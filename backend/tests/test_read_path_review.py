@@ -1163,30 +1163,26 @@ def test_discrete_filters_reach_postgres_as_exists_too(db_session, test_user, wi
     query.all()
 
 
-#: The four flags that resolve an id set in Python (latest observation wins)
-#: and pass it as a literal list — not a subquery.
-_ID_SET_PREDICATES = {"eol_os_predicate", "cert_issue_predicate", "weak_auth_predicate", "weak_tls_predicate"}
-
-
 def test_no_host_predicate_is_an_in_subquery_any_more():
     """A host predicate over a child table is a correlated EXISTS.  A new
     ``Host.id.in_(…)`` in the predicate module is a predicate that runs its
     subquery over every project's rows under OR or NOT — write it with
-    ``_host_has`` / ``host_has_port``."""
+    ``_host_has`` / ``host_has_port``.  No exception is left (comprehensive
+    review 2026-10-16, A1: the four latest-observation flags shipped literal
+    id lists; they are correlated EXISTS in ``host_condition_sets`` now)."""
     import ast
     import inspect
 
-    tree = ast.parse(inspect.getsource(P))
+    from app.services import host_condition_sets as HC
+
     offenders = []
-    for function in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-        source = ast.unparse(function)
-        if function.name in _ID_SET_PREDICATES:
-            continue
-        if "Host.id.in_(" in source or "Host.id.notin_(" in source or "Host.id.not_in(" in source:
-            offenders.append(function.name)
+    for module in (P, HC):
+        tree = ast.parse(inspect.getsource(module))
+        for function in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            source = ast.unparse(function)
+            if "Host.id.in_(" in source or "Host.id.notin_(" in source or "Host.id.not_in(" in source:
+                offenders.append(f"{module.__name__}.{function.name}")
     assert offenders == []
-    for name in _ID_SET_PREDICATES:
-        assert "Host.id.in_(ids)" in inspect.getsource(getattr(P, name)), name
 
 
 # ---------------------------------------------------------------------------

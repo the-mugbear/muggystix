@@ -33,7 +33,12 @@ from app.services import ingestion_service as imports
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.scan_inventory_filters import apply_scan_inventory_filters
-from app.services.scan_snapshot_service import ScanHostSnapshot, scan_host_snapshots
+from app.services.scan_snapshot_service import (
+    ScanHostSnapshot,
+    ScanPortObservation,
+    scan_host_snapshots,
+    scan_port_observations,
+)
 from app.services.scan_diff_service import (
     ScanDiffResponse,
     ScanNotInProject,
@@ -500,24 +505,30 @@ def get_scans(
         )
         .select_from(models.Scan)
         .outerjoin(models.HostScanHistory, models.Scan.id == models.HostScanHistory.scan_id)
-        .filter(models.Scan.project_id == project.id)
     )
-    # v2.82.0 tool filter / v2.83.0 date-range filter / search — all shared
-    # with the summary endpoint via apply_scan_inventory_filters so the
-    # headline totals can't drift from the rows shown here.
-    scans_query = apply_scan_inventory_filters(
-        scans_query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
-    )
+    wanted = None
     if ids:
         try:
             wanted = {int(x) for x in ids.split(",") if x.strip()}
         except ValueError:
             raise HTTPException(status_code=422, detail="ids must be comma-separated integers")
-        scans_query = scans_query.filter(models.Scan.id.in_(wanted))
-    if batch_id is not None:
-        scans_query = scans_query.filter(models.Scan.batch_id == batch_id)
-    elif unbatched:
-        scans_query = scans_query.filter(models.Scan.batch_id.is_(None))
+
+    def _which_scans(query):
+        # v2.82.0 tool filter / v2.83.0 date-range filter / search — all
+        # shared with the summary endpoint via apply_scan_inventory_filters so
+        # the headline totals can't drift from the rows shown here.
+        query = apply_scan_inventory_filters(
+            query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
+        ).filter(models.Scan.project_id == project.id)
+        if wanted is not None:
+            query = query.filter(models.Scan.id.in_(wanted))
+        if batch_id is not None:
+            query = query.filter(models.Scan.batch_id == batch_id)
+        elif unbatched:
+            query = query.filter(models.Scan.batch_id.is_(None))
+        return query
+
+    scans_query = _which_scans(scans_query)
     scans_query = (
         scans_query
         .group_by(
@@ -554,12 +565,20 @@ def get_scans(
     ordering = order_direction(sort_column)
     if sort_by == "start_time":
         ordering = ordering.nullslast()
-    scans_query = (
-        scans_query
-        .order_by(ordering, models.Scan.id.desc())
-        .offset(skip)
-        .limit(limit)
-    )
+    scans_query = scans_query.order_by(ordering, models.Scan.id.desc())
+    if sort_by in ("total_hosts", "new_hosts"):
+        # Ordered by an aggregate: every filtered scan is counted to rank it.
+        scans_query = scans_query.offset(skip).limit(limit)
+    else:
+        # The page is chosen from the scan rows alone, then only its scans'
+        # host-history rows are aggregated (comprehensive review 2026-10-16,
+        # A2: grouping first hashed every history row of the project — a
+        # sweep per scan × every host — for each page).
+        page_ids = [
+            sid for (sid,) in _which_scans(db.query(models.Scan.id))
+            .order_by(ordering, models.Scan.id.desc()).offset(skip).limit(limit)
+        ]
+        scans_query = scans_query.filter(models.Scan.id.in_(page_ids))
 
     results = scans_query.all()
     scan_ids = [r.id for r in results]
@@ -1948,6 +1967,28 @@ def delete_scan(
         db.rollback()
         logger.exception("Failed to delete scan %s", scan_id)
         raise HTTPException(status_code=500, detail="Error deleting scan")
+
+@router.get(
+    "/{scan_id}/ports",
+    response_model=Paginated[ScanPortObservation],
+    responses={**_AUTH_RESPONSES, 404: {"description": "Scan not found"}},
+    summary="Ports as this scan recorded them",
+)
+def get_scan_ports(
+    scan_id: int,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """Every port this scan recorded, as it recorded it (state and service
+    from the scan's own observation), ordered by address, port and protocol.
+    ``total`` is the scan's ``total_ports``."""
+    try:
+        return scan_port_observations(db, project.id, scan_id, skip=skip, limit=limit)
+    except ScanNotInProject:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
 
 @router.get("/{scan_id}/dns-records", response_model=Paginated[DNSRecord])
 def get_scan_dns_records(

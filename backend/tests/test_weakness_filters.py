@@ -102,10 +102,11 @@ def test_rows_and_detail_carry_the_flags(client, db_session, test_project):
 
 
 def test_labelling_a_page_reads_only_its_hosts_and_agrees_with_the_filter(db_session, test_project, test_user):
-    """Review 2026-10-07: four flags resolve an id set in Python.  Labelling
-    one host pulled every web and login row of the project; now the set
-    queries are narrowed to the hosts being labelled — with the same answer
-    the filter gives."""
+    """Review 2026-10-07: four flags resolved an id set in Python, and
+    labelling one host pulled every web and login row of the project.  Since
+    the comprehensive review of 2026-10-16 (A1) three of them are conditions
+    in the labelling statement itself, and `eol` reads the page's OS names
+    only — with the same answer the filter gives."""
     from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import event
@@ -133,6 +134,7 @@ def test_labelling_a_page_reads_only_its_hosts_and_agrees_with_the_filter(db_ses
     db_session.commit()
     expected = ["eol", "weak_auth", "cert_issue", "weak_tls"]
 
+    first = hosts[0].id  # read before listening: the commit expired it
     statements = []
 
     def capture(conn, cursor, statement, parameters, context, executemany):
@@ -141,15 +143,19 @@ def test_labelling_a_page_reads_only_its_hosts_and_agrees_with_the_filter(db_ses
     engine = db_session.get_bind().engine
     event.listen(engine, "before_cursor_execute", capture)
     try:
-        flags = host_weakness_flags(db_session, test_user, test_project.id, [hosts[0].id])
+        flags = host_weakness_flags(db_session, test_user, test_project.id, [first])
     finally:
         event.remove(engine, "before_cursor_execute", capture)
 
-    assert sorted(flags[hosts[0].id]) == sorted(expected)
-    set_reads = [s for s in statements
-                 if s.startswith(("SELECT web_interfaces.", "SELECT netexec_results."))]
-    assert len(set_reads) == 3
-    assert all("host_id IN" in s for s in set_reads), set_reads
+    assert sorted(flags[first]) == sorted(expected)
+    # No read of the web or login rows on their own: the three are EXISTS
+    # inside the one labelling statement.  The other is the OS names, of the
+    # page's hosts only.
+    assert not [s for s in statements if s.startswith(("SELECT web_interfaces.", "SELECT netexec_results."))]
+    host_reads = [s for s in statements if "FROM hosts_v2" in s]
+    assert len(host_reads) == 2, host_reads
+    os_read = next(s for s in host_reads if "os_name" in s and "DISTINCT" in s)
+    assert "hosts_v2.id IN" in os_read, os_read
     # The filter (no narrowing) names the same hosts.
     for flag in expected:
         assert _ips(db_session, test_user, test_project, weaknesses=flag) == {h.ip_address for h in hosts}

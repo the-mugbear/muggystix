@@ -34,7 +34,6 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -45,9 +44,7 @@ from app.db.models import (
     Scope,
     Site,
     Subnet,
-    WebInterface,
 )
-from app.db.models_confidence import NetexecResult
 from app.db.models_findings import Finding, FindingHost, finding_active_on_host
 from app.services.attention_service import (
     _ACTIVE_FINDING_STATUSES,
@@ -400,69 +397,25 @@ def compute_subnet_insights(
                 "eol_date": eol.eol_date,
             })
 
-    # --- Hygiene: TLS cert issues (expired / self-signed), CURRENT only ---
-    # A rescan adds a new WebInterface row per scan (unique on scan_id, url,
-    # source), so reading all history would let a cert that was expired in an
-    # old scan keep the host flagged after a later clean re-observation.
-    # Reduce to the latest observation per (host, interface) before judging.
-    # Read the promoted cert columns (parsed once at ingest) instead of the
-    # tls_info blob — no per-row JSON parse / date guessing at request time.
-    cert_latest: Dict[tuple, tuple] = {}  # (host_id, url) -> (last_seen, not_after, self_signed)
-    for host_id, url, not_after, self_signed, last_seen in (
-        db.query(
-            WebInterface.host_id, WebInterface.url,
-            WebInterface.cert_not_after, WebInterface.cert_self_signed,
-            WebInterface.last_seen,
-        )
-        .filter(
-            WebInterface.project_id == project_id,
-            WebInterface.host_id.isnot(None),
-            or_(
-                WebInterface.cert_not_after.isnot(None),
-                WebInterface.cert_self_signed.isnot(None),
-            ),
-        )
-        .all()
-    ):
-        if host_to_subnet.get(host_id) is None:
-            continue
-        ls = _normalize_dt(last_seen) or _EPOCH
-        key = (host_id, url)
-        prev = cert_latest.get(key)
-        if prev is None or ls >= prev[0]:
-            cert_latest[key] = (ls, not_after, self_signed)
-    cert_issue_hosts: Dict[int, set] = defaultdict(set)
-    for (host_id, _url), (_ls, not_after, self_signed) in cert_latest.items():
-        if cert_issue_from_columns(not_after, self_signed, now):
-            cert_issue_hosts[host_to_subnet[host_id]].add(host_id)
+    # --- Hygiene: TLS cert issues (expired / self-signed) and weak / guest
+    # authentication, CURRENT only — the latest observation of each URL, and
+    # of each NetExec protocol and port, decides (a clean re-scan retires the
+    # weakness).  The SAME conditions the Hosts filter's `has:cert_issue` /
+    # `has:weak_auth` use (`host_condition_sets`), so this view and its
+    # drill-down cannot disagree; they were a loop over every row of the
+    # project here (comprehensive review 2026-10-16, A1).
+    from app.services.host_condition_sets import cert_issue_condition, weak_auth_condition
 
-    # --- Hygiene: weak / guest authentication, CURRENT only ---------------
-    # Latest NetExec observation per (host, protocol, port).  We no longer
-    # pre-filter to auth_success=True: if the most recent observation is a
-    # failure (creds rotated), an older guest success must not still flag the
-    # host.  ``_is_weak_user`` only flags an EXPLICIT guest/blank identity.
-    nxc_latest: Dict[tuple, tuple] = {}  # (host_id, proto, port) -> (discovered_at, auth, user)
-    for host_id, protocol, port, auth_success, username, discovered_at in (
-        db.query(
-            NetexecResult.host_id, NetexecResult.protocol, NetexecResult.port,
-            NetexecResult.auth_success, NetexecResult.username, NetexecResult.discovered_at,
-        )
-        .join(models.Host, NetexecResult.host_id == models.Host.id)
-        # Only login results (v2.388.1): a banner row is not an auth attempt.
-        .filter(models.Host.project_id == project_id, NetexecResult.auth_success.isnot(None))
-        .all()
-    ):
-        if host_to_subnet.get(host_id) is None:
-            continue
-        d = _normalize_dt(discovered_at) or _EPOCH
-        key = (host_id, protocol, port)
-        prev = nxc_latest.get(key)
-        if prev is None or d >= prev[0]:
-            nxc_latest[key] = (d, auth_success, username)
-    weak_auth_hosts: Dict[int, set] = defaultdict(set)
-    for (host_id, _proto, _port), (_d, auth_success, username) in nxc_latest.items():
-        if auth_success and _is_weak_user(username):
-            weak_auth_hosts[host_to_subnet[host_id]].add(host_id)
+    def hosts_by_subnet(condition) -> Dict[int, set]:
+        out: Dict[int, set] = defaultdict(set)
+        for (host_id,) in db.query(models.Host.id).filter(models.Host.project_id == project_id, condition):
+            subnet = host_to_subnet.get(host_id)
+            if subnet is not None:
+                out[subnet].add(host_id)
+        return out
+
+    cert_issue_hosts = hosts_by_subnet(cert_issue_condition(now))
+    weak_auth_hosts = hosts_by_subnet(weak_auth_condition())
 
     # --- Hygiene: risky exposed services (ports of interest) --------------
     poi_map = ports_by_number()

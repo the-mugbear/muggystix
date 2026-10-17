@@ -142,25 +142,43 @@ export interface ScanHostSnapshot {
   ports: ScanPortSnapshot[];
 }
 
-const SNAPSHOT_PAGE = 1000;
+/** One page of the hosts as the scan observed them. */
 export const getScanHostSnapshots = async (
   projectId: number,
   scanId: number,
+  page: { offset: number; limit: number },
   signal?: AbortSignal,
 ): Promise<Paginated<ScanHostSnapshot>> => {
-  try {
-    const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/host-snapshots`, {
-      params: { skip: 0, limit: SNAPSHOT_PAGE }, signal,
-    });
-    return response.data;
-  } catch (error) {
-    // A deployment mid-upgrade has the page but not the route yet; the caller
-    // falls back to the current-inventory view rather than erroring the tab.
-    if (asAxiosError(error)?.response?.status === 404) {
-      return { items: [], total: 0, skip: 0, limit: SNAPSHOT_PAGE, has_more: false };
-    }
-    throw error;
-  }
+  const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/host-snapshots`, {
+    params: { skip: page.offset, limit: page.limit }, signal,
+  });
+  return response.data;
+};
+
+/** A port as THIS scan recorded it (2.514.0): state and service from the
+ *  scan's own observation, never the port's current record. */
+export interface ScanPortObservation {
+  host_id: number;
+  ip_address: string;
+  port_number: number;
+  protocol: string | null;
+  state_at_scan: string | null;
+  service_name: string | null;
+  service_product: string | null;
+  service_version: string | null;
+}
+
+/** One page of every port the scan recorded; `total` is its `total_ports`. */
+export const getScanPorts = async (
+  projectId: number,
+  scanId: number,
+  page: { offset: number; limit: number },
+  signal?: AbortSignal,
+): Promise<Paginated<ScanPortObservation>> => {
+  const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/ports`, {
+    params: { skip: page.offset, limit: page.limit }, signal,
+  });
+  return response.data;
 };
 
 // --- Saved Hosts page filter views (per-user, per-project) ---

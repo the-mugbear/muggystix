@@ -403,7 +403,7 @@ _HAS_KEYWORDS = {
     "smb_unsigned": (lambda ctx: P.smb_unsigned_predicate(),
                      "SMB message signing not required — disabled, or on but not required "
                      "(NTLM-relay / lateral-movement exposure)."),
-    "weak_auth": (lambda ctx: P.weak_auth_predicate(ctx.db, ctx.project_id, ctx.only_host_ids),
+    "weak_auth": (lambda ctx: P.weak_auth_predicate(),
                   "A guest / anonymous / null-session login succeeded (NetExec, SMBMap)."),
     # v2.412.0 — the access an analyst HAS, not a weakness of the target, so
     # a filter rather than a scanner observation.
@@ -411,9 +411,9 @@ _HAS_KEYWORDS = {
                     "A credential was a local administrator (NetExec \"Pwn3d!\")."),
     "writable_share": (lambda ctx: P.writable_share_predicate(),
                        "A share granted WRITE (NetExec --shares, SMBMap)."),
-    "cert_issue": (lambda ctx: P.cert_issue_predicate(ctx.db, ctx.project_id, ctx.only_host_ids),
+    "cert_issue": (lambda ctx: P.cert_issue_predicate(),
                    "Latest TLS certificate is expired or self-signed."),
-    "weak_tls": (lambda ctx: P.weak_tls_predicate(ctx.db, ctx.project_id, ctx.only_host_ids),
+    "weak_tls": (lambda ctx: P.weak_tls_predicate(),
                  "Offers a weak TLS protocol (SSLv2 / SSLv3 / TLS 1.0 / TLS 1.1)."),
     "cleartext": (lambda ctx: P.cleartext_predicate(ctx.db),
                   "Open cleartext-credential service (Telnet / FTP / POP3 / IMAP)."),

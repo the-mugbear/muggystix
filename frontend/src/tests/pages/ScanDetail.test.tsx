@@ -4,8 +4,8 @@
  * one for the tabs; a missing hostname read "N/A" here and "No hostname"
  * everywhere else.
  */
-import { fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const api = vi.hoisted(() => {
@@ -31,12 +31,14 @@ vi.mock('../../components/CommandExplanation', () => ({ default: () => null }));
 import ScanDetail from '../../pages/ScanDetail';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
-const renderPage = () =>
+const Address = () => <output data-testid="address">{useLocation().search}</output>;
+
+const renderPage = (entry = '/scans/9') =>
   render(
-    <MemoryRouter initialEntries={['/scans/9']}>
+    <MemoryRouter initialEntries={[entry]}>
       <TooltipProvider>
         <Routes>
-          <Route path="/scans/:scanId" element={<ScanDetail />} />
+          <Route path="/scans/:scanId" element={<><ScanDetail /><Address /></>} />
         </Routes>
       </TooltipProvider>
     </MemoryRouter>,
@@ -57,6 +59,7 @@ beforeEach(() => {
     items: [
       { host_id: 1, ip_address: '10.0.0.1', hostname_at_scan: null, state_at_scan: null, host_created: true, open_port_count: 0, observed_port_count: 0 },
     ],
+    total: 1,
   });
   api.getScans.mockResolvedValue([]);
 });
@@ -95,6 +98,7 @@ describe('ScanDetail', () => {
         { host_id: 2, ip_address: '10.0.0.2', hostname_at_scan: 'b.corp', state_at_scan: 'up', host_created: false, credentialed: false, open_port_count: 0, observed_port_count: 0 },
         { host_id: 3, ip_address: '10.0.0.3', hostname_at_scan: 'c.corp', state_at_scan: 'up', host_created: false, credentialed: null, open_port_count: 0, observed_port_count: 0 },
       ],
+      total: 3,
     });
     renderPage();
     expect(await screen.findByRole('columnheader', { name: 'Authenticated' })).toBeInTheDocument();
@@ -114,6 +118,7 @@ describe('ScanDetail', () => {
         // An older server does not say.
         { host_id: 4, ip_address: '10.0.0.4', hostname_at_scan: null, state_at_scan: null, host_created: false, open_port_count: 0, observed_port_count: 0 },
       ],
+      total: 4,
     });
     renderPage();
     const rowOf = (ip: string) => screen.getByRole('button', { name: ip }).closest('tr')!;
@@ -122,6 +127,56 @@ describe('ScanDetail', () => {
     expect(rowOf('10.0.0.2')).toHaveTextContent('Renamed here');
     expect(rowOf('10.0.0.3')).toHaveTextContent('Seen before');
     expect(rowOf('10.0.0.4')).toHaveTextContent('Seen before');
+  });
+
+  // Review 2026-10-16, A7 / A9: counts from the scan, lists paged, the tab
+  // and the view in the address.
+  it('pages the as-scanned hosts and reads no current host records for it', async () => {
+    api.getScan.mockResolvedValue({
+      id: 9, filename: 'sweep.xml', tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
+      total_hosts: 120, up_hosts: 100, total_ports: 4, open_ports: 3,
+    });
+    api.getScanHostSnapshots.mockImplementation(async (_p: number, _s: number, page: { offset: number; limit: number }) => ({
+      items: Array.from({ length: page.limit }, (_, i) => ({
+        host_id: page.offset + i + 1, ip_address: `10.0.1.${page.offset + i + 1}`, hostname_at_scan: null,
+        state_at_scan: 'up', host_created: false, open_port_count: 0, observed_port_count: 0,
+      })),
+      total: 120,
+    }));
+    renderPage('/scans/9?page=2');
+    expect(await screen.findByText('51–100 of 120')).toBeInTheDocument();
+    expect(api.getScanHostSnapshots).toHaveBeenCalledWith(1, 9, { offset: 50, limit: 50 }, expect.anything());
+    expect(screen.getByTestId('scan-measures')).toHaveTextContent('100/120');
+    expect(api.getHostsByScan).not.toHaveBeenCalled();
+    expect(api.getScanPorts).not.toHaveBeenCalled();
+  });
+
+  it('lists the ports as the scan recorded them, under the scan\'s own port count', async () => {
+    api.getScanPorts.mockResolvedValue({
+      items: [
+        { host_id: 1, ip_address: '10.0.0.1', port_number: 443, protocol: 'tcp', state_at_scan: 'open', service_name: 'https', service_product: 'nginx', service_version: '1.25' },
+        { host_id: 1, ip_address: '10.0.0.1', port_number: 8080, protocol: 'tcp', state_at_scan: 'filtered', service_name: null, service_product: null, service_version: null },
+      ],
+      total: 4,
+    });
+    renderPage('/scans/9?tab=ports');
+    expect(await screen.findByText('nginx 1.25')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Ports \(4\)/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('filtered')).toBeInTheDocument();
+    expect(screen.getByText('1–2 of 4')).toBeInTheDocument();
+    expect(api.getScanHostSnapshots).not.toHaveBeenCalled();
+    expect(api.getHostsByScan).not.toHaveBeenCalled();
+  });
+
+  it('keeps the tab and the view in the address, each choice starting on page one', async () => {
+    renderPage('/scans/9?page=3');
+    await screen.findByRole('button', { name: 'As scanned' });
+    fireEvent.click(screen.getByRole('button', { name: 'Current inventory' }));
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('?view=current'));
+    expect(await screen.findByText('db.corp')).toBeInTheDocument();
+    expect(api.getHostsByScan).toHaveBeenCalledWith(1, 9, { skip: 0, limit: 50 }, expect.anything());
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /Ports/ }));
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('?view=current&tab=ports'));
   });
 
   // nmap's scanned port list: returned by GET /scans/{id} since forever, read by nothing.

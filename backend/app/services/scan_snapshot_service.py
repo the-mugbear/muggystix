@@ -230,3 +230,71 @@ def scan_host_snapshots(
             ports=ports_by_host.get(host.id, []),
         ))
     return Paginated[ScanHostSnapshot].build(items, total, skip, limit)
+
+
+class ScanPortObservation(BaseModel):
+    """One port as THIS scan recorded it (a ``PortScanHistory`` row)."""
+    host_id: int
+    ip_address: str
+    port_number: int
+    protocol: Optional[str] = None
+    state_at_scan: Optional[str] = None
+    service_name: Optional[str] = None
+    service_product: Optional[str] = None
+    service_version: Optional[str] = None
+
+
+def _service_field(service_info: Optional[str], key: str) -> Optional[str]:
+    try:
+        data = json.loads(service_info) if service_info else None
+    except (TypeError, ValueError):
+        return None
+    value = data.get(key) if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def scan_port_observations(
+    db: Session,
+    project_id: int,
+    scan_id: int,
+    *,
+    skip: int = 0,
+    limit: int = 100,
+) -> Paginated[ScanPortObservation]:
+    """Every port this scan recorded, paged by address, port and protocol
+    (comprehensive review 2026-10-16, A7: the Scan page's Ports tab listed
+    the CURRENT ports of the first hosts it had loaded, under the scan's
+    port total).  ``total`` is the scan's ``total_ports`` — the same rows.
+    Raises ``ScanNotInProject`` when the scan is not one of this project's."""
+    if not db.query(models.Scan.id).filter(
+        models.Scan.id == scan_id, models.Scan.project_id == project_id,
+    ).first():
+        raise ScanNotInProject([scan_id])
+    base = (
+        db.query(models.PortScanHistory)
+        .join(models.Port, models.PortScanHistory.port_id == models.Port.id)
+        .join(models.Host, models.Host.id == models.Port.host_id)
+        .filter(models.PortScanHistory.scan_id == scan_id)
+    )
+    total = base.with_entities(func.count(models.PortScanHistory.id)).scalar() or 0
+    rows = (
+        base.with_entities(
+            models.Host.id, models.Host.ip_address, models.Port.port_number, models.Port.protocol,
+            models.PortScanHistory.state_at_scan, models.PortScanHistory.service_name,
+            models.PortScanHistory.service_info,
+        )
+        .order_by(models.Host.ip_address, models.Port.port_number, models.Port.protocol, models.Port.id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    items = [
+        ScanPortObservation(
+            host_id=host_id, ip_address=ip, port_number=number, protocol=protocol,
+            state_at_scan=state, service_name=service_name or _service_name_at_scan(info),
+            service_product=_service_field(info, "service_product"),
+            service_version=_service_field(info, "service_version"),
+        )
+        for host_id, ip, number, protocol, state, service_name, info in rows
+    ]
+    return Paginated[ScanPortObservation].build(items, total, skip, limit)

@@ -346,10 +346,9 @@ def host_weakness_flags(db: Session, current_user: User, project_id: int, host_i
     """{host_id: [flag, …]} — the weakness / access flags each host carries,
     by the same predicates as the filter.  One statement for the page.
 
-    The predicates are told which hosts are being labelled: four of them
-    resolve an id set in Python (latest observation wins), and for a page —
-    or the one host of a detail view — that set is taken from those hosts'
-    rows instead of every web and login row of the project."""
+    The predicates are told which hosts are being labelled: `eol` runs its
+    catalog over the OS names in Python, and for a page — or the one host of
+    a detail view — it reads those hosts' names instead of the project's."""
     if not host_ids:
         return {}
     from sqlalchemy import case

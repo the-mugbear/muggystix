@@ -1,9 +1,14 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, RefreshCw, Upload, Globe } from 'lucide-react';
-import { getScan, getScans, getHostsByScan, getScanDnsRecords, getScanHostSnapshots } from '../services/api';
-import type { ScanHost, DNSRecord, Scan as ScanSummaryRow, ScanHostSnapshot } from '../services/api';
+import { getScan, getScans, getHostsByScan, getScanDnsRecords, getScanHostSnapshots, getScanPorts } from '../services/api';
+import type { ScanHost, DNSRecord, Scan as ScanSummaryRow, ScanHostSnapshot, ScanPortObservation } from '../services/api';
+import { usePagedList, type PagedList } from '../hooks/usePagedList';
+import type { ListPage } from '../hooks/useListQuery';
+import { useUrlPage } from '../hooks/useUrlPage';
+import { PagedFooter, UnavailableLine } from '../components/operations/QueueParts';
+import { TableSkeleton } from '../components/PageSkeleton';
 import ImportResult from '../components/scans/ImportResult';
 import CommandExplanation from '../components/CommandExplanation';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -71,28 +76,47 @@ const getWebUrl = (ip: string, port: WebPortLike): string => {
 };
 
 
+/** Rows a page of each of the page's lists. */
+export const SCAN_DETAIL_PAGE_SIZE = 50;
+
+const TABS = ['hosts', 'ports', 'dns', 'command'] as const;
+type ScanTab = typeof TABS[number];
+
 const ScanDetail: React.FC = () => {
   const { scanId } = useParams<{ scanId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const fromHost = (location.state as { fromHost?: { id: number; ip: string } } | null)?.fromHost;
-  // Which record the Hosts tab shows. Defaults to the scan's own record —
-  // this page is a scan artifact, and rendering current inventory under
-  // "this scan recorded" is what made it unreliable as evidence (v5.184.0).
-  const [hostView, setHostView] = useState<'as_scanned' | 'current'>('as_scanned');
-  const [tab, setTab] = useState('hosts');
+  // The tab and the Hosts tab's view are the address's (review 2026-10-16,
+  // A9): Back from a host returns to them, and a link can name them.  The
+  // view defaults to the scan's own record — this page is a scan artifact,
+  // and rendering current inventory under "this scan recorded" is what made
+  // it unreliable as evidence (v5.184.0).
+  const [params, setParams] = useSearchParams();
+  const tab: ScanTab = (TABS as readonly string[]).includes(params.get('tab') ?? '') ? params.get('tab') as ScanTab : 'hosts';
+  const hostView: 'as_scanned' | 'current' = params.get('view') === 'current' ? 'current' : 'as_scanned';
+  // One address write per choice; a new tab or view starts on its first page.
+  const choose = (next: { tab?: ScanTab; view?: 'as_scanned' | 'current' }) => {
+    setParams((prev) => {
+      const out = new URLSearchParams(prev);
+      out.delete('page');
+      if (next.tab) {
+        if (next.tab === 'hosts') out.delete('tab'); else out.set('tab', next.tab);
+      }
+      if (next.view) {
+        if (next.view === 'current') out.set('view', 'current'); else out.delete('view');
+      }
+      return out;
+    }, { replace: true });
+  };
 
-  // The page is four reads, shown together: the scan, its hosts as they are
-  // now, the names it resolved and what it recorded per host.
+  // The page is the scan, the names it resolved and its summary row, shown
+  // together; each tab's list is paged and read when it is open.
   const id = scanId ? parseInt(scanId) : NaN;
   const known = !Number.isNaN(id);
   const projectId = useProjectId();
   const scanQuery = useQuery({ queryKey: ['getScan', projectId, id], queryFn: ({ signal }) => getScan(projectId, id, signal), enabled: known });
-  const hostsQuery = useQuery({ queryKey: ['getHostsByScan', projectId, id], queryFn: ({ signal }) => getHostsByScan(projectId, id, undefined, signal), enabled: known });
   const dnsQuery = useQuery({ queryKey: ['getScanDnsRecords', projectId, id], queryFn: ({ signal }) => getScanDnsRecords(projectId, id, signal), enabled: known });
-  const snapshotsQuery = useQuery({
-    queryKey: ['getScanHostSnapshots', projectId, id], queryFn: ({ signal }) => getScanHostSnapshots(projectId, id, signal), enabled: known,
-  });
   // v5.222.0 — the inventory's per-scan summary (hosts added, conflicts,
   // import quality) for the Import result card; not fatal if it fails.
   const summaryQuery = useQuery({
@@ -100,7 +124,7 @@ const ScanDetail: React.FC = () => {
     queryFn: ({ signal }) => getScans(projectId, 0, 1, { ids: [id], signal }),
     enabled: known,
   });
-  const required = [scanQuery, hostsQuery, dnsQuery, snapshotsQuery];
+  const required = [scanQuery, dnsQuery];
   const failed = required.find((q) => q.isError);
   const error = queryErrorText(failed?.error, 'Failed to load scan details.');
   // The summary is waited for too, so the page appears whole.
@@ -110,11 +134,40 @@ const ScanDetail: React.FC = () => {
   };
 
   const scan = scanQuery.data ?? null;
-  const hosts: ScanHost[] = hostsQuery.data ?? [];
-  const snapshots: ScanHostSnapshot[] = snapshotsQuery.data?.items ?? [];
   const dnsRecords: DNSRecord[] = dnsQuery.data?.items ?? [];
   const dnsTotal = dnsQuery.data?.total ?? 0;
   const summaryRow: ScanSummaryRow | null = summaryQuery.data?.[0] ?? null;
+  // The scan's own counts (review 2026-10-16, A7): the page no longer loads
+  // a thousand hosts and their ports to count them.
+  const totalHostCount = scan?.total_hosts ?? 0;
+
+  const urlPage = useUrlPage();
+  const listOptions = (open: boolean) => ({
+    pageSize: SCAN_DETAIL_PAGE_SIZE, page: urlPage, within: projectId, enabled: known && !!scan && open,
+  });
+  const snapshotList = usePagedList<ScanHostSnapshot>(
+    'getScanHostSnapshots',
+    ({ offset, limit, signal }) => getScanHostSnapshots(projectId, id, { offset, limit }, signal),
+    [projectId, id],
+    listOptions(tab === 'hosts' && hostView === 'as_scanned'),
+  );
+  // The hosts' current records: the route answers a bare page, and the
+  // scan's host count is how many there are (one row each).
+  const currentList = usePagedList<ScanHost>(
+    'getHostsByScan',
+    async ({ offset, limit, signal }) => ({
+      items: await getHostsByScan(projectId, id, { skip: offset, limit }, signal),
+      total: totalHostCount,
+    }),
+    [projectId, id, totalHostCount],
+    listOptions(tab === 'hosts' && hostView === 'current'),
+  );
+  const portList = usePagedList<ScanPortObservation>(
+    'getScanPorts',
+    ({ offset, limit, signal }) => getScanPorts(projectId, id, { offset, limit }, signal),
+    [projectId, id],
+    listOptions(tab === 'ports'),
+  );
 
   if (loading) {
     return <DetailSkeleton />;
@@ -145,27 +198,39 @@ const ScanDetail: React.FC = () => {
     );
   }
 
-  const upHosts = hosts.filter((h) => h.state === 'up').length;
-  const totalPorts = hosts.reduce((acc, h) => acc + h.ports.length, 0);
-  const openPorts = hosts.reduce((acc, h) => acc + h.ports.filter((p) => p.state === 'open').length, 0);
-
-  // Prefer the scan-level aggregates from getScan (accurate, matches the
-  // /scans list badge) over counts derived from the fetched host list,
-  // which is capped (getHostsByScan limit) and undercounts large scans.
-  const totalHostCount = scan.total_hosts ?? hosts.length;
-  const upHostCount = scan.up_hosts ?? upHosts;
-  const totalPortCount = scan.total_ports ?? totalPorts;
-  const openPortCount = scan.open_ports ?? openPorts;
+  const upHostCount = scan.up_hosts ?? 0;
+  const totalPortCount = scan.total_ports ?? 0;
+  const openPortCount = scan.open_ports ?? 0;
   // Per-scan rollups — absent on scans ingested before the summaries
   // existed, so both are guarded at the render site.
   const portBreakdown = scan.port_breakdown ?? null;
   const vulnSummary = scan.vulnerability_summary ?? null;
-  // The rendered host/port tables are a sample when the scan has more
-  // hosts than we fetched — surface that so the counts don't look buggy.
-  const hostsCapped = hosts.length < totalHostCount;
+  const snapshots: ScanHostSnapshot[] = snapshotList.rows ?? [];
+  const hosts: ScanHost[] = currentList.rows ?? [];
+  const ports: ScanPortObservation[] = portList.rows ?? [];
   // Whether the scan authenticated to each host is a column only when the scan
-  // said so for someone: an nmap scan gets no column of blanks.
+  // said so for someone on this page: an nmap scan gets no column of blanks.
   const showCredentialed = snapshots.some((row) => row.credentialed != null);
+  const openHost = (hostId: number) =>
+    navigate(`/hosts/${hostId}`, { state: { fromScan: { id: Number(scanId), filename: scan.filename } } });
+  // The open list's state above its table: loading, or its failure with Retry.
+  const listState = (list: { rows: unknown[] | null; error: string | null; reload: () => Promise<void> }) =>
+    list.error ? (
+      <UnavailableLine onRetry={() => void list.reload()}>{list.error}</UnavailableLine>
+    ) : list.rows === null ? (
+      <TableSkeleton />
+    ) : null;
+  type Paged = Pick<PagedList<unknown, ListPage<unknown>>, 'rows' | 'total' | 'page' | 'pageSize' | 'setPage' | 'loading'>;
+  const footer = (list: Paged, noun: string, openAll?: { to: string; label: string }) =>
+    list.rows && list.total > 0 ? (
+      <PagedFooter
+        pager={{ page: list.page, pageSize: list.pageSize, total: list.total, onPage: list.setPage }}
+        shown={list.rows.length}
+        noun={noun}
+        busy={list.loading}
+        openAll={openAll}
+      />
+    ) : null;
 
   // v5.205.0 — same wording as the /scans list: when the scan ran per its own
   // output (or that the file doesn't say), where that time came from, and the
@@ -262,20 +327,21 @@ const ScanDetail: React.FC = () => {
       )}
 
       <PostureSection title="What this scan recorded">
-          <Tabs value={tab} onValueChange={setTab}>
+          <Tabs value={tab === 'dns' && dnsTotal === 0 ? 'hosts' : tab} onValueChange={(v) => choose({ tab: v as ScanTab })}>
             <TabsList>
               {/* Audit RSP·L6 — surface counts in the tab labels so
                   operators can see how much data each tab contains
-                  before clicking through. */}
-              <TabsTrigger value="hosts"><Computer className="size-4" aria-hidden /> Hosts ({totalHostCount})</TabsTrigger>
-              <TabsTrigger value="ports"><Shield className="size-4" aria-hidden /> All Ports ({totalPortCount})</TabsTrigger>
+                  before clicking through.  Each count is the scan's, and
+                  the tab lists exactly those rows, page by page. */}
+              <TabsTrigger value="hosts"><Computer className="size-4" aria-hidden /> Hosts ({totalHostCount.toLocaleString()})</TabsTrigger>
+              <TabsTrigger value="ports"><Shield className="size-4" aria-hidden /> Ports ({totalPortCount.toLocaleString()})</TabsTrigger>
               {dnsTotal > 0 && (
-                <TabsTrigger value="dns"><Globe className="size-4" aria-hidden /> DNS Records ({dnsTotal})</TabsTrigger>
+                <TabsTrigger value="dns"><Globe className="size-4" aria-hidden /> DNS Records ({dnsTotal.toLocaleString()})</TabsTrigger>
               )}
               <TabsTrigger value="command"><Terminal className="size-4" aria-hidden /> Command</TabsTrigger>
             </TabsList>
             <TabsContent value="hosts">
-              {hosts.length === 0 ? (
+              {totalHostCount === 0 ? (
                 <div className="rounded-panel border border-border py-xl text-center text-muted-foreground">
                   {/* Audit FBK·H8 — empty-state explains the likely
                       cause and offers a re-upload path (no /upload
@@ -292,23 +358,6 @@ const ScanDetail: React.FC = () => {
                 </div>
               ) : (
                 <>
-                  {hostsCapped && (
-                    <Alert className="mb-sm">
-                      <AlertDescription className="flex flex-wrap items-center gap-xs">
-                        <span>
-                          Showing the first {hosts.length.toLocaleString()} of{' '}
-                          {totalHostCount.toLocaleString()} hosts in this scan.
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => navigate(`/hosts?scan_ids=${scan.id}`)}
-                        >
-                          View all on Hosts page
-                        </Button>
-                      </AlertDescription>
-                    </Alert>
-                  )}
                   {/* As-scanned vs current (v5.184.0). These are different
                       questions and the page used to answer the second one
                       under the first one's heading: a host that was down when
@@ -319,7 +368,7 @@ const ScanDetail: React.FC = () => {
                       <Button
                         size="sm"
                         variant={hostView === 'as_scanned' ? 'default' : 'ghost'}
-                        onClick={() => setHostView('as_scanned')}
+                        onClick={() => choose({ view: 'as_scanned' })}
                         aria-pressed={hostView === 'as_scanned'}
                       >
                         As scanned
@@ -327,7 +376,7 @@ const ScanDetail: React.FC = () => {
                       <Button
                         size="sm"
                         variant={hostView === 'current' ? 'default' : 'ghost'}
-                        onClick={() => setHostView('current')}
+                        onClick={() => choose({ view: 'current' })}
                         aria-pressed={hostView === 'current'}
                       >
                         Current inventory
@@ -339,7 +388,8 @@ const ScanDetail: React.FC = () => {
                         : 'These hosts as they are today — later scans and remediation included.'}
                     </p>
                   </div>
-                  {hostView === 'as_scanned' && snapshots.length === 0 && hosts.length > 0 && (
+                  {listState(hostView === 'as_scanned' ? snapshotList : currentList)}
+                  {hostView === 'as_scanned' && snapshotList.rows?.length === 0 && snapshotList.total === 0 && (
                     <Alert className="mb-sm">
                       <AlertDescription>
                         No per-host observations were recorded for this scan, so there is
@@ -375,11 +425,7 @@ const ScanDetail: React.FC = () => {
                                 <div className="max-w-full truncate min-w-0">
                                   <button
                                     type="button"
-                                    onClick={() =>
-                                      navigate(`/hosts/${row.host_id}`, {
-                                        state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
-                                      })
-                                    }
+                                    onClick={() => openHost(row.host_id)}
                                     className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
                                   >
                                     {row.ip_address}
@@ -467,11 +513,7 @@ const ScanDetail: React.FC = () => {
                               <div className="max-w-full truncate min-w-0">
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    navigate(`/hosts/${host.id}`, {
-                                      state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
-                                    })
-                                  }
+                                  onClick={() => openHost(host.id)}
                                   className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
                                 >
                                   {host.ip_address}
@@ -528,11 +570,14 @@ const ScanDetail: React.FC = () => {
                     </Table>
                     )}
                   </div>
+                  {hostView === 'as_scanned'
+                    ? footer(snapshotList, 'hosts')
+                    : footer(currentList, 'hosts', { to: `/hosts?scan_ids=${scan.id}`, label: 'These hosts on the Hosts page' })}
                 </>
               )}
             </TabsContent>
             <TabsContent value="ports">
-              {hosts.flatMap((h) => h.ports).length === 0 ? (
+              {totalPortCount === 0 ? (
                 <div className="rounded-panel border border-border py-xl text-center text-muted-foreground">
                   {/* Audit FBK·H8 — see Hosts-tab note above. */}
                   <div className="flex flex-col items-center gap-xs">
@@ -546,85 +591,90 @@ const ScanDetail: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-panel border border-border">
-                  <Table className="table-fixed">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Host</TableHead>
-                        <TableHead className="w-24">Port</TableHead>
-                        <TableHead className="w-24">Protocol</TableHead>
-                        <TableHead className="w-24">State</TableHead>
-                        <TableHead className="w-1/4">Service</TableHead>
-                        <TableHead className="w-1/4">Version</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {hosts.flatMap((host) =>
-                        host.ports.map((port) => (
-                          <TableRow key={`${host.id}-${port.id}`}>
-                            <TableCell>
-                              <div className="max-w-full truncate min-w-0">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    navigate(`/hosts/${host.id}`, {
-                                      state: { fromScan: { id: Number(scanId), filename: scan?.filename } },
-                                    })
-                                  }
-                                  className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
-                                >
-                                  {host.ip_address}
-                                </button>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex items-center gap-xs">
-                                <span>{port.port_number}</span>
-                                {port.state === 'open' && isWebPort(port) && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        onClick={() =>
-                                          window.open(
-                                            getWebUrl(host.ip_address, port),
-                                            '_blank',
-                                            'noopener,noreferrer',
-                                          )
-                                        }
-                                        aria-label={`Open ${getWebUrl(host.ip_address, port)} in new tab`}
-                                      >
-                                        <ExternalLink className="size-3.5 text-primary" aria-hidden />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      Open {getWebUrl(host.ip_address, port)}
-                                    </TooltipContent>
-                                  </Tooltip>
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell>{port.protocol}</TableCell>
-                            <TableCell>
-                              <Badge variant={portStateVariant(port.state)} className="whitespace-nowrap">{port.state || 'unknown'}</Badge>
-                            </TableCell>
-                            <TableCell>
-                              <div className="max-w-full truncate min-w-0">{port.service_name || 'Unknown'}</div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="max-w-full truncate min-w-0">
-                                {port.service_product && port.service_version
-                                  ? `${port.service_product} ${port.service_version}`
-                                  : port.service_product || 'N/A'}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )),
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
+                <>
+                  {/* Every port the scan recorded, as it recorded it — the
+                      state and service of the scan's own observation, never
+                      the port's record today (review 2026-10-16, A7). */}
+                  <p className="mb-sm text-caption text-muted-foreground">
+                    What this scan observed on each port. Does not change as later scans run.
+                  </p>
+                  {listState(portList)}
+                  <div className="rounded-panel border border-border">
+                    <Table className="table-fixed">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Host</TableHead>
+                          <TableHead className="w-24">Port</TableHead>
+                          <TableHead className="w-24">Protocol</TableHead>
+                          <TableHead className="w-28">State at scan</TableHead>
+                          <TableHead className="w-1/4">Service</TableHead>
+                          <TableHead className="w-1/4">Version</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {ports.map((port) => {
+                          const webPort = { port_number: port.port_number, service_name: port.service_name };
+                          return (
+                            <TableRow key={`${port.host_id}-${port.port_number}-${port.protocol}`}>
+                              <TableCell>
+                                <div className="max-w-full truncate min-w-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => openHost(port.host_id)}
+                                    className="text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-control"
+                                  >
+                                    {port.ip_address}
+                                  </button>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-xs">
+                                  <span>{port.port_number}</span>
+                                  {port.state_at_scan === 'open' && isWebPort(webPort) && (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          onClick={() =>
+                                            window.open(
+                                              getWebUrl(port.ip_address, webPort),
+                                              '_blank',
+                                              'noopener,noreferrer',
+                                            )
+                                          }
+                                          aria-label={`Open ${getWebUrl(port.ip_address, webPort)} in new tab`}
+                                        >
+                                          <ExternalLink className="size-3.5 text-primary" aria-hidden />
+                                        </Button>
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        Open {getWebUrl(port.ip_address, webPort)}
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell>{port.protocol ?? '—'}</TableCell>
+                              <TableCell>
+                                <Badge variant={portStateVariant(port.state_at_scan)} className="whitespace-nowrap">{port.state_at_scan || 'unknown'}</Badge>
+                              </TableCell>
+                              <TableCell>
+                                <div className="max-w-full truncate min-w-0" title={port.service_name ?? undefined}>{port.service_name || '—'}</div>
+                              </TableCell>
+                              <TableCell>
+                                <div className="max-w-full truncate min-w-0">
+                                  {[port.service_product, port.service_version].filter(Boolean).join(' ') || '—'}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {footer(portList, 'ports')}
+                </>
               )}
             </TabsContent>
             {dnsTotal > 0 && (

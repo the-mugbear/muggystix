@@ -56,10 +56,10 @@ from app.services.host_query_common import (  # noqa: F401  (re-exported on purp
 # subnet_insight_service imports neither host_query nor this module.)
 from app.services.host_condition_sets import (
     CLEARTEXT_PORTS,
-    cert_issue_host_ids,
-    eol_os_host_ids,
-    weak_auth_host_ids,
-    weak_tls_host_ids,
+    cert_issue_condition,
+    eol_os_condition,
+    weak_auth_condition,
+    weak_tls_condition,
 )
 
 
@@ -466,9 +466,9 @@ def webtitle_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
 # ("SMB signing disabled — 40 hosts") links to `/hosts?q=has:smb_unsigned`, and
 # this predicate must resolve those same 40 hosts.  SMB-signing and cleartext
 # are simple column/port conditions expressed directly in SQL here (index- and
-# NOT-friendly at scale); EOL OS, cert hygiene, and weak auth carry non-trivial
-# judgments (regex catalog, latest-observation-wins) that live once in
-# host_condition_sets and are pulled in as id-sets so the two surfaces agree.
+# NOT-friendly at scale); EOL OS, cert hygiene, weak TLS and weak auth carry
+# non-trivial judgments (regex catalog, latest-observation-wins) that live once
+# in host_condition_sets as conditions, so the two surfaces agree.
 
 
 def smb_unsigned_predicate() -> ColumnElement:
@@ -493,24 +493,26 @@ def cleartext_predicate(db: Session) -> ColumnElement:
 
 
 def eol_os_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
-    """Host running an end-of-life OS (per the shared EOL catalog).
+    """Host running an end-of-life OS (per the shared EOL catalog): a
+    condition on ``os_name`` (``host_condition_sets.eol_os_condition``).
 
-    ``only_host_ids`` (here and on the three predicates like it): the caller
-    is labelling those hosts, so the judgment reads their rows only."""
-    ids = eol_os_host_ids(db, project_id, only_host_ids)
-    return models.Host.id.in_(ids) if ids else false()
-
-
-def cert_issue_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
-    """Host whose latest TLS cert observation is expired or self-signed."""
-    ids = cert_issue_host_ids(db, project_id, host_ids=only_host_ids)
-    return models.Host.id.in_(ids) if ids else false()
+    ``only_host_ids``: the caller is labelling those hosts, so the catalog
+    reads their OS names only."""
+    return eol_os_condition(db, project_id, only_host_ids)
 
 
-def weak_auth_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
-    """Host where a guest / anonymous / null-session login succeeded."""
-    ids = weak_auth_host_ids(db, project_id, only_host_ids)
-    return models.Host.id.in_(ids) if ids else false()
+def cert_issue_predicate() -> ColumnElement:
+    """Host whose latest TLS cert observation is expired or self-signed — a
+    correlated EXISTS (``host_condition_sets.cert_issue_condition``; it was a
+    literal list of every such host of the project, on every filtered request
+    — comprehensive review 2026-10-16, A1)."""
+    return cert_issue_condition()
+
+
+def weak_auth_predicate() -> ColumnElement:
+    """Host where a guest / anonymous / null-session login succeeded, on the
+    latest login of its protocol and port (``weak_auth_condition``)."""
+    return weak_auth_condition()
 
 
 def _netexec_flag_predicate(column) -> ColumnElement:
@@ -529,11 +531,10 @@ def writable_share_predicate() -> ColumnElement:
     return _netexec_flag_predicate(NetexecResult.writable_share)
 
 
-def weak_tls_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
+def weak_tls_predicate() -> ColumnElement:
     """Host whose latest TLS observation offers a weak protocol (SSLv2/SSLv3/
-    TLS 1.0/1.1)."""
-    ids = weak_tls_host_ids(db, project_id, only_host_ids)
-    return models.Host.id.in_(ids) if ids else false()
+    TLS 1.0/1.1) — ``weak_tls_condition``."""
+    return weak_tls_condition()
 
 
 # ---------------------------------------------------------------------------
