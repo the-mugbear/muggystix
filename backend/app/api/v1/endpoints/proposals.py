@@ -12,13 +12,14 @@ from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import get_current_user
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
-from app.db.session import get_db
+from app.db.session import get_db, is_deadlock
 from app.services import agent_evidence_service as evidence
 from app.services import proposal_service as proposals
 from app.services.finding_actions import finding_actor
@@ -97,10 +98,32 @@ def _decide(
     the locks released — and ``_LeftForOneAtATime`` is raised.  A single
     accept does not pass it: there the reviewer has the current text beside
     the draft, with the warning, and overwrites knowingly."""
+    try:
+        return _decide_locked(db, project_id, proposal_id, user, action, body,
+                              serialize=serialize, skip_rewritten=skip_rewritten)
+    except DBAPIError as exc:
+        # A promote / dismiss takes its own locks (evidence, then the finding);
+        # a scan deleted by hand at the same moment cascades into the
+        # proposal from the other end, and Postgres ends one of the two.
+        # That is a race lost, not a server fault (review 2026-10-16, A3).
+        if not is_deadlock(exc):
+            raise
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Something else changed this at the same moment — nothing was applied. Try again.",
+        )
+
+
+def _decide_locked(
+    db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody,
+    *, serialize: bool, skip_rewritten: bool,
+):
     # Locked until the commit below: a second decision on it waits, then
     # finds it decided (409) instead of applying it again.
-    # One lock order for every decision — a report-text proposal's finding
-    # first, then the proposal (H1; `lock_for_decision` says why).
+    # One lock order for every decision — a report-text proposal's finding,
+    # an endpoint-status proposal's endpoint, first; then the proposal
+    # (`lock_for_decision` says why).
     proposal = proposals.lock_for_decision(db, project_id, proposal_id)
     # Under those locks, so the text compared is the text an accept would
     # replace: a save of the section waits for this decision or came first.

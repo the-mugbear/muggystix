@@ -14,6 +14,7 @@ Two REAL connections (``tests/two_connections.py``); the ordinary fixtures
 bind every session to one connection, where nothing ever waits.
 """
 import threading
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -178,7 +179,112 @@ def test_a_decision_locks_the_finding_only_for_report_text(db_session, test_proj
         assert len(of_text) == 2
         assert "FROM findings" in of_text[0] and of_text[0].endswith("FOR NO KEY UPDATE")
         assert "FROM agent_proposals" in of_text[1] and of_text[1].endswith("FOR UPDATE")
+        # An endpoint-status proposal naming no endpoint locks only itself.
         assert len(of_endpoint) == 1 and "FROM agent_proposals" in of_endpoint[0]
     with pytest.raises(HTTPException) as exc:
         proposals.lock_for_decision(db_session, test_project.id, 999_999_999)
     assert exc.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Comprehensive review 2026-10-16, A3 — accepting an endpoint-status proposal
+# while the endpoint is removed
+# ---------------------------------------------------------------------------
+
+def _endpoint_proposal(two_sessions, project, user):
+    from app.db.models import Host
+    from app.db.models_findings import FindingHost
+
+    def seed(db):
+        host = Host(project_id=project.id, ip_address="10.66.0.1", state="up")
+        f = Finding(project_id=project.id, title="Endpoint race", severity="high", status="open",
+                    source="manual", created_by_id=user.id)
+        db.add_all([host, f])
+        db.flush()
+        fh = FindingHost(finding_id=f.id, host_id=host.id, host_status="open")
+        db.add(fh)
+        db.flush()
+        p = AgentProposal(project_id=project.id, finding_id=f.id, finding_host_id=fh.id, kind="endpoint_status",
+                          source="agent", payload={"host_status": "false_positive"})
+        db.add(p)
+        db.flush()
+        return f.id, fh.id, p.id
+    return two_sessions.commit(seed)
+
+
+def test_an_endpoint_proposal_locks_its_endpoint_before_itself(two_sessions):
+    from sqlalchemy import event
+
+    project, user = two_sessions.project()
+    _, _, proposal_id = _endpoint_proposal(two_sessions, project, user)
+    db = two_sessions.fresh()
+    seen = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "FOR " in statement:
+            seen.append(" ".join(statement.split()))
+
+    engine = db.get_bind().engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        proposals.lock_for_decision(db, project.id, proposal_id)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+        db.rollback()
+        db.close()
+    assert len(seen) == 2, seen
+    assert "FROM finding_hosts" in seen[0] and seen[0].endswith("FOR UPDATE")
+    assert "FROM agent_proposals" in seen[1]
+
+
+def test_accepting_an_endpoint_proposal_while_its_endpoint_is_removed_never_fails_in_the_database(
+        two_sessions, monkeypatch):
+    """Both sides stop right after their first step until the other has got
+    as far.  On the old order the accept held its proposal and the removal its
+    endpoint (whose DELETE cascades into the proposal): each then waited for
+    the other's row, and Postgres ended one with a deadlock — a 500.  Now the
+    accept holds the endpoint first, so the removal waits for it."""
+    from app.services.finding_service import FindingService
+
+    project, user = two_sessions.project()
+    finding_id, fh_id, proposal_id = _endpoint_proposal(two_sessions, project, user)
+    both = threading.Barrier(2)
+    real_accept = proposals.accept_proposal
+
+    def held_accept(*args, **kwargs):
+        try:
+            both.wait(timeout=3)
+        except threading.BrokenBarrierError:
+            pass
+        # Let the removal's DELETE go first — the order that deadlocked: it
+        # then waits on what the accept holds, and the accept on it.
+        time.sleep(0.5)
+        return real_accept(*args, **kwargs)
+
+    monkeypatch.setattr(proposals, "accept_proposal", held_accept)
+
+    def remove(db):
+        try:
+            both.wait(timeout=3)
+        except threading.BrokenBarrierError:
+            pass
+        finding = db.get(Finding, finding_id)
+        return FindingService(db).remove_endpoint(
+            finding=finding, finding_host_id=fh_id, actor_id=user.id, is_project_admin=True,
+        )
+
+    results = two_sessions.race(_decide(project, user, proposal_id, "accept"), remove)
+
+    # No deadlock on either side: the accept lands (and the removal then
+    # takes the endpoint), or the removal lands first and the accept finds
+    # its proposal gone with the endpoint (404).  A 409 here would be the
+    # deadlock `_decide` turns into "try again" — the old order.
+    for r in results:
+        if isinstance(r, BaseException):
+            assert isinstance(r, HTTPException) and r.status_code == 404, repr(r)
+    db = two_sessions.fresh()
+    try:
+        from app.db.models_findings import FindingHost
+        assert db.get(FindingHost, fh_id) is None    # the removal always lands
+    finally:
+        db.close()

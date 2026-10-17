@@ -88,6 +88,16 @@ def is_statement_timeout(exc: BaseException) -> bool:
     return getattr(orig, "pgcode", None) == QUERY_CANCELED_SQLSTATE
 
 
+DEADLOCK_SQLSTATE = "40P01"
+
+
+def is_deadlock(exc: BaseException) -> bool:
+    """True when ``exc`` is SQLAlchemy's wrapper around a transaction Postgres
+    ended to break a deadlock — the request lost a race and may be tried
+    again, never a 500 (comprehensive review 2026-10-16, A3)."""
+    return getattr(getattr(exc, "orig", None), "pgcode", None) == DEADLOCK_SQLSTATE
+
+
 def disable_statement_timeout(db) -> None:
     """Lift the API statement timeout for the REST of this request's session
     (R23) — for the few request paths that run long statements by design

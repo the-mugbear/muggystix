@@ -513,11 +513,19 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
     The kind and finding are read without a lock; neither changes after a
     proposal is created.  ``FOR NO KEY UPDATE``: deciders exclude each other,
     while a comment or history row referencing the finding is not held up.
+    An endpoint-status proposal locks its ENDPOINT row first, then itself
+    (comprehensive review 2026-10-16, A3): accepting it locks the endpoint in
+    ``set_endpoint_status``, and removing that endpoint holds the row while
+    its DELETE cascades into the proposal row — proposal-then-endpoint
+    against endpoint-then-proposal, a deadlock Postgres broke with a 500.
+    Endpoint first on both sides: the second waits, then finds the endpoint
+    gone (a 404 for the proposal, deleted with it) or the decision made.
+
     Other kinds lock only the proposal, as before — a promote / dismiss takes
     its own locks in its own order (evidence first, then the finding), and
     nothing they write is superseded by another proposal's accept."""
     head = (
-        db.query(AgentProposal.kind, AgentProposal.finding_id)
+        db.query(AgentProposal.kind, AgentProposal.finding_id, AgentProposal.finding_host_id)
         .filter(AgentProposal.id == proposal_id, AgentProposal.project_id == project_id)
         .first()
     )
@@ -525,6 +533,10 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
         db.query(Finding.id).filter(
             Finding.id == head.finding_id, Finding.project_id == project_id,
         ).with_for_update(key_share=True).first()
+    if head is not None and head.kind == ProposalKind.ENDPOINT_STATUS.value and head.finding_host_id:
+        # FOR UPDATE: the lock `set_endpoint_status` takes, and the one a
+        # DELETE of the row needs.
+        db.query(FindingHost.id).filter(FindingHost.id == head.finding_host_id).with_for_update().first()
     return get_proposal(db, project_id, proposal_id, for_update=True)
 
 

@@ -35,6 +35,8 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
+import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -479,6 +481,60 @@ def expire_retained_files(db: Session, *, now: Optional[datetime] = None) -> int
     return removed
 
 
+#: How long after its last write an upload folder no job names is left alone:
+#: an upload still being written, or about to be registered, is newer.
+ORPHAN_UPLOAD_GRACE = timedelta(hours=1)
+#: A job's folder is named by `create_job` / `reprocess_job`: `uuid4().hex`.
+_JOB_DIR_NAME = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _last_write(folder: Path) -> Optional[float]:
+    """The newest modification time of a folder and what it holds; None when
+    it cannot be read (it is then left alone)."""
+    try:
+        return max([folder.stat().st_mtime] + [entry.stat().st_mtime for entry in folder.iterdir()])
+    except OSError:
+        return None
+
+
+def sweep_orphan_upload_dirs(db: Session, *, now: Optional[datetime] = None, root: Optional[Path] = None) -> int:
+    """Remove upload folders no ingestion job names (comprehensive review
+    2026-10-16, A4).  An upload is written to its own folder BEFORE its job
+    row exists; a process that dies in between, or a request cancelled while
+    the file was arriving, leaves a folder no row will ever name — the class
+    of leftover the report renderer's sweep already removes.  Only folders
+    named as a job's are considered, and only once ``ORPHAN_UPLOAD_GRACE``
+    has passed since anything in them was written.  Returns how many went."""
+    from app.services.ingestion_service import ingestion_service
+
+    root = Path(root or ingestion_service._storage_root)
+    if not root.is_dir():
+        return 0
+    cutoff = ((now or datetime.now(timezone.utc)) - ORPHAN_UPLOAD_GRACE).timestamp()
+    removed = 0
+    for folder in root.iterdir():
+        if not folder.is_dir() or not _JOB_DIR_NAME.match(folder.name):
+            continue
+        written = _last_write(folder)
+        if written is None or written > cutoff:
+            continue
+        named = (
+            db.query(IngestionJob.id)
+            .filter(IngestionJob.storage_path.startswith(f"{folder}{os.sep}", autoescape=True))
+            .first()
+        )
+        if named is not None:
+            continue
+        shutil.rmtree(folder, ignore_errors=True)
+        if folder.exists():
+            # Said, as the retention sweep says it: a sweep that cannot
+            # delete is how the uploads disk fills unnoticed.
+            logger.warning("Could not remove the orphaned upload folder %s", folder.name)
+            continue
+        removed += 1
+    return removed
+
+
 def reprocess_job(
     db: Session, job: IngestionJob, *, submitted_by_id: Optional[int],
     format_override: Optional[str], source_tool: Optional[str],
@@ -499,6 +555,21 @@ def reprocess_job(
     src = Path(job.storage_path)
     job_dir = ingestion_service._storage_root / uuid4().hex
     job_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        return _reprocess_into(db, job, src, job_dir, submitted_by_id=submitted_by_id,
+                               format_override=format_override, source_tool=source_tool)
+    except Exception:
+        # The copy is this request's alone until its row commits (review
+        # 2026-10-16, A4: a failed copy or insert left the folder behind).
+        db.rollback()
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
+
+
+def _reprocess_into(
+    db: Session, job: IngestionJob, src: Path, job_dir: Path, *, submitted_by_id: Optional[int],
+    format_override: Optional[str], source_tool: Optional[str],
+) -> IngestionJob:
     dst = job_dir / src.name
     shutil.copy2(src, dst)
     options = dict(job.options or {})
