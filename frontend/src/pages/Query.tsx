@@ -594,13 +594,14 @@ export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string)
       ) : (
         <>
           <div className="overflow-x-auto">
-            <Table className="min-w-[44rem]" style={{ tableLayout: 'fixed' }} data-testid="query-history">
+            <Table className="min-w-[56rem]" style={{ tableLayout: 'fixed' }} data-testid="query-history">
               <TableHeader>
                 <TableRow>
                   <TableHead>Query</TableHead>
-                  <TableHead className="w-44">Outcome</TableHead>
-                  <TableHead className="w-44">Last run</TableHead>
-                  <TableHead className="w-32"><span className="sr-only">Actions</span></TableHead>
+                  {/* Wide enough for a refusal's reason — what the reader corrects from. */}
+                  <TableHead className="w-72">Outcome</TableHead>
+                  <TableHead className="w-48">Last run</TableHead>
+                  <TableHead className="w-44"><span className="sr-only">Actions</span></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -618,7 +619,7 @@ export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string)
                     </TableCell>
                     <TableCell className="min-w-0 text-caption">
                       {row.error !== null ? (
-                        <span className="block truncate text-destructive" title={row.error}>Refused: {row.error}</span>
+                        <span className="line-clamp-2 break-words text-destructive" title={row.error}>Refused: {row.error}</span>
                       ) : (
                         <span className="text-muted-foreground">
                           {row.result_count === null ? '—' : `${row.result_count.toLocaleString()} ${row.result_count === 1 ? 'result' : 'results'}`}
@@ -630,7 +631,7 @@ export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string)
                       {row.run_count > 1 && <span> · {row.run_count.toLocaleString()} runs</span>}
                     </TableCell>
                     <TableCell className="text-right">
-                      <span className="inline-flex gap-xxs">
+                      <span className="inline-flex shrink-0 gap-xxs whitespace-nowrap">
                         <Button variant="ghost" size="sm" onClick={() => onSave(row.q)}>Save…</Button>
                         <Button variant="ghost" size="sm" disabled={forget.isPending}
                           aria-label={`Remove ${row.q} from your history`} onClick={() => forget.mutate(row)}>
