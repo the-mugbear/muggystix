@@ -98,12 +98,24 @@ def test_history_keeps_distinct_in_order(client, test_project):
     assert [r["q"] for r in rows] == ["os:linux", "port:443", "port:80"]  # newest first
 
 
+def test_history_an_older_repeat_moves_to_the_top(client, test_project):
+    """v2.512.0 (one history with the Query page): a query already in the
+    list is ONE entry that moves to the top — only consecutive repeats
+    collapsed before, so `port:80` was listed twice."""
+    pid = test_project.id
+    for q in ["port:80", "port:443", "port:80"]:
+        client.post(f"{_base(pid)}/history", json={"q": q})
+    rows = client.get(f"{_base(pid)}/history").json()
+    assert [r["q"] for r in rows] == ["port:80", "port:443"]
+    assert rows[0]["last_run_at"] >= rows[1]["last_run_at"]
+
+
 def test_history_trim_to_cap(client, db_session, test_project):
     pid = test_project.id
     for n in range(55):
         client.post(f"{_base(pid)}/history", json={"q": f"port:{1000 + n}"})
-    kept = db_session.query(models.HostQueryHistory).filter(
-        models.HostQueryHistory.project_id == pid
+    kept = db_session.query(models.QueryHistory).filter(
+        models.QueryHistory.project_id == pid
     ).count()
     assert kept == 50, f"expected trim to 50, got {kept}"
 
@@ -133,7 +145,7 @@ def test_history_isolated_per_user(client, db_session, test_project):
     )
     db_session.add(other)
     db_session.flush()
-    db_session.add(models.HostQueryHistory(
+    db_session.add(models.QueryHistory(
         user_id=other.id, project_id=test_project.id, q="secret:other"
     ))
     db_session.commit()

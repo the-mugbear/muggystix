@@ -300,7 +300,7 @@ describe('Hosts', () => {
     });
     mockedApi.validateHostQuery.mockResolvedValue({ valid: true, match_count: 3, leaf_count: 1 });
     mockedApi.listHostQueryHistory.mockResolvedValue([]);
-    mockedApi.recordHostQuery.mockResolvedValue({ id: 1, q: 'port:443', result_count: 3, created_at: '2026-06-05T00:00:00Z' });
+    mockedApi.recordHostQuery.mockResolvedValue({ id: 1, q: 'port:443', result_count: 3, last_run_at: '2026-06-05T00:00:00Z' });
     mockedApi.deleteHostQuery.mockResolvedValue(undefined);
     mockedApi.clearHostQueryHistory.mockResolvedValue(undefined);
     sessionStorage.clear();

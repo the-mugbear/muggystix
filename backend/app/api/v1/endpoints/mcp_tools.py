@@ -747,9 +747,11 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "describe the row's HOST (on ports, `port:445` = the host has 445 open; on findings, one of "
             "its endpoints' hosts; names take none); `where` compares the dataset's columns (`where port=445 AND state=\"open\"`, = is "
             "exact). stats: count, dc(col), min, max, avg, sum, values; top [limit=N] col. Each stats / "
-            "top row carries a `drilldowns` query listing exactly that group. `total` is the whole answer "
-            "(rows matched or groups); at most 500 rows / 1000 groups come back. "
-            "assist_query_schema lists the columns."
+            "top row carries a `drilldowns` query listing exactly that group. After stats / top, `where` and "
+            "`fields` work on the answer (`| stats count by title | where count > 5`). `total` is the whole "
+            "answer (rows matched or groups); at most 500 rows / 1000 groups come back. An empty answer's "
+            "`hint` says when `=` (exact, case-sensitive) is why. assist_query_schema lists the columns. "
+            "Each run goes into your operator's Query history, labelled an agent's (assist_query_history)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/query",
@@ -765,6 +767,15 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
                        "description, query, shared, created_by) — run one with assist_query.",
         "method": "GET",
         "path": "/api/v1/agent/assist/saved-queries",
+    },
+    # v2.512.0 — the Query page's History section.
+    "assist_query_history": {
+        "description": "The operator's Query history, newest first: the queries they ran on the Query page "
+                       "and the ones agents ran for them (`by_agent`), each with its last answer's `total` "
+                       "(`result_count`) or, when it was refused, `error` and `error_position`. The newest 200 "
+                       "are kept. `contains` narrows by text. Paged: `total` is every entry that matches.",
+        "method": "GET",
+        "path": "/api/v1/agent/assist/query-history",
     },
     "assist_get_scanner_observation": {
         "description": (

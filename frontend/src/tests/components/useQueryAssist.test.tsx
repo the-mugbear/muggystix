@@ -27,7 +27,7 @@ import { createQueryClient } from '../../lib/query';
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
 const schema = { fields: [{ name: 'port', aliases: [], value_source: 'port', trgm: false, enum_values: [] }], examples: [] };
-const entry = (id: number, q: string) => ({ id, q, result_count: 3, created_at: '2026-10-01T00:00:00Z' });
+const entry = (id: number, q: string) => ({ id, q, result_count: 3, last_run_at: '2026-10-01T00:00:00Z' });
 
 beforeEach(() => {
   vi.clearAllMocks();

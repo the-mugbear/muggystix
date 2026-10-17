@@ -167,6 +167,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "Which ports did that nmap scan actually probe?" | `assist_list_scans` (`scan_info`) |
 | "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
 | "How many hosts run each service?" / anything grouped | `assist_query` — the Query page's Splunk-style pipeline (`ports \| where state="open" \| stats dc(host) as hosts by service`); `assist_query_schema` lists the columns, `assist_list_saved_queries` the team's saved queries |
+| "Run the query I ran earlier" | `assist_query_history` — the operator's Query history (theirs and their agents', `by_agent`), refused ones with `error`; every `assist_query` run is recorded there |
 | "What does the scanner say about this issue?" | `assist_get_scanner_observation` — description, remediation, CVSS, CVE, plugin, references (the Scanner observations inspector); per host, `assist_get_host_vulnerabilities` |
 | "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (the operator needs `auditor`) — an issued report is its frozen text, a draft what it would say now |
 

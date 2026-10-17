@@ -33,14 +33,16 @@ from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.v1.endpoints.agent_schemas import AgentPage, agent_page
 from app.api.v1.endpoints.client_reports import report_file_response, report_scope_response
 from app.api.v1.endpoints.agent_common import load_operator
-from app.api.v1.endpoints.queries import QueryAnswer, SavedQueryOut
+from app.api.v1.endpoints.queries import (
+    HISTORY_CONTAINS, HISTORY_LIMIT, QueryAnswer, QueryHistoryEntryOut, SavedQueryOut, history_page,
+)
 from app.api.v1.endpoints.scanner_observations import IssueDetailOut, IssueHostOut, IssuePageOut, IssueRowOut
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
 from app.db.session import get_db
 from app.schemas.client_reports import ReportFileOut, ReportOut
-from app.services import query_service
+from app.services import query_history_service, query_service
 from app.services import saved_query_service as saved_queries
 from app.services import scanner_observation_service as observations
 from app.services.client_report_service import ClientReportService
@@ -178,8 +180,35 @@ def run_assist_query(
 ):
     """The page's own ``query_service.run``, as the session's operator (the
     Hosts language's ``follow:mine`` / ``assigned:me`` are theirs).  A query
-    that cannot be read is a 400 with its ``position``, as on the page."""
-    return query_service.run(db, request.state.agent_project_id, load_operator(db, request), q)
+    that cannot be read is a 400 with its ``position``, as on the page.  The
+    run goes into the operator's Query history, labelled an agent's."""
+    return query_history_service.run_and_record(
+        db, request.state.agent_project_id, load_operator(db, request), q, by_agent=True,
+    )
+
+
+class AgentQueryHistoryPage(AgentPage):
+    items: List[QueryHistoryEntryOut]
+
+
+@router.get(
+    "/assist/query-history",
+    response_model=AgentQueryHistoryPage,
+    summary="The operator's Query history: their queries and yours, newest first, refused ones with the reason",
+)
+def list_assist_query_history(
+    request: Request,
+    contains: Optional[str] = HISTORY_CONTAINS,
+    limit: int = HISTORY_LIMIT,
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The page's History section (one call, ``queries.history_page``): the
+    operator's own entries, ``by_agent`` on the ones an agent ran."""
+    items, total = history_page(db, request.state.agent_project_id, load_operator(db, request),
+                                contains, limit, offset)
+    return agent_page(items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/assist/query/schema", summary="What a query can name: datasets, columns, commands, caps")

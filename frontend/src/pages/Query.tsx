@@ -17,15 +17,24 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { BookOpen, Loader2, Play, Save, Share2, Wrench } from 'lucide-react';
 
 import {
+  clearQueryHistory,
   createSavedQuery,
+  deleteQueryHistoryEntry,
   deleteSavedQuery,
   downloadQueryCsv,
+  getHostQuerySchema,
   getQuerySchema,
+  listQueryHistory,
   listSavedQueries,
   runQuery,
   updateSavedQuery,
 } from '../services/api';
-import type { QueryAnswer, QuerySchema, SavedQuery } from '../services/api';
+import type { QueryAnswer, QueryHistoryEntry, QuerySchema, SavedQuery } from '../services/api';
+import ListFilterBar, { ListFilterSearch } from '../components/ListFilterBar';
+import { PagedFooter } from '../components/operations/QueueParts';
+import { usePagedList } from '../hooks/usePagedList';
+import { useUrlPage } from '../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import DownloadButton from '../components/DownloadButton';
 import QueryBuilder from '../components/query/QueryBuilder';
 import QueryChart, { chartMeasures } from '../components/query/QueryChart';
@@ -46,10 +55,12 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
-import { queryErrorText, rememberFor } from '../lib/query';
+import { invalidateReads, queryErrorText, rememberFor } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { cn } from '../utils/cn';
-import { applyCompletion, completeQuery } from '../utils/queryCompletion';
+import { applyCompletion, completeQuery, completionNeed } from '../utils/queryCompletion';
+import { useQueryValueSuggest } from '../components/hosts/useQueryValueSuggest';
+import { useQueryColumnValues } from '../components/query/useQueryColumnValues';
 import { formatTimestamp } from '../utils/relativeTime';
 
 export const QUERY_PATH = '/query';
@@ -85,6 +96,7 @@ const Editor: React.FC<{
   /** The server's schema — completion's source (the page's one read). */
   schema: QuerySchema | null;
 }> = ({ initial, running, onRun, onSave, building, onBuild, schema }) => {
+  const projectId = useProjectId();
   const [draft, setDraft] = useState(initial);
   const text = draft.trim();
   const box = useRef<HTMLTextAreaElement>(null);
@@ -92,7 +104,24 @@ const Editor: React.FC<{
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const pendingCaret = useRef<number | null>(null);
-  const completion = open && caret !== null ? completeQuery(draft, caret, schema) : null;
+  // The search terms are the Hosts language: its fields are the Hosts page's
+  // read (same key, remembered — a visit to either page serves the other).
+  const hostFields = useQuery({
+    queryKey: ['getHostQuerySchema', projectId],
+    queryFn: ({ signal }) => getHostQuerySchema(projectId, signal),
+    ...rememberFor(30 * 60_000),
+    retryOnMount: true,
+  }).data?.fields ?? null;
+  // What the slot at the caret needs from the server: a Hosts field's values,
+  // or a text column's.
+  const need = open && caret !== null ? completionNeed(draft, caret, schema, hostFields) : null;
+  const hostSpec = need?.kind === 'hostValue' ? hostFields?.find((f) => f.name === need.field) ?? null : null;
+  const hostValues = useQueryValueSuggest(hostSpec?.name ?? null, hostSpec?.value_source ?? null,
+    need?.kind === 'hostValue' ? need.partial : '');
+  const columnValues = useQueryColumnValues(need?.kind === 'columnValue' ? need : null);
+  const completion = open && caret !== null
+    ? completeQuery(draft, caret, schema, { hostFields, hostValues, columnValues })
+    : null;
   const activeIndex = completion ? Math.min(active, completion.items.length - 1) : 0;
   useEffect(() => {
     if (pendingCaret.current === null || !box.current) return;
@@ -494,6 +523,141 @@ const SavedQueries: React.FC<{ onRun: (q: string) => void; onEdit: (row: SavedQu
 };
 
 // ---------------------------------------------------------------------------
+// History (5.408.0; owner, 2026-10-17): every query I ran, and the ones my
+// agent ran for me (labelled), refused ones with why — kept on the server,
+// the newest 200.
+// ---------------------------------------------------------------------------
+
+const HISTORY_PAGE = 20;
+
+export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string) => void }> = ({ onRun, onSave }) => {
+  const projectId = useProjectId();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [confirmEl, confirm] = useConfirm();
+  // The filter and the page are list state a reader returns to: the address.
+  const searchBox = useUrlSearchDraft('history', { also: ['history_page'] });
+  const contains = searchBox.value;
+  const list = usePagedList<QueryHistoryEntry>(
+    'listQueryHistory',
+    ({ offset, limit, signal }) => listQueryHistory(projectId, { contains, limit, offset }, signal),
+    [projectId, contains],
+    { pageSize: HISTORY_PAGE, errorMessage: 'Could not load your query history.', page: useUrlPage('history_page'), within: projectId },
+  );
+  const forget = useMutation({
+    mutationFn: (row: QueryHistoryEntry) => deleteQueryHistoryEntry(projectId, row.id),
+    onSuccess: () => invalidateReads(queryClient, 'listQueryHistory'),
+    onError: (err) => toast.error(formatApiError(err, 'Could not remove it from your history')),
+  });
+  const clear = useMutation({
+    mutationFn: () => clearQueryHistory(projectId),
+    onSuccess: () => {
+      toast.success('Your query history is cleared');
+      return invalidateReads(queryClient, 'listQueryHistory');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not clear your history')),
+  });
+  const rows = list.rows;
+  return (
+    <PostureSection
+      title={<>History {rows && <SectionCount>{list.total}</SectionCount>}</>}
+      description="Your queries and your agent's, newest first; one that was refused says why. A query runs it."
+      actions={list.total > 0 && !contains ? (
+        <Button
+          variant="ghost" size="sm" disabled={clear.isPending}
+          onClick={() => void confirm({
+            title: 'Clear your query history',
+            body: 'Every query you and your agent ran in this project leaves your history. Saved queries stay.',
+            severity: 'danger', confirmLabel: 'Clear',
+          }).then((ok) => { if (ok) clear.mutate(); })}
+        >
+          Clear
+        </Button>
+      ) : undefined}
+    >
+      {confirmEl}
+      <ListFilterBar className="mb-xs">
+        <ListFilterSearch value={searchBox.draft} onChange={searchBox.setDraft}
+          placeholder="Search your queries…" label="Search your query history" />
+      </ListFilterBar>
+      {list.error && !rows ? (
+        <p role="alert" className="text-metadata text-destructive">
+          {list.error}{' '}
+          <Button variant="ghost" size="sm" onClick={() => void list.reload()}>Retry</Button>
+        </p>
+      ) : !rows ? (
+        <p role="status" className="text-metadata text-muted-foreground">Loading your history…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-metadata text-muted-foreground">
+          {contains ? 'None of your queries contains that.' : 'Nothing yet — every query you run is kept here.'}
+        </p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <Table className="min-w-[44rem]" style={{ tableLayout: 'fixed' }} data-testid="query-history">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Query</TableHead>
+                  <TableHead className="w-44">Outcome</TableHead>
+                  <TableHead className="w-44">Last run</TableHead>
+                  <TableHead className="w-32"><span className="sr-only">Actions</span></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row) => (
+                  <TableRow key={row.id} data-testid="history-row">
+                    <TableCell className="min-w-0">
+                      <span className="flex min-w-0 items-center gap-xxs">
+                        {row.by_agent && <Badge variant="outline" className="shrink-0">Agent</Badge>}
+                        <button type="button" title={row.q}
+                          className="block min-w-0 truncate text-left font-mono text-caption text-primary hover:underline"
+                          onClick={() => onRun(row.q)}>
+                          {row.q}
+                        </button>
+                      </span>
+                    </TableCell>
+                    <TableCell className="min-w-0 text-caption">
+                      {row.error !== null ? (
+                        <span className="block truncate text-destructive" title={row.error}>Refused: {row.error}</span>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          {row.result_count === null ? '—' : `${row.result_count.toLocaleString()} ${row.result_count === 1 ? 'result' : 'results'}`}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-caption text-muted-foreground">
+                      {formatTimestamp(row.last_run_at)}
+                      {row.run_count > 1 && <span> · {row.run_count.toLocaleString()} runs</span>}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className="inline-flex gap-xxs">
+                        <Button variant="ghost" size="sm" onClick={() => onSave(row.q)}>Save…</Button>
+                        <Button variant="ghost" size="sm" disabled={forget.isPending}
+                          aria-label={`Remove ${row.q} from your history`} onClick={() => forget.mutate(row)}>
+                          Remove
+                        </Button>
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {list.total > HISTORY_PAGE && (
+            <PagedFooter
+              pager={{ page: list.page, pageSize: HISTORY_PAGE, total: list.total, onPage: list.setPage }}
+              shown={rows.length}
+              noun="queries"
+              busy={list.loading}
+            />
+          )}
+        </>
+      )}
+    </PostureSection>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // The reference: datasets, columns, commands — from the server's schema
 // ---------------------------------------------------------------------------
 
@@ -573,7 +737,13 @@ const Query: React.FC = () => {
       void queryClient.invalidateQueries({ queryKey: ['runQuery', projectId, q] });
       return;
     }
-    setParams(text ? { q: text, ...(view === 'chart' ? { view } : {}) } : {});
+    // The query is one value of the address: the history's search and page
+    // (and the view) stay as they were.
+    setParams((prev) => {
+      const out = new URLSearchParams(prev);
+      if (text) out.set('q', text); else out.delete('q');
+      return out;
+    });
   };
   const setView = (next: AnswerView) => setParams((prev) => {
     const out = new URLSearchParams(prev);
@@ -585,6 +755,12 @@ const Query: React.FC = () => {
     queryFn: ({ signal }) => runQuery(projectId, q, signal),
     enabled: q !== '',
   });
+  // Every run is recorded in my history on the server (refused ones too):
+  // once one has answered, the History section reads again.
+  const settledAt = Math.max(answer.dataUpdatedAt, answer.errorUpdatedAt);
+  useEffect(() => {
+    if (settledAt) void invalidateReads(queryClient, 'listQueryHistory');
+  }, [settledAt, queryClient]);
   const [saving, setSaving] = useState<SaveForm | null>(null);
   // The builder (5.406.0): a panel that writes the query text.
   const [building, setBuilding] = useState(false);
@@ -666,6 +842,7 @@ const Query: React.FC = () => {
         onRun={run}
         onEdit={(row) => setSaving({ id: row.id, name: row.name, description: row.description ?? '', query: row.query, shared: row.shared })}
       />
+      <History onRun={run} onSave={(text) => setSaving({ id: null, name: '', description: '', query: text, shared: false })} />
       <Reference onRun={run} schema={schema} />
       <SaveDialog form={saving} onClose={() => setSaving(null)} />
     </div>

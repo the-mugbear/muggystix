@@ -34,6 +34,7 @@ PAGED = {
     "/agent/assist/notes": "assist_list_recent_notes",
     "/agent/assist/findings": "assist_list_findings",
     "/agent/assist/names": "assist_list_names",
+    "/agent/assist/query-history": "assist_query_history",
     "/agent/assist/scans": "assist_list_scans",
     "/agent/assist/scans/{scan_id}/hosts": "assist_list_scan_hosts",
     "/agent/assist/segments": "assist_list_segments",
@@ -210,6 +211,7 @@ def estate(client, db_session, test_project, test_user):
             source=VulnerabilitySource.MANUAL, host_id=worked.id, scan_id=scan.id,
         ))
         db_session.add(models.Annotation(host_id=worked.id, user_id=test_user.id, body=f"note {i}"))
+        db_session.add(models.QueryHistory(user_id=test_user.id, project_id=pid, kind="query", q=f"hosts | head {i + 1}"))
         db_session.add(models.WebInterface(
             project_id=pid, host_id=worked.id, scan_id=scan.id, url=f"http://10.80.9.9:80{i}/", source="httpx",
         ))

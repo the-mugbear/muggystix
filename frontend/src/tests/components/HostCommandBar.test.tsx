@@ -32,7 +32,7 @@ beforeEach(() => {
   mocked.getHostQuerySchema.mockResolvedValue(schema);
   mocked.listHostQueryHistory.mockResolvedValue([]);
   mocked.validateHostQuery.mockResolvedValue({ valid: true, match_count: 3, leaf_count: 1 });
-  mocked.recordHostQuery.mockResolvedValue({ id: 1, q: 'port:80', result_count: 3, created_at: 'x' });
+  mocked.recordHostQuery.mockResolvedValue({ id: 1, q: 'port:80', result_count: 3, last_run_at: 'x' });
   // Default: the server has nothing to add, so the page's facets stand.
   mocked.suggestHostQueryValues.mockResolvedValue({ field: 'port', supported: false, values: [] });
 });

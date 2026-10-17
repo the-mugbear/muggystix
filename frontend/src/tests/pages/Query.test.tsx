@@ -18,6 +18,12 @@ const api = vi.hoisted(() => ({
   createSavedQuery: vi.fn(),
   updateSavedQuery: vi.fn(),
   deleteSavedQuery: vi.fn(),
+  listQueryHistory: vi.fn(),
+  deleteQueryHistoryEntry: vi.fn(),
+  clearQueryHistory: vi.fn(),
+  getQueryColumnValues: vi.fn(),
+  getHostQuerySchema: vi.fn(),
+  suggestHostQueryValues: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() };
@@ -43,7 +49,12 @@ const ROWS = {
 /** Where the address is now — the page's own writes land here. */
 const Address: React.FC = () => {
   const [params] = useSearchParams();
-  return <p data-testid="address">{params.get('q') ?? ''}</p>;
+  return (
+    <>
+      <p data-testid="address">{params.get('q') ?? ''}</p>
+      <p data-testid="search">{params.toString()}</p>
+    </>
+  );
 };
 
 const renderAt = (url: string) => render(
@@ -60,6 +71,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   role.canExport = true;
   api.listSavedQueries.mockResolvedValue([]);
+  api.listQueryHistory.mockResolvedValue({ items: [], total: 0 });
+  api.getHostQuerySchema.mockResolvedValue({ fields: [], examples: [] });
   api.getQuerySchema.mockResolvedValue({
     datasets: [{ name: 'ports', description: 'ports', default_fields: [], examples: [],
       columns: [{ name: 'service', type: 'text', description: '' }] }],
@@ -309,5 +322,89 @@ describe('Query page — second review 2026-10-16', () => {
     api.runQuery.mockResolvedValue({ ...ROWS, rows: [], total: 0, hint: null });
     renderAt('/query?q=hosts');
     expect(await screen.findByTestId('query-empty')).toHaveTextContent(/^Nothing matches this query\.$/);
+  });
+});
+
+const ENTRY = {
+  id: 1, q: 'ports | stats count by service', by_agent: false, result_count: 12, error: null,
+  error_position: null, run_count: 3, first_run_at: '2026-10-17T00:00:00Z', last_run_at: '2026-10-17T01:00:00Z',
+};
+
+describe('Query page — history and richer suggestions (5.408.0)', () => {
+  it('lists my queries and my agent’s, labelled; a refused one says why; a query runs it', async () => {
+    api.runQuery.mockResolvedValue(ROWS);
+    api.listQueryHistory.mockResolvedValue({ total: 2, items: [
+      ENTRY,
+      { ...ENTRY, id: 2, q: 'hosts | where bogus=1', by_agent: true, result_count: null,
+        error: "Unknown column 'bogus' in hosts", error_position: 14, run_count: 1 },
+    ] });
+    renderAt('/query?history=bogus');
+    const table = await screen.findByTestId('query-history');
+    const [mine, agents] = within(table).getAllByTestId('history-row');
+    expect(mine).toHaveTextContent('12 results');
+    expect(mine).toHaveTextContent('3 runs');
+    expect(within(mine).queryByText('Agent')).not.toBeInTheDocument();
+    expect(within(agents).getByText('Agent')).toBeInTheDocument();
+    expect(agents).toHaveTextContent("Refused: Unknown column 'bogus' in hosts");
+    // The search is the address's, sent to the server.
+    expect(api.listQueryHistory).toHaveBeenCalledWith(9, { contains: 'bogus', limit: 20, offset: 0 }, expect.any(AbortSignal));
+    // A query runs it, and the history's own search stays in the address.
+    fireEvent.click(within(agents).getByRole('button', { name: 'hosts | where bogus=1' }));
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('hosts | where bogus=1'));
+    expect(screen.getByTestId('search')).toHaveTextContent('history=bogus');
+  });
+
+  it('reads the history again once a run has answered — a refused run too', async () => {
+    api.runQuery.mockRejectedValue({ response: { status: 400, data: { detail: 'Unknown dataset', position: 0 } } });
+    renderAt('/query?q=widgets');
+    await screen.findByTestId('query-error');
+    await waitFor(() => expect(api.listQueryHistory.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it('removes one entry, and Save… saves a query from it', async () => {
+    api.listQueryHistory.mockResolvedValue({ total: 1, items: [ENTRY] });
+    api.deleteQueryHistoryEntry.mockResolvedValue(undefined);
+    renderAt('/query');
+    const table = await screen.findByTestId('query-history');
+    fireEvent.click(within(table).getByRole('button', { name: `Remove ${ENTRY.q} from your history` }));
+    await waitFor(() => expect(api.deleteQueryHistoryEntry).toHaveBeenCalledWith(9, 1));
+    fireEvent.click(within(table).getByRole('button', { name: 'Save…' }));
+    expect(await screen.findByLabelText('Query', { selector: '#saved-query-text' })).toHaveValue(ENTRY.q);
+  });
+
+  it('says a failed history read is a failure, not "nothing yet"', async () => {
+    api.listQueryHistory.mockRejectedValue(new Error('down'));
+    renderAt('/query');
+    expect(await screen.findByText(/Could not load your query history/)).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing yet/)).not.toBeInTheDocument();
+  });
+
+  it('offers a text column’s values from the server after where col = "', async () => {
+    api.getQueryColumnValues.mockResolvedValue({ supported: true, timed_out: false, values: [{ value: 'microsoft-ds', count: 6 }] });
+    renderAt('/query');
+    const box = screen.getByLabelText('Query') as HTMLTextAreaElement;
+    await waitFor(() => expect(api.getQuerySchema).toHaveBeenCalled());
+    fireEvent.focus(box);
+    const text = 'ports | where service="mi';
+    fireEvent.change(box, { target: { value: text, selectionStart: text.length, selectionEnd: text.length } });
+    const option = await screen.findByRole('option', { name: /microsoft-ds/ });
+    expect(option).toHaveTextContent('6 rows');
+    expect(api.getQueryColumnValues).toHaveBeenCalledWith(9, 'ports', 'service', 'mi', expect.any(AbortSignal));
+    fireEvent.keyDown(box, { key: 'Tab' });
+    await waitFor(() => expect(box).toHaveValue('ports | where service="microsoft-ds"'));
+  });
+
+  it('completes the search terms with the Hosts language’s fields', async () => {
+    api.getHostQuerySchema.mockResolvedValue({ examples: [], fields: [
+      { name: 'port', aliases: [], value_source: 'port', trgm: false, enum_values: [], description: 'an open port', enum_descriptions: {} },
+    ] });
+    renderAt('/query');
+    const box = screen.getByLabelText('Query') as HTMLTextAreaElement;
+    await waitFor(() => expect(api.getHostQuerySchema).toHaveBeenCalled());
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: 'ports po', selectionStart: 8, selectionEnd: 8 } });
+    expect(await screen.findByRole('option', { name: /port:/ })).toHaveTextContent('an open port');
+    fireEvent.keyDown(box, { key: 'Tab' });
+    await waitFor(() => expect(box).toHaveValue('ports port:'));
   });
 });

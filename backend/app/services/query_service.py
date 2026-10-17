@@ -588,6 +588,31 @@ def run(db: Session, project_id: int, user: User, text: str, *, row_cap: Optiona
     return {"query": text, "dataset": ds.name, **answer, "hint": hint}
 
 
+VALUES_SUGGEST_CAP = 20
+
+
+def column_values(db: Session, project_id: int, dataset: str, column: str, contains: str = "",
+                  limit: int = 12) -> Optional[List[Dict[str, Any]]]:
+    """A text column's values in the project that contain ``contains``, most
+    rows first — what the editor offers after `where col = "` (v2.512.0).
+    None for a column that is not text (an enum's values are the schema's;
+    a number is typed).  A typing aid: the dataset's own rows, no search
+    terms, no `where`."""
+    ds = DATASETS.get(dataset)
+    if ds is None:
+        raise QueryError(f"Unknown dataset '{dataset}'. Datasets: {', '.join(DATASETS)}")
+    col = _column(ds, column, 0)
+    if col.type != "text" or col.enum is not None:
+        return None
+    count = func.count()
+    query = ds.base(db, project_id).with_entities(col.expr, count).filter(col.expr.isnot(None))
+    if contains:
+        pattern = contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(col.expr.ilike(f"%{pattern}%", escape="\\"))
+    rows = query.group_by(col.expr).order_by(count.desc(), col.expr.asc()).limit(min(limit, VALUES_SUGGEST_CAP)).all()
+    return [{"value": value, "count": int(n)} for value, n in rows]
+
+
 def to_csv(answer: Dict[str, Any]) -> str:
     """An answer as CSV: the columns, then the rows (a list joined by "; "),
     every cell through the codebase's one formula guard (``csv_utils``) — a

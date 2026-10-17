@@ -26,7 +26,7 @@ vi.mock('../../services/api', () => ({
   getHostQuerySchema: vi.fn(async () => ({ fields: [], examples: [] })),
   validateHostQuery: vi.fn(async () => ({ valid: true, match_count: 3, leaf_count: 1 })),
   listHostQueryHistory: vi.fn(async () => []),
-  recordHostQuery: vi.fn(async () => ({ id: 1, q: 'x', result_count: 0, created_at: '2026-06-05T00:00:00Z' })),
+  recordHostQuery: vi.fn(async () => ({ id: 1, q: 'x', result_count: 0, last_run_at: '2026-06-05T00:00:00Z' })),
   deleteHostQuery: vi.fn(),
   clearHostQueryHistory: vi.fn(),
   suggestHostQueryValues: vi.fn(async (field: string) => ({ field, supported: false, values: [] })),

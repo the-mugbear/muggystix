@@ -527,6 +527,7 @@ hosts site:"HQ" | top limit=5 os_family
 - `total` is the whole answer (rows matched, or groups); at most 500 rows or 1,000 groups come back — say "the first N of `total`", never N alone. Each stats / top row's `drilldowns` entry is a query listing exactly that group's rows; a listing's `links` entry is each row's page in the app (cite it to your operator).
 - A query that cannot be read is a `400` with `detail` and the character `position`: fix it and ask again; do not report a number from a refused query.
 - The team's saved queries: `GET /agent/assist/saved-queries` (MCP `assist_list_saved_queries`) — yours and the shared ones; run one's `query` with `assist_query`.
+- Every query you run goes into your operator's Query history, labelled as an agent's — they see it on the Query page, refused ones with the reason. Their history (theirs and their agents', newest first): `GET /agent/assist/query-history` (MCP `assist_query_history`; `contains=` narrows) — read it when they say "the query I ran earlier".
 
 <!-- agents:end -->
 

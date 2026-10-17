@@ -102,3 +102,56 @@ export const updateSavedQuery = async (
 export const deleteSavedQuery = async (projectId: number, id: number): Promise<void> => {
   await api.delete(`${projectPath(projectId)}/queries/saved/${id}`);
 };
+
+/** One of my queries (v2.512.0): every run is recorded on the server, mine
+ *  and my agent's (`by_agent`), a refused one with why. */
+export interface QueryHistoryEntry {
+  id: number;
+  q: string;
+  by_agent: boolean;
+  /** The answer's total at the last run; null when it was refused. */
+  result_count: number | null;
+  /** Why the last run was refused. */
+  error: string | null;
+  error_position: number | null;
+  run_count: number;
+  first_run_at: string | null;
+  last_run_at: string;
+}
+
+export interface QueryHistoryPage {
+  items: QueryHistoryEntry[];
+  /** Entries matching `contains` (the newest 200 are kept). */
+  total: number;
+}
+
+export const listQueryHistory = async (
+  projectId: number, params: { contains?: string; limit: number; offset: number }, signal?: AbortSignal,
+): Promise<QueryHistoryPage> =>
+  (await api.get<QueryHistoryPage>(`${projectPath(projectId)}/query/history`, {
+    params: { ...params, contains: params.contains || undefined }, signal,
+  })).data;
+
+export const deleteQueryHistoryEntry = async (projectId: number, id: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/query/history/${id}`);
+};
+
+export const clearQueryHistory = async (projectId: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/query/history`);
+};
+
+export interface QueryColumnValues {
+  /** False for a column that is not text: nothing to offer. */
+  supported: boolean;
+  values: { value: string; count: number }[];
+  timed_out: boolean;
+}
+
+/** A text column's values in the project containing `contains`, most rows
+ *  first — what the editor offers after `where col = "`. */
+export const getQueryColumnValues = async (
+  projectId: number, dataset: string, column: string, contains: string, signal?: AbortSignal,
+): Promise<QueryColumnValues> =>
+  (await api.get<QueryColumnValues>(`${projectPath(projectId)}/query/values`, {
+    params: { dataset, column, contains }, signal,
+  })).data;

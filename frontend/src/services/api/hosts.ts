@@ -851,7 +851,7 @@ export interface HostQueryHistoryEntry {
   id: number;
   q: string;
   result_count: number | null;
-  created_at: string;
+  last_run_at: string;
 }
 
 export const getHostQuerySchema = async (projectId: number, signal?: AbortSignal): Promise<HostQuerySchema> => {

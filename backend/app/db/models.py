@@ -1329,30 +1329,41 @@ class SavedQuery(Base):
     )
 
 
-class HostQueryHistory(Base):
-    """A recently-run Hosts-page boolean query (``q=``), per user/project.
+class QueryHistory(Base):
+    """One person's queries in one project, newest first — the Hosts page's
+    recent queries (``kind`` 'hosts') and the Query page's history ('query';
+    owner, 2026-10-17).  Written only by ``query_history_service``.
 
-    Backs the command bar's "recent queries" dropdown.  Rows are appended
-    only when a query is *committed* (not on every keystroke), with
-    consecutive duplicates collapsed and the list trimmed to the most
-    recent N — so it stays a short, useful recency list rather than an
-    unbounded audit log.  ``result_count`` is the match count at run time,
-    shown alongside each entry.
-    """
-    __tablename__ = "host_query_history"
+    One row per distinct query (per person, project, kind, and whether their
+    agent ran it): running it again moves it to the top (``last_run_at``,
+    ``run_count``); the oldest past the kind's cap are dropped (FIFO).
+    ``result_count`` is the answer's size at the last run; ``error`` /
+    ``error_position`` say why the last run was refused, so it can be
+    corrected.  ``created_at`` is the first run."""
+    __tablename__ = "query_history"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(16), nullable=False, server_default="hosts")
     q = Column(Text, nullable=False)
     result_count = Column(Integer, nullable=True)
+    error = Column(Text, nullable=True)
+    error_position = Column(Integer, nullable=True)
+    by_agent = Column(Boolean, nullable=False, server_default="false")
+    run_count = Column(Integer, nullable=False, server_default="1")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_run_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     user = relationship("User")
 
     __table_args__ = (
-        # Serves the "newest N for this user+project" read directly.
-        Index("ix_host_query_history_user_project_created", "user_id", "project_id", "created_at"),
+        # Serves the "newest N for this person, project and page" read.
+        Index("ix_query_history_user_project_kind_last", "user_id", "project_id", "kind", "last_run_at"),
+        # One entry per query: recording is an upsert on it, so two runs at
+        # once cannot make two rows.  md5: a query may be longer than a
+        # btree entry allows.
+        Index("uq_query_history_entry", "user_id", "project_id", "kind", "by_agent", func.md5(q), unique=True),
     )
 
 

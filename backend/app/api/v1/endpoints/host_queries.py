@@ -24,7 +24,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, text
 from sqlalchemy.exc import OperationalError
@@ -33,7 +33,6 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_project
 from app.api.deps import get_current_user
 from app.db import models
-from app.db.models import HostQueryHistory
 from app.db.models_auth import User
 from app.db.models_project import Project
 from app.db.session import get_db
@@ -45,14 +44,12 @@ from app.services.host_query_dsl import (
     provenance_examples,
     schema as dsl_schema,
 )
+from app.services import query_history_service
 from app.services.host_query_suggest import MAX_SUGGESTIONS, suggest as suggest_values
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-# Keep the recency list short and useful rather than an audit trail.
-_HISTORY_KEEP = 50
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +119,9 @@ class QueryHistoryEntry(BaseModel):
     id: int
     q: str
     result_count: Optional[int] = None
-    created_at: datetime
+    # When it was last run (v2.512.0; it was `created_at`, which a repeat
+    # also moved — the same moment under a wrong name).
+    last_run_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -265,21 +264,15 @@ def suggest_query_values(
     summary="Recent boolean queries for the current user + project",
 )
 def list_query_history(
-    limit: int = Query(20, ge=1, le=_HISTORY_KEEP),
+    limit: int = Query(20, ge=1, le=query_history_service.CAPS[query_history_service.HOSTS]),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    return (
-        db.query(HostQueryHistory)
-        .filter(
-            HostQueryHistory.user_id == current_user.id,
-            HostQueryHistory.project_id == project.id,
-        )
-        .order_by(HostQueryHistory.created_at.desc(), HostQueryHistory.id.desc())
-        .limit(limit)
-        .all()
+    items, _ = query_history_service.entries(
+        db, user_id=current_user.id, project_id=project.id, kind=query_history_service.HOSTS, limit=limit,
     )
+    return items
 
 
 @router.post(
@@ -294,42 +287,16 @@ def record_query_history(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Append a committed query.  If it matches the most recent entry it
-    is bumped to "now" instead of duplicated; the list is then trimmed to
-    the newest ``_HISTORY_KEEP``."""
-    q = body.q.strip()
-    base = db.query(HostQueryHistory).filter(
-        HostQueryHistory.user_id == current_user.id,
-        HostQueryHistory.project_id == project.id,
+    """Record a committed query (``query_history_service``, the Query page's
+    too): a query already in the list moves to the top, and the list keeps
+    the newest 50."""
+    if not body.q.strip():
+        raise HTTPException(status_code=422, detail="An empty query is not recorded")
+    entry = query_history_service.record(
+        db, user_id=current_user.id, project_id=project.id, kind=query_history_service.HOSTS,
+        text=body.q, result_count=body.result_count,
     )
-    newest = base.order_by(HostQueryHistory.created_at.desc(), HostQueryHistory.id.desc()).first()
-
-    if newest is not None and newest.q == q:
-        newest.created_at = func.now()
-        newest.result_count = body.result_count
-        entry = newest
-    else:
-        entry = HostQueryHistory(
-            user_id=current_user.id,
-            project_id=project.id,
-            q=q,
-            result_count=body.result_count,
-        )
-        db.add(entry)
-    db.flush()
-
-    # Trim anything past the newest _HISTORY_KEEP for this user+project.
-    keep_ids = [
-        row.id
-        for row in base.order_by(
-            HostQueryHistory.created_at.desc(), HostQueryHistory.id.desc()
-        ).limit(_HISTORY_KEEP).all()
-    ]
-    if keep_ids:
-        base.filter(HostQueryHistory.id.notin_(keep_ids)).delete(synchronize_session=False)
-
     db.commit()
-    db.refresh(entry)
     return entry
 
 
@@ -344,19 +311,12 @@ def delete_query_history_entry(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    deleted = (
-        db.query(HostQueryHistory)
-        .filter(
-            HostQueryHistory.id == entry_id,
-            HostQueryHistory.user_id == current_user.id,
-            HostQueryHistory.project_id == project.id,
-        )
-        .delete(synchronize_session=False)
-    )
-    db.commit()
     # Idempotent: deleting an already-gone (or someone else's) entry is a
     # no-op 204 rather than a 404, matching the "clear my recents" UX.
-    _ = deleted
+    query_history_service.delete(
+        db, user_id=current_user.id, project_id=project.id, kind=query_history_service.HOSTS, entry_id=entry_id,
+    )
+    db.commit()
     return None
 
 
@@ -370,9 +330,6 @@ def clear_query_history(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    db.query(HostQueryHistory).filter(
-        HostQueryHistory.user_id == current_user.id,
-        HostQueryHistory.project_id == project.id,
-    ).delete(synchronize_session=False)
+    query_history_service.clear(db, user_id=current_user.id, project_id=project.id, kind=query_history_service.HOSTS)
     db.commit()
     return None
