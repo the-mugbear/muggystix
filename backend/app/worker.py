@@ -108,6 +108,14 @@ def main() -> None:
     _restore_app_logging()
 
     service = IngestionService()
+    from app.core.config import settings
+    if settings.INGESTION_JOB_TIMEOUT_STILL_SET:
+        logger.warning(
+            "INGESTION_JOB_TIMEOUT is set (%ss) and INGESTION_STALL_TIMEOUT is not: it is read as the stall "
+            "window — how long an import may go WITHOUT PROGRESS (an import that progresses is no longer "
+            "stopped for taking long). Rename it to INGESTION_STALL_TIMEOUT in .env.",
+            settings.INGESTION_STALL_TIMEOUT,
+        )
 
     def _reap() -> None:
         reaped = service.reap_orphaned_jobs()

@@ -36,8 +36,10 @@ from app.db.models import IngestionJob
 # app.db.session.SessionLocal onto the test engine and have these background
 # sessions land in the test DB — same pattern as agent_api_log_service.
 from app.db import session as _session_module
+from app.db.session import is_statement_timeout
 from app.parsers.cut_short import TruncatedFile, begin_read, end_read
 from app.services.format_registry import format_label
+from app.services.ingestion_stall import StallWatchdog, exit_worker, stall_message, stall_statement_timeout
 from app.services.parse_error_service import log_parse_error
 from app.services.job_transitions import JobNotTransitionable, JobTransitions
 
@@ -154,6 +156,20 @@ def report_progress(progress: str) -> None:
     svc.update_heartbeat(
         db, job_id, progress, claimed_at=getattr(_active_job, "claimed_at", None),
     )
+
+
+def stall_failure() -> "ParseFailure":
+    """The failure of an import that stopped making progress (said with the
+    setting's name; services/ingestion_stall.py)."""
+    return ParseFailure("Import stalled", user_message=stall_message(settings.INGESTION_STALL_TIMEOUT))
+
+
+def _attempt_stalled(exc: BaseException) -> bool:
+    """The active attempt stalled: the watchdog said so, or Postgres cancelled
+    a statement that outlasted the stall window (the watchdog looks every few
+    seconds, the statement timeout is exact)."""
+    watchdog = getattr(_active_job, "watchdog", None)
+    return (watchdog is not None and watchdog.stalled) or is_statement_timeout(exc)
 
 
 def note_scan_created(db: Session, scan_id: Optional[int]) -> None:
@@ -1317,7 +1333,7 @@ class IngestionService:
     def _orphan_cutoff() -> datetime:
         """Leases older than this belong to a worker that is gone."""
         return datetime.now(timezone.utc) - timedelta(
-            seconds=settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+            seconds=settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
         )
 
     def _lease_is_dead(self, job: IngestionJob) -> bool:
@@ -1384,8 +1400,8 @@ class IngestionService:
         overwrite its progress.  A zero-row update raises ``ParseFailure``:
         this attempt no longer owns the job and must stop writing scan data.
 
-        Raises ``ParseFailure`` if the job has been cancelled or has exceeded
-        the configured timeout, giving the active parser a chance to bail out.
+        Raises ``ParseFailure`` if the job has been cancelled or the watchdog
+        marked it stalled, giving the active parser a chance to bail out.
         """
         # A long parse keeps the container's liveness file fresh, and a worker
         # asked to stop hands the job back NOW instead of being SIGKILLed
@@ -1399,8 +1415,12 @@ class IngestionService:
                 "Worker shutting down",
                 user_message="Interrupted by a worker restart — re-queued",
             )
-
-        now = datetime.now(timezone.utc)
+        # The watchdog marked this attempt stalled (no progress for the
+        # window): a parse that moves again after that — a cancelled
+        # statement it skipped as one bad record — is stopped all the same.
+        watchdog = getattr(_active_job, "watchdog", None) if getattr(_active_job, "job_id", None) == job_id else None
+        if watchdog is not None and watchdog.stalled:
+            raise stall_failure()
 
         written = _transitions.heartbeat(
             db, job_id, claimed_at,
@@ -1432,17 +1452,13 @@ class IngestionService:
                 user_message="Superseded by a newer attempt",
             )
         db.commit()
-
-        # The fenced UPDATE wrote the row, so it was 'processing' and its
-        # ``started_at`` is the token this attempt holds: the timeout needs no
-        # second read.  (A cancel landing after the commit is seen by the
-        # next heartbeat, or by the fenced completion.)
-        elapsed = (now - claimed_at).total_seconds()
-        if elapsed > settings.INGESTION_JOB_TIMEOUT:
-            raise ParseFailure(
-                f"Job timed out after {int(elapsed)}s (limit {settings.INGESTION_JOB_TIMEOUT}s)",
-                user_message=f"Parse timed out after {int(elapsed // 60)} minutes",
-            )
+        # A heartbeat is progress: the watchdog's clock starts again.  There
+        # is no cap on how long an import that is progressing may run (owner,
+        # 2026-10-17; services/ingestion_stall.py).  (A cancel landing after
+        # the commit is seen by the next heartbeat, or by the fenced
+        # completion.)
+        if watchdog is not None:
+            watchdog.progressed()
 
     def _validate_content_matches_extension(self, destination: Path, raw_name: str) -> None:
         """Peek at the first 1 KB of the uploaded file and verify it
@@ -1587,7 +1603,7 @@ class IngestionService:
         worker that owned it has died without writing a final status.
         Two ways to know: nobody holds the attempt's liveness lock
         (``attempt_is_over`` — exact, and immediate), or its heartbeat is
-        older than ``INGESTION_JOB_TIMEOUT × INGESTION_ORPHAN_CUTOFF_MULTIPLIER``
+        older than ``INGESTION_STALL_TIMEOUT × INGESTION_ORPHAN_CUTOFF_MULTIPLIER``
         (a worker that is alive but wedged).
 
         Returns the number of jobs reaped — the worker logs this so
@@ -1595,7 +1611,7 @@ class IngestionService:
         poll iteration; cheap because the filter uses a partial index
         on ``status = 'processing'`` (see alembic migration).
         """
-        cutoff_seconds = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+        cutoff_seconds = settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=cutoff_seconds)
         max_retries = settings.INGESTION_MAX_RETRIES
         db = _session_module.SessionLocal()
@@ -1937,6 +1953,18 @@ class IngestionService:
             _active_job.job_id = job_id
             _active_job.claimed_at = claimed_at
 
+            # T7 (owner, 2026-10-17) — stopped when it stops making progress,
+            # never for taking long: a watchdog beside the parse, and no
+            # statement of this import may outlast the same window
+            # (services/ingestion_stall.py).
+            watchdog = StallWatchdog(
+                settings.INGESTION_STALL_TIMEOUT,
+                fail_and_exit=lambda: self._fail_stalled_and_exit(job_id, claimed_at),
+            ).start()
+            _active_job.watchdog = watchdog
+            import_lock.callback(watchdog.stop)
+            import_lock.enter_context(stall_statement_timeout(db, settings.INGESTION_STALL_TIMEOUT))
+
             # R1 — a scan still named on the row belongs to an attempt that
             # died (hard kill, reaped lease) after committing it.  Delete it
             # before parsing, or this attempt imports into a second scan and
@@ -2161,8 +2189,31 @@ class IngestionService:
             _active_job.db = None
             _active_job.job_id = None
             _active_job.claimed_at = None
+            _active_job.watchdog = None
             import_lock.close()
             db.close()
+
+    def _fail_stalled_and_exit(self, job_id: int, claimed_at: datetime, *, exit=exit_worker) -> None:
+        """The watchdog's last resort: the parse made no progress for the
+        stall window and did not stop when marked (stuck in Python, where
+        nothing in this process can interrupt it).  The job is failed — fenced
+        on this attempt's claim, on a session of its own — and the process
+        ends; Docker restarts the worker, and the reaper, finding the
+        attempt's liveness lock free, removes the partial scan
+        (``_discard_failed_jobs_leftovers``)."""
+        message = stall_message(settings.INGESTION_STALL_TIMEOUT)
+        try:
+            with _session_module.SessionLocal() as db:
+                db.execute(text("SET LOCAL lock_timeout = '10s'"))
+                _transitions.fail(
+                    db, job_id, claimed_at, increment_retry=True,
+                    error_message=message, message=message,
+                    last_error="Stalled: no progress, and the parse did not stop when marked; worker ended",
+                )
+                db.commit()
+        except Exception:  # noqa: BLE001 — the reaper's time rule is the fallback
+            logger.exception("Ingestion job %s: could not fail the stalled job before exiting", job_id)
+        exit()
 
     def _process_job(self, db: Session, job: IngestionJob) -> Optional[Dict[str, object]]:
         """Run parser detection and execute the first successful parser."""
@@ -2255,6 +2306,11 @@ class IngestionService:
                 raise
             except Exception as exc:
                 db.rollback()
+                if _attempt_stalled(exc):
+                    # A stall is terminal, like a cancel: no other parser is
+                    # tried over a file that just stopped making progress.
+                    self._discard_attempt_scan(db, job_id)
+                    raise stall_failure() from exc
                 # Every parser commits its scan as soon as it exists (and a
                 # heartbeat commits hosts), so a failure anywhere after that —
                 # in the parser, or between its return and the dispatcher's

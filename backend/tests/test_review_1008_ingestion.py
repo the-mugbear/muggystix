@@ -272,11 +272,13 @@ def test_a_stale_attempt_never_deletes_the_scan_the_new_owner_is_writing(db_sess
 # H — the heartbeat is one statement; the timeout comes from the claim token
 # --------------------------------------------------------------------------
 
-def test_a_heartbeat_is_one_statement_and_still_times_out(db_session, test_project, monkeypatch):
+def test_a_heartbeat_is_one_statement_and_a_stalled_attempt_is_stopped(db_session, test_project, monkeypatch):
+    """The heartbeat is one statement.  It stops nothing for its age (T7):
+    only an attempt the stall watchdog marked is stopped at its next beat."""
     import pytest
     from sqlalchemy import event
 
-    from app.core.config import settings
+    from app.services import ingestion_service as svc_module
     from app.services.ingestion_service import IngestionService, ParseFailure
 
     claim = (datetime.now(timezone.utc) - timedelta(seconds=30)).replace(microsecond=0)
@@ -296,9 +298,14 @@ def test_a_heartbeat_is_one_statement_and_still_times_out(db_session, test_proje
         event.remove(engine, "before_cursor_execute", record)
     assert statements == ["UPDATE"]
 
-    monkeypatch.setattr(settings, "INGESTION_JOB_TIMEOUT", 10)
-    with pytest.raises(ParseFailure, match="timed out"):
+    class _Marked:
+        stalled = True
+
+    monkeypatch.setattr(svc_module._active_job, "job_id", job.id, raising=False)
+    monkeypatch.setattr(svc_module._active_job, "watchdog", _Marked(), raising=False)
+    with pytest.raises(ParseFailure) as stopped:
         IngestionService().update_heartbeat(db_session, job.id, "20 hosts", claimed_at=claim)
+    assert "stopped making progress" in stopped.value.user_message
 
 
 # --------------------------------------------------------------------------
@@ -308,7 +315,7 @@ def test_a_heartbeat_is_one_statement_and_still_times_out(db_session, test_proje
 def _stale(db, project_id, path, **cols):
     from app.core.config import settings
 
-    cutoff_s = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+    cutoff_s = settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
     old = datetime.now(timezone.utc) - timedelta(seconds=cutoff_s + 600)
     return _job(db, project_id, path, status="processing", started_at=old, last_heartbeat=old, **cols)
 
@@ -334,7 +341,7 @@ def test_a_failure_and_an_operator_retry_do_not_spend_the_reapers_budget(
     assert row.retry_count == settings.INGESTION_MAX_RETRIES == 2
     # Claimed again, and the worker dies.
     stale = datetime.now(timezone.utc) - timedelta(
-        seconds=settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER + 600
+        seconds=settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER + 600
     )
     row.status, row.started_at, row.last_heartbeat = "processing", stale, stale
     db_session.commit()

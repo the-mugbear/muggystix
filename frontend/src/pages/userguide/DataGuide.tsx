@@ -102,8 +102,9 @@ const sections: GuideSection[] = [
           <li><strong>Result</strong> — the scan says what it added: hosts added and already known, conflicts, new open ports, records skipped.</li>
         </OrderedList>
         <Para>
-          A running import can be <strong>cancelled</strong> from the Scans page, and every import
-          stops at the deployment's time limit (30 minutes unless changed). Parsers that drop
+          A running import can be <strong>cancelled</strong> from the Scans page. An import runs as
+          long as it keeps making progress; one that makes none for the deployment's stall window
+          (30 minutes unless changed) is stopped and keeps nothing. Parsers that drop
           records report a skipped count and warnings on the job, so data lost to malformed input
           is visible rather than hidden.
         </Para>

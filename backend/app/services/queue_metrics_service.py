@@ -122,7 +122,7 @@ def _failed_ingestion_by_project(db: Session) -> list:
 def queue_metrics(db: Session) -> dict:
     """Snapshot both job queues. Stale cutoffs match each reaper's own."""
     ingestion_cutoff = (
-        settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+        settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
     )
     ingestion = _queue_snapshot(db, models.IngestionJob, ingestion_cutoff)
     ingestion["failed_by_project"] = _failed_ingestion_by_project(db)

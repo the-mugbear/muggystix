@@ -11,9 +11,8 @@ import pytest
 
 
 def _recent(seconds_ago: int = 30) -> datetime:
-    # Claims must be recent — update_heartbeat also enforces the job timeout
-    # against started_at.  Microseconds dropped so the token round-trips
-    # through Postgres/SQLite identically.
+    # Microseconds dropped so the token round-trips through Postgres/SQLite
+    # identically.
     return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).replace(microsecond=0)
 
 from app.db import models
@@ -264,12 +263,13 @@ def test_a_heartbeat_never_loads_the_created_port_list(db_session, test_project)
 
 
 @pytest.mark.parametrize("zone", ["Etc/GMT+12", "Pacific/Kiritimati"])
-def test_the_job_timeout_is_measured_in_real_time_whatever_the_session_zone(
+def test_an_import_that_is_progressing_is_never_stopped_for_taking_long(
     db_session, test_project, zone,
 ):
-    """``started_at`` comes back in the session's zone.  Stripping the zone
-    instead of converting made a 30-second-old job twelve hours old west of
-    UTC (timed out at once) and never old east of it."""
+    """T7 (owner, 2026-10-17): the wall-clock cap is gone — a heartbeat on a
+    claim two days old is progress like any other, in any session zone.  (The
+    zone case is what the cap's arithmetic once got wrong: ``started_at``
+    comes back in the session's zone.)"""
     from sqlalchemy import text
 
     if db_session.get_bind().dialect.name != "postgresql":
@@ -286,7 +286,8 @@ def test_the_job_timeout_is_measured_in_real_time_whatever_the_session_zone(
     late = _job(db_session, test_project.id, started_at=old, heartbeat=old)
     db_session.execute(text(f"SET TIME ZONE '{zone}'"))
     try:
-        with pytest.raises(ParseFailure, match="timed out"):
-            IngestionService().update_heartbeat(db_session, late.id, "10%", claimed_at=old)
+        IngestionService().update_heartbeat(db_session, late.id, "10%", claimed_at=old)
     finally:
         db_session.execute(text("SET TIME ZONE 'UTC'"))
+    db_session.expire_all()
+    assert db_session.get(type(late), late.id).progress == "10%"

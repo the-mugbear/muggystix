@@ -20,7 +20,7 @@ def _ingestion(db, project_id, **kw):
 
 def test_queue_metrics_snapshot(client, db_session, test_project):
     now = datetime.now(timezone.utc)
-    stale_cutoff = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+    stale_cutoff = settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
 
     _ingestion(db_session, test_project.id, status="queued")
     _ingestion(db_session, test_project.id, status="queued")

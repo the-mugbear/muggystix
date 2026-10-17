@@ -1120,7 +1120,7 @@ def test_a_deploy_ends_by_showing_the_settings_in_force_and_where_each_comes_fro
         "  db:\n    command: -c shared_buffers=${PG_SHARED_BUFFERS:-256MB}\n"
     )
     (project.root / ".env.example").write_text(
-        "# Seconds one import may run.\n# INGESTION_JOB_TIMEOUT=1800\n"
+        "# Seconds an import may go without progress.\n# INGESTION_STALL_TIMEOUT=1800\n"
         "# Sized for NESSUS (INGESTION_RETAIN_FILES_DAYS=99) in prose is not a default.\n"
     )
     env = project.root / ".env"
@@ -1134,7 +1134,7 @@ def test_a_deploy_ends_by_showing_the_settings_in_force_and_where_each_comes_fro
     rows = _settings(out)
     assert rows["WORKER_MEM_LIMIT"] == ("8g", ".env")
     assert rows["PG_SHARED_BUFFERS"] == ("256MB", "default")       # docker-compose.yml
-    assert rows["INGESTION_JOB_TIMEOUT"] == ("1800", "default")    # .env.example's commented line
+    assert rows["INGESTION_STALL_TIMEOUT"] == ("1800", "default")  # .env.example's commented line
     assert rows["BACKUP_KEEP"] == ("25", "environment")
     assert rows["DEPLOY_HEALTH_TIMEOUT"] == ("10", "environment")  # the harness sets it
     assert rows["MIN_FREE_GB"] == ("0", "environment")

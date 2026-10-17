@@ -25,7 +25,7 @@ def _admin(db, uid=200):
 
 
 def _stale_over_cap_job(db, project_id):
-    cutoff_s = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+    cutoff_s = settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
     old = datetime.now(timezone.utc) - timedelta(seconds=cutoff_s + 600)
     # reap_count already at the cap -> the reaper's increment pushes it over,
     # so this orphan is permanently failed (not requeued).
@@ -63,7 +63,7 @@ def test_requeue_does_not_alert(db_session, test_project, tmp_path):
     admin = _admin(db_session)
     f = tmp_path / "scan.xml"
     f.write_text("<nmaprun/>")
-    cutoff_s = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+    cutoff_s = settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
     old = datetime.now(timezone.utc) - timedelta(seconds=cutoff_s + 600)
     job = models.IngestionJob(
         project_id=test_project.id, filename="s.xml", original_filename="s.xml",

@@ -14,7 +14,7 @@ from app.services.ingestion_service import IngestionService
 
 def _stale_processing_job(db, project_id, storage_path, reap_count=0):
     # Heartbeat older than the orphan cutoff (timeout * multiplier).
-    cutoff_s = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
+    cutoff_s = settings.INGESTION_STALL_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
     old = datetime.now(timezone.utc) - timedelta(seconds=cutoff_s + 600)
     job = models.IngestionJob(
         project_id=project_id,

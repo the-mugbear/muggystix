@@ -220,8 +220,19 @@ class Settings:
     # import of that project has a batch open and holds new batches
     # back for the few statements it runs.
 
-    # Ingestion job timeout (seconds). Jobs exceeding this are marked failed.
-    INGESTION_JOB_TIMEOUT: int = int(os.getenv("INGESTION_JOB_TIMEOUT", "1800"))  # 30 minutes
+    # How long an import may go WITHOUT PROGRESS (seconds) before it is
+    # stopped — never how long it may run (owner, 2026-10-17; see
+    # services/ingestion_stall.py).  INGESTION_JOB_TIMEOUT, the wall-clock cap
+    # it replaced, is still read when this is not set — a value an operator
+    # put in .env keeps meaning "how long", now "how long without progress" —
+    # with a warning at boot; read until the release after the next remote
+    # deployment.
+    INGESTION_STALL_TIMEOUT: int = int(
+        os.getenv("INGESTION_STALL_TIMEOUT") or os.getenv("INGESTION_JOB_TIMEOUT") or "1800"
+    )  # 30 minutes
+    INGESTION_JOB_TIMEOUT_STILL_SET: bool = (
+        os.getenv("INGESTION_JOB_TIMEOUT") is not None and os.getenv("INGESTION_STALL_TIMEOUT") is None
+    )
     # How many times the orphan reaper will auto-requeue a job whose worker
     # died mid-parse (transient OOM/restart) before giving up and failing it.
     # The stored upload is reused, so this is a free retry — only crashes that
