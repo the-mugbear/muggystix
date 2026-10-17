@@ -27,7 +27,7 @@ vi.mock('../../services/api', () => ({
   exportRemediationOverview: vi.fn(),
   applyRemediation: (...a: unknown[]) => applyRemediation(...a),
   getRemediationPolicy: (...a: unknown[]) => getRemediationPolicy(...a),
-  listRemediationContacts: (...a: unknown[]) => listRemediationContacts(...a),
+  listRemediationContacts: (...a: unknown[]) => Promise.resolve(listRemediationContacts(...a)).then(asCapped),
   getRemediationFollowUp: (...a: unknown[]) => getRemediationFollowUp(...a),
   recordRemediationFollowUp: (...a: unknown[]) => recordRemediationFollowUp(...a),
   recordRemediationFollowUpOverview: (...a: unknown[]) => recordRemediationFollowUpOverview(...a),
@@ -35,7 +35,7 @@ vi.mock('../../services/api', () => ({
   listClientReports: (...a: unknown[]) => listClientReports(...a),
   assignRemediationFromReport: (...a: unknown[]) => assignRemediationFromReport(...a),
   listRemediationOverview: vi.fn(),
-  listRemediationTeams: vi.fn().mockResolvedValue([]),
+  listRemediationTeams: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 200 }),
   listRemediationEvents: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   addRemediationNote: vi.fn(),
   deleteRemediationNote: vi.fn(),
@@ -58,6 +58,7 @@ import { TooltipProvider } from '../../components/ui/tooltip';
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { formatDate } from '../../utils/relativeTime';
 import type { RemediationPage, RemediationRow } from '../../services/api';
+import { asCapped } from '../helpers/cappedList';
 
 const LONG = 'a'.repeat(200);
 const row = (id: number, over: Partial<RemediationRow> = {}): RemediationRow => ({

@@ -41,9 +41,10 @@ class Settings:
     # Connection pool sizing — PER uvicorn worker process.  The API
     # container runs UVICORN_WORKERS separate processes, each with its
     # own pool, so the real Postgres connection ceiling is
-    #   UVICORN_WORKERS * (DB_POOL_SIZE + DB_MAX_OVERFLOW) + worker container
-    # and MUST stay under the db container's max_connections.  Defaults:
-    # 4*(5+10) + (5+10) = 75, comfortably under PG max_connections=120.
+    # `main.connection_budget` (the API workers, both workers' pools and their
+    # LISTEN connections) and MUST stay under the db container's
+    # max_connections — the backend warns at boot when it does not.
+    # Defaults: 4*(5+10) + (5+10) + (3+10) + 2 = 90, under 120.
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "5"))
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     # pool_timeout: how long a checkout blocks before raising when the pool

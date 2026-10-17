@@ -273,8 +273,25 @@ def test_the_contacts_read_takes_any_iterable_of_projects(client, db_session, te
     answers = [remediation_service.contacts(db_session, projects) for projects in (
         [test_project.id], (test_project.id,), (pid for pid in [test_project.id]))]
     assert answers[0] == answers[1] == answers[2]
-    assert {c["contact_email"]: c["work_project_ids"] for c in answers[2]} == {
+    assert {c["contact_email"]: c["work_project_ids"] for c in answers[2]["items"]} == {
         "alice@testdomain.com": [test_project.id], "bob@testdomain.com": [test_project.id]}
+
+
+def test_the_contacts_and_teams_lists_say_how_many_there_are(client, db_session, test_project, two_contacts):
+    """Review 2026-10-16, N4: both lists stop at 200 and said nothing when
+    they did.  Each answers the first `limit` of `total` now, on every mount."""
+    from app.services import remediation_service
+    cut = remediation_service.contacts(db_session, [test_project.id], limit=1)
+    assert (len(cut["items"]), cut["total"], cut["limit"]) == (1, 2, 1)
+    assert cut["items"][0]["contact_email"] == "alice@testdomain.com"  # the most overdue first, then by address
+    for path in ("contacts", "teams"):
+        r = client.get(f"/api/v1/projects/{test_project.id}/remediation/{path}")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == len(body["items"]) and body["limit"] == 200, body
+        r = client.get(f"/api/v1/remediation-overview/{path}", params={"project_id": test_project.id})
+        assert r.status_code == 200 and r.json()["total"] == body["total"], r.text
+    assert remediation_service.teams(db_session, [test_project.id], limit=1)["total"] == 1  # "a contact, no team"
 
 
 @needs_templates

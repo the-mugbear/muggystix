@@ -291,11 +291,19 @@ export interface RemediationContact {
  *  `listRemediationTeams`, `getRemediationTrend` and `getRemediationFollowUp`. */
 export const listRemediationContacts = async (
   projectId: number | null, scope?: 'all', signal?: AbortSignal,
-): Promise<RemediationContact[]> =>
-  (await api.get<{ items: RemediationContact[] }>(
+): Promise<CappedList<RemediationContact>> =>
+  (await api.get<CappedList<RemediationContact>>(
     scope === 'all' ? '/remediation-overview/contacts' : `${projectPath(projectId)}/remediation/contacts`,
     { params: scope === 'all' && projectId != null ? { project_id: projectId } : undefined, signal },
-  )).data.items;
+  )).data;
+
+/** The first `limit` rows of `total` (2.515.0; review 2026-10-16, N4 — the
+ *  contacts and teams lists stop at 200, and said nothing when they did). */
+export interface CappedList<T> {
+  items: T[];
+  total: number;
+  limit: number;
+}
 
 /** One contact's remediation list, prepared as a document on the report worker. */
 export type ContactReportFormat = 'contact-docx' | 'contact-html';
@@ -353,11 +361,11 @@ export interface RemediationTeam {
 }
 export const listRemediationTeams = async (
   projectId: number | null, scope?: 'all', signal?: AbortSignal,
-): Promise<RemediationTeam[]> =>
-  (await api.get<{ items: RemediationTeam[] }>(
+): Promise<CappedList<RemediationTeam>> =>
+  (await api.get<CappedList<RemediationTeam>>(
     scope === 'all' ? '/remediation-overview/teams' : `${projectPath(projectId)}/remediation/teams`,
     { params: scope === 'all' && projectId != null ? { project_id: projectId } : undefined, signal },
-  )).data.items;
+  )).data;
 
 /** The recorded history: a day nobody recorded is absent, never a zero. */
 export interface RemediationTrend {

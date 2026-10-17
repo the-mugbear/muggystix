@@ -31,17 +31,23 @@ class UserRole(str, Enum):
     MEMBER = "member"        # Standard account; capabilities come from project memberships
 
 
+#: The column lengths a request is held to, so an over-long value is a 422
+#: naming the field instead of a database error (review 2026-10-16, N17).
+USERNAME_MAX = 50
+FULL_NAME_MAX = 100
+
+
 class User(Base):
     """User accounts for the security platform"""
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), unique=True, nullable=False, index=True)
+    username = Column(String(USERNAME_MAX), unique=True, nullable=False, index=True)
     email = Column(String(100), unique=True, nullable=True, index=True)
     hashed_password = Column(String(255), nullable=False)
 
     # User profile
-    full_name = Column(String(100))
+    full_name = Column(String(FULL_NAME_MAX))
     role = Column(String(20), nullable=False, default=UserRole.MEMBER)
 
     # Account status

@@ -161,11 +161,13 @@ def make_router(reader, admin, *, dependencies=(), page=None):
 
     @router.get("/remediation/contacts", summary="The contacts in use, with their counts")
     def contact_list(actor: Actor = Depends(reader), db: Session = Depends(get_db)):
-        return {"items": remediation.contacts(db, [actor.project_id])}
+        """The first `limit` contacts of `total`, most overdue first."""
+        return remediation.contacts(db, [actor.project_id])
 
     @router.get("/remediation/teams", summary="The teams that own fixes, most overdue first")
     def team_list(actor: Actor = Depends(reader), db: Session = Depends(get_db)):
-        return {"items": remediation.teams(db, [actor.project_id])}
+        """The first `limit` teams of `total`, most overdue first."""
+        return remediation.teams(db, [actor.project_id])
 
     @router.get("/remediation/trend", summary="Daily deadline counts and how closed rows ended per month")
     def trend(days: int = _TREND_DAYS, actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -480,7 +482,7 @@ def overview_defect_metrics(project_id: Optional[int] = Query(None, gt=0, descri
 def overview_contacts(project_id: Optional[int] = Query(None, gt=0),
                       projects: List[Project] = Depends(administered_projects),
                       db: Session = Depends(get_db)):
-    return {"items": remediation.contacts(db, _selected(projects, project_id))}
+    return remediation.contacts(db, _selected(projects, project_id))
 
 
 @account_router.get("/remediation-overview/teams",
@@ -488,7 +490,7 @@ def overview_contacts(project_id: Optional[int] = Query(None, gt=0),
 def overview_teams(project_id: Optional[int] = Query(None, gt=0),
                    projects: List[Project] = Depends(administered_projects),
                    db: Session = Depends(get_db)):
-    return {"items": remediation.teams(db, _selected(projects, project_id))}
+    return remediation.teams(db, _selected(projects, project_id))
 
 
 @account_router.get("/remediation-overview/trend",

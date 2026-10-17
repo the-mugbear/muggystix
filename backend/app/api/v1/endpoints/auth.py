@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.db.models_auth import User, UserSession, UserRole
+from app.db.models_auth import FULL_NAME_MAX, USERNAME_MAX, User, UserSession, UserRole
 from app.core.security import (
     authenticate_user,
     create_access_token,
@@ -76,9 +76,9 @@ class LoginRequest(BaseModel):
 
 
 class RegisterRequest(BaseModel):
-    username: str
+    username: str = Field(..., max_length=USERNAME_MAX)
     password: str
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(None, max_length=FULL_NAME_MAX)
     # v2.46.0 — global role is binary: "admin" or "member".  Optional;
     # defaults to "member" (rights come from project memberships).
     role: Optional[str] = None

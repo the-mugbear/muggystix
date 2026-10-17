@@ -62,8 +62,9 @@ class BloodHoundParser:
         # computer "succeeded" with nothing in it.
         entries_seen = 0
         imported = 0
+        failed = 0
         no_address: list[str] = []
-        # R6 — heartbeat between objects (nothing here is inside a savepoint).
+        # R6 — heartbeat between objects, outside each object's savepoint.
         beat = ProgressBeat("objects")
         for entry in entries:
             if not isinstance(entry, dict):
@@ -89,16 +90,23 @@ class BloodHoundParser:
                 no_address.append(str(hostname or entry.get("ObjectIdentifier") or "unnamed object"))
                 continue
 
-            persist_host_observation(
+            # One computer that fails to write is skipped and counted, never
+            # the whole file (comprehensive review 2026-10-16, B-OPS-6).
+            if persist_host_observation(
                 dedup_service=self.dedup_service,
                 scan_id=scan.id,
                 ip_address=ip_address,
                 hostname=str(hostname) if hostname else None,
                 ports=[],
                 project_id=project_id,
-            )
+                isolate=True,
+            ) is None:
+                failed += 1
+                continue
             imported += 1
 
+        if imported == 0 and failed:
+            raise ValueError(f"None of the {failed} BloodHound computer(s) with an address could be written.")
         if imported == 0:
             raise ValueError(
                 f"BloodHound file had {entries_seen} object(s) and no computer with an IPv4 "
@@ -108,18 +116,22 @@ class BloodHoundParser:
             )
 
         correlate_scan(self.db, scan.id)
-        self.last_parse_stats = {
-            "skipped": len(no_address),
-            "warnings": (
+        warnings = []
+        if no_address:
+            warnings.append(
                 f"{len(no_address)} object(s) with no IPv4 address were not imported: "
                 + ", ".join(no_address[:10]) + (" …" if len(no_address) > 10 else "")
-                if no_address else None
-            ),
+            )
+        if failed:
+            warnings.append(f"{failed} computer(s) could not be written and were skipped")
+        self.last_parse_stats = {
+            "skipped": len(no_address) + failed,
+            "warnings": "; ".join(warnings) or None,
             "summary": (
                 f"{imported} computer{'s' if imported != 1 else ''} (address and name only; "
                 "BloodHound relationships and properties are not imported)"
             ),
-            "partial": bool(no_address),
+            "partial": bool(no_address) or failed > 0,
         }
         return scan
 

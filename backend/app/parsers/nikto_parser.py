@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -24,11 +25,14 @@ from app.parsers.parser_utils import (
     map_text_severity,
     normalize_ip,
     persist_host_observation,
+    record_savepoint,
     upsert_vulnerability,
 )
 from app.services.dns_name_service import ObservationCache, bind_hostname
 from app.services.misconfig_checks import nikto_header_check, record_misconfig
 from app.services.host_deduplication_service import HostDeduplicationService
+
+logger = logging.getLogger(__name__)
 
 
 def _content_is_json(file_path: str) -> bool:
@@ -101,6 +105,8 @@ class NiktoParser:
         self.dedup_service = HostDeduplicationService(db)
         self._name_cache = ObservationCache()
         self._beat = ProgressBeat("findings")
+        self._skipped = 0
+        self.last_parse_stats: dict | None = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -127,6 +133,13 @@ class NiktoParser:
 
         self._clock.apply(scan)
         correlate_scan(self.db, scan.id)
+        self.last_parse_stats = {
+            "skipped": self._skipped,
+            "warnings": (f"{self._skipped} finding(s) could not be written and were skipped"
+                         if self._skipped else None),
+            "summary": None,
+            "partial": self._skipped > 0,
+        }
         return scan
 
     def _parse_json(self, file_path: str, scan: models.Scan) -> None:
@@ -388,6 +401,40 @@ class NiktoParser:
             hostname = None
         # R6 — heartbeat between findings (nothing of this one is written yet).
         self._beat.tick()
+        # One finding's writes are one unit: a finding that fails is skipped
+        # and counted, never the whole file (comprehensive review 2026-10-16,
+        # B-OPS-6).
+        try:
+            with record_savepoint(self.db, on_rollback=self._reset_caches):
+                self._write_finding(
+                    scan=scan, ip_address=ip_address, hostname=hostname, port=port, title=title,
+                    description=description, plugin_id=plugin_id, cve_id=cve_id, severity=severity,
+                    references=references, request=request,
+                )
+        except Exception as exc:  # noqa: BLE001 — one finding, counted
+            logger.warning("Nikto: skipping a finding on %s:%s: %s", ip_address, port, exc)
+            self._skipped += 1
+
+    def _reset_caches(self) -> None:
+        """After a finding's savepoint rolled back (see record_savepoint)."""
+        self.dedup_service.discard_rolled_back_state()
+        self._name_cache = ObservationCache()
+
+    def _write_finding(
+        self,
+        *,
+        scan: models.Scan,
+        ip_address: str,
+        hostname: Optional[str],
+        port: int,
+        title: str,
+        description: Optional[str],
+        plugin_id: Optional[str],
+        cve_id: Optional[str],
+        severity,
+        references: Optional[list],
+        request: Optional[str],
+    ) -> None:
         host, port_map = persist_host_observation(
             dedup_service=self.dedup_service,
             scan_id=scan.id,

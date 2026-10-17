@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -13,10 +14,12 @@ from app.parsers.netexec_parser import writable_share
 from app.services.misconfig_checks import record_misconfig
 from app.parsers.parser_utils import (
     ProgressBeat, beat_while_reading, correlate_scan, extract_first_ip, ensure_scan,
-    persist_host_observation, without_nul,
+    persist_host_observation, record_savepoint, without_nul,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.host_deduplication_service import HostDeduplicationService
+
+logger = logging.getLogger(__name__)
 
 
 # "[+] 10.0.0.5:445  Name: …" (older) and, since 1.10,
@@ -139,45 +142,62 @@ class SMBMapParser:
                 f"file is empty or not smbmap output."
             )
 
-        # R6 — heartbeat between hosts.  No savepoint wraps a host here, and
-        # everything a host needs is written (and flushed) within its own
-        # iteration, so the heartbeat's commit lands on a host boundary.
+        # R6 — heartbeat between hosts, outside each host's savepoint.  A host
+        # is one unit: its port, its share row and its observation are written
+        # together or not at all, and one that fails is skipped and counted
+        # (comprehensive review 2026-10-16, B-OPS-6 — it failed the file).
         beat = ProgressBeat("hosts", every=200)
+        skipped = 0
         for ip_address, entry in hosts.items():
             beat.tick()
-            persisted = persist_host_observation(
-                dedup_service=self.dedup_service,
-                scan_id=scan.id,
-                ip_address=ip_address,
-                ports=[{"port_number": entry["port"], "protocol": "tcp", "state": "open", "service_name": "smb"}],
-                project_id=project_id,
-            )
-            host = persisted[0] if persisted else None
-            if host is None:
-                continue
-            name = entry["name"] if entry["name"] and entry["name"] != ip_address else None
-            session = _session(entry["status"])
-            line = f"SMBMap {ip_address}:{entry['port']} Status: {entry['status'] or 'unknown'}"
-            self.db.add(NetexecResult(
-                scan_id=scan.id,
-                host_id=host.id,
-                tool="smbmap",
-                protocol="smb",
-                port=entry["port"],
-                hostname=name,
-                shares=entry["shares"] or None,
-                writable_share=writable_share(entry["shares"]) if entry["shares"] else None,
-                raw_output=line[:10000],
-                **session,
-            ))
-            # v2.412.0 — a NULL or guest session is a catalog observation.
-            if session.get("username") in ("", "guest"):
-                self.db.flush()
-                record_misconfig(
-                    self.db, check_id="smb_null_session", host_id=host.id, scan_id=scan.id,
-                    source=VulnerabilitySource.SMBMAP, port_number=entry["port"], evidence=line,
-                )
-        self.db.flush()
+            try:
+                with record_savepoint(self.db, on_rollback=self.dedup_service.discard_rolled_back_state):
+                    self._write_host(scan, project_id, ip_address, entry)
+            except Exception as exc:  # noqa: BLE001 — one host, counted below
+                logger.warning("SMBMap: skipping host %s: %s", ip_address, exc)
+                skipped += 1
 
         correlate_scan(self.db, scan.id)
+        self.last_parse_stats = {
+            "skipped": skipped,
+            "warnings": None,
+            "summary": None,
+            "partial": skipped > 0,
+        }
         return scan
+
+    def _write_host(self, scan: models.Scan, project_id: Optional[int], ip_address: str,
+                    entry: Dict[str, Any]) -> None:
+        persisted = persist_host_observation(
+            dedup_service=self.dedup_service,
+            scan_id=scan.id,
+            ip_address=ip_address,
+            ports=[{"port_number": entry["port"], "protocol": "tcp", "state": "open", "service_name": "smb"}],
+            project_id=project_id,
+        )
+        host = persisted[0] if persisted else None
+        if host is None:
+            return
+        name = entry["name"] if entry["name"] and entry["name"] != ip_address else None
+        session = _session(entry["status"])
+        line = f"SMBMap {ip_address}:{entry['port']} Status: {entry['status'] or 'unknown'}"
+        self.db.add(NetexecResult(
+            scan_id=scan.id,
+            host_id=host.id,
+            tool="smbmap",
+            protocol="smb",
+            port=entry["port"],
+            hostname=name,
+            shares=entry["shares"] or None,
+            writable_share=writable_share(entry["shares"]) if entry["shares"] else None,
+            raw_output=line[:10000],
+            **session,
+        ))
+        # v2.412.0 — a NULL or guest session is a catalog observation.
+        if session.get("username") in ("", "guest"):
+            self.db.flush()
+            record_misconfig(
+                self.db, check_id="smb_null_session", host_id=host.id, scan_id=scan.id,
+                source=VulnerabilitySource.SMBMAP, port_number=entry["port"], evidence=line,
+            )
+        self.db.flush()

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import disable_statement_timeout, get_db
-from app.db.models_auth import User, UserRole
+from app.db.models_auth import FULL_NAME_MAX, User, UserRole
 from app.db.models_project import Project, ProjectMembership
 from app.core.security import (
     get_password_hash,
@@ -102,7 +102,7 @@ class UserDirectoryEntry(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(None, max_length=FULL_NAME_MAX)
     role: Optional[str] = Field(None, description="Global role — 'admin' or 'member' (v2.46.0)")
     is_active: Optional[bool] = None
 
@@ -112,7 +112,7 @@ class AdminPasswordResetRequest(BaseModel):
 
 
 class UserProfileUpdateRequest(BaseModel):
-    full_name: Optional[str] = None
+    full_name: Optional[str] = Field(None, max_length=FULL_NAME_MAX)
 
 
 class MessageResponse(BaseModel):

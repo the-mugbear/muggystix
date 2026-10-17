@@ -114,9 +114,12 @@ export const RemediationEditDialog: React.FC<{
     queryFn: ({ signal }) => listRemediationContacts(
       acrossProjects ? null : currentProjectId, acrossProjects ? 'all' : undefined, signal),
   });
-  const contacts = known.data ?? NO_CONTACTS;
+  const contacts = known.data?.items ?? NO_CONTACTS;
   const typedEmail = draft.contact_email.trim().toLowerCase();
-  const newContact = known.isSuccess && !!typedEmail && typedEmail !== opened.contact_email.trim().toLowerCase()
+  // "New" only against the whole list: past the server's cap, an address
+  // that is not offered may still be in use.
+  const wholeList = known.isSuccess && known.data.total <= known.data.items.length;
+  const newContact = wholeList && !!typedEmail && typedEmail !== opened.contact_email.trim().toLowerCase()
     && !contacts.some((c) => c.contact_email === typedEmail);
 
   const day = today ?? localToday();

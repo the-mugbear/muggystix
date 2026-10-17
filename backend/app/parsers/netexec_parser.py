@@ -20,7 +20,7 @@ from app.services.confidence_service import (
 )
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySource
-from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text
+from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text, record_savepoint
 from app.parsers.streaming_json import document_before_the_cut
 from app.services import smb_signing as smb_signing_states
 from app.services.misconfig_checks import record_misconfig
@@ -335,6 +335,10 @@ class NetexecParser:
         self.dedup_service = HostDeduplicationService(db)
         # (host_id, port_number) → port id, resolved this parse (v2.422.0).
         self._port_ids: Dict[Tuple[int, int], int] = {}
+        # Reset by parse_file; here too for a caller that reads a file's
+        # content directly (the tests' console helpers).
+        self._hosts_recorded = 0
+        self._skipped = 0
 
         # Regex patterns for different netexec output formats.  The hostname
         # column is `\S+`, not `\w+`: Windows' default names are hyphenated
@@ -369,6 +373,7 @@ class NetexecParser:
         """Parse netexec output file"""
         self._project_id = kwargs.get("project_id")
         self._hosts_recorded = 0
+        self._skipped = 0
         self._filename = filename
         self.uninterpreted = None
         self.last_parse_stats = None
@@ -413,6 +418,8 @@ class NetexecParser:
             # Fail closed on 0 hosts (same rule as naabu/smbmap): a completed
             # `tool_name='netexec'` scan with no hosts hid a parser that had
             # matched nothing behind a "successful" import.
+            if not self._hosts_recorded and self._skipped:
+                raise ValueError(f"None of the {self._skipped} NetExec host(s) in {filename} could be written.")
             if not self._hosts_recorded:
                 raise ValueError(
                     f"NetExec parser found no host lines in {filename}; "
@@ -430,12 +437,14 @@ class NetexecParser:
                     f"({self.uninterpreted['distinct']} shape{'s' if self.uninterpreted['distinct'] != 1 else ''}) — "
                     "kept as the tool's text or dropped; the shapes are listed on the import"
                 )
+            if self._skipped:
+                notes.append(f"{self._skipped} host{'s' if self._skipped != 1 else ''} could not be written and were skipped")
             if notes:
                 self.last_parse_stats = {
-                    "skipped": 0,
+                    "skipped": self._skipped,
                     "warnings": "; ".join(notes),
                     "summary": None,
-                    "partial": False,
+                    "partial": self._skipped > 0,
                     "uninterpreted": self.uninterpreted,
                 }
 
@@ -487,12 +496,12 @@ class NetexecParser:
                 for key, value in data.items():
                     if self._looks_like_ip(key):
                         # Key is IP address
-                        self._process_json_host_data(key, value, scan_id)
+                        self._write_isolated(self._process_json_host_data, key, value, scan_id)
                     elif isinstance(value, dict):
                         # Nested structure with shares/folders
                         for ip_or_share, share_data in value.items():
                             if self._looks_like_ip(ip_or_share):
-                                self._process_json_host_data(ip_or_share, share_data, scan_id)
+                                self._write_isolated(self._process_json_host_data, ip_or_share, share_data, scan_id)
                 # v2.387.0 — spider_plus writes one file per host,
                 # "<ip>.json", holding {share: {path: {size, mtime…}}} with the
                 # address ONLY in the file name.  Nothing inside is an IP, so
@@ -502,7 +511,7 @@ class NetexecParser:
                     if ip_match and self._looks_like_ip(ip_match.group(1)) and all(
                         isinstance(v, dict) for v in data.values()
                     ):
-                        self._process_json_host_data(ip_match.group(1), data, scan_id)
+                        self._write_isolated(self._process_json_host_data, ip_match.group(1), data, scan_id)
 
         except json.JSONDecodeError as e:
             logger.warning(
@@ -674,20 +683,47 @@ class NetexecParser:
         from app.services.ingestion_service import report_progress
         total_hosts = len(observations)
         for index, ip_observations in enumerate(observations.values(), start=1):
+            # The progress report commits: outside the host's savepoint.
             if index == 1 or index % _PROGRESS_EVERY_HOSTS == 0:
                 report_progress(f"{index - 1}/{total_hosts} hosts")
-            # The SMB banner names the host, its OS, domain and signing
-            # posture; an auth line carries none of that.  Order in the file
-            # must not decide which one describes the host.
-            primary = next(
-                (o for o in ip_observations if o.get('os_name')), ip_observations[0]
-            )
-            host =self._process_host_with_confidence(primary, scan_id, primary['raw_line'])
-            seen_ports = {primary.get('port')}
-            for observation in ip_observations:
-                if observation is primary:
-                    continue
-                self._process_additional_observation(host, observation, scan_id, seen_ports)
+            self._write_isolated(self._write_host_observations, ip_observations, scan_id)
+
+    def _write_host_observations(self, ip_observations: List[Dict[str, Any]], scan_id: int) -> None:
+        # The SMB banner names the host, its OS, domain and signing
+        # posture; an auth line carries none of that.  Order in the file
+        # must not decide which one describes the host.
+        primary = next(
+            (o for o in ip_observations if o.get('os_name')), ip_observations[0]
+        )
+        host = self._process_host_with_confidence(primary, scan_id, primary['raw_line'])
+        seen_ports = {primary.get('port')}
+        for observation in ip_observations:
+            if observation is primary:
+                continue
+            self._process_additional_observation(host, observation, scan_id, seen_ports)
+
+    def _write_isolated(self, write, *args) -> None:
+        """One host's writes as one unit: a host that fails is rolled back,
+        skipped and counted, never the whole file (comprehensive review
+        2026-10-16, B-OPS-6).  A cancel or a shutdown still ends the parse."""
+        from app.services.ingestion_service import ParseFailure
+
+        recorded = self._hosts_recorded
+        try:
+            with record_savepoint(self.db, on_rollback=self._forget_rolled_back):
+                write(*args)
+        except ParseFailure:
+            raise
+        except Exception as exc:  # noqa: BLE001 — one host, counted
+            self._hosts_recorded = recorded
+            self._skipped += 1
+            logger.warning("NetExec: skipping a host: %s", exc)
+
+    def _forget_rolled_back(self) -> None:
+        """After a host's savepoint rolled back: what this parse remembered
+        of rows that no longer exist."""
+        self.dedup_service.discard_rolled_back_state()
+        self._port_ids.clear()
 
     def _process_additional_observation(
         self, host: models.Host, host_data: Dict[str, Any], scan_id: int, seen_ports: set

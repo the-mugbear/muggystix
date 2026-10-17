@@ -17,12 +17,32 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import models
 
 logger = logging.getLogger(__name__)
+
+#: ``Session.info`` key: files written for rows not yet committed
+#: (``store_image_bytes(commit=False)``).  A rollback removes them, a commit
+#: keeps them; the reconciler reaps note folders only, so nothing else would.
+_UNCOMMITTED_FILES = "bluestick_uncommitted_attachment_files"
+
+
+@event.listens_for(Session, "after_commit")
+def _keep_written_files(session: Session) -> None:
+    session.info.pop(_UNCOMMITTED_FILES, None)
+
+
+@event.listens_for(Session, "after_rollback")
+def _remove_written_files(session: Session) -> None:
+    for path in session.info.pop(_UNCOMMITTED_FILES, ()):
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove %s after its transaction rolled back", path)
 
 # Image attachment limits.  Images only (so the report can embed them and the
 # browser can render thumbnails); 10 MB cap; magic-byte sniffed so a renamed
@@ -150,11 +170,13 @@ def store_image_attachment(
 def store_image_bytes(
     db: Session, *, note_id: Optional[int], project_id: int, uploaded_by_id: Optional[int],
     data: bytes, content_type: str, filename: Optional[str], caption: Optional[str] = None,
+    commit: bool = True,
 ) -> "models.NoteAttachment":
     """``store_image_attachment`` for bytes already in hand — the ONE writer
     of an image attachment's file and row (an upload, and an issued report's
     frozen image restored for its revision or addendum).  Same checks, same
-    layout; commits the new row."""
+    layout; commits the new row — or, with ``commit=False``, flushes it into
+    the caller's transaction and removes the file if that rolls back."""
     declared = (content_type or "").lower()
     for_report = note_id is None
     if for_report and declared == "image/webp":
@@ -202,6 +224,13 @@ def store_image_bytes(
         caption=caption,
     )
     db.add(att)
+    if not commit:
+        # Part of the caller's transaction (an issued report's image restored
+        # with its revision's draft — review 2026-10-16, N6): the file goes
+        # if that transaction rolls back.
+        db.flush()
+        db.info.setdefault(_UNCOMMITTED_FILES, []).append(target)
+        return att
     try:
         db.commit()
     except Exception:

@@ -256,7 +256,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     queryFn: ({ signal }) => listRemediationContacts(asked, every, signal),
     enabled: view === 'contacts',
   });
-  const contacts = people.data ?? NO_CONTACTS;
+  const contacts = people.data?.items ?? NO_CONTACTS;
   // Narrowed to one project, a contact's row counts that project alone: the
   // same contacts over every project say in how many each has findings, so
   // the column reads "1 of 3" and nobody is taken to have one document to
@@ -267,7 +267,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     enabled: across && projectId != null && view === 'contacts',
   });
   const projectsOf = useMemo(
-    () => new Map((everywhere.data ?? NO_CONTACTS).map((c) => [c.contact_email, c.projects])),
+    () => new Map((everywhere.data?.items ?? NO_CONTACTS).map((c) => [c.contact_email, c.projects])),
     [everywhere.data],
   );
 
@@ -276,7 +276,14 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     queryFn: ({ signal }) => listRemediationTeams(asked, every, signal),
     enabled: view === 'teams',
   });
-  const teams = groups.data ?? NO_TEAMS;
+  const teams = groups.data?.items ?? NO_TEAMS;
+  // A list cut at the server's cap says so (review 2026-10-16, N4).
+  const cutLine = (list: { items: unknown[]; total: number } | undefined, noun: string) =>
+    list && list.total > list.items.length ? (
+      <p className="mb-xs text-caption text-muted-foreground" data-testid="remediation-list-cut">
+        The first {list.items.length.toLocaleString()} of {list.total.toLocaleString()} {noun}, most overdue first.
+      </p>
+    ) : null;
 
   // Open the rows view on a set of filters, dropping the ones that would
   // contradict them.
@@ -474,7 +481,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
 
       {view === 'teams' ? (
         <ListBody
-          rows={groups.data ?? null}
+          rows={groups.data?.items ?? null}
           state={{
             loading: groups.isFetching, error: queryErrorText(groups.error, 'The teams could not be loaded.'),
             onRetry: () => void groups.refetch(),
@@ -484,6 +491,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         >
           {() => (
             <div className="min-w-0 overflow-x-auto">
+              {cutLine(groups.data, 'teams')}
               <Table aria-label="Teams and their remediation deadlines" className="min-w-[50rem] table-fixed">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent hover:shadow-none">
@@ -524,7 +532,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         </ListBody>
       ) : view === 'contacts' ? (
         <ListBody
-          rows={people.data ?? null}
+          rows={people.data?.items ?? null}
           state={{
             loading: people.isFetching, error: queryErrorText(people.error, 'The contacts could not be loaded.'),
             onRetry: () => void people.refetch(),
@@ -539,6 +547,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                   Follow up covers every project. A contact’s list as a document is one project’s: Document asks which.
                 </p>
               )}
+              {cutLine(people.data, 'contacts')}
               <Table aria-label="Remediation contacts and their deadlines" className="min-w-[57rem] table-fixed">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent hover:shadow-none">

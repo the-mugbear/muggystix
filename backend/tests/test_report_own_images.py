@@ -594,6 +594,34 @@ def test_a_second_correction_reuses_the_restored_diagram(client, db_session, tes
     assert second.json()["settings"]["system_description"] == f"![](evidence:{restored[0]})"
 
 
+def test_a_correction_that_fails_leaves_no_restored_image(client, db_session, test_project, storage, monkeypatch):
+    """Review 2026-10-16, N6: each restored image was committed before the
+    revision's draft existed, so a failure after it left an image (row and
+    file) that no report placed.  They are one transaction now."""
+    from app.services.client_report_service import ClientReportService
+
+    diagram = _image(client, test_project, caption="As issued")
+    draft = _draft(client, test_project, system_description=f"![](evidence:{diagram})")
+    assert _issue(client, test_project, draft["id"]).status_code == 200
+    assert client.delete(_attachment(test_project, diagram)).status_code == 204
+    files_before = sorted(p.name for p in (storage / "note_attachments").rglob("*") if p.is_file())
+
+    carry = ClientReportService.settings_carried_from
+
+    def carry_then_fail(self, *a, **kw):
+        carry(self, *a, **kw)
+        raise RuntimeError("after the restore, before the draft")
+
+    monkeypatch.setattr(ClientReportService, "settings_carried_from", carry_then_fail)
+    with pytest.raises(RuntimeError):
+        client.post(f"{_reports(test_project)}/{draft['id']}/revise")
+    db_session.rollback()
+    db_session.expire_all()
+    assert _listed(client, test_project) == {}
+    assert sorted(p.name for p in (storage / "note_attachments").rglob("*") if p.is_file()) == files_before
+    assert db_session.query(Report).filter(Report.revision_of_id == draft["id"]).count() == 0
+
+
 @pytest.mark.parametrize("start", ["revise", "addendum"])
 def test_a_correction_never_turns_a_findings_image_into_a_figure(client, db_session, test_project, storage, start):
     """Review 2026-10-14, H4: the issued report keeps a copy of every image

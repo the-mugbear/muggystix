@@ -702,7 +702,10 @@ class MyToolParser:
 - **Record isolation:** a parser that catches a record's exception and carries
   on MUST wrap the record in `record_savepoint(db, observed, on_rollback)`;
   without it the failed flush poisons the session and the whole import fails
-  after logging "skipped" (v2.419.0).
+  after logging "skipped" (v2.419.0). Since 2.515.0 NetExec (per host),
+  Nikto (per finding), RustScan, SMBMap and BloodHound (per host) do too: one
+  record the database refuses is skipped and counted, the import completes
+  partial, and only a file whose every record failed fails.
 - **Name your scan:** create the `Scan` with `ensure_scan`, or call
   `announce_scan(db, scan)` right after flushing a row you built yourself —
   once, OUTSIDE any record savepoint. Under a job this stamps

@@ -202,6 +202,16 @@ const AgentSessionDetail: React.FC = () => {
           <Fact label="Started by" title={row.user_username ?? undefined}>{safeFallback(operator, 'unknown')}</Fact>
           <Fact label="Started">{formatTimestamp(row.started_at)}</Fact>
           <Fact label={ended ? 'Ran for' : 'Running for'}>{sessionDuration(row.started_at, row.completed_at)}</Fact>
+          {/* Review 2026-10-16, B-UI-2: when the agent first reached the
+              session says whether it connected and how long that took. */}
+          <Fact
+            label="First call"
+            title={row.first_call_at ? `${sessionDuration(row.started_at, row.first_call_at)} after the session started` : undefined}
+          >
+            {row.first_call_at
+              ? `${formatTimestamp(row.first_call_at)} · ${sessionDuration(row.started_at, row.first_call_at)} after start`
+              : 'none yet'}
+          </Fact>
           <Fact label="Last call">{row.last_activity_at ? formatTimestamp(row.last_activity_at) : 'none yet'}</Fact>
           <Fact
             label="Model"
@@ -213,6 +223,7 @@ const AgentSessionDetail: React.FC = () => {
           </Fact>
           <Fact label="Client" title={clientName ?? undefined}>{safeFallback(clientName, '—')}</Fact>
           <Fact label="API calls">{row.call_count != null ? row.call_count.toLocaleString() : '—'}</Fact>
+          <Fact label="Notes left">{row.note_count != null ? row.note_count.toLocaleString() : '—'}</Fact>
           <Fact label="Feedback left">{(row.feedback_count ?? 0).toLocaleString()}</Fact>
         </dl>
       </section>

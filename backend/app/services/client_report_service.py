@@ -787,6 +787,13 @@ class ClientReportService:
                 settings[key] = frozen[key]
         return settings
 
+    def lock_issued_for_carry(self, issued: Report) -> Report:
+        """``issued`` under ``FOR UPDATE``, re-read: a new draft carried from
+        it (a revision, an addendum) is made under this lock, so a second one
+        at the same moment waits and then reuses the image the first restored."""
+        return (self.db.query(Report).filter(Report.id == issued.id)
+                .populate_existing().with_for_update().one())
+
     def settings_carried_from(self, issued: Report, user_id: Optional[int], *,
                               with_summary: bool = True) -> Dict[str, Any]:
         """``settings_from_issued`` for a NEW draft — a revision of ``issued``
@@ -799,7 +806,11 @@ class ClientReportService:
         type and caption as issued) and the reference points at it.  An image
         with no copy (a report issued before copies existed, or one that did
         not print it) is left as written: the draft's checklist names it
-        (``summary.unresolved_images``).  Commits each restored image."""
+        (``summary.unresolved_images``).  Restored images are flushed, never
+        committed: the caller commits them with the new draft, holding the
+        issued report's lock (``lock_issued_for_carry``), so a failure leaves
+        no image behind and two revisions at once restore one image (review
+        2026-10-16, N6)."""
         carried = self.settings_from_issued(issued, with_summary=with_summary)
         engagement = (((issued.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
         captions = {e.get("attachment_id"): e.get("caption") for e in engagement.get("images") or []}
@@ -845,6 +856,7 @@ class ClientReportService:
                 att = store_image_bytes(
                     self.db, note_id=None, project_id=issued.project_id, uploaded_by_id=user_id,
                     data=data, content_type=copy.content_type, filename=filename, caption=caption,
+                    commit=False,
                 )
                 restored_before[filename] = att
                 live.add(att.id)

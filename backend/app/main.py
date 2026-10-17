@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -562,7 +563,7 @@ async def _run_startup_sequence() -> None:
     ensure_default_project()
     seed_system_identity()
     _seed_tool_registry()
-    _warn_if_pool_undersized()
+    _check_pool_budget()
     # Hourly housekeeping: mark expired UserSession rows as revoked so they
     # stop accumulating. Idempotent — if multiple uvicorn workers each fire
     # this it's wasteful but not incorrect.
@@ -591,9 +592,10 @@ async def _warm_mcp_registry() -> None:
         logger.exception("[startup] MCP tool registry could not be built ahead of use")
 
 
-def _warn_if_pool_undersized() -> None:
+def _check_pool_budget(server_max: Optional[int] = None) -> None:
     """Log a WARNING if DB_POOL_SIZE + DB_MAX_OVERFLOW can't keep up with the
-    uvicorn worker count.  Connection starvation manifests as random query
+    uvicorn worker count, or if every process's pool together exceeds the
+    server's max_connections.  Connection starvation manifests as random query
     timeouts that read like "the DB is slow"; this sanity check turns the
     silent-misconfig case into an actionable log line at boot.
 
@@ -612,6 +614,40 @@ def _warn_if_pool_undersized() -> None:
             ".env, or drop UVICORN_WORKERS to match.",
             capacity, settings.DB_POOL_SIZE, settings.DB_MAX_OVERFLOW, workers,
         )
+    # …and the other way (review 2026-10-16, N14): every process's pool
+    # together must fit under the server's own max_connections.
+    budget = connection_budget(
+        workers=workers, pool=settings.DB_POOL_SIZE, overflow=settings.DB_MAX_OVERFLOW,
+        report_pool=int(os.getenv("REPORT_WORKER_DB_POOL_SIZE", "3")),
+    )
+    if server_max is None:
+        try:
+            from sqlalchemy import text
+
+            from app.db.session import engine
+            with engine.connect() as conn:
+                server_max = int(conn.execute(text("SHOW max_connections")).scalar())
+        except Exception:
+            logger.debug("[startup] max_connections could not be read; budget not checked", exc_info=True)
+            return
+    if budget > server_max:
+        logger.warning(
+            "Database connections the processes may open together (%d: %d API workers x %d, "
+            "the ingestion worker %d, the report worker %d, two LISTEN connections) exceed the "
+            "server's max_connections (%d).  Under load requests fail with 'too many clients'.  "
+            "Raise PG_MAX_CONNECTIONS, or lower UVICORN_WORKERS / DB_POOL_SIZE / DB_MAX_OVERFLOW.",
+            budget, workers, capacity, capacity,
+            int(os.getenv("REPORT_WORKER_DB_POOL_SIZE", "3")) + settings.DB_MAX_OVERFLOW, server_max,
+        )
+
+
+def connection_budget(*, workers: int, pool: int, overflow: int, report_pool: int) -> int:
+    """The most connections the stack's processes may hold at once: each API
+    worker's pool, the ingestion worker's (the same settings), the report
+    worker's (its own pool size, the same overflow), and one LISTEN
+    connection for each of the two workers.  `.env.example` states it for
+    the defaults (90)."""
+    return workers * (pool + overflow) + (pool + overflow) + (report_pool + overflow) + 2
 
 
 # --- everything below this point was extracted to app/startup.py +

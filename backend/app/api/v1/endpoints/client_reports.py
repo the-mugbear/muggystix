@@ -14,6 +14,7 @@ import logging
 from typing import Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, defer, selectinload
@@ -250,19 +251,28 @@ async def upload_report_template_asset(
     _template, asset = _declared_asset(name, asset_id)
     limit = int(asset.get("max_bytes") or 0) or asset_store_module.MAX_DOCX_UNCOMPRESSED
     data = await file.read(limit + 1)  # every await BEFORE any database write
-    try:
-        _meta, warnings = asset_store_module.save(
-            name, asset, data, uploaded_by=current_user.username, original_filename=file.filename,
+
+    def store() -> ReportTemplateAssetChangeOut:
+        # The image checks, the file write under its lock and the audit
+        # commit block: on a worker thread, never the event loop (review
+        # 2026-10-16, N5 — the loop serves /health too).
+        try:
+            meta, warnings = asset_store_module.save(
+                name, asset, data, uploaded_by=current_user.username, original_filename=file.filename,
+            )
+        except asset_store_module.AssetUploadError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        log_audit_event(
+            db, user_id=current_user.id, action="report_template_asset_uploaded", resource_type="report_template",
+            resource_id=name,
+            details={"project_id": project.id, "template": name, "asset": asset_id, "sha256": meta["sha256"],
+                     "size": meta["size"], "width": meta["width"], "height": meta["height"]},
         )
-    except asset_store_module.AssetUploadError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    log_audit_event(
-        db, user_id=current_user.id, action="report_template_asset_uploaded", resource_type="report_template",
-        resource_id=name,
-        details={"project_id": project.id, "template": name, "asset": asset_id, "sha256": _meta["sha256"],
-                 "size": _meta["size"], "width": _meta["width"], "height": _meta["height"]},
-    )
-    return ReportTemplateAssetChangeOut(template=ReportTemplateOut(**_template_or_422(name).as_dict()), warnings=warnings)
+        return ReportTemplateAssetChangeOut(
+            template=ReportTemplateOut(**_template_or_422(name).as_dict()), warnings=warnings,
+        )
+
+    return await run_in_threadpool(store)
 
 
 @router.delete("/templates/{name}/assets/{asset_id}", response_model=ReportTemplateAssetChangeOut)
@@ -550,7 +560,7 @@ def create_report(
     # restored from the baseline's copy (`settings_carried_from`).
     # Its summary is its own (`report_defaults.OWN_IN_ADDENDUM`): the
     # baseline's executive summary is not carried.
-    carried = (svc.settings_carried_from(baseline, current_user.id, with_summary=False)
+    carried = (svc.settings_carried_from(svc.lock_issued_for_carry(baseline), current_user.id, with_summary=False)
                if baseline is not None else {})
     report = Report(
         project_id=project.id, kind=body.kind, status=ReportStatus.DRAFT, title=title[:255],
@@ -942,12 +952,14 @@ def revise_report(
 ):
     """Start a correction of an issued report: a new draft with the same
     engagement details and summary.  Issuing it supersedes the original."""
-    original = _load(db, project, report_id)
+    svc = ClientReportService(db)
+    original = svc.lock_issued_for_carry(_load(db, project, report_id))
     if original.status != ReportStatus.ISSUED:
         raise HTTPException(status_code=409, detail="Only the current issue of a report can be revised.")
     # An image the original printed that the project no longer has is
-    # restored from the original's copy (`settings_carried_from`).
-    carried = ClientReportService(db).settings_carried_from(original, current_user.id)
+    # restored from the original's copy (`settings_carried_from`), in this
+    # transaction: the draft and its images are committed together.
+    carried = svc.settings_carried_from(original, current_user.id)
     draft = Report(
         project_id=project.id, kind=original.kind, status=ReportStatus.DRAFT,
         title=original.title, template=original.template,

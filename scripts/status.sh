@@ -133,6 +133,30 @@ else
 fi
 echo
 
+# The certificate nginx serves, and when it expires (review 2026-10-16, N16):
+# an expired one turns every browser and agent away, and only the diagnostics
+# bundle used to say so.  Read from the file (no connection is made).
+print_header "Certificate"
+CERT_FILE="$PROJECT_ROOT/ssl/certs/networkmapper.crt"
+CERT_WARN_DAYS="${CERT_WARN_DAYS:-30}"
+if ! command -v openssl >/dev/null 2>&1; then
+    print_warning "openssl is not installed: the certificate's expiry cannot be read."
+elif [[ ! -r "$CERT_FILE" ]]; then
+    print_warning "No readable certificate at $CERT_FILE (first-time setup, option 2, creates one)."
+else
+    cert_end="$(openssl x509 -in "$CERT_FILE" -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
+    if [[ -z "$cert_end" ]]; then
+        print_warning "$CERT_FILE could not be read as a certificate."
+    elif ! openssl x509 -in "$CERT_FILE" -noout -checkend 0 >/dev/null 2>&1; then
+        print_warning "The certificate EXPIRED on $cert_end. Renew it: ./scripts/deploy.sh option 3, or ca/local-ca.sh server + install."
+    elif ! openssl x509 -in "$CERT_FILE" -noout -checkend $(( CERT_WARN_DAYS * 86400 )) >/dev/null 2>&1; then
+        print_warning "The certificate expires on $cert_end, within ${CERT_WARN_DAYS} day(s) (CERT_WARN_DAYS). Renew it before then."
+    else
+        print_success "Certificate valid until $cert_end"
+    fi
+fi
+echo
+
 # One-off data corrections this instance has no recorded run of (the
 # data-repair ledger, review 2026-10-01 B10).  Read-only; prints the commands.
 print_header "Data Repairs"

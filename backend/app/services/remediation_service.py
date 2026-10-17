@@ -1163,7 +1163,7 @@ def delete_note(db, project_id: int, event_id: int, user_id: Optional[int]) -> N
 
 
 def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
-             policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> list[dict]:
+             policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> dict:
     """The contacts in use, each with their findings on hosts by state — the
     page's contact chooser and its "by contact" follow-up list.  The contact
     with the most overdue comes first; ``last_follow_up_on`` is the most
@@ -1180,7 +1180,7 @@ def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
     rows = (db.query(Remediation.contact_email, func.max(Remediation.contact_name), func.count(),
                      n(*deadlines.OPEN_STATES), overdue, n("due_soon"), n("on_track"), n("deferred"),
                      n("closed"), func.max(case((at_risk, Remediation.last_follow_up_on))),
-                     func.count(func.distinct(Remediation.project_id)))
+                     func.count(func.distinct(Remediation.project_id)), func.count().over())
             .join(FindingHost, FindingHost.id == Remediation.finding_host_id)
             .join(Finding, Finding.id == FindingHost.finding_id)
             .filter(Remediation.project_id.in_(tuple(project_ids)),
@@ -1200,15 +1200,17 @@ def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
             .distinct().order_by(Remediation.project_id)
         ):
             work.setdefault(email, []).append(project_id)
-    return [{"contact_email": r[0], "contact_name": r[1], "total": r[2], "open": int(r[3] or 0),
-             "overdue": int(r[4] or 0), "due_soon": int(r[5] or 0), "on_track": int(r[6] or 0),
-             "deferred": int(r[7] or 0), "closed": int(r[8] or 0),
-             "last_follow_up_on": _iso(deadlines.as_date(r[9])), "projects": r[10],
-             "work_project_ids": work.get(r[0], [])} for r in rows]
+    items = [{"contact_email": r[0], "contact_name": r[1], "total": r[2], "open": int(r[3] or 0),
+              "overdue": int(r[4] or 0), "due_soon": int(r[5] or 0), "on_track": int(r[6] or 0),
+              "deferred": int(r[7] or 0), "closed": int(r[8] or 0),
+              "last_follow_up_on": _iso(deadlines.as_date(r[9])), "projects": r[10],
+              "work_project_ids": work.get(r[0], [])} for r in rows]
+    # The first `limit` of `total` (review 2026-10-16, N4: the cut was silent).
+    return {"items": items, "total": rows[0][11] if rows else 0, "limit": limit}
 
 
 def teams(db, project_ids: Iterable[int], *, limit: int = 200,
-          policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> list[dict]:
+          policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> dict:
     """The teams that own fixes, each with its findings on hosts by state —
     the most overdue first.  A team is free text compared without case; the
     spelling shown is one that was entered.  Rows with a contact and no team
@@ -1222,7 +1224,7 @@ def teams(db, project_ids: Iterable[int], *, limit: int = 200,
     rows = (db.query(key, func.max(Remediation.team), func.count(), n(*deadlines.OPEN_STATES), overdue,
                      n("due_soon"), n("on_track"), n("deferred"), n("closed"),
                      func.count(func.distinct(Remediation.contact_email)),
-                     func.count(func.distinct(Remediation.project_id)))
+                     func.count(func.distinct(Remediation.project_id)), func.count().over())
             .join(FindingHost, FindingHost.id == Remediation.finding_host_id)
             .join(Finding, Finding.id == FindingHost.finding_id)
             .filter(Remediation.project_id.in_(tuple(project_ids)),
@@ -1230,9 +1232,10 @@ def teams(db, project_ids: Iterable[int], *, limit: int = 200,
             .group_by(key)
             .order_by(key.is_(None), overdue.desc(), n("due_soon").desc(), key)
             .limit(limit).all())
-    return [{"team": r[1], "total": r[2], "open": int(r[3] or 0), "overdue": int(r[4] or 0),
-             "due_soon": int(r[5] or 0), "on_track": int(r[6] or 0), "deferred": int(r[7] or 0),
-             "closed": int(r[8] or 0), "contacts": r[9], "projects": r[10]} for r in rows]
+    items = [{"team": r[1], "total": r[2], "open": int(r[3] or 0), "overdue": int(r[4] or 0),
+              "due_soon": int(r[5] or 0), "on_track": int(r[6] or 0), "deferred": int(r[7] or 0),
+              "closed": int(r[8] or 0), "contacts": r[9], "projects": r[10]} for r in rows]
+    return {"items": items, "total": rows[0][11] if rows else 0, "limit": limit}
 
 
 # --- history ------------------------------------------------------------------

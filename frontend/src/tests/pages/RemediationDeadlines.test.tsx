@@ -16,7 +16,7 @@ const getRemediationTrend = vi.fn();
 const getRemediationDefectMetrics = vi.fn();
 vi.mock('../../services/api', () => ({
   getRemediationDefectMetrics: (...a: unknown[]) => getRemediationDefectMetrics(...a),
-  listRemediationTeams: (...a: unknown[]) => listRemediationTeams(...a),
+  listRemediationTeams: (...a: unknown[]) => Promise.resolve(listRemediationTeams(...a)).then(asCapped),
   getRemediationTrend: (...a: unknown[]) => getRemediationTrend(...a),
   getRemediationPolicy: (...a: unknown[]) => getRemediationPolicy(...a),
   updateRemediationPolicy: (...a: unknown[]) => updateRemediationPolicy(...a),
@@ -53,6 +53,7 @@ import RemediationSettingsSection, { daysProblem, zoneProblem } from '../../comp
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { notificationHref } from '../../utils/notificationLinks';
 import type { RemediationRow, RemediationState } from '../../services/api';
+import { asCapped } from '../helpers/cappedList';
 
 const POLICY = { enabled: true, due_soon_days: 7, days: { critical: 30, high: 30, medium: 90, low: 120, info: null } };
 const states = (over: Partial<Record<RemediationState, number>> = {}): Record<RemediationState, number> => ({

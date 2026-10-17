@@ -28,11 +28,11 @@ vi.mock('../../services/api', () => ({
   previewRemediationPolicy: (...a: unknown[]) => previewRemediationPolicy(...a),
   listRemediationProjects: (...a: unknown[]) => listRemediationProjects(...a),
   listRemediationOverview: (...a: unknown[]) => listRemediationOverview(...a),
-  listRemediationContacts: (...a: unknown[]) => listRemediationContacts(...a),
+  listRemediationContacts: (...a: unknown[]) => Promise.resolve(listRemediationContacts(...a)).then(asCapped),
   getRemediationFollowUp: (...a: unknown[]) => getRemediationFollowUp(...a),
   recordRemediationFollowUp: (...a: unknown[]) => recordRemediationFollowUp(...a),
   recordRemediationFollowUpOverview: (...a: unknown[]) => recordRemediationFollowUpOverview(...a),
-  listRemediationTeams: vi.fn().mockResolvedValue([]),
+  listRemediationTeams: vi.fn().mockResolvedValue({ items: [], total: 0, limit: 200 }),
   getRemediationTrend: vi.fn().mockResolvedValue({ as_of: '2026-11-10', days: 90, daily: [], closed_by_month: [] }),
   applyRemediation: vi.fn(),
   listRemediation: vi.fn(),
@@ -58,6 +58,7 @@ import { TooltipProvider } from '../../components/ui/tooltip';
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { formatDate } from '../../utils/relativeTime';
 import type { RemediationPage, RemediationRow, RemediationState } from '../../services/api';
+import { asCapped } from '../helpers/cappedList';
 
 const POLICY = { enabled: true, due_soon_days: 7, time_zone: 'UTC', days: { critical: 30, high: 30, medium: 90, low: 120, info: null } };
 const states = (over: Partial<Record<RemediationState, number>> = {}): Record<RemediationState, number> => ({

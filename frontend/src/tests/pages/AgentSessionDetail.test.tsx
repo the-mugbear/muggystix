@@ -124,6 +124,14 @@ describe('AgentSessionDetail', () => {
     expect(screen.getByText('API calls').parentElement).toHaveTextContent('14');
   });
 
+  // Review 2026-10-16, B-UI-2: the row's first call and note count were shown nowhere.
+  it('says when the agent first called and how many notes it left', async () => {
+    renderAt('72');
+    const first = (await screen.findByText('First call')).parentElement!;
+    expect(first).toHaveTextContent('1h after start');   // started 2 h ago, first call 1 h ago
+    expect(screen.getByText('Notes left').parentElement).toHaveTextContent('1');
+  });
+
   it('says how many notes there are when it shows only the newest', async () => {
     getAgentSessionNotes.mockResolvedValue({ ...notes, total: 73 });
     renderAt('72');

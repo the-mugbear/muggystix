@@ -3,7 +3,7 @@
  * the address, write controls for project admins only, and an edit that
  * sends only what changed.
  */
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,10 +28,10 @@ vi.mock('../../services/api', () => ({
   prepareContactReport: (...a: unknown[]) => prepareContactReport(...a),
   getContactReport: (...a: unknown[]) => getContactReport(...a),
   downloadContactReport: (...a: unknown[]) => downloadContactReport(...a),
-  listRemediationTeams: (...a: unknown[]) => listRemediationTeams(...a),
+  listRemediationTeams: (...a: unknown[]) => Promise.resolve(listRemediationTeams(...a)).then(asCapped),
   getRemediationTrend: (...a: unknown[]) => getRemediationTrend(...a),
   getRemediationPolicy: (...a: unknown[]) => getRemediationPolicy(...a),
-  listRemediationContacts: (...a: unknown[]) => listRemediationContacts(...a),
+  listRemediationContacts: (...a: unknown[]) => Promise.resolve(listRemediationContacts(...a)).then(asCapped),
   getRemediationFollowUp: (...a: unknown[]) => getRemediationFollowUp(...a),
   recordRemediationFollowUp: (...a: unknown[]) => recordRemediationFollowUp(...a),
   listRemediationOverview: vi.fn(),
@@ -61,6 +61,7 @@ import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { formatDate } from '../../utils/relativeTime';
 import type { RemediationPage, RemediationRow } from '../../services/api';
+import { asCapped, capped } from '../helpers/cappedList';
 
 const LONG = 'a'.repeat(200);
 const row = (id: number, over: Partial<RemediationRow> = {}): RemediationRow => ({
@@ -701,6 +702,23 @@ describe('Remediation', () => {
     const dialog = await screen.findByRole('dialog');
     fireEvent.change(within(dialog).getByLabelText('Contact email'), { target: { value: 'jane@example.com' } });
     expect(within(dialog).getByLabelText('Assigned on')).toHaveValue('2026-11-10');     // the list's as_of
+  });
+
+  // Review 2026-10-16, N4: the contacts and teams lists stop at 200.
+  it('says when the contacts or the teams are the first of more', async () => {
+    const roger = { contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 3, open: 3, overdue: 2,
+      due_soon: 1, on_track: 0, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1, work_project_ids: [1] };
+    listRemediationContacts.mockResolvedValue(capped([roger], 340));
+    show('/remediation?view=contacts');
+    expect(await screen.findByTestId('remediation-list-cut')).toHaveTextContent('The first 1 of 340 contacts, most overdue first.');
+    listRemediationContacts.mockResolvedValue(capped([roger]));
+    listRemediationTeams.mockResolvedValue(capped([
+      { team: 'Ops', total: 3, open: 3, overdue: 2, due_soon: 1, on_track: 0, deferred: 0, closed: 0, contacts: 1, projects: 1 },
+    ]));
+    cleanup();
+    show('/remediation?view=teams');
+    expect(await screen.findByRole('button', { name: 'Ops' })).toBeInTheDocument();
+    expect(screen.queryByTestId('remediation-list-cut')).not.toBeInTheDocument();
   });
 
   it('prepares a contact’s list as a document, waits for the worker, and downloads it', async () => {

@@ -698,6 +698,13 @@ def add_member(
     user = db.query(User).filter(User.id == data.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if not user.is_active:
+        # Review 2026-10-16, N17: a deactivated account was added and then
+        # listed among the members with nothing to say it cannot sign in.
+        raise HTTPException(
+            status_code=409,
+            detail=f"{user.username}'s account is deactivated. A global administrator can reactivate it first.",
+        )
 
     existing = db.query(ProjectMembership).filter(
         ProjectMembership.project_id == project_id,

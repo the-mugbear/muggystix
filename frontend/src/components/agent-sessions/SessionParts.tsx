@@ -107,8 +107,10 @@ const plural = (n: number, one: string, many: string): string =>
 export const SessionWork: React.FC<{ row: AgentSessionRow; className?: string }> = ({ row, className }) => {
   const tests = row.host_test_count ?? 0;
   const evidence = row.evidence_count ?? 0;
-  if (tests === 0 && evidence === 0) {
-    return <span className="text-caption text-muted-foreground">No tests or evidence — inventory queries only</span>;
+  // Review 2026-10-16, B-UI-2: notes are work the session left too.
+  const notes = row.note_count ?? 0;
+  if (tests === 0 && evidence === 0 && notes === 0) {
+    return <span className="text-caption text-muted-foreground">No tests, evidence or notes — inventory queries only</span>;
   }
   return (
     <Link
@@ -119,6 +121,7 @@ export const SessionWork: React.FC<{ row: AgentSessionRow; className?: string }>
       {[
         tests > 0 ? plural(tests, 'test proposed', 'tests proposed') : null,
         evidence > 0 ? plural(evidence, 'evidence record', 'evidence records') : null,
+        notes > 0 ? plural(notes, 'note', 'notes') : null,
       ].filter(Boolean).join(' · ')}
     </Link>
   );

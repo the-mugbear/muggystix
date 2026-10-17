@@ -111,30 +111,36 @@ class RustScanParser:
                    if embedded_nmap else "")
             )
 
-        # R6 — heartbeat between hosts (no savepoint wraps a host here; each
-        # host's rows are written within its own iteration).
+        # R6 — heartbeat between hosts, outside each host's savepoint.  One
+        # host that fails to write is skipped and counted, never the whole
+        # file (comprehensive review 2026-10-16, B-OPS-6).
         beat = ProgressBeat("hosts", every=200)
+        skipped = 0
         for ip_address, ports in hosts.items():
             beat.tick()
-            persist_host_observation(
+            if persist_host_observation(
                 dedup_service=self.dedup_service,
                 scan_id=scan.id,
                 ip_address=ip_address,
                 ports=ports,
                 project_id=project_id,
-            )
+                isolate=True,
+            ) is None:
+                skipped += 1
 
         correlate_scan(self.db, scan.id)
         port_count = sum(len(p) for p in hosts.values())
         self.last_parse_stats = {
-            "skipped": 0,
+            "skipped": skipped,
             "warnings": (
                 "This file also holds nmap's report (services, versions, scripts), which the "
                 "RustScan import does not read: only open ports were imported. Import nmap's "
                 "XML (pass `-- -oX out.xml` to RustScan) to keep them."
                 if embedded_nmap else None
             ),
-            "summary": f"{port_count} open port{'s' if port_count != 1 else ''} on {len(hosts)} host{'s' if len(hosts) != 1 else ''}",
-            "partial": False,
+            "summary": f"{port_count} open port{'s' if port_count != 1 else ''} on {len(hosts)} host{'s' if len(hosts) != 1 else ''}"
+                       + (f"; {skipped} host{'s' if skipped != 1 else ''} could not be written and were skipped"
+                          if skipped else ""),
+            "partial": skipped > 0,
         }
         return scan
