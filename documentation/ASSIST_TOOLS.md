@@ -30,7 +30,7 @@ Every tool is text in the model's context on every session. One session does
 every kind of work, so `tools/list` returns the whole catalogue: a tool added
 for assist is context spent by a session that only uploads scans too.
 
-The catalogue is 77 tools, 43 of them `assist_*` (40 reads and 3 writes);
+The catalogue is 78 tools, 44 of them `assist_*` (41 reads and 3 writes);
 `GET /api/v1/references/mcp-tools` is the live list. Their descriptions come to
 about 5,500 words, and that number is watched: a description says what the tool
 returns and the one or two things an agent gets wrong without being told, and
@@ -67,6 +67,7 @@ returning from leave.
 | Engagement dates, members, totals (the scope's subnet and domain counts among them), the latest scans | `assist_get_context` |
 | What the project's scope declares | `assist_get_scope` — one object, no arguments: the first 100 CIDRs and the first 100 declared domains, with `subnet_total` / `domain_total` and `*_truncated`; the whole lists are `scope_list_subnets` / `scope_list_domains` |
 | Which scans exist, in full | `assist_list_scans` (an nmap scan's rows carry `scan_info`: the port list it was asked to probe) |
+| Every port one scan recorded, with its state and service at scan | `assist_list_scan_ports` — the scan page's Ports tab, paged; `total` is the scan's port count (v2.518.0) |
 | Which hosts one scan saw, and whether it authenticated to them | `assist_list_scan_hosts` — the scan page's "As scanned" rows; `credentialed` is true / false when the scanner said so (Nessus), null when it did not. Each row also says what the scan did to the host: `host_created` (it first discovered it) or `hostname_changed` (it changed the display name of a host that already existed — the hosts the Scans row counts as "renamed"; false for imports made before this was recorded) |
 | Which session am I, for whom (what `assigned:me` means) | `assist_session_info` |
 | How much has actually been assessed | `assist_get_coverage` |

@@ -645,6 +645,20 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "defaults": {"limit": 100},
         "params": {"scan_id": "Scan id (assist_list_scans)"},
     },
+    "assist_list_scan_ports": {
+        "description": (
+            "Every port ONE scan recorded, as it recorded it (the scan page's Ports "
+            "tab; scan_id from assist_list_scans): address, port, protocol, the state "
+            "at scan and the service the scan named (name, product, version) — never "
+            "the port's current record. Ordered by address, port and protocol; total "
+            "is the scan's total_ports. Use it when assist_list_scan_hosts' 50 ports "
+            "per host are not enough. Paged."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/scans/{scan_id}/ports",
+        "defaults": {"limit": 100},
+        "params": {"scan_id": "Scan id (assist_list_scans)"},
+    },
     "assist_list_ingestion_issues": {
         "description": (
             "Imports that failed, are still in flight, finished partial, or parsed "

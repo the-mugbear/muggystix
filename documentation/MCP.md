@@ -164,6 +164,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "What is still unassessed in segment Y?" | `assist_list_evidence_gaps` |
 | "What changed between these two scans?" | `assist_compare_scans` |
 | "Which hosts did this scan see, and did it log in to them?" | `assist_list_scan_hosts` (`credentialed`: true / false / null = the scan did not say) |
+| "Which ports did this scan find open, and what did it say ran on them?" | `assist_list_scan_ports` (every port as the scan recorded it, paged) |
 | "Which ports did that nmap scan actually probe?" | `assist_list_scans` (`scan_info`) |
 | "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
 | "How many hosts run each service?" / anything grouped | `assist_query` — the Query page's pipe query language (`ports \| where state="open" \| stats dc(host) as hosts by service`); `assist_query_schema` lists the columns, `assist_list_saved_queries` the team's saved queries |

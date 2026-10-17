@@ -16,6 +16,7 @@ it).
 * ``GET /assist/evidence/gaps?domain=`` → ``evidence_service.evidence_gap_hosts``
 * ``GET /assist/scans/compare``        → ``scan_diff_service.compute_scan_diff``
 * ``GET /assist/scans/{id}/hosts``     → ``scan_snapshot_service.scan_host_snapshots``
+* ``GET /assist/scans/{id}/ports``     → ``scan_snapshot_service.scan_port_observations``
 
 The personal sections are the key's OPERATOR's — the person the session acts
 for — exactly as that person would see them.  Reading never acknowledges
@@ -50,7 +51,12 @@ from app.services.operations_read_service import (
     compute_my_findings,
 )
 from app.services.scan_diff_service import ScanDiffResponse, ScanNotInProject, compute_scan_diff
-from app.services.scan_snapshot_service import ScanHostSnapshot, scan_host_snapshots
+from app.services.scan_snapshot_service import (
+    ScanHostSnapshot,
+    ScanPortObservation,
+    scan_host_snapshots,
+    scan_port_observations,
+)
 from app.services.workbench_service import WorkbenchResponse, compute_workbench
 
 logger = logging.getLogger(__name__)
@@ -96,6 +102,12 @@ class AgentScanHostsPage(AgentPage):
     rows and total, in the agents' page (``offset``, where the page says
     ``skip``)."""
     items: List[ScanHostSnapshot]
+
+
+class AgentScanPortsPage(AgentPage):
+    """``GET /scans/{id}/ports`` as the agent receives it: the same rows and
+    total (the scan's ``total_ports``), in the agents' page."""
+    items: List[ScanPortObservation]
 
 
 #: The assessment domains, typed: the route's OpenAPI carries the values (the
@@ -423,3 +435,29 @@ def get_assist_scan_hosts(
     except ScanNotInProject:
         raise HTTPException(status_code=404, detail="Scan not found in this project")
     return AgentScanHostsPage(**agent_page(page.items, total=page.total, limit=limit, offset=offset))
+
+
+@router.get(
+    "/assist/scans/{scan_id}/ports",
+    response_model=AgentScanPortsPage,
+    summary="Every port one scan recorded — state and service as the scan saw them",
+)
+def get_assist_scan_ports(
+    scan_id: int,
+    request: Request,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The scan page's Ports tab (``GET /scans/{id}/ports``, 2.514.0), from the
+    same ``scan_snapshot_service.scan_port_observations``: every port THIS scan
+    recorded, ordered by address, port and protocol, with the state and the
+    service (name, product, version) of the scan's own observation — never the
+    port's current record.  ``total`` is the scan's ``total_ports``; the host
+    read (``/assist/scans/{id}/hosts``) lists at most 50 ports per host."""
+    try:
+        page = scan_port_observations(db, request.state.agent_project_id, scan_id, skip=offset, limit=limit)
+    except ScanNotInProject:
+        raise HTTPException(status_code=404, detail="Scan not found in this project")
+    return AgentScanPortsPage(**agent_page(page.items, total=page.total, limit=limit, offset=offset))

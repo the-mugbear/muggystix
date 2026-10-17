@@ -160,6 +160,7 @@ docker compose exec backend python scripts/seed_acceptance_fixtures.py   # the "
 - Tables are owned by Alembic — migrations live in `backend/alembic/versions/`. Every startup runs `alembic upgrade head` before serving traffic.
 - Baseline revision: `b46cd59c17f5_baseline_schema.py`. Subsequent migrations layer on additive changes (ingestion-quality columns, the agent API call log, host tests, evidence records…).
 - `app/db/init.py` builds no schema itself — it takes an advisory lock and runs `alembic upgrade head` (skipped under `BLUESTICK_SKIP_DB_INIT=1`, test harness only). The old `create_all` + hand-rolled migration list is gone; the model is the schema, and Alembic enforces it.
+- **Upgrading across v2.518.0** (frontend 5.412.2). No revision. Agents gain `assist_list_scan_ports` (every port a scan recorded). Prompt 4.44.0: Resume running agent sessions to give them the new tool.
 - **Upgrading across v2.517.0** (frontend 5.412.2). No revision, nothing to back up. Global administrators now get alerts in the bell, once a day per kind: the uploads disk is low, the import queue is backing up, or a worker has gone silent. Each opens System settings.
 - **Upgrading across v2.516.0** (frontend 5.412.1). No revision, nothing to back up.
   - **Imports have no time limit any more:** one that keeps making progress runs to the end. One that makes NO progress for `INGESTION_STALL_TIMEOUT` (default 1800 s) is stopped and keeps nothing.

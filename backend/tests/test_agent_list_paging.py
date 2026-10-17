@@ -37,6 +37,7 @@ PAGED = {
     "/agent/assist/query-history": "assist_query_history",
     "/agent/assist/scans": "assist_list_scans",
     "/agent/assist/scans/{scan_id}/hosts": "assist_list_scan_hosts",
+    "/agent/assist/scans/{scan_id}/ports": "assist_list_scan_ports",
     "/agent/assist/segments": "assist_list_segments",
     "/agent/assist/scanner-observations": "assist_list_scanner_observations",
     "/agent/assist/scanner-observations/hosts": "assist_list_observation_hosts",
@@ -195,6 +196,11 @@ def estate(client, db_session, test_project, test_user):
         db_session.add(models.HostScanHistory(
             host_id=host.id, scan_id=scan.id, state_at_scan="up", discovered_at=datetime.now(timezone.utc),
         ))
+        # …and a port the scan recorded on each (the scan's ports read).
+        recorded = models.Port(host_id=host.id, port_number=22, protocol="tcp", state="open")
+        db_session.add(recorded)
+        db_session.flush()
+        db_session.add(models.PortScanHistory(port_id=recorded.id, scan_id=scan.id, state_at_scan="open"))
         db_session.add(Vulnerability(
             title="Shared weakness", severity=VulnerabilitySeverity.CRITICAL,
             source=VulnerabilitySource.MANUAL, host_id=host.id, scan_id=scan.id, exploitable=True,

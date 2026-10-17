@@ -447,6 +447,52 @@ def test_agent_scan_hosts_equal_the_scan_pages_as_scanned_table(client, db_sessi
     assert len(result["structuredContent"]["items"]) == 2
 
 
+def test_the_agents_read_a_scans_ports_as_the_ports_tab_does(client, db_session, test_project):
+    """2.518.0 — the scan page's Ports tab (GET /scans/{id}/ports) has its
+    agent read on the same service: the same rows and total, paged in the
+    agents' envelope, and its MCP tool."""
+    pid = test_project.id
+    scan = models.Scan(project_id=pid, filename="p.xml", tool_name="nmap")
+    db_session.add(scan)
+    db_session.flush()
+    for i, ip in enumerate(["10.92.0.1", "10.92.0.2"]):
+        host = models.Host(project_id=pid, ip_address=ip, state="up")
+        db_session.add(host)
+        db_session.flush()
+        for number in (22, 443):
+            port = models.Port(host_id=host.id, port_number=number, protocol="tcp", state="closed")
+            db_session.add(port)
+            db_session.flush()
+            db_session.add(models.PortScanHistory(port_id=port.id, scan_id=scan.id, state_at_scan="open",
+                                                  service_name="ssh" if number == 22 else "https"))
+    db_session.commit()
+    headers = _start(client, pid)
+
+    page = client.get(_ui(pid, f"/scans/{scan.id}/ports"), params={"limit": 100}).json()
+    agent = client.get(f"/api/v1/agent/assist/scans/{scan.id}/ports", headers=headers).json()
+    assert agent["items"] == page["items"] and agent["total"] == page["total"] == 4
+    assert {r["state_at_scan"] for r in agent["items"]} == {"open"}         # as recorded, not as now
+    second = client.get(f"/api/v1/agent/assist/scans/{scan.id}/ports",
+                        params={"limit": 3, "offset": 3}, headers=headers).json()
+    assert second["items"] == agent["items"][3:] and second["has_more"] is False
+
+    from app.db.models_project import Project
+    other = Project(name="Other ports", slug="other-scan-ports")
+    db_session.add(other)
+    db_session.flush()
+    foreign = models.Scan(project_id=other.id, filename="theirs.xml")
+    db_session.add(foreign)
+    db_session.commit()
+    assert client.get(f"/api/v1/agent/assist/scans/{foreign.id}/ports", headers=headers).status_code == 404
+
+    result = client.post("/api/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_list_scan_ports", "arguments": {"scan_id": scan.id, "limit": 2}},
+    }, headers=headers).json()["result"]
+    assert result["isError"] is False, result
+    assert result["structuredContent"]["total"] == 4 and len(result["structuredContent"]["items"]) == 2
+
+
 def test_agent_scan_list_carries_the_scanned_port_list(client, db_session, test_project):
     """nmap's <scaninfo> — what the scan was asked to probe — was stored and
     read by nothing.  The scan page shows it; the agent's scan rows carry it."""

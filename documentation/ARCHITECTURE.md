@@ -1,6 +1,6 @@
 # BlueStick Architecture
 
-> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26); since then each change has updated the sections it touched in the same commit (latest: 2.477.0, the agent guide's parts and the well-known claims); the rest has not been re-read as a whole since 2026-10-02
+> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26); since then each change has updated the sections it touched in the same commit (latest: 2.517.0, the comprehensive review of 2026-10-16 — the weakness conditions in SQL, the stall rule, operational alerts); the rest has not been re-read as a whole since 2026-10-02
 
 BlueStick is a multi-user, multi-project pentest-operations platform that ingests scanner output, deduplicates hosts, correlates them to each project's scope (a project has exactly one), enriches findings with vulnerability data, and records agent-assisted testing: tests proposed on hosts and the evidence of what they produced. This document is the canonical architecture reference — update it when domains, endpoints, or workflows change materially.
 
@@ -240,6 +240,8 @@ backend/app/
 │   │                         # dispatch + retry_count/reap_count/last_error (the LISTEN/poll/
 │   │                         # reaper loop itself lives in worker_loop.py); `delete_partial_scan`, the
 │   │                         # cleanup of an unfinished import, and the steps a scan delete by hand shares
+│   ├── ingestion_stall.py    # an import is stopped when it stops making progress: the stall window's
+│   │                         # statement timeout and the watchdog (§4, step 4)
 │   ├── scan_sightings.py     # which scans reported a script / host script / host attribute / scanner
 │   │                         # observation (`see`, `see_many`) and `release_scan`, the ONE step before
 │   │                         # any scan row is deleted (§4, step 5)
@@ -248,6 +250,7 @@ backend/app/
 │   ├── report_job_service.py # report_jobs queue (enqueue/claim/heartbeat/complete)
 │   ├── report_generator.py   # the host inventory downloads (CSV, JSON), the per-host record, the systemic briefing
 │   ├── queue_metrics_service.py # operational metrics for both durable job queues
+│   ├── operational_alerts.py # disk low, import backlog, a silent worker → the global admins' bell
 │   ├── host_deduplication_service.py
 │   ├── subnet_correlation.py # host ↔ subnet mapping (ip_trie for speed)
 │   ├── ip_trie.py
@@ -262,7 +265,7 @@ backend/app/
 │   ├── pattern_families.py       # the program-level weakness taxonomy + classify()
 │   ├── evidence_service.py       # per-domain assessment-coverage (eligible vs assessed)
 │   ├── attention_service.py      # per-project / per-site exposure + neglect rollups
-│   ├── host_condition_sets.py    # per-condition host-id sets (shared by systemic + the has: DSL)
+│   ├── host_condition_sets.py    # per-condition host conditions + sets (systemic, subnet insights, the has: DSL)
 │   ├── ports_of_interest.py
 │   ├── host_follow_service.py
 │   ├── notification_service.py
@@ -725,10 +728,11 @@ Auxiliary scripts (`scripts/README.md` has the full list):
 - `scripts/backup-db.sh` / `restore-db.sh` — database (+ `uploads/`) backup and restore. A backup is read to its END before it counts — a dump is converted back to SQL and discarded (`pg_restore -f /dev/null`; listing it proves nothing, the table of contents is at the front of the file), each tar is listed to its end — and its size and SHA-256 go in the `.meta` beside it. It is written 0600 in a 0700 directory, fails when the uploads archive fails (`--allow-missing-uploads` to accept), and the newest `BACKUP_KEEP` are kept. A restore compares the file with its `.meta` (size, SHA-256) and reads a dump to its end before it drops anything (`--force-unverified` to override), takes a safety backup first, and starts the stack staged. Both run `tar` in the database's own image — nothing is pulled.
 - `scripts/check.sh` — the gate (see §10). `scripts/data_repairs.py` — the data-repair ledger (see §8).
 - `scripts/upgrade-instance.sh` — carry a running instance's local state into a freshly copied source tree, then deploy.
-- `scripts/status.sh` — container status, the newest backup's age, data repairs not yet applied.
+- `scripts/status.sh` — container status, the newest backup's age, when the TLS certificate expires, data repairs not yet applied.
+- `scripts/bump-version.py` — a version bump in all four places it is written (refuses a tree that already disagrees).
 - `scripts/generate-ssl-cert.sh` / `generate-ssl-cert-simple.sh` — SSL certificate helpers (also invoked by `deploy.sh` during first-time setup).
 
-**Scaling.** The stateless backend and frontend containers can run multiple replicas; the ingestion and report workers are each currently a single long-lived process and should not be replicated as-is (the `FOR UPDATE SKIP LOCKED` claim is safe for multiple workers, but the orphan-reaper logic assumes one reaper per queue). Postgres needs external strategies (managed service, read replicas) for anything beyond single-host deployments. There is no general job scheduler: beyond the two workers' periodic callbacks (the ingestion worker's reaper, backlog check and webhook sweep), the API runs two background loops — the hourly expired-session cleanup, which also ends agent sessions whose keys have expired past their renewal window (`lapse_expired_agent_sessions`), and agent-API-call / audit-log retention (`startup.py`); re-correlation and vuln refresh remain on-demand.
+**Scaling.** The stateless backend and frontend containers can run multiple replicas; the ingestion and report workers are each currently a single long-lived process and should not be replicated as-is (the `FOR UPDATE SKIP LOCKED` claim is safe for multiple workers, but the orphan-reaper logic assumes one reaper per queue). Postgres needs external strategies (managed service, read replicas) for anything beyond single-host deployments. There is no general job scheduler: beyond the two workers' periodic callbacks (the ingestion worker's reaper, backlog / disk / silent-worker checks with their operational alerts, and webhook sweep; the report worker's reaper, cleanup and silent-worker check), the API runs two background loops — the hourly expired-session cleanup, which also ends agent sessions whose keys have expired past their renewal window (`lapse_expired_agent_sessions`), and agent-API-call / audit-log retention (`startup.py`); re-correlation and vuln refresh remain on-demand.
 
 ---
 
