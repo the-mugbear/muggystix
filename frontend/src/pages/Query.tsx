@@ -594,12 +594,10 @@ export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string)
       ) : (
         <>
           <div className="overflow-x-auto">
-            <Table className="min-w-[56rem]" style={{ tableLayout: 'fixed' }} data-testid="query-history">
+            <Table className="min-w-[40rem]" style={{ tableLayout: 'fixed' }} data-testid="query-history">
               <TableHeader>
                 <TableRow>
                   <TableHead>Query</TableHead>
-                  {/* Wide enough for a refusal's reason — what the reader corrects from. */}
-                  <TableHead className="w-72">Outcome</TableHead>
                   <TableHead className="w-48">Last run</TableHead>
                   <TableHead className="w-44"><span className="sr-only">Actions</span></TableHead>
                 </TableRow>
@@ -607,6 +605,9 @@ export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string)
               <TableBody>
                 {rows.map((row) => (
                   <TableRow key={row.id} data-testid="history-row">
+                    {/* The query and, under it, its outcome: the query takes the
+                        width a narrow window has (seen in Chrome, 5.408.1: an
+                        outcome column of its own left the query ~20 characters). */}
                     <TableCell className="min-w-0">
                       <span className="flex min-w-0 items-center gap-xxs">
                         {row.by_agent && <Badge variant="outline" className="shrink-0">Agent</Badge>}
@@ -616,12 +617,12 @@ export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string)
                           {row.q}
                         </button>
                       </span>
-                    </TableCell>
-                    <TableCell className="min-w-0 text-caption">
                       {row.error !== null ? (
-                        <span className="line-clamp-2 break-words text-destructive" title={row.error}>Refused: {row.error}</span>
+                        <span className="mt-xxs line-clamp-2 break-words text-caption text-destructive" title={row.error}>
+                          Refused: {row.error}
+                        </span>
                       ) : (
-                        <span className="text-muted-foreground">
+                        <span className="mt-xxs block text-caption text-muted-foreground">
                           {row.result_count === null ? '—' : `${row.result_count.toLocaleString()} ${row.result_count === 1 ? 'result' : 'results'}`}
                         </span>
                       )}
