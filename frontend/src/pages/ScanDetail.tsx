@@ -152,14 +152,17 @@ const ScanDetail: React.FC = () => {
     listOptions(tab === 'hosts' && hostView === 'as_scanned'),
   );
   // The hosts' current records: the route answers a bare page, and the
-  // scan's host count is how many there are (one row each).
+  // scan's host count is how many there are (one row each).  The count is
+  // not a dep: the list starts only once the scan has loaded, so it is
+  // settled by the first read, and a dep that changed as the scan arrived
+  // sent an address that names a page back to the first.
   const currentList = usePagedList<ScanHost>(
     'getHostsByScan',
     async ({ offset, limit, signal }) => ({
       items: await getHostsByScan(projectId, id, { skip: offset, limit }, signal),
       total: totalHostCount,
     }),
-    [projectId, id, totalHostCount],
+    [projectId, id],
     listOptions(tab === 'hosts' && hostView === 'current'),
   );
   const portList = usePagedList<ScanPortObservation>(

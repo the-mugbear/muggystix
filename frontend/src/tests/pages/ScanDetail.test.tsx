@@ -168,6 +168,24 @@ describe('ScanDetail', () => {
     expect(api.getHostsByScan).not.toHaveBeenCalled();
   });
 
+  // Found in the browser: the count arriving with the scan sent a named page
+  // of the current view back to the first.
+  it('opens the page of the current view that the address names', async () => {
+    api.getScan.mockResolvedValue({
+      id: 9, filename: 'sweep.xml', tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
+      total_hosts: 120, up_hosts: 100, total_ports: 4, open_ports: 3,
+    });
+    api.getHostsByScan.mockImplementation(async (_p: number, _s: number, q: { skip: number; limit: number }) =>
+      Array.from({ length: Math.min(q.limit, 120 - q.skip) }, (_, i) => ({
+        id: q.skip + i + 1, ip_address: `10.0.2.${q.skip + i + 1}`, hostname: null, state: 'up', os_name: null, ports: [],
+      })));
+    renderPage('/scans/9?view=current&page=3');
+    expect(await screen.findByText('101–120 of 120')).toBeInTheDocument();
+    expect(api.getHostsByScan).toHaveBeenCalledWith(1, 9, { skip: 100, limit: 50 }, expect.anything());
+    expect(api.getHostsByScan).not.toHaveBeenCalledWith(1, 9, { skip: 0, limit: 50 }, expect.anything());
+    expect(screen.getByTestId('address')).toHaveTextContent('page=3');
+  });
+
   it('keeps the tab and the view in the address, each choice starting on page one', async () => {
     renderPage('/scans/9?page=3');
     await screen.findByRole('button', { name: 'As scanned' });
