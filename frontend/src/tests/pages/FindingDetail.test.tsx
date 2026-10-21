@@ -124,7 +124,7 @@ describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
     expect(screen.getByText('Weak TLS on portal')).toBeInTheDocument();
   });
 
-  it('a severity change shows the answer at once, without reading the finding or its history again', async () => {
+  it('a severity change shows the answer at once, without reading the finding again; its history line is read', async () => {
     const user = userEvent.setup();
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');
@@ -135,7 +135,8 @@ describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
     await waitFor(() => expect(screen.getByLabelText('Finding severity')).toHaveTextContent('Low'));
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Severity reclassified to Low.'));
     expect(mocked.getFinding).toHaveBeenCalledTimes(1);
-    expect(mocked.getFindingHistory).toHaveBeenCalledTimes(1);
+    // 5.413.0 — the edit has its line on the history, so the history is read again.
+    expect(mocked.getFindingHistory).toHaveBeenCalledTimes(2);
   });
 
   it('a status change whose history cannot be read again says so and keeps the new status', async () => {
@@ -443,7 +444,7 @@ describe('FindingDetail — layout and the initial status', () => {
       await screen.findByRole('heading', { name: /Test evidence/ }),
       screen.getByRole('heading', { name: /Report text/ }),
       screen.getByLabelText('New comment'),
-      screen.getByRole('heading', { name: /Disposition history/ }),
+      screen.getByRole('heading', { name: 'History' }),
     ];
     inOrder.slice(1).forEach((el, i) => {
       // eslint-disable-next-line no-bitwise
@@ -855,8 +856,8 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     expect(screen.getByText('recommendation')).toBeInTheDocument(); // "Still empty" follows the answer
     await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledTimes(2));
     expect(mocked.getFinding).toHaveBeenCalledTimes(1);
-    // Report text is not a status change: the history is not read again.
-    expect(mocked.getFindingHistory.mock.calls.length).toBe(history);
+    // 5.413.0 — each changed section has its line on the history: read again.
+    await waitFor(() => expect(mocked.getFindingHistory.mock.calls.length).toBe(history + 1));
     expect(toastMock.success).toHaveBeenCalledWith('Report text saved.');
   });
 
@@ -1068,7 +1069,7 @@ describe('FindingDetail — the jump bar', () => {
     await screen.findByText('Weak TLS on portal');
     // No proposals waiting and no test evidence: neither is offered.
     await waitFor(async () => expect(await entries()).toEqual([
-      'Affected hosts3', 'Report text2 empty', 'Comments & evidence2', 'Disposition history',
+      'Affected hosts3', 'Report text2 empty', 'Comments & evidence2', 'History',
     ]));
   });
 
@@ -1132,11 +1133,11 @@ describe('FindingDetail — the jump bar', () => {
     await screen.findByText('Weak TLS on portal');
     const bar = await screen.findByRole('navigation', { name: 'Sections of this finding' });
     scrollIntoView.mockClear();
-    fireEvent.click(within(bar).getByRole('button', { name: /Disposition history/ }));
+    fireEvent.click(within(bar).getByRole('button', { name: 'History' }));
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     const target = scrollIntoView.mock.instances[0] as unknown as HTMLElement;
     expect(target.id).toBe('section-history');
-    expect(within(target).getByRole('heading', { name: /Disposition history/ })).toBeInTheDocument();
+    expect(within(target).getByRole('heading', { name: 'History' })).toBeInTheDocument();
     expect(target.style.scrollMarginTop).toMatch(/var\(--topbar-h/);
   });
 

@@ -34,7 +34,14 @@ interface Props {
   staleBase?: { value: string | null } | null;
   /** The finding's placed images, where the page has them. */
   evidence?: EvidenceResolver;
+  /** The panes' names, and what the left one says when empty — a history
+   *  edit's "Before" / "After" (5.413.0); a proposal's by default. */
+  labels?: { current: string; proposed: string; empty: string };
 }
+
+const PROPOSAL_LABELS = {
+  current: 'Now in the report', proposed: 'Proposed', empty: 'Nothing yet — accepting fills this section.',
+};
 
 const PaneLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <p className="mb-xxs text-caption font-medium text-muted-foreground">{children}</p>
@@ -59,7 +66,9 @@ export const ChangesText: React.FC<{ parts: DiffPart[]; mono?: boolean }> = ({ p
   </p>
 );
 
-const TextComparison: React.FC<Props> = ({ current, proposed, mono = false, staleBase = null, evidence }) => {
+const TextComparison: React.FC<Props> = ({
+  current, proposed, mono = false, staleBase = null, evidence, labels = PROPOSAL_LABELS,
+}) => {
   const now = (current ?? '').trim();
   const [view, setView] = useState<View>('side');
   const parts = useMemo(() => (now ? diffWords(now, proposed.trim()) : null), [now, proposed]);
@@ -75,11 +84,11 @@ const TextComparison: React.FC<Props> = ({ current, proposed, mono = false, stal
     return (
       <div className="grid min-w-0 grid-cols-2 gap-md">
         <div className="min-w-0 border-r border-border pr-md" data-testid="compare-current">
-          <PaneLabel>Now in the report</PaneLabel>
-          <p className="text-body text-muted-foreground">Nothing yet — accepting fills this section.</p>
+          <PaneLabel>{labels.current}</PaneLabel>
+          <p className="text-body text-muted-foreground">{labels.empty}</p>
         </div>
         <div className="min-w-0" data-testid="compare-proposed">
-          <PaneLabel>Proposed</PaneLabel>
+          <PaneLabel>{labels.proposed}</PaneLabel>
           <Text text={proposed} mono={mono} evidence={evidence} />
         </div>
       </div>
@@ -137,11 +146,11 @@ const TextComparison: React.FC<Props> = ({ current, proposed, mono = false, stal
       ) : (
         <div className="grid min-w-0 grid-cols-2 gap-md">
           <div className="min-w-0 border-r border-border pr-md" data-testid="compare-current">
-            <PaneLabel>Now in the report</PaneLabel>
+            <PaneLabel>{labels.current}</PaneLabel>
             <Text text={now} mono={mono} evidence={evidence} muted />
           </div>
           <div className="min-w-0" data-testid="compare-proposed">
-            <PaneLabel>Proposed</PaneLabel>
+            <PaneLabel>{labels.proposed}</PaneLabel>
             <Text text={proposed} mono={mono} evidence={evidence} />
           </div>
         </div>

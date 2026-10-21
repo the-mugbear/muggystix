@@ -213,13 +213,14 @@ const FindingReportTextCard: React.FC<Props> = ({
     onMutate: () => { setError(null); return findingAsSent(queryClient, projectId, finding.id); },
     onSuccess: (updated, _payload, sent) => {
       // The route answers with the finding: it goes onto the page's cached
-      // record (report text is not a status change — the history stands) —
+      // record, and the history is read again (each changed section has its
+      // line there, 5.413.0) —
       // unless another write reached the record while this one was out, in
       // which case the finding is read again (`putFindingAnswer`).
       // Saved text may place or release an image: where each one is placed
       // is read again.  A draft report's summary counts this finding's
       // missing text (the bar a report's checklist opens this page with).
-      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
       void invalidateReads(queryClient, 'getFindingImages', 'getClientReport');
       setDraft(null);
       toast.success('Report text saved.');

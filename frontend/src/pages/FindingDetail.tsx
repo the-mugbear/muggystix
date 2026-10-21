@@ -56,6 +56,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import FindingEndpoints from '../components/findings/FindingEndpoints';
+import { FindingEditDisclosure } from '../components/findings/FindingEditChange';
 import ReportDraftBar, { reportParam } from '../components/findings/ReportDraftBar';
 import {
   findingAsSent, findingHistoryKey, findingKey, putFinding, putFindingAnswer,
@@ -247,7 +248,7 @@ const FindingDetail: React.FC = () => {
     mutationFn: (severity: FindingSeverity) => updateFinding(projectId, id, { severity }),
     onMutate: recordAsSent,
     onSuccess: async (updated, severity, sent) => {
-      await showAnswer(updated, sent.sentOver, false); // headline badge; severity is not on the history trail
+      await showAnswer(updated, sent.sentOver, true); // headline badge + its line on the history (5.413.0)
       toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update severity.')),
@@ -282,7 +283,7 @@ const FindingDetail: React.FC = () => {
     mutationFn: (ownerId: number | null) => updateFinding(projectId, id, { owner_id: ownerId }),
     onMutate: () => findingAsSent(queryClient, projectId, id),
     onSuccess: (updated, ownerId, sent) => {
-      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
       toast.success(ownerId == null ? 'Owner cleared.' : `Owner set to ${updated.owner_name ?? 'user'}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update owner.')),
@@ -328,7 +329,7 @@ const FindingDetail: React.FC = () => {
     mutationFn: (title: string) => updateFinding(projectId, id, { title }),
     onMutate: () => findingAsSent(queryClient, projectId, id),
     onSuccess: (updated, _title, sent) => {
-      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
       setTitleDraft(null);
       toast.success('Finding renamed.');
     },
@@ -440,7 +441,7 @@ const FindingDetail: React.FC = () => {
     { id: 'section-report-text', label: 'Report text', count: emptyReportSections > 0 ? `${emptyReportSections} empty` : null },
     { id: 'section-evidence-note', label: 'Evidence note' },
     { id: 'section-comments', label: 'Comments & evidence', count: commentCount ? commentCount.toLocaleString() : null },
-    { id: 'section-history', label: 'Disposition history' },
+    { id: 'section-history', label: 'History' },
   ], [pendingProposals, hostCount, emptyReportSections, commentCount]);
 
   if (!finding && findingQuery.isFetching) return <DetailSkeleton />;
@@ -756,7 +757,7 @@ const FindingDetail: React.FC = () => {
       </div>
 
       <div id="section-history" style={jumpTargetStyle}>
-      <PostureSection title={<span>Disposition history</span>}>
+      <PostureSection title={<span>History</span>}>
           {historyLoading && history.length === 0 ? (
             <div className="flex items-center gap-xs text-caption text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden /> Loading history…
@@ -793,6 +794,8 @@ const FindingDetail: React.FC = () => {
                       {r.summary}
                     </p>
                   )}
+                  {/* An edit's line (5.413.0) keeps the field's value before and after. */}
+                  {r.field && <FindingEditDisclosure projectId={projectId} findingId={id} entryId={r.id} field={r.field} />}
                 </li>
               ))}
             </ul>

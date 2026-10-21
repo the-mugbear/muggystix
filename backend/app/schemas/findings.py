@@ -213,7 +213,20 @@ class FindingStatusHistoryEntry(BaseModel):
     changed_by_id: Optional[int] = None
     changed_by_name: Optional[str] = None
     summary: Optional[str] = None
+    # 2.519.0 — set on an edit's line (title, severity, owner, a report-text
+    # section, CVSS): the field changed.  Its values before and after are
+    # read one line at a time (`/history/{id}`) — a section can be 32 KB.
+    field: Optional[str] = None
     created_at: datetime
+
+
+class FindingEditValues(BaseModel):
+    """An edit's line on a finding's history, with the field's value before
+    and after (null = empty)."""
+    id: int
+    field: str
+    before: Optional[str] = None
+    after: Optional[str] = None
 
 
 class PromoteVulnerabilityRequest(BaseModel):

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import check_permissions
 from app.db.models_auth import User, UserRole
-from app.db.models_findings import Finding, FindingStatus
+from app.db.models_findings import Finding, FindingStatus, FindingStatusHistory
 from app.db.models_project import ProjectMembership, ProjectRole
 from app.db.models_vulnerability import Vulnerability
 from app.services.cvss_service import CvssError, normalize_cvss
@@ -81,13 +81,79 @@ def require_delete(actor: FindingActor, finding: Finding) -> None:
         )
 
 
+FIELD_LABELS = {
+    "title": "Title", "severity": "Severity", "owner": "Owner",
+    "description": "Description", "impact": "Impact", "recommendation": "Recommendation",
+    "references": "References", "steps_to_reproduce": "Steps to reproduce", "evidence_text": "Evidence",
+    "cvss_vector": "CVSS vector", "cvss_score": "CVSS score",
+}
+
+
+def _shown(value: object) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
+def record_edit(
+    db: Session, finding: Finding, *, field: str, before: object, after: object,
+    actor_id: Optional[int], summary: Optional[str] = None,
+) -> None:
+    """One line on the finding's history for one edited field, keeping its
+    value before and after (2.519.0, owner 2026-10-21: an edit was recorded
+    nowhere, and any analyst may now make one).  The ONE writer of an edit
+    row — the PATCH, the bulk assign and an accepted proposal all come here.
+    ``before`` / ``after`` are the values as a reader knows them (an owner's
+    name, a severity's label).  The finding's status does not move.  Added,
+    not committed."""
+    label = FIELD_LABELS.get(field, field)
+    before_s, after_s = _shown(before), _shown(after)
+    if summary is None:
+        if field in ("severity", "owner"):
+            summary = f"{label}: {before_s or 'none'} → {after_s or 'none'}"
+        elif field == "title":
+            summary = "Renamed"
+        else:
+            summary = f"{label} {'written' if before_s is None else 'cleared' if after_s is None else 'edited'}"
+    db.add(FindingStatusHistory(
+        finding_id=finding.id, from_status=finding.status, to_status=finding.status,
+        changed_by_id=actor_id, summary=summary,
+        field=field, before_value=before_s, after_value=after_s,
+    ))
+
+
+def severity_label(severity: object) -> Optional[str]:
+    value = getattr(severity, "value", severity)
+    return str(value).capitalize() if value else None
+
+
+def _person(db: Session, user_id: Optional[int]) -> Optional[str]:
+    user = db.get(User, user_id) if user_id is not None else None
+    return (user.full_name or user.username) if user else None
+
+
+def set_owner(db: Session, finding: Finding, owner_id: Optional[int], actor_id: Optional[int]) -> None:
+    """Give the finding to ``owner_id`` (already checked by the assignee
+    rule) and record it — the PATCH and the bulk assign alike."""
+    if owner_id == finding.owner_id:
+        return
+    record_edit(
+        db, finding, field="owner", before=_person(db, finding.owner_id), after=_person(db, owner_id),
+        actor_id=actor_id,
+    )
+    finding.owner_id = owner_id
+
+
 def apply_report_text(
-    finding: Finding, actor: FindingActor, sent: Dict[str, Optional[object]],
+    db: Session, finding: Finding, actor: FindingActor, sent: Dict[str, Optional[object]], *,
+    provenance: Optional[str] = None,
 ) -> Dict[str, object]:
     """Apply report-text fields (``REPORT_TEXT_FIELDS``, ``cvss_vector``,
     ``cvss_score``) that are present in ``sent``.  Only a field whose value
     actually changes needs the right, so resending an unchanged form after a
-    triage edit is not refused.  Returns the applied changes; the caller
+    triage edit is not refused.  Each changed field gets its history line (``record_edit``); ``provenance`` (an accepted proposal's
+    "from agent proposal #…") goes ON that line — "<Field> set <provenance>"
+    — never on a second one.  Returns the applied changes; the caller
     commits."""
     changes: Dict[str, object] = {}
     for field in REPORT_TEXT_FIELDS:
@@ -114,6 +180,11 @@ def apply_report_text(
     if changes:
         require_modify(actor, finding, "edit its report text")
         for field, value in changes.items():
+            record_edit(
+                db, finding, field=field, before=getattr(finding, field), after=value,
+                actor_id=actor.user_id,
+                summary=f"{FIELD_LABELS[field]} set {provenance}" if provenance else None,
+            )
             setattr(finding, field, value)
     return changes
 

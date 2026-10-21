@@ -768,6 +768,13 @@ def test_the_findings_history_names_the_proposal_each_accepted_change_came_from(
     summaries = history(finding["id"])
     assert f"Impact set from agent proposal #{impact} (model-a, agent session #{sid})" in summaries
     assert f"Description set (edited on accept) from agent proposal #{desc} (model-a, agent session #{sid})" in summaries
+    # 2.519.0 — the line the accept writes is the edit's: it keeps the values,
+    # and there is no second line for the same change.
+    lines = client.get(f"{base}/findings/{finding['id']}/history").json()
+    desc_lines = [h for h in lines if h["field"] == "description"]
+    assert len(desc_lines) == 1 and desc_lines[0]["summary"].startswith("Description set (edited on accept)")
+    values = client.get(f"{base}/findings/{finding['id']}/history/{desc_lines[0]['id']}").json()
+    assert (values["before"], values["after"]) == (None, "Signing is off.")
 
     fh = db_session.query(FindingHost).filter(FindingHost.finding_id == finding["id"]).one()
     ep = client.post("/api/v1/agent/proposals/endpoint-status", headers=key, json={

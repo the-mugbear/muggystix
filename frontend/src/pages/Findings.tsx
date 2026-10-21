@@ -485,6 +485,8 @@ const FindingsList: React.FC = () => {
         : members.find((m) => m.user_id === assigneeId)?.username ?? 'user';
       const assigned = new Set(ids);
       patchFindings((f) => (assigned.has(f.id) ? { ...f, owner_id: assigneeId, owner_name: name } : f));
+      // Each finding's history gained an "Owner" line.
+      void queryClient.invalidateQueries({ queryKey: ['getFindingHistory'] });
       // Under "Assigned to me" / "Unowned" a row may have left the filter.
       listChanged();
       setSelected(new Set());

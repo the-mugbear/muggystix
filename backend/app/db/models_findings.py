@@ -303,9 +303,12 @@ class FindingVulnerability(Base):
 
 
 class FindingStatusHistory(Base):
-    """Audit trail of finding disposition transitions, written by the
-    status-transition recorder (app.services.status_history_service).  Note
-    status history, which shared it, was dropped in v2.447.0."""
+    """A finding's history: its status transitions (the status-transition
+    recorder, app.services.status_history_service), lines about its endpoints,
+    and — v2.519.0, revision ``b8e4d2f6a0c3`` — each edit of a field
+    (``field`` set, with the value ``before_value`` / ``after_value``; written
+    only by ``finding_actions.record_edit``).  Note status history, which
+    shared it, was dropped in v2.447.0."""
     __tablename__ = "finding_status_history"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -316,6 +319,11 @@ class FindingStatusHistory(Base):
     to_status = Column(String(20), nullable=False)
     changed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     summary = Column(Text, nullable=True)
+    # An edit's row: which field, and its value before and after (as shown —
+    # an owner's name, a severity's label).  Null on a status / endpoint row.
+    field = Column(String(40), nullable=True)
+    before_value = Column(Text, nullable=True)
+    after_value = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     finding = relationship("Finding", back_populates="status_history")

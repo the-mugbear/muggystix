@@ -29,6 +29,7 @@ from app.db.models_auth import User
 from app.db.models_findings import Finding
 from app.db.models_project import Notification, Project, ProjectRole
 from app.db.session import get_db
+from app.services.finding_actions import set_owner
 from app.services.finding_service import FindingService
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -144,7 +145,7 @@ def bulk_assign(
         )
 
     for finding in findings:
-        finding.owner_id = assignee.id if assignee else None
+        set_owner(db, finding, assignee.id if assignee else None, current_user.id)
 
     # One summary notification for the batch, not N pings.
     if assignee is not None and assignee.id != current_user.id:

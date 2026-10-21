@@ -26,7 +26,8 @@ from app.services.finding_service import (
     FindingService, endpoint_segments, load_retest_requests, validate_severity,
 )
 from app.services.finding_actions import (
-    FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_delete, require_modify,
+    FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, record_edit, require_delete,
+    require_modify, set_owner, severity_label,
 )
 from app.services import finding_needs, remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
@@ -44,7 +45,7 @@ from app.schemas.findings import (
     FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
     PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest, FindingNotePage, FindingNoteUpdate,
-    FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
+    FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry, FindingEditValues,
     FindingDiscussionList,
 )
 
@@ -333,8 +334,8 @@ def update_finding(
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     viewer: FindingActor = Depends(get_finding_viewer),
 ):
-    # Only status transitions are audited (via finding_status_history);
-    # title/severity/owner edits are not — they're attributes, not lifecycle.
+    # Each field this changes gets its line on the finding's history, with
+    # the value before and after (2.519.0, `finding_actions.record_edit`).
     finding = _load(db, project, finding_id)
     if body.title is not None:
         # v2.375.0 — the title is authored content; since 2.519.0 any
@@ -344,12 +345,19 @@ def update_finding(
         title = body.title.strip()
         if not title:
             raise HTTPException(status_code=422, detail="A finding's title cannot be empty.")
+        title = title[:500]
         if title != finding.title:
             require_modify(viewer, finding, "rename it")
-        finding.title = title[:500]
+            record_edit(db, finding, field="title", before=finding.title, after=title, actor_id=viewer.user_id)
+            finding.title = title
     if body.severity is not None:
         previous = finding.severity
         finding.severity = validate_severity(body.severity)
+        if finding.severity != previous:
+            record_edit(
+                db, finding, field="severity", before=severity_label(previous),
+                after=severity_label(finding.severity), actor_id=viewer.user_id,
+            )
         # A severity change moves the remediation deadlines that come from
         # the policy: it goes on those hosts' timelines, in this transaction
         # (nothing on an installation that does not track remediation).
@@ -358,14 +366,14 @@ def update_finding(
     # (applied by the shared service, v2.436.0).
     sent = body.model_fields_set
     apply_report_text(
-        finding, viewer,
+        db, finding, viewer,
         {f: getattr(body, f) for f in (*REPORT_TEXT_FIELDS, "cvss_vector", "cvss_score") if f in sent},
     )
     # Owner: distinguish "field omitted" from "explicitly set to null" so
     # selecting Unassigned (owner_id: null) actually clears ownership instead of
     # being silently ignored. A non-null owner must be a valid project assignee.
     if "owner_id" in body.model_fields_set:
-        finding.owner_id = resolve_project_assignee(db, project.id, body.owner_id)
+        set_owner(db, finding, resolve_project_assignee(db, project.id, body.owner_id), viewer.user_id)
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 
@@ -437,9 +445,9 @@ def get_finding_history(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """The finding's disposition trail (open → confirmed → remediated, …),
-    newest first.  The rows were always written on each transition but had no
-    read path — this surfaces who changed status, when, and why."""
+    """The finding's history, newest first: its status moves (who, when and
+    why), its endpoint changes and — 2.519.0 — each edit of a field, which
+    names the field (its values: the route below)."""
     _load(db, project, finding_id)  # 404s + enforces project scope
     rows = (
         db.query(FindingStatusHistory)
@@ -453,10 +461,36 @@ def get_finding_history(
             id=r.id, from_status=r.from_status, to_status=r.to_status,
             changed_by_id=r.changed_by_id,
             changed_by_name=(r.changed_by.full_name or r.changed_by.username) if r.changed_by else None,
-            summary=r.summary, created_at=r.created_at,
+            summary=r.summary, field=r.field, created_at=r.created_at,
         )
         for r in rows
     ]
+
+
+@router.get(
+    "/findings/{finding_id}/history/{entry_id}",
+    response_model=FindingEditValues,
+)
+def get_finding_edit(
+    finding_id: int,
+    entry_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """One edit's line with the field's value before and after (2.519.0).
+    Same reader as the history; 404 for a line that is not an edit."""
+    _load(db, project, finding_id)
+    row = (
+        db.query(FindingStatusHistory)
+        .filter(
+            FindingStatusHistory.id == entry_id, FindingStatusHistory.finding_id == finding_id,
+            FindingStatusHistory.field.isnot(None),
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such edit on this finding.")
+    return FindingEditValues(id=row.id, field=row.field, before=row.before_value, after=row.after_value)
 
 
 @router.post("/findings/{finding_id}/hosts", response_model=FindingResponse)

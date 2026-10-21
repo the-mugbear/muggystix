@@ -32,7 +32,7 @@ from app.db.models_agent import AgentSession
 from app.db.models_auth import User
 from app.db.models_project import Notification, ProjectMembership, ProjectRole
 from app.db.models_findings import (
-    Finding, FindingHost, FindingHostStatus, FindingStatus, FindingStatusHistory, FindingVulnerability,
+    Finding, FindingHost, FindingHostStatus, FindingStatus, FindingVulnerability,
 )
 from app.db.models_proposals import (
     AgentProposal, EvidenceRecord, ProposalKind, ProposalSource, ProposalStatus,
@@ -564,13 +564,6 @@ def _provenance(proposal: AgentProposal) -> str:
     return f"from agent proposal #{proposal.id}" + (f" ({detail})" if detail else "")
 
 
-_FIELD_LABELS = {
-    "description": "Description", "impact": "Impact", "recommendation": "Recommendation",
-    "references": "References", "steps_to_reproduce": "Steps to reproduce", "evidence_text": "Evidence",
-    "cvss_vector": "CVSS vector",
-}
-
-
 def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optional[str]) -> Optional[int]:
     """Run the change as ``user``; returns the finding it produced / touched."""
     project_id = proposal.project_id
@@ -596,15 +589,13 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
             # Nobody reviewing a vector proposal sees a score, so leave it
             # empty (shown as missing) rather than wrong.
             sent["cvss_score"] = None
-        if apply_report_text(finding, finding_actor(db, project_id, user), sent):
-            # Report text has no history of its own; an accepted proposal's
-            # text is recorded, so the finding shows an AI wrote it.
-            label = _FIELD_LABELS.get(proposal.field, proposal.field)
-            edited = " (edited on accept)" if edited_value is not None else ""
-            db.add(FindingStatusHistory(
-                finding_id=finding.id, from_status=finding.status, to_status=finding.status,
-                changed_by_id=user.id, summary=f"{label} set{edited} {_provenance(proposal)}",
-            ))
+        # Each changed field's history line names the proposal, so the finding
+        # shows an AI wrote it — on the line the edit writes, not a second one.
+        edited = "(edited on accept) " if edited_value is not None else ""
+        apply_report_text(
+            db, finding, finding_actor(db, project_id, user), sent,
+            provenance=f"{edited}{_provenance(proposal)}",
+        )
         return finding.id
     if kind == ProposalKind.FINDING_CREATE.value:
         finding = FindingService(db).create_finding(
@@ -616,7 +607,9 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         text = payload.get("report_text") or {}
         if text:
             # The accepter created it, so they are its author and may write it.
-            apply_report_text(finding, finding_actor(db, project_id, user), text)
+            apply_report_text(
+                db, finding, finding_actor(db, project_id, user), text, provenance=_provenance(proposal),
+            )
         return finding.id
     if kind in (ProposalKind.OBSERVATION_PROMOTE.value, ProposalKind.OBSERVATION_DISMISS.value):
         vuln = _vulnerability(db, project_id, proposal.vulnerability_id)

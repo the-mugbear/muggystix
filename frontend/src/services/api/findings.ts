@@ -385,8 +385,32 @@ export interface FindingStatusHistoryEntry {
   changed_by_id: number | null;
   changed_by_name: string | null;
   summary: string | null;
+  /** 5.413.0 — set on an edit's line (`title`, `severity`, `owner`, a
+   *  report-text section, `cvss_vector` / `cvss_score`); its values before and
+   *  after are read with `getFindingEdit`. */
+  field?: string | null;
   created_at: string;
 }
+
+/** An edit's values (null = empty). */
+export interface FindingEditValues {
+  id: number;
+  field: string;
+  before: string | null;
+  after: string | null;
+}
+
+export const getFindingEdit = async (
+  projectId: number,
+  findingId: number,
+  entryId: number,
+  signal?: AbortSignal,
+): Promise<FindingEditValues> => {
+  const response = await api.get<FindingEditValues>(
+    `${projectPath(projectId)}/findings/${findingId}/history/${entryId}`, { signal },
+  );
+  return response.data;
+};
 
 export const getFindingHistory = async (
   projectId: number,
