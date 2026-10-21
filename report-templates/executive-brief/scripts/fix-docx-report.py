@@ -170,6 +170,59 @@ def fill_table_of_contents(body):
     return len(entries)
 
 
+#: What Word accepts as a bookmark name: a letter first, then letters, digits
+#: and underscores, at most 40 characters.
+_WORD_BOOKMARK = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}")
+
+
+def word_safe_bookmark_names(body):
+    """Give every bookmark a name Word accepts, and point every link at it.
+
+    Pandoc names a heading's bookmark after its id — `sec-finding-11`,
+    `project-information` — with hyphens, which a Word bookmark name may not
+    hold (letters, digits and underscores, a letter first, at most 40
+    characters).  In Word every link from the summary tables to a finding went
+    to the top of the document (owner, 2026-10-14, and again 2026-10-21 after
+    the bookmarks were moved into their headings).  Each name Word would not
+    accept becomes one it does (`sec_finding_11`; a number on the end keeps two
+    apart), and every `w:hyperlink w:anchor` and REF / PAGEREF field naming it
+    follows.  A name Word accepts is left as it is.  Returns the number
+    renamed."""
+    starts = list(body.iter(f"{NS}bookmarkStart"))
+    taken = {s.get(f"{NS}name") for s in starts if _WORD_BOOKMARK.fullmatch(s.get(f"{NS}name") or "")}
+    renamed = {}
+    for start in starts:
+        name = start.get(f"{NS}name") or ""
+        if _WORD_BOOKMARK.fullmatch(name) or name.startswith("_"):
+            continue   # Word's own hidden bookmarks (_Toc…, _GoBack) start with "_"
+        if name in renamed:
+            start.set(f"{NS}name", renamed[name])
+            continue
+        base = re.sub(r"[^A-Za-z0-9_]", "_", name)
+        if not base[:1].isalpha():
+            base = "b_" + base
+        base = base[:40]
+        candidate, n = base, 1
+        while candidate in taken:
+            n += 1
+            suffix = f"_{n}"
+            candidate = base[:40 - len(suffix)] + suffix
+        taken.add(candidate)
+        renamed[name] = candidate
+        start.set(f"{NS}name", candidate)
+    if not renamed:
+        return 0
+    for link in body.iter(f"{NS}hyperlink"):
+        anchor = link.get(f"{NS}anchor")
+        if anchor in renamed:
+            link.set(f"{NS}anchor", renamed[anchor])
+    field = re.compile(r"(\b(?:PAGEREF|REF)\s+)(\S+)")
+    for instr in body.iter(f"{NS}instrText"):
+        if instr.text:
+            instr.text = field.sub(lambda m: m.group(1) + renamed.get(m.group(2), m.group(2)), instr.text)
+    return len(renamed)
+
+
 def put_bookmarks_in_their_paragraphs(body):
     """Pandoc writes a section's bookmark at BODY level: a `bookmarkStart`
     before the heading paragraph and its `bookmarkEnd` after the section's
@@ -679,6 +732,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         kept = keep_table_captions_with_their_tables(body, styles_path)
         count = add_image_borders(body)
         bookmarks = put_bookmarks_in_their_paragraphs(body)
+        renamed = word_safe_bookmark_names(body)
         fill_table_of_contents(body)
         tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
 
@@ -694,6 +748,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         if verbose:
             print(f"  Aligned {aligned} table(s) as their style says, kept {kept} caption(s) with their table, "
                   f"added a border to {count} image(s), put {bookmarks} bookmark(s) in their heading, "
+                  f"gave {renamed} bookmark(s) a name Word accepts, "
                   f"placed {replaced} template image(s), wrote the classification in {classified} place(s) "
                   f"→ {docx_path}")
         return count

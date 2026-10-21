@@ -1507,6 +1507,46 @@ def test_section_bookmarks_are_moved_into_their_heading(tmp_path):
     assert fix.put_bookmarks_in_their_paragraphs(body) == 0
 
 
+def test_every_bookmark_gets_a_name_word_accepts_and_its_links_follow(tmp_path):
+    """Pandoc names bookmarks after heading ids (`sec-finding-11`); a Word
+    bookmark name holds only letters, digits and underscores, a letter first,
+    at most 40 characters.  The summary tables' links still went to the top
+    of the document in Word after the bookmarks were moved into their
+    headings (2026-10-21).  Every name is made one Word accepts — kept apart
+    when two would clash — and every link and REF / PAGEREF field follows;
+    Word's own hidden ones (`_Toc…`) and names already valid stay."""
+    import re
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{w}}}"
+    long_id = "appendix-a-informational-findings-of-the-whole-engagement"
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        '<w:p><w:bookmarkStart w:id="1" w:name="sec-finding-11"/><w:r><w:t>4.1</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>'
+        '<w:p><w:bookmarkStart w:id="2" w:name="sec_finding_11"/><w:r><w:t>clash</w:t></w:r><w:bookmarkEnd w:id="2"/></w:p>'
+        f'<w:p><w:bookmarkStart w:id="3" w:name="{long_id}"/><w:r><w:t>A</w:t></w:r><w:bookmarkEnd w:id="3"/></w:p>'
+        '<w:p><w:bookmarkStart w:id="4" w:name="1-intro"/><w:bookmarkEnd w:id="4"/></w:p>'
+        '<w:p><w:bookmarkStart w:id="5" w:name="_Toc123"/><w:bookmarkEnd w:id="5"/></w:p>'
+        '<w:p><w:bookmarkStart w:id="6" w:name="findings"/><w:bookmarkEnd w:id="6"/></w:p>'
+        '<w:tbl><w:tr><w:tc><w:p><w:hyperlink w:anchor="sec-finding-11"><w:r><w:t>4.1</w:t></w:r></w:hyperlink></w:p></w:tc></w:tr></w:tbl>'
+        f'<w:p><w:hyperlink w:anchor="{long_id}"/><w:hyperlink w:anchor="findings"/><w:hyperlink w:anchor="elsewhere-x"/></w:p>'
+        '<w:p><w:r><w:instrText xml:space="preserve"> PAGEREF sec-finding-11 \\h </w:instrText></w:r></w:p>'
+        '</w:body>'
+    )
+    assert fix.word_safe_bookmark_names(body) == 3
+    names = [s.get(f"{W}name") for s in body.iter(f"{W}bookmarkStart")]
+    assert names[1] == "sec_finding_11"                      # valid already: untouched
+    assert names[0] == "sec_finding_11_2"                    # its clash kept apart
+    assert names[3] == "b_1_intro" and names[4] == "_Toc123" and names[5] == "findings"
+    assert len(names[2]) <= 40 and names[2].startswith("appendix_a_informational")
+    assert all(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,39}", n) for n in names if not n.startswith("_"))
+    anchors = [h.get(f"{W}anchor") for h in body.iter(f"{W}hyperlink")]
+    assert anchors == ["sec_finding_11_2", names[2], "findings", "elsewhere-x"]   # an unknown anchor is left
+    assert "PAGEREF sec_finding_11_2 \\h" in body.find(f".//{W}instrText").text
+    assert fix.word_safe_bookmark_names(body) == 0           # once done, nothing to do
+
+
 @needs_template
 def test_the_classification_read_for_the_word_header_is_one_plain_line(tmp_path):
     fix = _post_processor()
