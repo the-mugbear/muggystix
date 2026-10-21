@@ -29,7 +29,7 @@ import pytest
 
 from app.main import app, _OPENAPI_TAGS
 from app.services.agents_guide_service import (
-    GUIDE_PARTS, UnknownGuidePart, read_agent_guide, slice_agents_md,
+    GUIDE_PARTS, UnknownGuidePart, guide_sections, read_agent_guide, slice_agents_md,
 )
 
 # The parts of the guide a caller may ask for (``?part=<part>``): reading
@@ -134,6 +134,44 @@ def test_slice_with_no_workflow_returns_full_file():
     assert slice_agents_md(full, None) == full
     assert slice_agents_md(full, "project") == full
     assert slice_agents_md(full, " Assist ") == slice_agents_md(full, "assist")
+
+
+def test_the_guide_is_read_one_section_at_a_time(client):
+    """2.519.0 — the guide is ~80 KB and one part up to 82 KB (prod feedback
+    2026-10-20): `section=contents` names every `## ` section with its size,
+    and `section=<name>` answers that section alone."""
+    full = _load_agents_md()
+    sections = guide_sections(full)
+    headings = [line[3:].strip() for line in _outside_code(full) if line.startswith("## ")]
+    assert [title for _slug, title, _text in sections] == headings
+    assert len({slug for slug, _t, _x in sections}) == len(sections), "two sections share a name"
+
+    contents = client.get("/api/v1/agents-guide", params={"section": "contents"})
+    assert contents.status_code == 200, contents.text
+    for slug, title, _text in sections:
+        assert f"`{slug}` — {title}" in contents.text
+    assert len(contents.text) < 4096
+
+    slug, title, text = next(s for s in sections if s[1].startswith("Evidence and proposals"))
+    one = client.get("/api/v1/agents-guide", params={"section": slug})
+    assert one.status_code == 200, one.text
+    assert one.text.startswith(f"## {title}") and "agents:section" not in one.text
+    assert len(one.text) < len(full) / 4
+    assert one.text.strip() == text.strip()
+
+    bad = client.get("/api/v1/agents-guide", params={"section": "nope"})
+    assert bad.status_code == 422 and slug in bad.json()["detail"]
+    both = client.get("/api/v1/agents-guide", params={"section": slug, "part": "assist"})
+    assert both.status_code == 422
+
+
+def _outside_code(content: str):
+    in_code = False
+    for line in content.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+        elif not in_code:
+            yield line
 
 
 # ---------------------------------------------------------------------------

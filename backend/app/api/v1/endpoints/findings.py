@@ -26,8 +26,8 @@ from app.services.finding_service import (
     FindingService, endpoint_segments, load_retest_requests, validate_severity,
 )
 from app.services.finding_actions import (
-    FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, record_edit, require_delete,
-    require_modify, set_owner, severity_label,
+    FindingActor, apply_report_text, edit_values, finding_actor, promote_or_dismiss_vulnerability, record_edit,
+    require_delete, require_modify, set_owner, severity_label,
 )
 from app.services import finding_needs, remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
@@ -480,16 +480,7 @@ def get_finding_edit(
     """One edit's line with the field's value before and after (2.519.0).
     Same reader as the history; 404 for a line that is not an edit."""
     _load(db, project, finding_id)
-    row = (
-        db.query(FindingStatusHistory)
-        .filter(
-            FindingStatusHistory.id == entry_id, FindingStatusHistory.finding_id == finding_id,
-            FindingStatusHistory.field.isnot(None),
-        )
-        .first()
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="No such edit on this finding.")
+    row = edit_values(db, finding_id, entry_id)
     return FindingEditValues(id=row.id, field=row.field, before=row.before_value, after=row.after_value)
 
 

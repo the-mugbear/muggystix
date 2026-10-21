@@ -62,6 +62,10 @@ export interface Proposal {
   result_finding_id: number | null;
   /** Why the last accept failed (the target changed); the proposal stays pending. */
   error: string | null;
+  /** 5.413.0 — its proposer sent another in its place (it is `superseded`),
+   *  and the proposals this one replaced. */
+  replaced_by_id?: number | null;
+  replaces_ids?: number[];
 }
 
 export interface ProposalList {
@@ -140,7 +144,8 @@ export type EvidenceOutcome = 'finding' | 'no_finding' | 'inconclusive' | 'faile
 export interface EvidenceRecord {
   id: number;
   host_test_id?: number | null;
-  host_id: number;
+  /** Null for context about no single host (an `info` record, 5.413.0). */
+  host_id: number | null;
   host_ip: string | null;
   finding_id: number | null;
   finding_host_id: number | null;
@@ -150,6 +155,8 @@ export interface EvidenceRecord {
   summary: string;
   raw_output_preview: string | null;
   raw_output_bytes: number | null;
+  /** SHA-256 (hex) of the raw output's UTF-8 bytes (5.413.0). */
+  raw_output_sha256?: string | null;
   raw_output_truncated_in_preview: boolean;
   observed_ip: string | null;
   executed_at: string | null;

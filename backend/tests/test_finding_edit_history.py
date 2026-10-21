@@ -123,3 +123,25 @@ def test_a_status_line_has_no_values_to_read(client, test_project, people):
     client.patch(_url(test_project, other), json={"title": "Other one"})
     (edit,) = _edits(client, test_project, other)
     assert client.get(f"{_url(test_project, fid)}/history/{edit['id']}").status_code == 404
+
+
+def test_an_agent_reads_the_same_edit(client, test_project, people):
+    """Agent parity: the finding's read names each edit's id and field, and
+    the agents' route answers the page's values through the same read."""
+    fid = client.post(_url(test_project), json={"title": "Weak TLS", "severity": "medium"}).json()["id"]
+    client.patch(_url(test_project, fid), json={"title": "TLS 1.0 enabled"})
+    (edit,) = _edits(client, test_project, fid)
+
+    app.dependency_overrides[get_current_user] = lambda: people["alice"]
+    r = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
+    assert r.status_code == 201, r.text
+    key = {"X-API-Key": r.json()["api_key"]}
+    detail = client.get(f"/api/v1/agent/assist/findings/{fid}", headers=key).json()
+    line = next(h for h in detail["status_history"] if h["field"])
+    assert (line["id"], line["field"]) == (edit["id"], "title")
+    values = client.get(f"/api/v1/agent/assist/findings/{fid}/history/{edit['id']}", headers=key)
+    assert values.status_code == 200, values.text
+    assert values.json() == {"id": edit["id"], "field": "title", "before": "Weak TLS", "after": "TLS 1.0 enabled"}
+    status_line = next(h for h in detail["status_history"] if not h["field"])
+    assert client.get(f"/api/v1/agent/assist/findings/{fid}/history/{status_line['id']}",
+                      headers=key).status_code == 404

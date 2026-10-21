@@ -295,6 +295,7 @@ const ProposalItem: React.FC<Props> = ({
   const pending = pr.status === 'pending';
   const outcome = proposalOutcomeLink(pr);
   const decidedWhen = formatRelativeTime(pr.decided_at, { fallback: '' });
+  const replaces = pr.replaces_ids ?? [];
 
   return (
     <article
@@ -317,7 +318,19 @@ const ProposalItem: React.FC<Props> = ({
       {/* Kept while editing, so both texts stay in view (5.334.1). */}
       <Body pr={pr} />
       <ProposalReasons pr={pr} />
-      {!pending && (pr.decided_by || pr.decision_note || decidedWhen) && (
+      {replaces.length > 0 && (
+        <p className="break-words text-caption text-muted-foreground" data-testid="proposal-replaces">
+          Replaces {replaces.length === 1 ? 'proposal' : 'proposals'} {replaces.map((n) => `#${n}`).join(', ')},
+          withdrawn by its proposer.
+        </p>
+      )}
+      {/* 5.413.0 — a proposal its proposer replaced was decided by nobody. */}
+      {pr.replaced_by_id != null ? (
+        <p className="break-words text-caption text-muted-foreground" data-testid="proposal-replaced">
+          Replaced by its proposer with proposal #{pr.replaced_by_id}
+          {decidedWhen && <> · <time dateTime={pr.decided_at ?? undefined} title={formatTimestamp(pr.decided_at)}>{decidedWhen}</time></>}
+        </p>
+      ) : !pending && (pr.decided_by || pr.decision_note || decidedWhen) && (
         <p className="break-words text-caption text-muted-foreground">
           {pr.decided_by
             ? `${pr.status === 'superseded' ? 'Superseded' : 'Decided'} by ${pr.decided_by}`

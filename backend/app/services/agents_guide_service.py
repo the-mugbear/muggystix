@@ -10,13 +10,14 @@ The guide is served whole or as one PART (``?part=<part>``): the sections
 tagged for that part plus every ``shared`` section, so an agent reads the
 reference for what it is doing and not the rest.  A part is a reading aid, not
 a kind of session and not a permission — one project session does every kind
-of work.
+of work.  Or as one SECTION (``?section=<name>``, 2.519.0), with
+``section=contents`` listing the sections and their sizes.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 AGENT_GUIDE_FILENAME = "AGENT_GUIDE.md"
 
@@ -60,6 +61,72 @@ _SECTION_START = re.compile(
     re.IGNORECASE,
 )
 _SECTION_END = re.compile(r'<!--\s*agents:end\s*-->', re.IGNORECASE)
+
+
+#: ``section=contents`` — the guide's table of contents, not a section.
+GUIDE_CONTENTS = "contents"
+
+
+class UnknownGuideSection(ValueError):
+    """``section`` named no heading of the guide."""
+
+    def __init__(self, value: str, slugs: List[str]):
+        self.value = value
+        super().__init__(
+            f"section must be {GUIDE_CONTENTS!r} or one of: {', '.join(slugs)}; "
+            f"not understood: {value!r}."
+        )
+
+
+def _slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def guide_sections(content: str) -> List[Tuple[str, str, str]]:
+    """The guide's ``## `` sections as ``(slug, title, text)`` (2.519.0).
+
+    The whole guide is 80 KB and one part up to 82 KB — more than an agent's
+    terminal shows (prod feedback 2026-10-20) — so an agent can read the
+    contents and then one section.  A section runs from its ``## `` heading to
+    the next one; a heading inside a code block is not one.  The part markers
+    are dropped, as ``slice_agents_md`` drops them."""
+    sections: List[Tuple[str, str, List[str]]] = []
+    in_code = False
+    for line in content.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+        if not in_code and line.startswith("## "):
+            title = line[3:].strip()
+            sections.append((_slug(title), title, [line]))
+            continue
+        if sections and not (_SECTION_START.search(line) or _SECTION_END.search(line)):
+            sections[-1][2].append(line)
+    return [(slug, title, "\n".join(lines).strip() + "\n") for slug, title, lines in sections]
+
+
+def guide_contents(content: str) -> str:
+    """The table of contents ``section=contents`` answers."""
+    rows = [
+        f"- `{slug}` — {title} ({max(1, round(len(text.encode('utf-8')) / 1024))} KB)"
+        for slug, title, text in guide_sections(content)
+    ]
+    return (
+        "# Agent guide — contents\n\n"
+        "Read one section with `section=<name>` (the name in backticks), or one "
+        "part of the guide with `part=`.\n\n" + "\n".join(rows) + "\n"
+    )
+
+
+def guide_section(content: str, section: str) -> str:
+    """One section by its name, or the contents; anything else is refused."""
+    wanted = section.strip().lower()
+    if wanted == GUIDE_CONTENTS:
+        return guide_contents(content)
+    sections = guide_sections(content)
+    for slug, _title, text in sections:
+        if slug == wanted:
+            return text
+    raise UnknownGuideSection(section, [slug for slug, _t, _x in sections])
 
 
 def slice_agents_md(content: str, part: Optional[str]) -> str:

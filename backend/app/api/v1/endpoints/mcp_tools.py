@@ -127,8 +127,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "read_agent_guide": {
         "description": (
             "The agent guide: endpoint body shapes, upload formats, recipes, and "
-            "the scope and working-directory rules in full. Read the part you need "
-            "when a tool leaves you guessing. Omit `part` for the whole guide."
+            "the scope and working-directory rules in full. It is about 80 KB: "
+            "read `section=contents` for its sections and their sizes, then the "
+            "one `section` you need (or one `part`). Omit both for the whole guide."
         ),
         "method": "GET",
         "path": "/api/v1/agents-guide",
@@ -689,6 +690,19 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # v2.428.0 — images can be read inline with assist_get_image (below); the
     # download paths assist_get_finding and assist_get_host hand out stay, for
     # saving a file beside a report.
+    "assist_get_finding_edit": {
+        "description": (
+            "One edit on a finding's history — a title, severity, owner, report-text section or CVSS "
+            "change — with the value before and after. The ids and fields are on "
+            "assist_get_finding's status_history (lines with a field)."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/findings/{finding_id}/history/{entry_id}",
+        "params": {
+            "finding_id": {"minimum": 1, "description": "The finding's id."},
+            "entry_id": {"minimum": 1, "description": "The history line's id (status_history[].id)."},
+        },
+    },
     "assist_get_finding": {
         "description": (
             "One finding with what a write-up cites. `hosts`: the first 100 "
@@ -940,8 +954,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "same fields, up to 5 MB of raw_output. Text only: you cannot upload an "
             "image — save a screenshot in your working directory, name the file in "
             "`summary`, and ask the operator to attach it to the finding. Pass `host_test_id` (with a "
-            "`request_key`) when it answers a proposed test. Recorded as it "
-            "happened and never changed; cite it from proposals (evidence_ids)."
+            "`request_key`) when it answers a proposed test. Context about no single "
+            "host (outcome info) may leave host_id out. The answer carries "
+            "raw_output_sha256. Recorded as it happened and never changed; cite it "
+            "from proposals (evidence_ids)."
         ),
         "method": "POST",
         "path": "/api/v1/agent/evidence",
@@ -957,10 +973,30 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "agent_model": AGENT_MODEL,
         },
     },
+    "get_evidence": {
+        "description": (
+            "One evidence record: its summary, a 2 KB preview of the raw output, the output's "
+            "size (raw_output_bytes) and SHA-256 (raw_output_sha256)."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/evidence/{evidence_id}",
+        "params": {"evidence_id": {"minimum": 1, "description": "The evidence record's id."}},
+    },
+    "read_evidence_raw": {
+        "description": (
+            "Read an evidence record's raw output in pieces: start at offset 0 and pass each "
+            "answer's next_offset until it is null. The pieces' texts joined are the output; "
+            "their SHA-256 is sha256 (the record's raw_output_sha256)."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/evidence/{evidence_id}/raw-chunk",
+        "params": {"evidence_id": {"minimum": 1, "description": "The evidence record's id."}},
+    },
     "list_evidence": {
         "description": (
             "Evidence records, newest first, paged, with a 2 KB preview of each raw output. "
-            "The full output is a file: curl GET /agent/evidence/{id}/raw with your key."
+            "The full output: read_evidence_raw, in pieces, or curl GET /agent/evidence/{id}/raw "
+            "with your key."
         ),
         "method": "GET",
         "path": "/api/v1/agent/evidence",
@@ -1053,9 +1089,22 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "params": {"agent_model": AGENT_MODEL},
     },
     "list_proposals": {
-        "description": "Proposals in this project and what happened to them (pending / accepted / rejected / superseded), paged.",
+        "description": (
+            "Proposals in this project and what happened to them (pending / accepted / rejected / "
+            "superseded), paged. Each text is given as its length (value_chars, base_value_chars, "
+            "report_text_chars); get_proposal returns one proposal with its texts."
+        ),
         "method": "GET",
         "path": "/api/v1/agent/proposals",
+    },
+    "get_proposal": {
+        "description": (
+            "One proposal whole: the proposed text (payload), the section's text when it was "
+            "proposed (base_value) and now (current_value), its decision and decision_note."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/proposals/{proposal_id}",
+        "params": {"proposal_id": {"minimum": 1, "description": "The proposal's id (from list_proposals)."}},
     },
     # --- assist writes (allowed iff the operator's project role permits writes) ---
     "assist_add_note": {

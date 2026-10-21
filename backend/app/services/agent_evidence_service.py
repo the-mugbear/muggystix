@@ -9,6 +9,7 @@ under ``uploads/evidence/``, which outlived a deleted host or project.
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import ipaddress
 from typing import List, Optional, Sequence, Tuple
 
@@ -33,7 +34,7 @@ def record_evidence(
     db: Session,
     *,
     project_id: int,
-    host_id: int,
+    host_id: Optional[int],
     tool: str,
     outcome: str,
     summary: str,
@@ -71,7 +72,7 @@ def record_evidence_once(
     db: Session,
     *,
     project_id: int,
-    host_id: int,
+    host_id: Optional[int],
     tool: str,
     outcome: str,
     summary: str,
@@ -114,6 +115,15 @@ def record_evidence_once(
     if request_key and "\x00" in request_key:
         # A NUL reached Postgres as a query parameter and failed with a 500.
         raise HTTPException(422, "request_key: NUL is not allowed")
+    if host_id is None and (outcome != EvidenceOutcome.INFO.value or host_test_id is not None
+                            or finding_host_id is not None):
+        # 2.519.0 — context about no single host (a domain-wide lookup, a
+        # scope note) needs no host; a test's result or a check against an
+        # endpoint is about one (the check constraint says the same).
+        raise HTTPException(
+            422, "host_id is required unless outcome is info and the record answers no host test "
+                 "and names no endpoint (finding_host_id).",
+        )
     test = get_test(db, project_id, host_test_id) if host_test_id is not None else None
     if test is not None and test.host_id != host_id:
         raise HTTPException(422, "Evidence and host test must refer to the same host")
@@ -138,12 +148,11 @@ def record_evidence_once(
             return prior, False
     if outcome not in OUTCOMES:
         raise HTTPException(status_code=422, detail=f"outcome must be one of {OUTCOMES}")
-    host = (
-        db.query(models.Host)
+    if host_id is not None and (
+        db.query(models.Host.id)
         .filter(models.Host.id == host_id, models.Host.project_id == project_id)
         .first()
-    )
-    if host is None:
+    ) is None:
         raise HTTPException(status_code=404, detail="Host not found in this project")
     if finding_id is not None:
         finding = (
@@ -165,18 +174,22 @@ def record_evidence_once(
     # PostgreSQL text rejects NUL, which tool output does carry (the
     # ingestion rule, v2.420.0): one byte would fail the whole record.
     raw_output = _no_nul(raw_output) or None
-    size = preview = None
+    size = preview = sha = None
     if raw_output:
         # Within the limit: checked on entry, before the fingerprint (R10).
-        size = len(raw_output.encode("utf-8", errors="replace"))
+        encoded = raw_output.encode("utf-8", errors="replace")
+        size = len(encoded)
         preview = raw_output[:PREVIEW_CHARS]
+        # What a reader of the output in pieces checks the whole against
+        # (2.519.0); the bytes `read_raw_chunk` serves.
+        sha = hashlib.sha256(encoded).hexdigest()
 
     record = EvidenceRecord(
         project_id=project_id, host_id=host_id, finding_id=finding_id,
         finding_host_id=finding_host_id, tool=_no_nul(tool).strip()[:100], command=_no_nul(command),
         host_test_id=host_test_id, request_key=request_key, request_hash=digest if request_key else None,
         outcome=outcome, summary=_no_nul(summary).strip(), raw_output=raw_output,
-        raw_output_bytes=size, raw_output_preview=preview, observed_ip=observed_ip,
+        raw_output_bytes=size, raw_output_preview=preview, raw_output_sha256=sha, observed_ip=observed_ip,
         executed_at=executed_at, agent_session_id=agent_session_id,
         recorded_by_user_id=recorded_by_user_id,
         agent_model=(agent_model or None) and agent_model[:100],
@@ -255,6 +268,39 @@ def read_raw_output(record: EvidenceRecord) -> str:
     if not record.raw_output:
         raise HTTPException(status_code=404, detail="This evidence record has no stored raw output")
     return record.raw_output
+
+
+#: A raw-output piece: the default and the most one read returns, in bytes.
+RAW_CHUNK_DEFAULT = 16 * 1024
+RAW_CHUNK_MAX = 64 * 1024
+
+
+def read_raw_chunk(record: EvidenceRecord, offset: int, length: int) -> dict:
+    """One piece of the raw output, by BYTE offset into its UTF-8 (2.519.0;
+    prod agent feedback 2026-10-20: an MCP client had no way to read an
+    output whole, and nothing to check it against).
+
+    A piece ends on a character boundary (it may be a few bytes short of
+    ``length``), so the pieces' texts joined are the output exactly, and
+    ``sha256`` of their bytes is the record's ``raw_output_sha256``.  An
+    ``offset`` inside a character is a 422; past the end is an empty piece."""
+    data = read_raw_output(record).encode("utf-8", errors="replace")
+    total = len(data)
+    if offset < total and (data[offset] & 0xC0) == 0x80:
+        raise HTTPException(422, "offset falls inside a character; use the next_offset a read returned.")
+    end = min(offset + length, total)
+    while end < total and end > offset and (data[end] & 0xC0) == 0x80:
+        end -= 1
+    piece = data[offset:end] if offset < total else b""
+    return {
+        "evidence_id": record.id,
+        "offset": offset,
+        "length": len(piece),
+        "total_bytes": total,
+        "next_offset": end if end < total else None,
+        "sha256": record.raw_output_sha256,
+        "text": piece.decode("utf-8"),
+    }
 
 
 def link_issue_evidence(
@@ -413,6 +459,7 @@ def serialize_evidence(record: EvidenceRecord) -> dict:
         "summary": record.summary,
         "raw_output_preview": record.raw_output_preview,
         "raw_output_bytes": record.raw_output_bytes,
+        "raw_output_sha256": record.raw_output_sha256,
         # Bytes against bytes: comparing the preview's characters with the
         # byte size flagged any short non-ASCII output as cut.
         "raw_output_truncated_in_preview": bool(

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import enum
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import deferred, relationship
 from sqlalchemy.sql import func
 
@@ -43,7 +43,9 @@ class EvidenceRecord(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Empty only for context about no single host (2.519.0): an ``info``
+    # record that answers no test and names no endpoint (the check below).
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True, index=True)
     finding_id = Column(Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True)
     finding_host_id = Column(Integer, ForeignKey("finding_hosts.id", ondelete="SET NULL"), nullable=True, index=True)
     host_test_id = Column(Integer, ForeignKey("host_tests.id", ondelete="SET NULL"), nullable=True)
@@ -57,6 +59,9 @@ class EvidenceRecord(Base):
     raw_output = deferred(Column(Text, nullable=True))
     raw_output_bytes = Column(Integer, nullable=True)
     raw_output_preview = Column(Text, nullable=True)
+    # SHA-256 (hex) of the stored raw output's UTF-8 bytes (2.519.0): a reader
+    # of it in pieces can check it has the whole of it.
+    raw_output_sha256 = Column(String(64), nullable=True)
     observed_ip = Column(String(45), nullable=True)
     executed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -72,6 +77,10 @@ class EvidenceRecord(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "request_key", name="uq_evidence_request"),
         Index("ix_evidence_host_test_created", "host_test_id", "created_at", "id"),
+        CheckConstraint(
+            "host_id IS NOT NULL OR (outcome = 'info' AND host_test_id IS NULL AND finding_host_id IS NULL)",
+            name="ck_evidence_host_or_info",
+        ),
     )
 
 
@@ -138,6 +147,11 @@ class AgentProposal(Base):
     # Why the last accept attempt failed (the target changed underneath); the
     # proposal stays pending.
     error = Column(Text, nullable=True)
+    # The proposal its proposer sent in this one's place (2.519.0): this one
+    # is then ``superseded``, never decided by a person.
+    replaced_by_id = Column(
+        Integer, ForeignKey("agent_proposals.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
 
     proposed_by = relationship("User", foreign_keys=[proposed_by_user_id])
     decided_by = relationship("User", foreign_keys=[decided_by_user_id])

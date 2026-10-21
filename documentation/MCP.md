@@ -56,7 +56,7 @@ read off the server's registry and is the list.
 | Scope reads and uploads | `assist_get_scope` (the project's one scope: the first 100 CIDRs and domains with their totals; no arguments), then `scope_list_subnets` / `scope_list_domains` for the whole lists when it says one is truncated — no tool takes a scope id; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload; `keep_truncated_upload` (with `operator_agreed: true`, after the agent asked the operator) imports what this session's cut-short upload holds, as a partial import — see §6 |
 | Host tests | `host_tests_list` (read first — do not duplicate), `host_tests_propose` (up to 200 individual tests, each with its own `request_key`; they appear on each host's page at once), `host_tests_get`, `host_tests_update` (409 when `expected_revision` is stale) |
 | Running a test | `host_tests_update` → `in_progress`, run it, `record_evidence` naming the `host_test_id` (with a `request_key`), then `host_tests_update` → `done`. Evidence with outcome `finding`, `no_finding` or `inconclusive` is what marks the host tested |
-| Evidence and proposals | `record_evidence`, `list_evidence`; `propose_finding_text`, `propose_finding`, `propose_observation`, `propose_endpoint_status`, `list_proposals` |
+| Evidence and proposals | `record_evidence`, `list_evidence`, `get_evidence`, `read_evidence_raw`; `propose_finding_text`, `propose_finding`, `propose_observation`, `propose_endpoint_status`, `list_proposals`, `get_proposal` |
 | Direct writes on a host | `assist_add_note` (discussion), `assist_set_follow` (the operator's review status), `assist_patch_host` (hostname / OS corrections) |
 | Remediation tracking | `remediation_list`, `remediation_contacts`, `remediation_teams`, `remediation_trend`, `remediation_follow_up`, `remediation_timeline` (reads — the operator needs `auditor`); `remediation_apply`, `remediation_assign_from_report`, `remediation_add_note`, `remediation_record_follow_up` (writes — the operator must be a project admin) |
 
@@ -153,7 +153,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "What has the team been discussing?" | `assist_list_recent_notes` (discussion; outstanding work is `host_tests_list` with `active_only`) |
 | "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
 | "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
-| "What's the evidence behind this finding?" | `assist_get_finding` — the notes and thread, the affected endpoints, scanner rows and evidence records, the report text and status history, `writing_guidance`, and the finding's `images`; `assist_get_image` to look at one |
+| "What's the evidence behind this finding?" | `assist_get_finding` — the notes and thread, the affected endpoints, scanner rows and evidence records, the report text and its history (each edit's before and after: `assist_get_finding_edit`), `writing_guidance`, and the finding's `images`; `assist_get_image` to look at one |
 | "What is mine? What changed since I was last here?" | `assist_get_workbench` — the operator's Operations page (see below) |
 | "Which findings are waiting on me — all of them?" | `assist_list_my_findings` — whole and paged, `need=decide\|write\|retest` (retest: a host awaiting a retest, a part of decide); `total` is the size of the list the call pages |
 | "What needs a retest?" | `assist_list_findings host_state=retest` — every finding with a host awaiting one, owned or not (a retest is per host; `status=retest` is refused); `assist_get_finding` says which hosts (`retest_stands`). To close one: `record_evidence` on that `finding_host_id`, then `propose_endpoint_status` |
@@ -242,8 +242,11 @@ Three things an assist agent is routinely asked for, and how each is served:
 ### Evidence and proposals
 
 `record_evidence` / `list_evidence` record and read what the agent ran against a
-host and what came back (the full raw output: `curl`
-`GET /agent/evidence/{id}/raw`). `record_evidence` takes `host_test_id` (with a
+host and what came back; `get_evidence` reads one record (with the output's size
+and `raw_output_sha256`), and `read_evidence_raw` its raw output in pieces
+(`offset` 0, then each `next_offset` until null; the pieces joined hash to
+`sha256`) — or `curl GET /agent/evidence/{id}/raw` for the whole. Context about
+no single host (outcome `info`) may leave `host_id` out. `record_evidence` takes `host_test_id` (with a
 `request_key`) when the record answers a proposed test, and stands alone when it
 does not. It is text only: an MCP request is limited to 1 MiB, larger output (up
 to 5 MB) goes by `curl`, and an image is attached to the finding by a person.
@@ -251,13 +254,18 @@ to 5 MB) goes by `curl`, and an image is attached to the finding by a person.
 A change to what the team concluded, or to what the client report says, is a
 **proposal** a person accepts or rejects in the app: `propose_finding_text`,
 `propose_finding`, `propose_observation`, `propose_endpoint_status`;
-`list_proposals` shows the decisions. Each creates a row per call, so none is
+`list_proposals` shows the decisions (texts as lengths) and `get_proposal` one
+proposal whole. Each creates a row per call, so none is
 marked idempotent.
 
 * **A create is acknowledged, not echoed.** `propose_finding_text` answers each
   proposal's id, field and status with `value_chars` / `base_value_chars`;
-  `propose_finding` answers `report_text_chars` per section. The texts are in
-  `list_proposals`.
+  `propose_finding` answers `report_text_chars` per section. `list_proposals`
+  gives the same lengths; the texts are in `get_proposal`.
+* **A draft is corrected by replacing it.** Every `propose_*` takes `replaces`
+  (the caller's own pending proposals, about the same thing): they become
+  `superseded` with `replaced_by_id`, and nothing is written if one cannot be
+  replaced.
 * **A proposed finding is not a finding yet.** `propose_finding` answers a
   `note` saying so: nothing appears on the Findings page until a person
   accepts it. The agent tells its operator it is waiting on the Proposals page
@@ -406,9 +414,10 @@ outside the usernames `assist_get_vocabulary` lists — the project's members,
 the active global administrators and whoever currently holds a host) or an
 `asn:` that is not a number is a 400 naming the value, never an empty list.
 
-`read_agent_guide` called without `part` returns the whole guide; with it,
-one part (`assist`, `reconnaissance`, `testing` or `remediation`). `part` is
-the argument's only name.
+`read_agent_guide` called without `part` or `section` returns the whole guide
+(about 80 KB); with `part`, one part (`assist`, `reconnaissance`, `testing` or
+`remediation`); with `section=contents`, the list of sections and their sizes;
+with `section=<name>`, that section. `part` is that argument's only name.
 
 The challenge is deliberately bare. MCP's authorization spec uses 401 plus
 `resource_metadata` to bootstrap OAuth 2.1 discovery; this server is not an

@@ -924,6 +924,11 @@ and the page was "confusing". The rules:
   left says nothing is written yet and that accepting fills it (5.334.5 — the
   proposal alone, full width, made a finding's written and empty sections look
   laid out differently). **Every draft on a page sits in the same layout.**
+- **A recorded edit is compared the same way** (5.413.0): an edit's line on a
+  finding's History offers "Show before and after", read when opened
+  (`components/findings/FindingEditChange`) — a section through `TextComparison`
+  with its panes named "Before" / "After", a title, severity, owner or score as
+  two lines, an emptied section as the text it held.
 - **Say when the base moved.** A proposal that replaces a whole value and was
   written against an older one says so before its controls
   (`changed_since_proposed`), with the text it was written against.

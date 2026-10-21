@@ -348,9 +348,11 @@ def test_the_guide_part_argument_is_part_and_nothing_else(client, test_project):
     remediation = slice_agents_md(full_text, "remediation")
     assert len(assist) < len(full_text) and not near(assist, remediation)
 
-    # --- MCP: only `part` is offered, and it selects.
+    # --- MCP: `part` and (2.519.0) `section` are offered, and they select.
     offered = TOOLS["read_agent_guide"]["input_schema"]["properties"]
-    assert set(offered) == {"part"}
+    assert set(offered) == {"part", "section"}
+    contents = _call(client, headers, "read_agent_guide", {"section": "contents"})
+    assert contents["isError"] is False and "# Agent guide — contents" in contents["content"][0]["text"]
     assert offered["part"]["enum"] == ["testing", "reconnaissance", "assist", "remediation"]
     whole = _call(client, headers, "read_agent_guide")["content"][0]["text"]
     sliced = _call(client, headers, "read_agent_guide", {"part": "assist"})
@@ -367,7 +369,7 @@ def test_the_guide_part_argument_is_part_and_nothing_else(client, test_project):
         assert unknown.get("error", {}).get("code") == -32602, unknown
         assert "unknown argument(s) workflow" in unknown["error"]["message"], unknown
 
-    # --- HTTP: `part` selects, and is the only parameter the route declares.
+    # --- HTTP: `part` selects; it and `section` are the parameters the route declares.
     url = "/api/v1/agents-guide"
     whole_http = client.get(url).text
     assert near(client.get(url, params={"part": "assist"}).text, assist)
@@ -375,7 +377,7 @@ def test_the_guide_part_argument_is_part_and_nothing_else(client, test_project):
     bad = client.get(url, params={"part": "bogus"})
     assert bad.status_code == 422, bad.text
     assert bad.json()["detail"].startswith("part must be one of testing, reconnaissance, assist, remediation")
-    assert [p["name"] for p in app.openapi()["paths"][url]["get"]["parameters"]] == ["part"]
+    assert [p["name"] for p in app.openapi()["paths"][url]["get"]["parameters"]] == ["part", "section"]
     # An undeclared query parameter selects nothing, whatever it holds.
     for value in ("assist", "bogus"):
         ignored = client.get(url, params={"workflow": value})

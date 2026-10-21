@@ -252,18 +252,27 @@ def test_a_draft_keeps_the_text_it_was_written_against_and_says_when_the_field_c
     assert r.status_code == 201, r.text
     # The acknowledgement names each proposal and the size of the two texts,
     # not the texts (prod feedback: the echo of both ran to 8–11 KB and an
-    # agent's terminal cut it off); the list returns the rows whole.
+    # agent's terminal cut it off); one proposal's read returns the row whole.
     created = {p["field"]: p for p in r.json()["proposals"]}
     assert (created["impact"]["value_chars"], created["impact"]["base_value_chars"]) == (
         len("NTLM relay to every host."), len("Relay to the file share."))
     assert (created["description"]["value_chars"], created["description"]["base_value_chars"]) == (4, 0)
     assert not {"payload", "base_value", "current_value"} & set(created["impact"])
     assert created["impact"]["base_recorded"] is True and created["impact"]["status"] == "pending"
-    by_field = {
+    listed = {
         p["field"]: p
         for p in client.get("/api/v1/agent/proposals", headers=key, params={"mine": True}).json()["items"]
     }
+    # 2.519.0 — the list gives lengths too (14 rows were 43.8 KB); the texts
+    # are in GET /agent/proposals/{id}.
+    assert not {"payload", "base_value", "current_value"} & set(listed["impact"])
+    assert (listed["impact"]["value_chars"], listed["impact"]["base_value_chars"]) == (
+        len("NTLM relay to every host."), len("Relay to the file share."))
+    by_field = {
+        f: client.get(f"/api/v1/agent/proposals/{p['id']}", headers=key).json() for f, p in listed.items()
+    }
     assert by_field["impact"]["id"] == created["impact"]["id"]
+    assert by_field["impact"]["payload"]["value"] == "NTLM relay to every host."
     assert by_field["impact"]["base_value"] == "Relay to the file share."
     assert by_field["impact"]["base_recorded"] is True
     assert by_field["impact"]["changed_since_proposed"] is False
@@ -645,6 +654,14 @@ def test_proposals_do_not_cross_projects(client, db_session, test_project):
     r = client.post("/api/v1/agent/proposals/finding", headers=key, json={
         "title": "t", "severity": "low", "host_ids": [host.id]})
     assert r.status_code == 404
+    # One proposal's read is this project's too: a session of the other
+    # project proposes (the fixture operator is a global admin), and this
+    # key cannot read it.
+    other_key, _ = _start(client, other)
+    theirs = client.post("/api/v1/agent/proposals/finding-text", headers=other_key, json={
+        "finding_id": finding.id, "fields": {"impact": "x"}}).json()["proposals"][0]["id"]
+    assert client.get(f"/api/v1/agent/proposals/{theirs}", headers=other_key).status_code == 200
+    assert client.get(f"/api/v1/agent/proposals/{theirs}", headers=key).status_code == 404
 
 
 # ---------------------------------------------------------------------------

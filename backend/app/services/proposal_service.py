@@ -318,7 +318,7 @@ def _refuse_internal_references(fields: Dict[str, str]) -> None:
 def propose_finding_text(
     db: Session, project_id: int, who: Attribution, *, finding_id: int,
     fields: Dict[str, str], rationale: Optional[str] = None,
-    evidence_ids: Optional[Iterable[int]] = None,
+    evidence_ids: Optional[Iterable[int]] = None, replaces: Optional[Iterable[int]] = None,
 ) -> List[AgentProposal]:
     """One proposal per field.  A CVSS vector is validated now, so a malformed
     one is refused at once rather than at accept — and so is a section that
@@ -344,6 +344,9 @@ def propose_finding_text(
         db, finding, {f: v for f, v in fields.items() if f in REPORT_TEXT_FIELDS}, require_marked=False,
     )
     _refuse_internal_references(fields)
+    claimed = claim_replaced(db, project_id, who, replaces, [
+        AgentProposal(kind=ProposalKind.FINDING_TEXT.value, finding_id=finding_id, field=f) for f in fields
+    ])
     out = []
     for field, value in fields.items():
         value = (value or "").strip()
@@ -365,6 +368,7 @@ def propose_finding_text(
             payload={"value": value, "base_value": getattr(finding, field, None)},
             rationale=rationale, evidence_ids=ev,
         ))
+    mark_replaced(db, claimed, out)
     _notify_finding_people(db, finding_id, who)
     return out
 
@@ -373,7 +377,7 @@ def propose_finding(
     db: Session, project_id: int, who: Attribution, *, title: str, severity: str,
     host_ids: List[int], status: str = FindingStatus.OPEN.value,
     report_text: Optional[Dict[str, str]] = None, rationale: Optional[str] = None,
-    evidence_ids: Optional[Iterable[int]] = None,
+    evidence_ids: Optional[Iterable[int]] = None, replaces: Optional[Iterable[int]] = None,
 ) -> AgentProposal:
     title = (title or "").strip()
     if not title:
@@ -408,12 +412,14 @@ def propose_finding(
     # A finding that does not exist yet has no images to place.
     report_images.check_references(db, None, text, require_marked=False)
     _refuse_internal_references(text)
+    claimed = claim_replaced(db, project_id, who, replaces, [AgentProposal(kind=ProposalKind.FINDING_CREATE.value)])
     proposal = _add(
         db, project_id, ProposalKind.FINDING_CREATE.value, who,
         payload={"title": title[:500], "severity": severity, "status": status,
                  "host_ids": ids, "report_text": text},
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
+    mark_replaced(db, claimed, [proposal])
     _notify_project_admins(db, project_id, who)
     return proposal
 
@@ -422,7 +428,7 @@ def propose_observation(
     db: Session, project_id: int, who: Attribution, *, vulnerability_id: int,
     action: str, scope: Optional[str] = None, severity: Optional[str] = None,
     summary: Optional[str] = None, rationale: Optional[str] = None,
-    evidence_ids: Optional[Iterable[int]] = None,
+    evidence_ids: Optional[Iterable[int]] = None, replaces: Optional[Iterable[int]] = None,
 ) -> AgentProposal:
     if action not in ("promote", "dismiss"):
         raise HTTPException(status_code=422, detail="action must be promote or dismiss")
@@ -432,11 +438,15 @@ def propose_observation(
         validate_severity(severity)
     _vulnerability(db, project_id, vulnerability_id)
     kind = ProposalKind.OBSERVATION_PROMOTE if action == "promote" else ProposalKind.OBSERVATION_DISMISS
+    claimed = claim_replaced(db, project_id, who, replaces, [
+        AgentProposal(kind=kind.value, vulnerability_id=vulnerability_id),
+    ])
     proposal = _add(
         db, project_id, kind.value, who, vulnerability_id=vulnerability_id,
         payload={"scope": scope, "severity": severity, "summary": summary},
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
+    mark_replaced(db, claimed, [proposal])
     # The findings this observation evidences, derived through
     # ``finding_vulnerabilities`` exactly as ``_about_findings`` does.
     finding_ids = [
@@ -458,7 +468,7 @@ def propose_observation(
 def propose_endpoint_status(
     db: Session, project_id: int, who: Attribution, *, finding_id: int,
     finding_host_id: int, host_status: str, rationale: Optional[str] = None,
-    evidence_ids: Optional[Iterable[int]] = None,
+    evidence_ids: Optional[Iterable[int]] = None, replaces: Optional[Iterable[int]] = None,
 ) -> AgentProposal:
     if host_status not in ENDPOINT_STATUSES:
         raise HTTPException(status_code=422, detail=f"host_status must be one of {ENDPOINT_STATUSES}")
@@ -466,14 +476,84 @@ def propose_endpoint_status(
     fh = db.get(FindingHost, finding_host_id)
     if fh is None or fh.finding_id != finding_id:
         raise HTTPException(status_code=404, detail="That endpoint is not on this finding")
+    claimed = claim_replaced(db, project_id, who, replaces, [
+        AgentProposal(kind=ProposalKind.ENDPOINT_STATUS.value, finding_id=finding_id, finding_host_id=finding_host_id),
+    ])
     proposal = _add(
         db, project_id, ProposalKind.ENDPOINT_STATUS.value, who,
         finding_id=finding_id, finding_host_id=finding_host_id,
         payload={"host_status": host_status},
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
+    mark_replaced(db, claimed, [proposal])
     _notify_finding_people(db, finding_id, who)
     return proposal
+
+
+#: How many proposals one request may replace (a finding's six sections, with room).
+REPLACES_MAX = 20
+
+
+def _same_target(old: AgentProposal, new: AgentProposal) -> bool:
+    if old.kind == ProposalKind.FINDING_TEXT.value:
+        return new.kind == old.kind and (new.finding_id, new.field) == (old.finding_id, old.field)
+    if old.kind == ProposalKind.FINDING_CREATE.value:
+        return new.kind == old.kind
+    if old.kind in _OBSERVATION_KINDS:
+        return new.kind in _OBSERVATION_KINDS and new.vulnerability_id == old.vulnerability_id
+    return new.kind == old.kind and new.finding_host_id == old.finding_host_id
+
+
+def claim_replaced(
+    db: Session, project_id: int, who: Attribution, replaces: Optional[Iterable[int]],
+    targets: List[AgentProposal],
+) -> List[Tuple[AgentProposal, int]]:
+    """The proposals ``replaces`` names, checked and locked BEFORE anything is
+    written (2.519.0; prod agent feedback 2026-10-20: a corrected draft sat
+    beside the wrong one).  ``targets`` are unsaved rows saying what the
+    request will propose, in order; each claimed proposal is returned with
+    the index of the target it gives way to (``mark_replaced``).
+
+    Each must be the CALLER's (same proposer, same source — another's is a
+    person's to decide), still pending, and about what one target is about
+    (the same finding and section, the same new finding, the same
+    observation, the same endpoint).  Locked as a decision locks
+    (``lock_for_decision``), so it cannot be accepted at the same moment."""
+    ids = sorted(set(replaces or []))
+    if not ids:
+        return []
+    if len(ids) > REPLACES_MAX:
+        raise HTTPException(status_code=422, detail=f"replaces names at most {REPLACES_MAX} proposals.")
+    claimed = []
+    for pid in ids:
+        old = lock_for_decision(db, project_id, pid)
+        if old.proposed_by_user_id != who.user_id or old.source != who.source:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Proposal #{pid} is not yours to replace: a person decides it.",
+            )
+        _require_pending(old)
+        index = next((i for i, t in enumerate(targets) if _same_target(old, t)), None)
+        if index is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Proposal #{pid} is about something this request proposes nothing for "
+                       "(a replacement is about the same finding and section, observation or endpoint).",
+            )
+        claimed.append((old, index))
+    return claimed
+
+
+def mark_replaced(db: Session, claimed: List[Tuple[AgentProposal, int]], new: List[AgentProposal]) -> None:
+    """Each claimed proposal becomes ``superseded``, pointing at the new one
+    in its place; nobody decided it."""
+    now = datetime.now(timezone.utc)
+    for old, index in claimed:
+        old.status = ProposalStatus.SUPERSEDED.value
+        old.replaced_by_id = new[index].id
+        old.decided_at = now
+    if claimed:
+        db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -898,7 +978,10 @@ def pending_counts(db: Session, project_id: int, *, mine_user_id: Optional[int] 
     return {kind: n for kind, n in q.group_by(AgentProposal.kind).all()}
 
 
-def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Finding]] = None) -> dict:
+def serialize_proposal(
+    proposal: AgentProposal, current: Optional[Dict[int, Finding]] = None,
+    replaces: Optional[Dict[int, List[int]]] = None,
+) -> dict:
     """The row, plus for report text the finding's current value so a reviewer
     sees the difference without a second request.
 
@@ -943,6 +1026,10 @@ def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Find
         "decision_note": proposal.decision_note,
         "result_finding_id": proposal.result_finding_id,
         "error": proposal.error,
+        # 2.519.0 — its proposer sent another in its place (`superseded`), and
+        # the ones this one replaced.
+        "replaced_by_id": proposal.replaced_by_id,
+        "replaces_ids": (replaces or {}).get(proposal.id, []),
     }
 
 
@@ -969,18 +1056,27 @@ def serialize_many(db: Session, proposals: List[AgentProposal]) -> List[dict]:
     """Rows as every proposal route returns them, with each report-text
     proposal's ``current_value`` read in one query."""
     current = _current_findings(db, proposals)
-    return [serialize_proposal(p, current) for p in proposals]
+    replaces: Dict[int, List[int]] = {}
+    ids = [p.id for p in proposals]
+    if ids:
+        for old_id, new_id in (
+            db.query(AgentProposal.id, AgentProposal.replaced_by_id)
+            .filter(AgentProposal.replaced_by_id.in_(ids)).order_by(AgentProposal.id)
+        ):
+            replaces.setdefault(new_id, []).append(old_id)
+    return [serialize_proposal(p, current, replaces) for p in proposals]
 
 
-def serialize_created(db: Session, proposals: List[AgentProposal]) -> List[dict]:
-    """What a create route answers to the agent that just proposed: the rows
-    without the report text the caller sent and the text it would replace.
+def without_texts(rows: List[dict]) -> List[dict]:
+    """Serialized rows with each report text replaced by its length
+    (``value_chars``, ``base_value_chars``, ``report_text_chars``) — the
+    agents' create answers and their list (2.519.0).  The texts are in
+    ``GET /agent/proposals/{id}``.
 
-    The full rows echoed both — 8 to 11 KB for one finding's sections — which
-    an agent's terminal cut off or moved to a file outside its working
-    directory, six times in prod feedback (2026-09-30, 2026-10-07).  Each text
-    is replaced by its length; ``GET /agent/proposals`` returns the rows whole."""
-    rows = serialize_many(db, proposals)
+    The full rows echoed every text — 8 to 11 KB for one finding's sections,
+    43.8 KB for a list of 14 — which an agent's terminal cut off or moved to a
+    file outside its working directory (prod feedback 2026-09-30, 2026-10-07,
+    2026-10-20).  Changed in place and returned."""
     for row in rows:
         payload = dict(row.get("payload") or {})
         if row["kind"] == ProposalKind.FINDING_TEXT.value:
@@ -988,10 +1084,19 @@ def serialize_created(db: Session, proposals: List[AgentProposal]) -> List[dict]
             row["base_value_chars"] = len(row.get("base_value") or "")
             for key in ("payload", "current_value", "base_value"):
                 row.pop(key, None)
-        elif row["kind"] == ProposalKind.FINDING_CREATE.value:
-            if payload.get("report_text"):
-                payload["report_text_chars"] = {k: len(v or "") for k, v in payload.pop("report_text").items()}
-                row["payload"] = payload
+        elif row["kind"] == ProposalKind.FINDING_CREATE.value and payload.get("report_text"):
+            payload["report_text_chars"] = {k: len(v or "") for k, v in payload.pop("report_text").items()}
+            row["payload"] = payload
+    return rows
+
+
+def serialize_created(db: Session, proposals: List[AgentProposal]) -> List[dict]:
+    """What a create route answers to the agent that just proposed: the rows
+    without the report text the caller sent and the text it would replace
+    (``without_texts``)."""
+    rows = without_texts(serialize_many(db, proposals))
+    for row in rows:
+        if row["kind"] == ProposalKind.FINDING_CREATE.value:
             # A proposed finding is not a finding: told nothing, an operator
             # looked for it on the Findings page and read the call as failed.
             row["note"] = NEW_FINDING_NOTE

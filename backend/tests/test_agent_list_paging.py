@@ -67,6 +67,9 @@ NOT_PAGED = {
         "several lists in one answer, each capped at `limit`; `counts` is exact",
     "/agent/assist/workbench/terrain":
         "a map of address blocks cut at `limit` (`blocks_total`, `limited`)",
+    "/agent/evidence/{evidence_id}/raw-chunk":
+        "one record's raw output by BYTE offset (`offset`, `length`, `next_offset`, "
+        "`total_bytes`) — not a list of rows",
     # The pre-assist reads: no MCP tool, kept as they are for existing curl
     # clients until production shows nobody calls them.
     "/agent/hosts": "pre-assist read, a bare array; superseded by /agent/assist/hosts",

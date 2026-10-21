@@ -36,7 +36,9 @@ from app.api.deps import get_current_user, get_current_user_if_present, require_
 from app.core.config import settings
 from app.db.models_auth import User, UserRole
 from app.db.session import get_db
-from app.services.agents_guide_service import UnknownGuidePart, read_agent_guide, slice_agents_md
+from app.services.agents_guide_service import (
+    UnknownGuidePart, UnknownGuideSection, guide_section, read_agent_guide, slice_agents_md,
+)
 from app.services.agent_prompt_service import PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
@@ -432,6 +434,13 @@ async def agents_guide(
             "remediation. Omit it (or send `project`) for the whole guide."
         ),
     ),
+    section: Optional[str] = Query(
+        None,
+        description=(
+            "One section of the guide by name; `contents` lists the names and "
+            "their sizes. Not with `part`."
+        ),
+    ),
     # See tool_registry above — attribution only, never a requirement.
     _agent=Depends(identify_agent_if_present),
 ):
@@ -442,15 +451,19 @@ async def agents_guide(
     that part plus every ``shared`` section.  Without it (or with ``project``)
     the whole guide is returned.  A part is a reading aid, not a kind of
     session.  Any other value is a 422 naming the accepted ones.
-    See ``services.agents_guide_service.slice_agents_md``.
+    ``section`` (2.519.0) answers one ``## `` section by name, or with
+    ``contents`` the list of names and sizes — an agent's terminal does not
+    show 80 KB.  See ``services.agents_guide_service``.
     """
     content = read_agent_guide()
     if content is None:
         raise HTTPException(status_code=404, detail="Agent guide not found")
+    if part is not None and section is not None:
+        raise HTTPException(status_code=422, detail="Ask for a part or a section, not both.")
 
     try:
-        content = slice_agents_md(content, part)
-    except UnknownGuidePart as exc:
+        content = guide_section(content, section) if section is not None else slice_agents_md(content, part)
+    except (UnknownGuidePart, UnknownGuideSection) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Stamp the served guide with the LIVE prompt version (the same

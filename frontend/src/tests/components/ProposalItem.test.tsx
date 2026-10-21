@@ -89,6 +89,20 @@ describe('ProposalItem', () => {
     expect(screen.queryByRole('button', { name: /Accept/ })).not.toBeInTheDocument();
   });
 
+  // 5.413.0 — an agent may replace its own pending proposal: the old one
+  // says it was replaced (by nobody's decision), the new one what it replaces.
+  it('says which proposal replaced it, and which it replaces', () => {
+    const { unmount } = renderItem({
+      ...base, status: 'superseded', replaced_by_id: 9, decided_at: new Date().toISOString(),
+    });
+    expect(screen.getByTestId('proposal-replaced')).toHaveTextContent('Replaced by its proposer with proposal #9');
+    expect(screen.queryByText(/^Superseded/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Accept/ })).toBeNull();
+    unmount();
+    renderItem({ ...base, id: 9, replaces_ids: [7] });
+    expect(screen.getByTestId('proposal-replaces')).toHaveTextContent('Replaces proposal #7, withdrawn by its proposer.');
+  });
+
   it('describes every kind in one line', () => {
     expect(describeProposal(base)).toBe('Impact for “SMB signing not required”');
     expect(describeProposal({ ...base, kind: 'observation_dismiss', field: null,

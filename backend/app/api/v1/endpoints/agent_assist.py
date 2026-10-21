@@ -3001,8 +3001,10 @@ class AssistFindingDetail(BaseModel):
     # rewrite of a field, keep the references it holds unless the image should
     # move back under Evidence; reference only ids listed here.
     images: List[Dict[str, Any]] = []
-    # The disposition trail, newest first: who changed the status, when,
-    # from what to what, and the justification they gave.
+    # The finding's history, newest first: who changed the status, when,
+    # from what to what, and the justification they gave; endpoint changes;
+    # and (2.519.0) each edit of a field, with its `id` and `field` — the
+    # values are /assist/findings/{id}/history/{entry_id}.
     status_history: List[Dict[str, Any]] = []
 
 
@@ -3028,6 +3030,33 @@ def _serialize_finding_note(note, attachments_by_note, uploaders=None) -> "Assis
             for a in attachments_by_note.get(note.id, [])
         ],
     )
+
+
+@router.get(
+    "/assist/findings/{finding_id}/history/{entry_id}",
+    summary="One edit on a finding's history, with the value before and after",
+)
+def get_assist_finding_edit(
+    request: Request,
+    finding_id: int = Path(..., ge=1),
+    entry_id: int = Path(..., ge=1),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """``{id, field, before, after}`` (2.519.0) — what the finding page's
+    "Show before and after" shows, through the same read
+    (``finding_actions.edit_values``).  ``status_history`` on the finding
+    names each edit's ``id`` and ``field``; a status or endpoint line, or
+    another finding's, is a 404."""
+    from app.db.models_findings import Finding
+    from app.services.finding_actions import edit_values
+
+    if db.query(Finding.id).filter(
+        Finding.id == finding_id, Finding.project_id == request.state.agent_project_id,
+    ).first() is None:
+        raise HTTPException(status_code=404, detail="Finding not found in this project")
+    row = edit_values(db, finding_id, entry_id)
+    return {"id": row.id, "field": row.field, "before": row.before_value, "after": row.after_value}
 
 
 @router.get(
@@ -3212,6 +3241,10 @@ def get_assist_finding(
 
     status_history = [
         {
+            # 2.519.0 — an edit's line names its field; its values are
+            # /agent/assist/findings/{id}/history/{entry_id}.
+            "id": r.id,
+            "field": r.field,
             "from_status": r.from_status,
             "to_status": r.to_status,
             "changed_by": r.changed_by.username if r.changed_by else None,

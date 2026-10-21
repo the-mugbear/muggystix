@@ -49,7 +49,13 @@ def _who(db: Session, request: Request, agent_model: Optional[str]) -> proposals
 class EvidenceCreate(BaseModel):
     host_test_id: Optional[int] = Field(None, gt=0)
     request_key: Optional[str] = Field(None, min_length=1, max_length=100, description="Stable retry key; required for host-test evidence.")
-    host_id: int = Field(..., gt=0)
+    host_id: Optional[int] = Field(
+        None, gt=0,
+        description=(
+            "The host it was run against. Leave it out only for context about no single host "
+            "(outcome info, no host_test_id, no finding_host_id) — a domain-wide lookup, say."
+        ),
+    )
     finding_id: Optional[int] = Field(None, gt=0, description="The finding this bears on, if any.")
     finding_host_id: Optional[int] = Field(None, gt=0, description="The finding endpoint (vhost) it was run against, if any.")
     tool: str = Field(..., min_length=1, max_length=100, description="The tool or method (e.g. nmap, curl, a custom script).")
@@ -130,6 +136,36 @@ def evidence_raw(
     return evidence.read_raw_output(evidence.get_evidence(db, agent.project_id, evidence_id))
 
 
+@router.get("/evidence/{evidence_id}", summary="One evidence record (its raw output's size and hash)")
+def get_evidence(
+    evidence_id: int = Path(..., gt=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The record as the list shows it (2.519.0): the 2 KB preview, the
+    output's size (``raw_output_bytes``) and SHA-256 (``raw_output_sha256``).
+    The output itself: ``/raw`` whole, or ``/raw-chunk`` in pieces."""
+    return evidence.serialize_evidence(evidence.get_evidence(db, agent.project_id, evidence_id))
+
+
+@router.get("/evidence/{evidence_id}/raw-chunk", summary="A piece of an evidence record's raw output")
+def evidence_raw_chunk(
+    evidence_id: int = Path(..., gt=0),
+    offset: int = Query(0, ge=0, description="Byte offset: 0, then each read's next_offset."),
+    length: int = Query(
+        evidence.RAW_CHUNK_DEFAULT, ge=1, le=evidence.RAW_CHUNK_MAX,
+        description="Bytes to read (a piece ends on a character boundary, so it may be a few short).",
+    ),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """``{evidence_id, offset, length, total_bytes, next_offset, sha256,
+    text}`` (2.519.0): read from 0 until ``next_offset`` is null; the pieces
+    joined are the output, and their SHA-256 is ``sha256``."""
+    record = evidence.get_evidence(db, agent.project_id, evidence_id)
+    return evidence.read_raw_chunk(record, offset, length)
+
+
 # ---------------------------------------------------------------------------
 # Proposals
 # ---------------------------------------------------------------------------
@@ -141,6 +177,14 @@ class _ProposalBase(BaseModel):
         description="Evidence records that support it (at most 100).",
     )
     agent_model: Optional[str] = _MODEL
+    replaces: Optional[List[int]] = Field(
+        None, max_length=proposals.REPLACES_MAX,
+        description=(
+            "Your own PENDING proposals this one replaces (ids from list_proposals): each becomes "
+            "superseded, pointing at the new one. Each must be about what this request proposes "
+            "(the same finding and section, new finding, observation or endpoint)."
+        ),
+    )
 
 
 class FindingTextProposal(_ProposalBase):
@@ -191,6 +235,7 @@ def propose_finding_text(
     rows = proposals.propose_finding_text(
         db, agent.project_id, _who(db, request, body.agent_model), finding_id=body.finding_id,
         fields=body.fields, rationale=body.rationale, evidence_ids=body.evidence_ids,
+        replaces=body.replaces,
     )
     # Built before the commit (review 2026-10-01 N8, as the host-test routes
     # do): the commit expires every row, and serializing afterwards re-reads
@@ -211,6 +256,7 @@ def propose_finding(
         db, agent.project_id, _who(db, request, body.agent_model), title=body.title,
         severity=body.severity, host_ids=body.host_ids, status=body.status,
         report_text=body.report_text, rationale=body.rationale, evidence_ids=body.evidence_ids,
+        replaces=body.replaces,
     )
     data = proposals.serialize_created(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
@@ -226,7 +272,7 @@ def propose_observation(
         db, agent.project_id, _who(db, request, body.agent_model),
         vulnerability_id=body.vulnerability_id, action=body.action, scope=body.scope,
         severity=body.severity, summary=body.summary, rationale=body.rationale,
-        evidence_ids=body.evidence_ids,
+        evidence_ids=body.evidence_ids, replaces=body.replaces,
     )
     data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
@@ -241,7 +287,7 @@ def propose_endpoint_status(
     row = proposals.propose_endpoint_status(
         db, agent.project_id, _who(db, request, body.agent_model), finding_id=body.finding_id,
         finding_host_id=body.finding_host_id, host_status=body.host_status,
-        rationale=body.rationale, evidence_ids=body.evidence_ids,
+        rationale=body.rationale, evidence_ids=body.evidence_ids, replaces=body.replaces,
     )
     data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
@@ -267,4 +313,19 @@ def list_proposals(
         db, agent.project_id, status=status, kind=kind, finding_id=finding_id,
         agent_session_id=session_id, limit=limit, offset=offset,
     )
-    return agent_page(proposals.serialize_many(db, rows), total=total, limit=limit, offset=offset)
+    # Without the texts (their lengths instead, 2.519.0): 14 rows were 43.8 KB.
+    # One proposal's texts: the route below.
+    items = proposals.without_texts(proposals.serialize_many(db, rows))
+    return agent_page(items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/proposals/{proposal_id}", summary="One proposal, its texts included")
+def get_proposal(
+    proposal_id: int = Path(..., gt=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The whole proposal (2.519.0): what the list leaves out — the proposed
+    text (``payload``), the section's text when it was proposed
+    (``base_value``) and now (``current_value``).  Another project's is 404."""
+    return proposals.serialize_many(db, [proposals.get_proposal(db, agent.project_id, proposal_id)])[0]

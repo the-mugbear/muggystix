@@ -122,6 +122,24 @@ def record_edit(
     ))
 
 
+def edit_values(db: Session, finding_id: int, entry_id: int) -> FindingStatusHistory:
+    """One edit's line on the finding's history, with its values — the ONE
+    read behind the page's and the agents' route (2.519.0); 404 for a line
+    that is not an edit, or another finding's.  The caller has checked the
+    finding is in the project."""
+    row = (
+        db.query(FindingStatusHistory)
+        .filter(
+            FindingStatusHistory.id == entry_id, FindingStatusHistory.finding_id == finding_id,
+            FindingStatusHistory.field.isnot(None),
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such edit on this finding.")
+    return row
+
+
 def severity_label(severity: object) -> Optional[str]:
     value = getattr(severity, "value", severity)
     return str(value).capitalize() if value else None
