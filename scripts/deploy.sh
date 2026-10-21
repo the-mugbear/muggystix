@@ -241,20 +241,7 @@ random_secret() {
     fi
 }
 
-# The Compose project name of THIS tree — what every container, volume,
-# network and built image of this instance is labelled with
-# (com.docker.compose.project).  Asked of compose itself, which applies its
-# own rules (COMPOSE_PROJECT_NAME, a top-level `name:`, else the normalised
-# directory name); the fallback reproduces them for the v1 binary, whose
-# `config` prints no name.
-compose_project_name() {
-    local project
-    project="$($DC config 2>/dev/null | awk '/^name:/ {print $2; exit}')"
-    [[ -z "$project" ]] && project="${COMPOSE_PROJECT_NAME:-}"
-    [[ -z "$project" ]] && project="$(grep -E '^COMPOSE_PROJECT_NAME=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
-    [[ -z "$project" ]] && project="$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
-    printf '%s\n' "$project"
-}
+# (compose_project_name is scripts/stack-lib.sh's.)
 
 # Whether this stack's Postgres volume already exists (then it was initialised
 # with some password, and a new one in .env would lock the app out).
@@ -626,6 +613,25 @@ permissions_gate() {
                 print_warning "Answer f, c or s." ;;
         esac
     done
+}
+
+# Options 1 and 2: is this folder the project the installed stack runs as?
+# (scripts/stack-lib.sh, stack_identity_ok).  Option 1 from a folder of
+# another name would back up nothing, build, and start a second stack on a
+# NEW, EMPTY database volume — and fail on the ports the running one holds.
+# DEPLOY_SECOND_STACK=1 is for a host that deliberately runs two.
+stack_identity_gate() {
+    local project
+    project="$(compose_project_name)"
+    stack_identity_ok "$project" && return 0
+    echo ""
+    print_stack_identity_problem "$project"
+    if [[ "${DEPLOY_SECOND_STACK:-0}" == "1" ]]; then
+        print_warning "DEPLOY_SECOND_STACK=1 — deploying a SECOND BlueStick stack ('$project') beside it."
+        return 0
+    fi
+    print_info "Nothing was changed. (A second, separate BlueStick on this host on purpose: DEPLOY_SECOND_STACK=1)"
+    exit 1
 }
 
 report_permissions() {
@@ -1364,6 +1370,7 @@ case $DEPLOY_CHOICE in
             exit 1
         fi
         permissions_gate
+        stack_identity_gate
         ensure_env
         CONFIGURED_IP=$(get_configured_ip)
         ensure_ssl_certs "$CONFIGURED_IP"
@@ -1523,6 +1530,7 @@ case $DEPLOY_CHOICE in
         print_header "First-time Setup"
 
         permissions_gate
+        stack_identity_gate
         select_ip
         generate_env "$SELECTED_IP"
 
@@ -1817,6 +1825,7 @@ case $DEPLOY_CHOICE in
         ;;
 
     5)
+        stack_identity_ok "$(compose_project_name)" || { print_stack_identity_problem "$(compose_project_name)"; echo ""; }
         security_status
         report_permissions
         ;;

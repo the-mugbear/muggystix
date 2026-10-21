@@ -135,6 +135,16 @@ compose() {
 }
 compose_available() { [[ ${#COMPOSE_CMD[@]} -gt 0 ]]; }
 
+# compose_project_name and other_bluestick_stacks (containers.txt).
+STACK_LIB_LOADED=""
+if [[ -f "$SCRIPT_DIR/stack-lib.sh" ]] && compose_available; then
+    DC="${COMPOSE_CMD[*]}"
+    PROJECT_ROOT="$PWD"
+    # shellcheck source=stack-lib.sh
+    source "$SCRIPT_DIR/stack-lib.sh"
+    STACK_LIB_LOADED=1
+fi
+
 # Read (never source) .env — its values are data, not shell.
 env_value() {
     [[ -f .env ]] || return 0
@@ -355,6 +365,30 @@ MemoryLimit: {{.HostConfig.Memory}}' "$cid" 2>&1 || true
         docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' $running_ids 2>&1 || true
     else
         echo "(none running)"
+    fi
+    # The one look beyond this project: is BlueStick installed here under
+    # ANOTHER Compose project (a folder of another name)?  Counts and how the
+    # folders relate only — a project name is a folder name, which can name
+    # a client.  The remote bundle of 2026-10-20 was collected from such a
+    # folder: every service "never started", while nginx answered.
+    echo ""
+    echo "--- BlueStick under other Compose projects (scripts/stack-lib.sh) ---"
+    if [[ -n "${STACK_LIB_LOADED:-}" ]] && compose_available; then
+        mine="$(compose_project_name)"
+        others=0; others_running=0; where=""
+        while IFS='|' read -r _project odir orunning; do
+            [[ -n "$_project" ]] || continue
+            others=$((others + 1)); others_running=$((others_running + orunning))
+            if [[ "$odir" == "$PWD" ]]; then where+=" this-folder"
+            elif [[ "$(dirname "$odir")" == "$(dirname "$PWD")" ]]; then where+=" a-sibling-folder"
+            elif [[ "$odir" == "$PWD"/* ]]; then where+=" inside-this-folder"
+            elif [[ "$PWD" == "$odir"/* ]]; then where+=" a-parent-folder"
+            else where+=" elsewhere"; fi
+        done < <(other_bluestick_stacks "$mine")
+        echo "other projects: $others (their running containers: $others_running; started from:${where:- -})"
+        echo "this folder's project has $(docker ps -aq --filter "label=com.docker.compose.project=$mine" 2>/dev/null | wc -l | tr -d ' ') container(s)"
+    else
+        echo "(not checked: scripts/stack-lib.sh missing or compose unavailable)"
     fi
 } > "$LOG_DIR/containers.txt" 2>&1
 

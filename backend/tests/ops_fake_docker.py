@@ -215,6 +215,33 @@ def compose(args: list[str], state: dict) -> int:
     return 0
 
 
+def docker_ps(args: list[str], state: dict) -> int:
+    """`docker ps` by label, as scripts/stack-lib.sh asks it.  This tree's
+    project is ``fakeproj`` (its containers are ``containers``); other
+    BlueStick stacks on the host are ``other_stacks``."""
+    filters = [args[i + 1] for i, a in enumerate(args) if a == "--filter" and i + 1 < len(args)]
+    every = "-a" in args or "-aq" in args
+    others = state.get("other_stacks", [])
+    if "label=com.docker.compose.service=report-worker" in filters:
+        lines = [f"{o['project']}|{o.get('working_dir', '')}" for o in others]
+        if "report-worker" in state.get("containers", {}):
+            lines.append(f"fakeproj|{state.get('working_dir', '')}")
+        out("".join(f"{line}\n" for line in lines))
+        return 0
+    for f in filters:
+        if f.startswith("label=com.docker.compose.project="):
+            project = f.split("=", 2)[2]
+            if project == "fakeproj":
+                ids = [c["id"] for c in state.get("containers", {}).values()
+                       if every or c.get("status") == "running"]
+            else:
+                ids = [f"cid-{project}-{n}" for o in others if o["project"] == project
+                       for n in range(o.get("running", 0))]
+            out("".join(f"{i}\n" for i in ids))
+            return 0
+    return 0
+
+
 def main(argv: list[str]) -> int:
     with open(LOG, "a", encoding="utf-8") as fh:
         fh.write(" ".join(argv) + "\n")
@@ -284,6 +311,8 @@ def main(argv: list[str]) -> int:
             return 0
         sys.stdin.buffer.read()
         return 0
+    if cmd == "ps":
+        return docker_ps(rest, state)
     if cmd == "volume" and rest[:1] == ["ls"]:
         out("fakeproj_postgres_data\n")
         return 0

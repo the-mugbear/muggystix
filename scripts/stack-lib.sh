@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# BlueStick — shared stack helpers, SOURCED by deploy.sh and restore-db.sh.
-# Not run by hand.
+# BlueStick — shared stack helpers, SOURCED by deploy.sh, restore-db.sh,
+# backup-db.sh, status.sh and collect-logs.sh.  Not run by hand.
 #
 # One implementation of "start the stack and know what state it is in"
 # (review 2026-10-01, branch review S3/S4): deploy.sh option 1, the rollback
@@ -20,7 +20,7 @@
 #
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    echo "stack-lib.sh is sourced by deploy.sh and restore-db.sh; it does nothing on its own." >&2
+    echo "stack-lib.sh is sourced by the other scripts; it does nothing on its own." >&2
     exit 2
 fi
 
@@ -55,6 +55,90 @@ ask() {
         fi
     fi
     printf -v "$__var" '%s' "$__reply"
+}
+
+# ------------------------------------------------------------------
+# Which Compose project is this stack? (remote bundle, 2026-10-20)
+#
+# Compose names everything — the containers, the network and the database
+# volume <project>_postgres_data — after the PROJECT, which is
+# COMPOSE_PROJECT_NAME from .env or else this FOLDER's name.  A host upgrades
+# by moving its folder aside and extracting the new source into a new folder
+# of the SAME name, which is therefore the same project.  Under any other
+# name (an archive's "<repo>-main" folder, a nested extract, "BlueStick_new")
+# compose here sees none of the running containers: a backup finds no
+# database, status shows nothing, and a deploy would create a second, EMPTY
+# database volume and then fail on the ports the running stack holds.
+# ------------------------------------------------------------------
+
+# The Compose project name of THIS tree — what every container, volume,
+# network and built image of this instance is labelled with
+# (com.docker.compose.project).  Asked of compose itself, which applies its
+# own rules (COMPOSE_PROJECT_NAME, a top-level `name:`, else the normalised
+# directory name); the fallback reproduces them for the v1 binary, whose
+# `config` prints no name.
+compose_project_name() {
+    local project
+    project="$($DC config 2>/dev/null | awk '/^name:/ {print $2; exit}')"
+    [[ -z "$project" ]] && project="${COMPOSE_PROJECT_NAME:-}"
+    [[ -z "$project" ]] && project="$(grep -E '^COMPOSE_PROJECT_NAME=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [[ -z "$project" ]] && project="$(basename "${PROJECT_ROOT:-$PWD}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+    printf '%s\n' "$project"
+}
+
+# The OTHER BlueStick stacks Docker knows of — projects with a report-worker
+# container (no other compose file has that service), running or not — one
+# line each: "<project>|<the folder it was started from>|<running containers>".
+other_bluestick_stacks() {
+    local mine="$1" line project dir running
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        project="${line%%|*}"; dir="${line#*|}"
+        [[ "$project" == "$mine" ]] && continue
+        running="$(docker ps -q --filter "label=com.docker.compose.project=$project" 2>/dev/null | wc -l | tr -d ' ')"
+        printf '%s|%s|%s\n' "$project" "$dir" "$running"
+    done < <(docker ps -a --filter "label=com.docker.compose.service=report-worker" \
+        --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
+        | sort -u)
+}
+
+# 0 when this folder's project has a container of its own or no other
+# BlueStick stack exists; otherwise 1, with STACK_OTHERS holding
+# other_bluestick_stacks' lines.
+STACK_OTHERS=()
+stack_identity_ok() {
+    local mine="$1"
+    STACK_OTHERS=()
+    if [[ -n "$(docker ps -aq --filter "label=com.docker.compose.project=$mine" 2>/dev/null | head -1)" ]]; then
+        return 0
+    fi
+    mapfile -t STACK_OTHERS < <(other_bluestick_stacks "$mine")
+    [[ ${#STACK_OTHERS[@]} -eq 0 ]]
+}
+
+# Says what stack_identity_ok found and the two ways out.  $1 this project.
+print_stack_identity_problem() {
+    local mine="$1" line project dir running here="${PROJECT_ROOT:-$PWD}"
+    print_error "This folder is Compose project '$mine' ($here), which has no containers — but BlueStick"
+    print_error "is installed on this host under another project:"
+    for line in "${STACK_OTHERS[@]}"; do
+        IFS='|' read -r project dir running <<< "$line"
+        print_error "    '$project', started from ${dir:-an unknown folder} — $running container(s) running"
+    done
+    IFS='|' read -r project dir running <<< "${STACK_OTHERS[0]}"
+    print_info "Compose names the project, and the database volume ${project}_postgres_data, after the FOLDER."
+    if [[ -n "$dir" && "$dir" != "$here" ]]; then
+        if [[ -f "$dir/scripts/deploy.sh" ]]; then
+            print_info "$dir holds a BlueStick tree: run the script from there  (cd \"$dir\")."
+            print_info "To upgrade it: move it aside, extract the new source into a new folder at that SAME"
+            print_info "path, and run ./scripts/upgrade-instance.sh there (it carries .env, ssl/ and uploads/"
+            print_info "across, then deploys)."
+        else
+            print_info "$dir is not there any more. Put the new source at that SAME path (rename this folder"
+            print_info "to it, or extract there) and run the script from it."
+        fi
+    fi
+    print_info "Or keep this folder and pin the name:  echo COMPOSE_PROJECT_NAME=$project >> \"$here/.env\""
 }
 
 backend_probe() {

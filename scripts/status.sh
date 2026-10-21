@@ -95,6 +95,13 @@ if [ -n "$($DC ps --status running -q 2>/dev/null)" ]; then
     fi
 else
     print_warning "Production instance is not running"
+    # …from THIS folder.  It may be running under another Compose project
+    # (a folder of another name — scripts/stack-lib.sh).
+    if [[ -f "$SCRIPT_DIR/stack-lib.sh" ]]; then
+        # shellcheck source=stack-lib.sh
+        source "$SCRIPT_DIR/stack-lib.sh"
+        stack_identity_ok "$(compose_project_name)" || print_stack_identity_problem "$(compose_project_name)"
+    fi
 fi
 echo
 

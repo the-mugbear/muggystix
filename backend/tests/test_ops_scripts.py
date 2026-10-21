@@ -19,6 +19,7 @@ import pathlib
 import shutil
 import stat
 import subprocess
+import tarfile
 
 import pytest
 
@@ -1108,6 +1109,97 @@ def test_security_status_says_that_a_containers_uploads_folder_is_as_it_should_b
     assert "this account cannot list it, by design" in out
     assert "exec backend ls -la /app/uploads" in out
     assert "File ownership and permissions: nothing to fix" in out
+
+
+# ---------------------------------------------------------------------------
+# A folder of another name is another Compose project (remote bundle,
+# 2026-10-20: every service "never started" while nginx answered — and the
+# backup failed with "Could not uniquely identify this stack's postgres
+# volume").  The upgrade is: move the folder aside, extract the new source
+# into a new folder of the SAME name.
+# ---------------------------------------------------------------------------
+
+def _installed_elsewhere(project, tmp_path, *, with_tree: bool = True) -> pathlib.Path:
+    where = tmp_path / "BlueStick"
+    if with_tree:
+        (where / "scripts").mkdir(parents=True)
+        (where / "scripts" / "deploy.sh").write_text("#!/bin/bash\n")
+    project.state["containers"] = {}
+    project.state["other_stacks"] = [{"project": "acmecorp", "working_dir": str(where), "running": 5}]
+    return where
+
+
+def test_a_deploy_from_a_folder_of_another_name_changes_nothing_and_says_where_the_stack_is(project, tmp_path):
+    where = _installed_elsewhere(project, tmp_path)
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "This folder is Compose project 'fakeproj'" in out and "which has no containers" in out
+    assert f"'acmecorp', started from {where} — 5 container(s) running" in out
+    assert f"{where} holds a BlueStick tree: run the script from there" in out
+    assert "upgrade-instance.sh" in out and "COMPOSE_PROJECT_NAME=acmecorp" in out
+    assert "Nothing was changed" in out
+    calls = project.calls()
+    assert _index(calls, "pg_dump") == -1 and _index(calls, "compose build") == -1 and _index(calls, "compose up") == -1
+
+
+def test_a_stack_whose_folder_is_gone_is_told_to_put_the_new_source_at_that_path(project, tmp_path):
+    where = _installed_elsewhere(project, tmp_path, with_tree=False)
+
+    result = project.run("deploy.sh", stdin="2\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert f"{where} is not there any more. Put the new source at that SAME path" in out
+
+
+def test_a_second_stack_on_purpose_is_let_through_and_said(project, tmp_path):
+    _installed_elsewhere(project, tmp_path)
+
+    result = project.run("deploy.sh", stdin="1\n", env={"DEPLOY_SECOND_STACK": "1"})
+
+    assert "deploying a SECOND BlueStick stack ('fakeproj')" in _output(result)
+
+
+def test_another_stack_beside_this_folders_own_is_no_obstacle(project, tmp_path):
+    project.state["other_stacks"] = [{"project": "acmecorp", "working_dir": str(tmp_path / "x"), "running": 5}]
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "This folder is Compose project" not in out and "Deployment complete" in out
+
+
+def test_a_backup_from_a_folder_of_another_name_says_where_the_stack_is(project, tmp_path):
+    where = _installed_elsewhere(project, tmp_path)
+
+    result = project.run("backup-db.sh")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert f"'acmecorp', started from {where}" in out and "No backup was taken." in out
+    assert "postgres volume" not in out
+    assert _index(project.calls(), "/data:ro") == -1
+
+
+def test_the_bundle_counts_stacks_under_other_projects_without_naming_them(project, tmp_path):
+    _installed_elsewhere(project, tmp_path)
+    out_dir = tmp_path / "bundle"
+    out_dir.mkdir()
+
+    result = project.run("collect-logs.sh", "--no-feedback", "--out", str(out_dir))
+
+    assert result.returncode == 0, _output(result)
+    bundle = next(out_dir.glob("bluestick_diagnostics_*.tar.gz"))
+    with tarfile.open(bundle) as tar:
+        member = next(m for m in tar.getmembers() if m.name.endswith("/containers.txt"))
+        text = tar.extractfile(member).read().decode()
+    assert "other projects: 1 (their running containers: 5; started from: a-sibling-folder)" in text
+    assert "this folder's project has 0 container(s)" in text
+    assert "acmecorp" not in text and "BlueStick" not in text.replace("BlueStick under", "")
 
 
 # ---------------------------------------------------------------------------

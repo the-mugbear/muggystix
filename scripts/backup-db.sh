@@ -117,6 +117,14 @@ else
     exit 1
 fi
 
+# compose_project_name and the stack-identity check (scripts/stack-lib.sh).
+if [[ ! -f "$SCRIPT_DIR/stack-lib.sh" ]]; then
+    print_error "scripts/stack-lib.sh is missing — this copy of the scripts folder is incomplete."
+    exit 1
+fi
+# shellcheck source=stack-lib.sh
+source "$SCRIPT_DIR/stack-lib.sh"
+
 # --- Saying why a step failed ------------------------------------------------
 # Each step's own error output goes to STEP_ERR and is printed when the step
 # fails, with what that kind of error usually means here.  It used to go to
@@ -287,10 +295,7 @@ resolve_volume() {
             return 0
         fi
     fi
-    project="$(env_val COMPOSE_PROJECT_NAME)"
-    if [[ -z "$project" ]]; then
-        project="$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
-    fi
+    project="$(compose_project_name)"
     expected="${project}_postgres_data"
     if docker volume ls -q 2>/dev/null | grep -qx "$expected"; then
         printf '%s\n' "$expected"
@@ -609,6 +614,14 @@ else
         show_step_error
         print_info "It may still be starting:  $DC logs db | tail -n 30      then run this again."
         print_info "(A raw snapshot of a running database's files is not a consistent backup; --volume forces one.)"
+        exit 1
+    fi
+    if [[ -z "$DB_STATE" ]] && ! stack_identity_ok "$(compose_project_name)"; then
+        # No container of this folder's project at all, and BlueStick runs on
+        # this host under another: the remote host of 2026-10-20 got "Could
+        # not uniquely identify this stack's postgres volume" here.
+        print_stack_identity_problem "$(compose_project_name)"
+        print_error "No backup was taken."
         exit 1
     fi
     print_warning "The database container is ${DB_STATE:-not created} — falling back to a raw volume snapshot."
