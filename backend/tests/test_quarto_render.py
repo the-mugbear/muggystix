@@ -2223,11 +2223,13 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     assert 'href="#finding-' not in html and 'id="finding-' not in html
     # Word: a link to the heading's bookmark, per finding — the bookmark
     # INSIDE the heading paragraph (at body level Word sent every link to the
-    # top of the document; owner, 2026-10-14).
+    # top of the document; owner, 2026-10-14) and named as Word allows
+    # (no hyphen; 2026-10-21).
     for finding in data["findings"]:
-        assert f'w:anchor="sec-finding-{finding["id"]}"' in doc, finding["id"]
+        assert f'w:anchor="sec_finding_{finding["id"]}"' in doc, finding["id"]
         assert re.search(rf'<w:p><w:pPr><w:pStyle w:val="Heading\d" /></w:pPr><w:bookmarkStart w:id="\d+" '
-                         rf'w:name="sec-finding-{finding["id"]}" />', doc), finding["id"]
+                         rf'w:name="sec_finding_{finding["id"]}" />', doc), finding["id"]
+    assert "w:anchor=\"sec-" not in doc and "w:name=\"sec-" not in doc
 
     # --- the finding's own table: no Status; affected systems: no Port, no Note --
     first = html[html.index('id="sec-finding-11"'):html.index('id="sec-finding-12"')]
