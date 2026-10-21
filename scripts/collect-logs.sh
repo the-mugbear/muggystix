@@ -5,8 +5,12 @@
 # instance whose parsers see far more real tool output than a dev box).
 #
 # Usage:
-#   ./scripts/collect-logs.sh [--since 72h] [--terms FILE]... [--no-feedback]
+#   ./scripts/collect-logs.sh [--since 72h] [--terms FILE]... [--no-feedback] [--out DIR]
 #
+#   --out DIR     where the bundle is written.  Default: the folder the script
+#                 was run from.  When that folder is not writable by this
+#                 account the bundle goes to the project folder, else $HOME,
+#                 and the closing line says so — it is never discarded.
 #   --since DUR   only container logs newer than DUR (docker syntax: 30m, 72h,
 #                 2026-09-20).  Default: everything the containers still hold.
 #   --terms FILE  extra values to remove, one per line (a client name, an
@@ -78,8 +82,8 @@ SUMMARIES="$SCRIPT_DIR/diag_summaries.py"
 # platform_version.json relative to the deployment root.  Run from scripts/
 # (production, 2026-09-26) every one of them read "(not found)" while docker
 # compose — which searches parent directories — still found the stack.  The
-# bundle is still written where the script was run from.
-ORIG_PWD="$PWD"
+# bundle is still written where the script was run from (or --out).
+OUT_DIR="$PWD"
 
 SINCE=""
 EXTRA_TERMS=()
@@ -87,6 +91,9 @@ WITH_FEEDBACK=true
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --since) SINCE="${2:?--since needs a value}"; shift 2 ;;
+        --out)
+            [[ -d "${2:-}" ]] || { print_error "--out: '${2:-}' is not a folder"; exit 1; }
+            OUT_DIR="$(cd "$2" && pwd)"; shift 2 ;;
         --no-feedback) WITH_FEEDBACK=false; shift ;;
         --terms)
             [[ -r "${2:-}" ]] || { print_error "--terms: cannot read '${2:-}'"; exit 1; }
@@ -959,13 +966,35 @@ if ! python3 "$SCRUBBER" "$LOG_DIR" --terms "$TERMS" --report "$LOG_DIR/anonymis
 fi
 
 tar -czf "$WORK/$LOG_NAME.tar.gz" -C "$WORK" "$LOG_NAME"
-mv "$WORK/$LOG_NAME.tar.gz" "$ORIG_PWD/$LOG_NAME.tar.gz"
+
+# Into the folder asked for; when this account cannot write there, the
+# project folder, then $HOME — said, never silent.  A failed `mv` used to end
+# the script under `set -e`, and the EXIT trap then deleted the finished
+# bundle with the rest of $WORK (a remote host found no bundle where it ran
+# the script, 2026-10-20).
+BUNDLE=""
+for dest in "$OUT_DIR" "$PWD" "${HOME:-}"; do
+    [[ -n "$dest" && -d "$dest" && -w "$dest" ]] || continue
+    if mv "$WORK/$LOG_NAME.tar.gz" "$dest/$LOG_NAME.tar.gz" 2>/dev/null; then
+        BUNDLE="$dest/$LOG_NAME.tar.gz"
+        break
+    fi
+done
+if [[ -z "$BUNDLE" ]]; then
+    trap - EXIT   # keep $WORK: the bundle is the one copy
+    print_error "Could not write the bundle to $OUT_DIR, $PWD or \$HOME as $(id -un)."
+    print_error "It is kept at $WORK/$LOG_NAME.tar.gz — move it from there (or re-run with --out DIR)."
+    exit 1
+fi
 
 echo ""
-print_success "Anonymised diagnostics bundle: $ORIG_PWD/$LOG_NAME.tar.gz"
+if [[ "$BUNDLE" != "$OUT_DIR/$LOG_NAME.tar.gz" ]]; then
+    print_warning "$OUT_DIR is not writable by $(id -un), so the bundle was written to $(dirname "$BUNDLE") instead."
+fi
+print_success "Anonymised diagnostics bundle: $BUNDLE"
 cat "$LOG_DIR/anonymisation.txt"
 echo ""
-print_warning "Skim it before sending: tar -xzf $LOG_NAME.tar.gz && grep -ri '<client name>' $LOG_NAME/"
+print_warning "Skim it before sending: tar -xzf \"$BUNDLE\" && grep -ri '<client name>' $LOG_NAME/"
 if $WITH_FEEDBACK && [[ "${FEEDBACK_ROWS:-0}" -gt 0 ]]; then
     print_warning "It includes agent feedback as free text ($FEEDBACK_ROWS entries, newest $FEEDBACK_LIMIT): read $LOG_NAME/feedback.txt before moving the bundle."
     print_info "To send without it: re-run with --no-feedback (or delete feedback.txt and re-pack the bundle)."

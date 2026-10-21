@@ -18,6 +18,9 @@
 #   PERM_FIX    the one command that fixes it
 #   PERM_AUTO   what the caller may do itself, or "" — only ever
 #               `chmod600:<path>` or `chown-uploads`, never text to evaluate
+#
+# `perm_describe_uploads` says what uploads/ is in one sentence, correct or
+# not (deploy.sh option 5) — never into a bundle: it names the host's account.
 
 PERM_KIND=(); PERM_WHAT=(); PERM_FIX=(); PERM_AUTO=()
 # The user the application's containers run as.
@@ -110,8 +113,27 @@ audit_permissions() {
         if [[ "$owner" != "$CONTAINER_UID" && "$owner" != "$uid" ]]; then
             auto=""; [[ "$uid" -eq 0 ]] && auto="chown-uploads"
             perm_note uploads_other_owner \
-                "uploads/ belongs to $(perm_owner_name uploads). It is the containers' (UID $CONTAINER_UID): they take it over at start where Docker lets them, and until then this script cannot create its folders in it. After the fix, $(perm_container_uid_note)." \
+                "uploads/ belongs to $(perm_owner_name uploads); it should be the containers' (UID $CONTAINER_UID). The backend takes it over on its next start (as root inside the container), so before a first start this needs nothing. If it is still so AFTER a start, Docker could not change its owner there (rootless Docker, an NFS share with root_squash, SELinux) — the backend log's [entrypoint] lines say why. After the fix, $(perm_container_uid_note)." \
                 "sudo chown -R $CONTAINER_UID:$CONTAINER_UID \"$root/uploads\"" "$auto"
         fi
+    fi
+}
+
+# One sentence on uploads/ for a person at a terminal, whatever its state:
+# the CORRECT state — another number's folder, mode 700, that this account
+# cannot list — reads like a fault, and operators took it for one.
+perm_describe_uploads() {
+    if [[ ! -e uploads ]]; then
+        echo "uploads/ does not exist yet: the deploy makes it, and the containers take it over at their first start."
+        return 0
+    fi
+    local owner mode
+    owner="$(perm_owner uploads)"; mode="$(perm_mode uploads)"
+    if [[ "$owner" == "$CONTAINER_UID" ]]; then
+        echo "uploads/ is the containers' (UID $CONTAINER_UID, mode $mode), as it should be: this account cannot list it, by design, and backups read it through a container. $(perm_container_uid_note). To look inside:  ${DC:-docker compose} exec backend ls -la /app/uploads"
+    elif [[ "$owner" == "$(id -u)" ]]; then
+        echo "uploads/ is still this account's (mode $mode): the containers take it over at their next start."
+    else
+        echo "uploads/ belongs to $(perm_owner_name uploads) (mode $mode), not to the containers — see the finding below."
     fi
 }

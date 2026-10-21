@@ -37,6 +37,14 @@
 #                            (BACKUP_PRUNE_MAX, default 3).  Without it a
 #                            backlog — a directory never pruned before, or a
 #                            lowered BACKUP_KEEP — is reported, not deleted.
+#   BACKUP_RESULT_FILE       For a calling script (deploy.sh): on success,
+#                            `type=` (pgdump | volume), `artifact=` (the file
+#                            just written) and `dir=` are written there.
+#
+# When a step fails, what the tool itself said (pg_dump, pg_restore, tar,
+# docker) is printed under it, with what that kind of error usually means on
+# a BlueStick host.  Before anything is taken, the script checks that this
+# account can run compose on the project and write in the backup folder.
 #
 # What "success" means (exit 0): the database artifact was written AND read
 # back TO ITS END (pg_restore -f /dev/null for a dump — every data block is
@@ -88,7 +96,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,58p' "$0"
+            sed -n '2,/^$/p' "$0"   # the header comment, however long
             exit 0
             ;;
         *)
@@ -106,6 +114,63 @@ elif command -v docker-compose >/dev/null 2>&1; then
     DC="docker-compose"
 else
     print_error "Neither 'docker compose' nor 'docker-compose' is available."
+    exit 1
+fi
+
+# --- Saying why a step failed ------------------------------------------------
+# Each step's own error output goes to STEP_ERR and is printed when the step
+# fails, with what that kind of error usually means here.  It used to go to
+# /dev/null: a remote host's backups failed with "pg_dump failed." and
+# nothing else to go on (2026-10-20).
+STEP_ERR="$(mktemp "${TMPDIR:-/tmp}/bluestick-backup-err.XXXXXX")"
+trap 'rm -f "$STEP_ERR"' EXIT
+
+show_step_error() {
+    if [[ -s "$STEP_ERR" ]]; then
+        print_error "What it said:"
+        tail -n 20 "$STEP_ERR" | sed 's/^/    /'
+    else
+        print_error "It printed nothing (only its exit status)."
+    fi
+    explain_step_error
+}
+
+explain_step_error() {
+    local text
+    text="$(cat "$STEP_ERR" 2>/dev/null || true)"
+    case "$text" in
+        *"Cannot connect to the Docker daemon"*|*"permission denied while trying to connect to the Docker daemon"*)
+            print_info "This account cannot use Docker: run as the deploy account (a member of the docker group)." ;;
+        *"No space left on device"*)
+            print_info "A disk is full. Free space where the backup goes:  df -h \"$BACKUP_DIR\"" ;;
+        *"file changed as we read it"*)
+            print_info "A file was being written while it was archived: run again when no import or report is running." ;;
+        *"Permission denied"*|*"Operation not permitted"*)
+            print_info "An account could not read or write a path named above. The backup files are written"
+            print_info "as $(id -un); uploads/ is read by the database image's root inside a container."
+            if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
+                print_info "SELinux is ENFORCING on this host: a container may be refused a bind-mounted folder"
+                print_info "whatever its owner (see: ausearch -m avc -ts recent)."
+            fi ;;
+        *"role \""*"does not exist"*|*"password authentication failed"*)
+            print_info "POSTGRES_USER in .env ('$PG_USER') is not a role of the running database: the"
+            print_info "database was initialised with other values than .env holds now." ;;
+        *"database \""*"does not exist"*)
+            print_info "POSTGRES_DB in .env ('$PG_DB') is not a database on the running server." ;;
+        *"is not running"*|*"No such container"*)
+            print_info "The database container stopped while the backup ran:  $DC ps db" ;;
+    esac
+}
+
+# --- Can this account run compose on this project at all? ------------------
+# An .env this account cannot read (left root's by a run under sudo) fails
+# every compose call; the script then used to blame the database volume.
+if ! $DC config --quiet >/dev/null 2>"$STEP_ERR"; then
+    print_error "'$DC' cannot read this project's configuration as $(id -un) — nothing was backed up."
+    show_step_error
+    if [[ -e .env && ! -r .env ]]; then
+        print_info ".env is not readable by $(id -un) (owner $(stat -c %U .env 2>/dev/null || echo '?')):  sudo chown $(id -un): \"$PROJECT_ROOT/.env\""
+    fi
     exit 1
 fi
 
@@ -145,21 +210,62 @@ key_fingerprint() {
 # Default OUTSIDE the project root (sibling dir) so an in-place folder-content
 # replace doesn't wipe the dump.  Override with BACKUP_DIR=/path.
 BACKUP_DIR="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
-mkdir -p "$BACKUP_DIR"
-# An existing directory keeps whatever mode it was created with (755 before
-# this change), which left earlier dumps listable and readable.
-if ! chmod 700 "$BACKUP_DIR" 2>/dev/null; then
-    print_warning "Could not set $BACKUP_DIR to mode 700 (not the owner, or a filesystem"
-    print_warning "without Unix permissions) — make sure only you can read it."
-fi
-print_info "Backups → $BACKUP_DIR"
+
+# "<owner>, mode <mode>" of a path, for a message.
+owner_and_mode() { stat -c '%U, mode %a' "$1" 2>/dev/null || echo "owner unknown"; }
+
+# The folder must exist and take a file from THIS account before anything is
+# dumped.  The default sits beside the project, so a project folder in /opt
+# (whose parent only root can write) failed here with mkdir's one bare line;
+# a folder an earlier run as root made failed later, as "pg_dump failed.".
+prepare_backup_dir() {
+    local me parent probe
+    me="$(id -un)"
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        parent="$(dirname "$BACKUP_DIR")"
+        if ! mkdir -p "$BACKUP_DIR" 2>"$STEP_ERR"; then
+            print_error "Cannot create the backup folder $BACKUP_DIR as $me — nothing was backed up."
+            [[ -d "$parent" ]] && print_error "Its parent $parent: $(owner_and_mode "$parent")."
+            show_step_error
+            print_info "Make it once for this account:  sudo install -d -m 700 -o $me \"$BACKUP_DIR\""
+            print_info "or back up where this account can write:  BACKUP_DIR=/path/to/folder ./scripts/backup-db.sh"
+            print_info "(deploy.sh passes BACKUP_DIR on to its backups too.)"
+            exit 1
+        fi
+    fi
+    # An existing directory keeps whatever mode it was created with (755
+    # before 2026-10-01), which left earlier dumps listable and readable.
+    if ! chmod 700 "$BACKUP_DIR" 2>/dev/null; then
+        print_warning "Could not set $BACKUP_DIR to mode 700 ($(owner_and_mode "$BACKUP_DIR")) — make sure only you can read it."
+    fi
+    probe="$BACKUP_DIR/.write-test-$$"
+    if ! { : > "$probe"; } 2>"$STEP_ERR"; then
+        print_error "Cannot write in the backup folder $BACKUP_DIR as $me ($(owner_and_mode "$BACKUP_DIR")) — nothing was backed up."
+        show_step_error
+        print_info "Give it to this account:  sudo chown -R $me: \"$BACKUP_DIR\""
+        print_info "or back up where this account can write:  BACKUP_DIR=/path/to/folder ./scripts/backup-db.sh"
+        exit 1
+    fi
+    rm -f "$probe"
+}
+prepare_backup_dir
+print_info "Backups → $BACKUP_DIR (as $(id -un); $(df -Ph "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}') free)"
 TS="$(date +%Y%m%d-%H%M%S)"
 
 # --- Is the db container up and accepting connections? ---
 db_is_ready() {
     # `exec` fails outright if the container is not running, so this
-    # doubles as a container-up check.
-    $DC exec -T db pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1
+    # doubles as a container-up check.  pg_isready reports on stdout.
+    $DC exec -T db pg_isready -U "$PG_USER" -d "$PG_DB" >"$STEP_ERR" 2>&1
+}
+
+# The db container's state word (running, exited, restarting …), or nothing
+# when there is no container.
+db_container_state() {
+    local cid
+    cid="$($DC ps -aq db 2>/dev/null | head -1)"
+    [[ -n "$cid" ]] || return 0
+    docker inspect "$cid" --format '{{.State.Status}}' 2>/dev/null | awk '{print $1}'
 }
 
 # --- Resolve the EXACT postgres volume for this stack ---
@@ -219,11 +325,6 @@ helper_image() {
     return 1
 }
 
-# A gzip'd tar that lists to the end was written completely.
-archive_is_readable() {
-    tar tzf "$1" >/dev/null 2>&1
-}
-
 # Size and SHA-256 of a finished artifact, for the .meta.
 file_bytes() {
     stat -c %s "$1" 2>/dev/null || wc -c < "$1" | tr -d ' '
@@ -237,13 +338,17 @@ do_pgdump() {
     local meta="$out.meta"
     print_info "Database is up — taking a logical backup (pg_dump -Fc)..."
 
-    if ! $DC exec -T db pg_dump -U "$PG_USER" -Fc "$PG_DB" > "$out" 2>/dev/null; then
-        print_error "pg_dump failed."
+    local rc=0
+    $DC exec -T db pg_dump -U "$PG_USER" -Fc "$PG_DB" > "$out" 2>"$STEP_ERR" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        print_error "pg_dump failed (exit $rc) writing $out — no dump was kept."
+        show_step_error
         rm -f "$out"
         return 1
     fi
     if [[ ! -s "$out" ]]; then
-        print_error "pg_dump produced an empty file — aborting."
+        print_error "pg_dump exited 0 but wrote an empty file — aborting."
+        show_step_error
         rm -f "$out"
         return 1
     fi
@@ -260,18 +365,19 @@ do_pgdump() {
     # and fails with "could not read from input file: end of file" on a
     # truncated one.  No database is touched (branch review S1).
     local entries
-    if ! entries="$($DC exec -T db pg_restore --list < "$out" 2>/dev/null | grep -c '^[0-9]')" \
+    if ! entries="$($DC exec -T db pg_restore --list < "$out" 2>"$STEP_ERR" | grep -c '^[0-9]')" \
         || [[ "${entries:-0}" -eq 0 ]]; then
-        print_error "The dump could not be read back (pg_restore --list) — it is NOT a usable backup."
-        print_error "Check free disk space in $BACKUP_DIR and re-run."
+        print_error "The dump could not be read back (pg_restore --list) — it is NOT a usable backup and was removed."
+        show_step_error
         rm -f "$out"
         return 1
     fi
     print_info "Verifying the dump by reading it to its end..."
-    if ! $DC exec -T db pg_restore -f /dev/null < "$out" >/dev/null 2>&1; then
+    if ! $DC exec -T db pg_restore -f /dev/null < "$out" >/dev/null 2>"$STEP_ERR"; then
         print_error "The dump is INCOMPLETE or corrupt: pg_restore could not read it to its end"
         print_error "(its table of contents lists $entries entries, but the data behind them is not all there)."
-        print_error "It is NOT a usable backup and was removed. Check free disk space in $BACKUP_DIR and re-run."
+        print_error "It is NOT a usable backup and was removed."
+        show_step_error
         rm -f "$out"
         return 1
     fi
@@ -301,6 +407,28 @@ do_pgdump() {
     print_info    "Schema revision: $rev"
     META_FILE="$meta"
     DB_ARTIFACT="$out"
+    DB_TYPE=pgdump
+}
+
+# Runs `docker run … tar czf - …` (the arguments) into $1 and reads the
+# archive back; on failure says what tar or docker said.  $2 names the
+# content for the message.
+archive_into() {
+    local dest="$1" what="$2" rc=0
+    shift 2
+    docker run --rm "$@" > "$dest" 2>"$STEP_ERR" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        print_error "Archiving $what failed (exit $rc)."
+        show_step_error
+        rm -f "$dest"
+        return 1
+    fi
+    if ! tar tzf "$dest" >/dev/null 2>"$STEP_ERR"; then
+        print_error "The archive of $what was written but cannot be read back to its end."
+        show_step_error
+        rm -f "$dest"
+        return 1
+    fi
 }
 
 # --- The files the database points at ---------------------------------------
@@ -330,15 +458,15 @@ backup_uploads() {
     fi
     local out="nm-uploads-$TS.tar.gz"
     print_info "Archiving uploads/ (evidence images, issued reports, screenshots)..."
-    if ! docker run --rm \
+    # In a container, as its root: uploads/ is the containers' alone (UID 999,
+    # mode 700), so this account could not read it from the host.
+    if ! archive_into "$BACKUP_DIR/$out" "uploads/" \
         -v "$PROJECT_ROOT/uploads":/uploads:ro \
         --entrypoint tar \
         "$image" czf - -C /uploads \
             --exclude=./ingestion_queue --exclude=./report_artifacts \
-            --exclude=./initial-admin-password.txt --exclude=./.worker-status . > "$BACKUP_DIR/$out" \
-        || ! archive_is_readable "$BACKUP_DIR/$out"; then
-        print_error "Archiving uploads/ failed — the database backup is kept, but evidence files are NOT backed up."
-        rm -f "$BACKUP_DIR/$out"
+            --exclude=./initial-admin-password.txt --exclude=./.worker-status .; then
+        print_error "The database backup is kept, but evidence files are NOT backed up."
         return 1
     fi
     chmod 600 "$BACKUP_DIR/$out"
@@ -364,13 +492,11 @@ do_volume_tar() {
     fi
     local out="nm-pgdata-$TS.tar.gz"
     print_info "Taking a raw volume snapshot of '$vol'..."
-    if ! docker run --rm \
+    if ! archive_into "$BACKUP_DIR/$out" "the database volume '$vol'" \
         -v "$vol":/data:ro \
         --entrypoint tar \
-        "$image" czf - -C /data . > "$BACKUP_DIR/$out" \
-        || ! archive_is_readable "$BACKUP_DIR/$out"; then
-        print_error "Volume snapshot failed."
-        rm -f "$BACKUP_DIR/$out"
+        "$image" czf - -C /data .; then
+        print_error "Volume snapshot failed — no backup was taken."
         return 1
     fi
     chmod 600 "$BACKUP_DIR/$out"
@@ -385,6 +511,7 @@ do_volume_tar() {
     } > "$BACKUP_DIR/$out.meta"
     META_FILE="$BACKUP_DIR/$out.meta"
     DB_ARTIFACT="$BACKUP_DIR/$out"
+    DB_TYPE=volume
     print_success "Backup written: $BACKUP_DIR/$out ($(du -h "$BACKUP_DIR/$out" | cut -f1))"
     print_warning "Raw volume snapshots restore only into the same PostgreSQL major version."
 }
@@ -474,7 +601,17 @@ if [[ "$FORCE_VOLUME" -eq 1 ]]; then
 elif db_is_ready; then
     do_pgdump
 else
-    print_warning "Database container is not running/ready — falling back to a raw volume snapshot."
+    DB_STATE="$(db_container_state || true)"
+    if [[ "$DB_STATE" == "running" ]]; then
+        # Copying the files of a database that is running gives no consistent
+        # backup; it used to be taken anyway, and deploy.sh then refused it.
+        print_error "The database container is running but does not accept connections — no backup was taken."
+        show_step_error
+        print_info "It may still be starting:  $DC logs db | tail -n 30      then run this again."
+        print_info "(A raw snapshot of a running database's files is not a consistent backup; --volume forces one.)"
+        exit 1
+    fi
+    print_warning "The database container is ${DB_STATE:-not created} — falling back to a raw volume snapshot."
     do_volume_tar
 fi
 
@@ -499,6 +636,10 @@ if [[ "$UPLOADS_FAILED" -eq 1 ]]; then
         report_free_space
         exit 1
     fi
+fi
+
+if [[ -n "${BACKUP_RESULT_FILE:-}" ]]; then
+    printf 'type=%s\nartifact=%s\ndir=%s\n' "$DB_TYPE" "$DB_ARTIFACT" "$BACKUP_DIR" > "$BACKUP_RESULT_FILE"
 fi
 
 echo ""

@@ -1,13 +1,13 @@
 #!/bin/bash
 
 #
-# BlueStick Deployment Helper
+# BlueStick deployment — the one entry point (interactive menu, options 1–7).
 #
-# For most cases, you can simply run:
-#   docker compose up -d
-#
-# This script handles first-time setup tasks like SSL certificate generation,
-# environment configuration with auto-detected IP, and common operations.
+# Run it as ONE ordinary account that can use Docker, never root.  Option 1
+# deploys or upgrades: a database backup and image snapshot first (the
+# rollback point option 7 returns to), the build, then a staged start
+# (scripts/stack-lib.sh) that waits for the boot migration.  Do not start the
+# stack with a bare `docker compose up`: the workers must wait for it.
 #
 
 set -e
@@ -60,7 +60,7 @@ fi
 # .git/, so it is passed in as a build arg; a file-copied tree without .git/
 # keeps whatever GIT_COMMIT the caller set, else "unknown".
 if [ -z "${GIT_COMMIT:-}" ]; then
-    GIT_COMMIT=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || echo unknown)
+    GIT_COMMIT=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
 fi
 export GIT_COMMIT
 
@@ -530,47 +530,16 @@ ensure_env() {
 }
 
 # ------------------------------------------------------------------
-# Ensure the uploads directory tree exists with correct permissions
-# so the bind-mounted volume is writable by the container user.
+# uploads/ is the containers' (UID 999, mode 700).  backend/docker-entrypoint.sh
+# makes every folder in it and takes the tree over on each start, as root
+# inside the container, so this script makes only the folder itself — as the
+# deploy account, so Docker does not create it as root's for the bind mount.
+# It used to make and chown sub-folders too, and once opened them to every
+# account (mode 1777).  Once the containers own it this account cannot look
+# inside, and need not.
 # ------------------------------------------------------------------
 ensure_uploads_dir() {
-    # The container runs as appuser (UID/GID 999) and bind-mounts ./uploads, so
-    # the worker-written dirs must be writable by UID 999: ingestion_queue (the
-    # ingestion worker) and report_artifacts (the async report worker).
-    #
-    # CR4-5c preferred least privilege (dir owned by 999, mode 0750), but the
-    # only way to chown is as root — and a deploy script must NEVER block on a
-    # sudo password prompt mid-run.  So: do the clean thing automatically when
-    # we already have root, leave a correctly-owned dir untouched, and
-    # otherwise only make the folders — the containers' entrypoint gives them
-    # to UID 999 at start.  No sudo, no prompt, nothing world-writable.
-    # Once the containers have taken uploads/ over it is theirs alone (mode
-    # 700, UID 999): this account cannot look inside, and need not — the
-    # entrypoint makes these folders itself on every start.
-    if [[ -d uploads && "$(id -u)" -ne 0 ]] && ! [[ -x uploads && -w uploads ]]; then
-        return 0
-    fi
-    for d in uploads/ingestion_queue uploads/report_artifacts; do
-        mkdir -p "$d"
-        if [ "$(id -u)" -eq 0 ]; then
-            # Already root (e.g. sudo ./deploy.sh): least privilege, no prompt.
-            chown -R 999:999 "$d"
-            chmod 750 "$d"
-            continue
-        fi
-        # Already owned by the container user from a previous privileged setup?
-        # Leave it — repeat deploys stay silent and least-privilege preserved.
-        if [ "$(stat -c '%u' "$d" 2>/dev/null || echo -1)" = "999" ]; then
-            chmod 750 "$d" 2>/dev/null || true
-            continue
-        fi
-        # Unprivileged deploy: leave the folder as it was made.  It used to be
-        # opened to every account here (mode 1777) so the container could
-        # write to it; the containers' entrypoint takes the uploads tree over
-        # at start (root inside the container, before it drops to UID 999),
-        # so nothing has to be world-writable on the host, and it closes a
-        # folder an earlier deploy opened.
-    done
+    [[ -e uploads ]] || mkdir uploads
 }
 
 # ------------------------------------------------------------------
@@ -661,6 +630,7 @@ permissions_gate() {
 
 report_permissions() {
     audit_permissions
+    print_info "$(perm_describe_uploads)"
     if [[ ${#PERM_WHAT[@]} -eq 0 ]]; then
         print_success "File ownership and permissions: nothing to fix (.env, ssl/, uploads/)"
     else
@@ -718,9 +688,10 @@ ensure_ssl_certs() {
 }
 
 # ------------------------------------------------------------------
-# SSL status check
+# Security status (option 5, and the end of option 2): the database's TLS and
+# whether its port is published.
 # ------------------------------------------------------------------
-check_ssl_status() {
+security_status() {
     print_header "Security Status"
 
     # The container's own user and database, as configured — not the
@@ -817,16 +788,11 @@ backup_config() {
 }
 
 # ------------------------------------------------------------------
-# Rollback helpers (B2-1)
+# Disk: production filled its disk on 2026-09-24 — Postgres PANICked ("No
+# space left on device") and crash-looped until space was freed.  Every
+# option-1 deploy busts the build cache (CACHE_BUST) and leaves the previous
+# images untagged, so each deploy grew Docker's disk use.
 # ------------------------------------------------------------------
-
-# Snapshot the currently-running built images to :rollback tags and record the
-# original image ref per service, so option 7 can restore the prior build.
-# Best-effort: a first-ever deploy (no prior images) records nothing.
-# Production filled its disk on 2026-09-24: Postgres PANICked ("No space left
-# on device") and crash-looped until space was freed.  Every option-1 deploy
-# busts the build cache (CACHE_BUST) and leaves the previous images untagged;
-# nothing removed either, so each deploy grew Docker's disk use.
 MIN_FREE_GB=${MIN_FREE_GB:-15}
 
 check_free_disk() {
@@ -885,6 +851,13 @@ prune_after_deploy() {
     fi
 }
 
+# ------------------------------------------------------------------
+# Rollback helpers (B2-1)
+# ------------------------------------------------------------------
+
+# Snapshot the currently-running built images to :rollback tags and record the
+# original image ref per service, so option 7 can restore the prior build.
+# Best-effort: a first-ever deploy (no prior images) records nothing.
 snapshot_images_for_rollback() {
     local tmp="${ROLLBACK_STATE_FILE}.tmp"
     : > "$tmp"
@@ -926,64 +899,60 @@ record_predeploy_dump() {
     state_set PREDEPLOY_ALEMBIC_REVISION "${rev:-unknown}"
 }
 
+# Run backup-db.sh; on success BACKUP_TYPE / BACKUP_ARTIFACT / BACKUP_LOCATION
+# name what THIS run wrote, as backup-db.sh itself reports it (no second
+# copy here of where backups go).  Returns backup-db.sh's status.
+run_backup() {
+    BACKUP_TYPE=""; BACKUP_ARTIFACT=""; BACKUP_LOCATION=""
+    if [[ ! -x "scripts/backup-db.sh" ]]; then
+        print_error "scripts/backup-db.sh is missing or not executable — no backup can be taken."
+        return 1
+    fi
+    local result rc=0
+    result="$(mktemp)"
+    BACKUP_RESULT_FILE="$result" ./scripts/backup-db.sh "$@" || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        BACKUP_TYPE="$(sed -n 's/^type=//p' "$result")"
+        BACKUP_ARTIFACT="$(sed -n 's/^artifact=//p' "$result")"
+        BACKUP_LOCATION="$(sed -n 's/^dir=//p' "$result")"
+    fi
+    rm -f "$result"
+    return "$rc"
+}
+
 # Take a pre-deploy DB backup and record its path in the state file so a
 # rollback can offer to restore the exact schema the old image expects.
+#
+# Fail closed (review B2): rolling back re-points the image tags, but an
+# older image may not run against a schema a newer migration changed, so the
+# dump IS the rollback path.  Only a dump written by THIS run counts — a
+# volume snapshot (the db container was down) cannot be restored by option 7.
 predeploy_db_backup() {
-    if [[ ! -x "scripts/backup-db.sh" ]]; then
-        print_warning "scripts/backup-db.sh not found — skipping pre-deploy DB backup."
-        return 0
-    fi
     print_info "Taking a pre-deploy database backup..."
-    # Review B2 — this used to warn and continue on a failed backup. Rolling
-    # back re-points the image tags, but an older image may not run against a
-    # schema a newer migration already changed, so the DB dump IS the rollback
-    # path for anything schema-touching. Continuing without one means the
-    # operator discovers recovery is impossible only after a bad migration,
-    # which is the worst possible moment to find out. Fail closed instead.
-    # Only a dump written by THIS run counts.  Taking the newest file in the
-    # folder recorded an earlier deploy's dump whenever this run produced a
-    # volume snapshot instead (db container down), and a rollback would then
-    # have restored days-old data without saying so.
-    local backup_dir dump marker
-    backup_dir="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
-    marker="$(mktemp)"
-    if ./scripts/backup-db.sh; then
-        dump="$(find "$backup_dir" -maxdepth 1 -name 'nm-pgdump-*.dump' -newer "$marker" -size +0 2>/dev/null \
-            | xargs -r ls -t 2>/dev/null | head -1)"
-        rm -f "$marker"
-        if [[ -z "$dump" ]]; then
-            print_error "backup-db.sh did not write a new database dump in $backup_dir"
-            print_error "(it takes a volume snapshot instead when the db container is not running,"
-            print_error " and a rollback can only restore a dump). Start the stack, then deploy again."
-            print_error "Refusing to deploy without a restorable backup."
-            print_info  "Override for a disposable environment: DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
-            [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]] || return 1
-            print_warning "DEPLOY_WITHOUT_BACKUP=1 — continuing with NO restorable database backup."
-            record_predeploy_dump "NONE (forced)"
+    if run_backup; then
+        if [[ "$BACKUP_TYPE" == "pgdump" && -s "$BACKUP_ARTIFACT" ]]; then
+            record_predeploy_dump "$BACKUP_ARTIFACT"
+            print_info "Pre-deploy DB backup: $BACKUP_ARTIFACT (schema revision $(state_get PREDEPLOY_ALEMBIC_REVISION))"
             return 0
         fi
-        record_predeploy_dump "$dump"
-        print_info "Pre-deploy DB backup: $dump (schema revision $(state_get PREDEPLOY_ALEMBIC_REVISION))"
-        return 0
+        print_error "backup-db.sh took a ${BACKUP_TYPE:-different} backup, not a database dump (it snapshots the"
+        print_error "volume when the db container is not running), and a rollback can only restore a dump."
+        print_error "Start the stack ($DC up -d db), then deploy again."
+    else
+        print_error "The pre-deploy backup FAILED — backup-db.sh says why above."
+        print_info  "Only the uploads archive failed, and a database-only backup is acceptable for this deploy?"
+        print_info  "    BACKUP_ALLOW_MISSING_UPLOADS=1 ./scripts/deploy.sh"
+        print_info  "Backups go beside this folder unless BACKUP_DIR says otherwise:"
+        print_info  "    BACKUP_DIR=/path/this/account/can/write ./scripts/deploy.sh"
     fi
-    rm -f "$marker"
-
-    print_error "Pre-deploy backup FAILED (see backup-db.sh's own message above)."
-    print_error "Rollback would not be able to restore this instance, so this deploy is aborting."
-    print_info  "If the database dump was written and only the uploads archive failed, and a"
-    print_info  "database-only backup is acceptable for this deploy:"
-    print_info  "    BACKUP_ALLOW_MISSING_UPLOADS=1 ./scripts/deploy.sh"
-    print_info  "Fix the backup (check disk space and that the db container is up), or, for a"
-    print_info  "disposable environment where losing the data is acceptable, re-run with:"
-    print_info  "    DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
-    if [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]]; then
-        print_warning "DEPLOY_WITHOUT_BACKUP=1 — proceeding with NO restorable database backup."
-        # Recorded so a later rollback tells the operator the DB cannot be
-        # restored, instead of silently offering a restore that can't happen.
-        record_predeploy_dump "NONE (forced)"
-        return 0
-    fi
-    return 1
+    print_error "Refusing to deploy without a restorable backup: a failed migration could not be rolled back."
+    print_info  "For a disposable environment where losing the data is acceptable:  DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
+    [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]] || return 1
+    print_warning "DEPLOY_WITHOUT_BACKUP=1 — continuing with NO restorable database backup."
+    # Recorded so a later rollback says the DB cannot be restored, instead of
+    # offering a restore that cannot happen.
+    record_predeploy_dump "NONE (forced)"
+    return 0
 }
 
 # ------------------------------------------------------------------
@@ -1054,6 +1023,27 @@ print_pending_data_repairs() {
         print_info "They correct rows written by older versions. Run them when no import is in"
         print_info "progress; ./scripts/status.sh repeats this list until each has been run."
     fi
+}
+
+# The closing lines of options 1 and 2: where the application answers, and
+# how the first admin signs in.  The backend port is not published —
+# everything goes through nginx on the frontend origin (printing :8000 URLs
+# once sent operators to a dead port).
+print_access_info() {
+    local ip="${1:-localhost}"
+    echo ""
+    echo "  Frontend: https://${ip}"
+    echo "  Backend:  https://${ip}/api/v1  (proxied via nginx)"
+    echo "  API Docs: https://${ip}/docs"
+    echo ""
+    print_header "Default admin"
+    echo "  Username: admin (unless DEFAULT_ADMIN_USERNAME says otherwise)"
+    echo "  Password: DEFAULT_ADMIN_PASSWORD, or, when that was not set, generated on the FIRST boot"
+    echo "            and written only to uploads/initial-admin-password.txt (never to a log)."
+    echo "            uploads/ is the application's alone, so read it through the container:"
+    echo "              $DC exec backend cat /app/uploads/initial-admin-password.txt"
+    print_info "Password change is required on first login."
+    echo ""
 }
 
 # ------------------------------------------------------------------
@@ -1135,10 +1125,10 @@ prepare_rollback_point() {
     print_warning "No restorable pre-deploy database backup is recorded for that deploy"
     print_warning "(recorded: ${dump:-nothing}). Taking a safety backup of the database AS IT IS NOW; it is"
     print_warning "not recorded as the rollback dump, because it may hold a migrated schema."
-    if [[ -x "scripts/backup-db.sh" ]] && ./scripts/backup-db.sh; then
+    if run_backup; then
         return 0
     fi
-    print_error "The safety backup failed."
+    print_error "The safety backup failed — backup-db.sh says why above."
     if [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]]; then
         print_warning "DEPLOY_WITHOUT_BACKUP=1 — continuing with NO backup."
         return 0
@@ -1526,19 +1516,7 @@ case $DEPLOY_CHOICE in
             echo ""
             exit 1
         fi
-        echo ""
-        # The backend port is not published; everything is proxied by nginx
-        # on the frontend origin.  Printing :8000 URLs sent operators to a
-        # dead port.
-        echo "  Frontend: https://${CONFIGURED_IP:-localhost}"
-        echo "  Backend:  https://${CONFIGURED_IP:-localhost}/api/v1  (proxied via nginx)"
-        echo "  API Docs: https://${CONFIGURED_IP:-localhost}/docs"
-        echo ""
-        print_info "Default admin: username 'admin'. If DEFAULT_ADMIN_PASSWORD was not set,"
-        print_info "the password was auto-generated on the FIRST boot — it is in"
-        print_info "./uploads/initial-admin-password.txt and nowhere else (it is never logged):"
-        print_info "  $DC exec backend cat /app/uploads/initial-admin-password.txt"
-        print_info "Password change is required on first login."
+        print_access_info "$CONFIGURED_IP"
         ;;
 
     2)
@@ -1598,23 +1576,8 @@ case $DEPLOY_CHOICE in
         # says whether it is on.
 
         print_success "First-time setup complete!"
-        echo ""
-        echo "  Frontend: https://${SELECTED_IP}"
-        echo "  Backend:  https://${SELECTED_IP}/api/v1  (proxied via nginx)"
-        echo ""
-
-        echo ""
-        print_header "Default Admin Credentials"
-        echo "  Username: admin"
-        echo "  Password: auto-generated (unless DEFAULT_ADMIN_PASSWORD was set)."
-        echo "            It is in ./uploads/initial-admin-password.txt and nowhere else"
-        echo "            (it is never written to the logs).  uploads/ is the application's"
-        echo "            alone, so read it with:"
-        echo "              $DC exec backend cat /app/uploads/initial-admin-password.txt"
-        print_info "Password change is required on first login."
-        echo ""
-
-        check_ssl_status
+        print_access_info "$SELECTED_IP"
+        security_status
         print_tunable_settings
         ;;
 
@@ -1749,19 +1712,15 @@ case $DEPLOY_CHOICE in
 
         # backup-db.sh auto-selects: a logical pg_dump if the db container is
         # up, or a raw volume snapshot if Postgres is down, plus an archive of
-        # uploads/.  It writes to the sibling <project>-db-backups directory —
-        # outside the project, which the teardown below does not touch.
-        nuke_backup_dir="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
-        if [[ -x "scripts/backup-db.sh" ]]; then
-            print_info "Backing up the database and uploads before teardown..."
-            if ./scripts/backup-db.sh; then
-                print_success "Database + uploads backup: $nuke_backup_dir"
-            else
-                print_error "The database / uploads backup FAILED."
-                nuke_backup_failed=1
-            fi
+        # uploads/.  It writes outside the project (beside it, unless
+        # BACKUP_DIR says otherwise), which the teardown below does not touch.
+        print_info "Backing up the database and uploads before teardown..."
+        nuke_backup="(none — the backup failed)"
+        if run_backup; then
+            nuke_backup="$BACKUP_ARTIFACT"
+            print_success "Database + uploads backup: $BACKUP_ARTIFACT"
         else
-            print_error "scripts/backup-db.sh not found — no backup was taken."
+            print_error "The database / uploads backup FAILED — backup-db.sh says why above."
             nuke_backup_failed=1
         fi
 
@@ -1851,14 +1810,14 @@ case $DEPLOY_CHOICE in
         print_info "Only resources labelled com.docker.compose.project=${nuke_project} were touched."
         print_info "Left in place: base images, Docker's build cache (shared with other projects —"
         print_info "'docker builder prune' reclaims it), ./uploads, ./ssl, and the backups:"
-        print_info "    database + uploads: $nuke_backup_dir"
+        print_info "    database + uploads: $nuke_backup"
         print_info "    .env + SSL:         $(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-config-backup-<timestamp>  (printed above)"
         print_info "To restore: copy the saved .env back FIRST (it holds the key the dump's"
         print_info "encrypted secrets need), start the stack, then ./scripts/restore-db.sh <dump>."
         ;;
 
     5)
-        check_ssl_status
+        security_status
         report_permissions
         ;;
 
@@ -1882,12 +1841,12 @@ echo ""
 print_success "Done!"
 echo ""
 print_info "Useful commands:"
-echo "  $DC up -d         - Start the application"
+echo "  ./scripts/deploy.sh          - Start / rebuild (option 1: staged, waits for migrations)"
 echo "  $DC down          - Stop the application"
 echo "  $DC logs backend  - View backend logs"
 echo "  $DC ps            - Container status"
-echo "  ./scripts/collect-logs.sh    - Collect debug logs"
 echo "  ./scripts/status.sh          - Quick status check"
-echo "  ./scripts/backup-db.sh       - Back up the database"
+echo "  ./scripts/collect-logs.sh    - Anonymised diagnostics bundle (written where you run it; --out DIR)"
+echo "  ./scripts/backup-db.sh       - Back up the database and uploads"
 echo "  ./scripts/restore-db.sh      - Restore the database from a backup"
 echo ""

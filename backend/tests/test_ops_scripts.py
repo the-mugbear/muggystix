@@ -138,7 +138,8 @@ class Project:
         return path.read_text() if path.exists() else ""
 
     # -- running a script ---------------------------------------------------
-    def run(self, script: str, *args: str, stdin: str = "", env: dict | None = None):
+    def run(self, script: str, *args: str, stdin: str = "", env: dict | None = None,
+            cwd: pathlib.Path | None = None):
         self.write_state()
         full_env = {
             **os.environ,
@@ -154,7 +155,7 @@ class Project:
         full_env.pop("BACKUP_DIR", None)
         return subprocess.run(
             ["bash", str(self.root / "scripts" / script), *args],
-            input=stdin, capture_output=True, text=True, env=full_env, cwd=self.root, timeout=120,
+            input=stdin, capture_output=True, text=True, env=full_env, cwd=cwd or self.root, timeout=120,
         )
 
 
@@ -629,7 +630,7 @@ def test_stop_changes_nothing_and_builds_nothing(project):
     assert "Stopped before anything was changed" in out
     assert _mode(env) == 0o644
     assert _index(project.calls(), "compose build") == -1
-    assert not (project.root / "uploads" / "ingestion_queue").exists()   # the step after the check
+    assert _index(project.calls(), "pg_dump") == -1   # no backup either: the steps after the check
 
 
 def test_continue_goes_on_and_leaves_the_files_alone(project):
@@ -983,6 +984,175 @@ def test_backup_records_size_and_checksum(project):
     assert meta["uploads_sha256"] == hashlib.sha256(uploads.read_bytes()).hexdigest()
     assert meta["uploads_bytes"] == str(uploads.stat().st_size)
     assert "full read" in meta["verified"]
+
+
+# ---------------------------------------------------------------------------
+# A failed backup says why (a remote host, 2026-10-20: "pg_dump failed." and
+# nothing else — every tool's own message went to /dev/null)
+# ---------------------------------------------------------------------------
+
+def test_a_failed_pg_dump_prints_what_it_said(project):
+    project.state["fail"] = [{"match": "pg_dump", "rc": 1}]
+
+    result = project.run("backup-db.sh")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "pg_dump failed (exit 1)" in out
+    assert "What it said:" in out and "scripted failure for: compose exec -T db pg_dump" in out
+    assert not list(project.backups.glob("nm-pgdump-*.dump"))
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere")
+def test_a_backup_folder_this_account_cannot_create_is_named_before_anything_is_dumped(project):
+    """The default folder sits beside the project: a project in /opt, whose
+    parent only root can write, failed with mkdir's one bare line."""
+    project.backups.rmdir()
+    parent = project.backups.parent
+    parent.chmod(0o500)
+    try:
+        result = project.run("backup-db.sh")
+    finally:
+        parent.chmod(0o700)
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert f"Cannot create the backup folder {project.backups}" in out
+    assert f"Its parent {parent}:" in out and "mode 500" in out and "Permission denied" in out
+    assert "sudo install -d -m 700" in out and "BACKUP_DIR=" in out
+    assert _index(project.calls(), "pg_dump") == -1
+
+
+def test_compose_that_cannot_read_the_project_is_said_as_such(project):
+    """An .env left unreadable fails every compose call; the script used to
+    go on and blame the database volume."""
+    project.state["fail"] = [{"match": "compose config --quiet", "rc": 1}]
+
+    result = project.run("backup-db.sh")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "cannot read this project's configuration" in out and "scripted failure" in out
+    assert "postgres volume" not in out
+    assert _index(project.calls(), "pg_dump") == -1
+
+
+def test_a_running_database_that_does_not_answer_is_not_copied_raw(project):
+    project.state["fail"] = [{"match": "pg_isready", "rc": 2}]
+
+    result = project.run("backup-db.sh")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "running but does not accept connections" in out and "scripted failure" in out
+    assert _index(project.calls(), "/data:ro") == -1          # no volume snapshot of a live database
+    assert not list(project.backups.glob("nm-pgdata-*"))
+
+
+def test_a_stopped_database_is_snapshotted_and_said(project):
+    project.state["containers"]["db"]["status"] = "exited"
+    project.state["fail"] = [{"match": "pg_isready", "rc": 1}]
+
+    result = project.run("backup-db.sh")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "The database container is exited — falling back to a raw volume snapshot." in out
+    assert list(project.backups.glob("nm-pgdata-*.tar.gz"))
+
+
+def test_a_failed_uploads_archive_prints_what_tar_said(project):
+    project.state["fail"] = [{"match": "/uploads:ro", "rc": 2}]
+
+    result = project.run("backup-db.sh")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "Archiving uploads/ failed (exit 2)" in out and "scripted failure for: run --rm" in out
+    assert "BACKUP INCOMPLETE" in out
+
+
+def test_a_deploy_whose_backup_fails_says_why_and_builds_nothing(project):
+    project.state["fail"] = [{"match": "pg_dump", "rc": 1}]
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "pg_dump failed (exit 1)" in out and "backup-db.sh says why above" in out
+    assert "Refusing to deploy without a restorable backup" in out
+    assert _index(project.calls(), "compose build") == -1
+
+
+def test_a_deploy_records_the_dump_backup_db_reports(project):
+    project.make_dump("nm-pgdump-20990101-000000.dump")   # newer by name, older than this run
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    assert result.returncode == 0, _output(result)
+    recorded = [ln for ln in project.state_file().splitlines() if ln.startswith("PREDEPLOY_DB_DUMP|")]
+    assert len(recorded) == 1 and "20990101" not in recorded[0]
+    assert pathlib.Path(recorded[0].split("|", 1)[1]).is_file()
+
+
+def test_security_status_says_that_a_containers_uploads_folder_is_as_it_should_be(project):
+    """The correct state — another number's folder, mode 700, unlistable from
+    the deploy account — read like a fault, and operators took it for one."""
+    _fake_owner(project, "uploads", uid=999, name="dnsmasq")
+
+    result = project.run("deploy.sh", stdin="5\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "uploads/ is the containers' (UID 999" in out and "as it should be" in out
+    assert "this account cannot list it, by design" in out
+    assert "exec backend ls -la /app/uploads" in out
+    assert "File ownership and permissions: nothing to fix" in out
+
+
+# ---------------------------------------------------------------------------
+# collect-logs.sh writes its bundle where it was run, and never discards it
+# ---------------------------------------------------------------------------
+
+def test_the_bundle_is_written_where_the_script_was_run(project, tmp_path):
+    here = tmp_path / "operator"
+    here.mkdir()
+
+    result = project.run("collect-logs.sh", "--no-feedback", cwd=here)
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    bundles = list(here.glob("bluestick_diagnostics_*.tar.gz"))
+    assert len(bundles) == 1 and f"Anonymised diagnostics bundle: {bundles[0]}" in out
+    assert not list(project.root.glob("bluestick_diagnostics_*.tar.gz"))
+
+
+def test_the_bundle_goes_to_out(project, tmp_path):
+    out_dir = tmp_path / "elsewhere"
+    out_dir.mkdir()
+
+    result = project.run("collect-logs.sh", "--no-feedback", "--out", str(out_dir))
+
+    assert result.returncode == 0, _output(result)
+    assert len(list(out_dir.glob("bluestick_diagnostics_*.tar.gz"))) == 1
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere")
+def test_a_folder_this_account_cannot_write_gets_no_bundle_and_is_told_where_it_went(project, tmp_path):
+    """A failed final move ended the script under `set -e`, and the EXIT trap
+    deleted the finished bundle with its work folder."""
+    here = tmp_path / "read-only"
+    here.mkdir()
+    here.chmod(0o500)
+    try:
+        result = project.run("collect-logs.sh", "--no-feedback", cwd=here)
+    finally:
+        here.chmod(0o700)
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert f"{here} is not writable" in out and f"written to {project.root} instead" in out
+    assert len(list(project.root.glob("bluestick_diagnostics_*.tar.gz"))) == 1
 
 
 def test_restore_refuses_a_dump_that_no_longer_matches_its_checksum(project):
