@@ -70,34 +70,61 @@ def test_a_process_is_near_its_limit_by_its_own_memory_not_its_peak(fake_host):
     assert rm.process_memory()["limit_bytes"] is None and rm.process_memory()["near_limit"] is False
 
 
-def test_no_cgroup_is_no_answer_and_no_peak_is_no_worker_report(fake_host):
+def test_a_worker_reports_that_it_is_alive_whatever_it_can_read_of_its_memory(fake_host, monkeypatch):
+    """Review 2026-10-21, A2: with no peak (or no cgroup) a worker used to
+    write no report at all — and one that never reports cannot be seen
+    going silent."""
     cgroup, _, uploads = fake_host
+    monkeypatch.setattr(rm.socket, "gethostname", lambda: "worker-a")
     assert rm.process_memory() is None
-    _cgroup(cgroup, current=1 * GB, peak=None, limit=4 * GB)
-    # The backend's own line can do without the peak; a worker's report cannot.
-    assert rm.process_memory()["peak_bytes"] is None
-    assert rm.process_memory(require_peak=True) is None
     rm.write_worker_report("ingestion_jobs")
-    assert not (uploads / rm.REPORTS_DIR).exists()
-    assert rm.worker_reports() == []
+    (report,) = rm.worker_reports()
+    assert (report["name"], report["instance"], report["memory_read"], report["current_bytes"]) == (
+        "ingestion_jobs", "worker-a", False, None)
+
+    rm._last_report = 0.0
+    _cgroup(cgroup, current=1 * GB, peak=None, limit=4 * GB)
+    rm.write_worker_report("ingestion_jobs")
+    (report,) = rm.worker_reports()
+    assert report["memory_read"] is True and report["peak_bytes"] is None and report["current_bytes"] == 1 * GB
+
+
+def test_two_replicas_of_one_queue_each_keep_their_own_report(fake_host, monkeypatch):
+    cgroup, _, uploads = fake_host
+    _cgroup(cgroup, current=1 * GB, peak=1 * GB, limit=4 * GB)
+    for host in ("worker-a", "worker-b"):
+        monkeypatch.setattr(rm.socket, "gethostname", lambda h=host: h)
+        rm._last_report = 0.0
+        rm.write_worker_report("ingestion_jobs")
+    assert sorted((r["name"], r["instance"]) for r in rm.worker_reports()) == [
+        ("ingestion_jobs", "worker-a"), ("ingestion_jobs", "worker-b")]
+    # The one-file-per-queue report of before is not read (it would be a
+    # worker silent since the upgrade), and a report a day old is forgotten.
+    folder = uploads / rm.REPORTS_DIR
+    (folder / "report_jobs.json").write_text(json.dumps({"name": "report_jobs", "at": time.time(), "memory": None}))
+    data = json.loads((folder / "ingestion_jobs.worker-b.json").read_text())
+    data["at"] = time.time() - rm.REPORT_FORGET_SECONDS - 5
+    (folder / "ingestion_jobs.worker-b.json").write_text(json.dumps(data))
+    assert [(r["name"], r["instance"]) for r in rm.worker_reports()] == [("ingestion_jobs", "worker-a")]
 
 
 def test_a_worker_report_is_written_whole_read_back_and_goes_stale(fake_host, monkeypatch):
     cgroup, _, uploads = fake_host
     _cgroup(cgroup, current=1 * GB, peak=int(3.9 * GB), limit=4 * GB, own=int(3.7 * GB), oom_kills=1)
+    monkeypatch.setattr(rm.socket, "gethostname", lambda: "worker-a")
     rm.write_worker_report("ingestion_jobs")
 
     folder = uploads / rm.REPORTS_DIR
-    assert [p.name for p in folder.iterdir()] == ["ingestion_jobs.json"]       # no temp file left
+    assert [p.name for p in folder.iterdir()] == ["ingestion_jobs.worker-a.json"]   # no temp file left
     (report,) = rm.worker_reports()
     assert report["name"] == "ingestion_jobs" and report["stale"] is False
     assert (report["current_bytes"], report["peak_bytes"], report["limit_bytes"]) == (1 * GB, int(3.9 * GB), 4 * GB)
     assert report["near_limit"] is True and report["own_bytes"] == int(3.7 * GB) and report["oom_kills"] == 1
 
     # The worker was killed: its last report is still there, and is said to be old.
-    data = json.loads((folder / "ingestion_jobs.json").read_text())
+    data = json.loads((folder / "ingestion_jobs.worker-a.json").read_text())
     data["at"] = time.time() - rm.REPORT_STALE_SECONDS - 5
-    (folder / "ingestion_jobs.json").write_text(json.dumps(data))
+    (folder / "ingestion_jobs.worker-a.json").write_text(json.dumps(data))
     (report,) = rm.worker_reports()
     assert report["stale"] is True and report["age_seconds"] > rm.REPORT_STALE_SECONDS
 
@@ -112,8 +139,9 @@ def test_a_report_is_rewritten_at_most_every_few_seconds(fake_host, monkeypatch)
     _cgroup(cgroup, current=1 * GB, peak=1 * GB, limit=4 * GB)
     clock = {"now": 1000.0}
     monkeypatch.setattr(rm.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(rm.socket, "gethostname", lambda: "worker-r")
     rm.write_worker_report("report_jobs")
-    target = uploads / rm.REPORTS_DIR / "report_jobs.json"
+    target = uploads / rm.REPORTS_DIR / "report_jobs.worker-r.json"
     first = target.read_text()
 
     _cgroup(cgroup, current=2 * GB, peak=2 * GB, limit=4 * GB)
@@ -133,7 +161,11 @@ def test_the_heartbeat_is_written_whatever_the_memory_report_does(fake_host, mon
     monkeypatch.setattr(worker_loop, "_status_name", "ingestion_jobs")
 
     worker_loop.write_heartbeat(str(heartbeat), logging.getLogger("test"))     # no cgroup at all
-    assert heartbeat.exists() and rm.worker_reports() == []
+    # Both written: the heartbeat, and (2.519.0) a report saying it is alive.
+    assert heartbeat.exists() and [r["memory_read"] for r in rm.worker_reports()] == [False]
+    for stale in (uploads / rm.REPORTS_DIR).iterdir():
+        stale.unlink()
+    (uploads / rm.REPORTS_DIR).rmdir()
 
     # The reports folder cannot be made (a file is in its place): still a heartbeat, no error.
     (uploads / rm.REPORTS_DIR).write_text("in the way")

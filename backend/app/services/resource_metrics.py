@@ -19,7 +19,11 @@ Two rules the page depends on:
   comfortable number for a worker killed seconds later.  A report carries
   the kernel's count of processes killed at the limit (``memory.events``
   ``oom_kill``) and its high-water mark (``memory.peak``, shown "since
-  start"); on a kernel without a peak a worker reports nothing.  "Near the
+  start").  A report is written whether or not the memory could be read
+  (2.519.0, review 2026-10-21 A2: a kernel without a peak used to mean no
+  report at all, and a worker that never reports cannot be seen going
+  silent); one per worker INSTANCE (its container), so two replicas of one
+  queue do not overwrite each other.  "Near the
   limit" is judged on the processes' OWN memory (``memory.stat`` ``anon``)
   — the peak counts file cache the kernel frees by itself, and one large
   import left the warning red until a restart (third review 2026-10-15,
@@ -33,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -62,6 +67,12 @@ REPORT_MIN_INTERVAL_SECONDS = 5.0
 #: A report older than this is a worker that is not reporting — killed,
 #: stopped, or wedged — and is shown as that, never as a calm worker.
 REPORT_STALE_SECONDS = 120.0
+#: A report older than this is forgotten: a replica that was scaled away
+#: stops being listed (and alerted on) a day after it last spoke.
+REPORT_FORGET_SECONDS = 24 * 3600.0
+#: When this process started — a worker alerts on a queue with NO report only
+#: once it has run long enough for that queue's worker to have written one.
+STARTED_AT = time.monotonic()
 
 _last_report: float = 0.0
 
@@ -88,7 +99,7 @@ def _read_keyed(path: Path) -> Dict[str, int]:
     return out
 
 
-def process_memory(*, require_peak: bool = False) -> Optional[dict]:
+def process_memory() -> Optional[dict]:
     """This container's memory from its cgroup (v2): ``current_bytes``,
     ``own_bytes`` (``memory.stat`` ``anon`` — the processes' own memory,
     which the kernel cannot give back; None where it cannot be read),
@@ -100,14 +111,11 @@ def process_memory(*, require_peak: bool = False) -> Optional[dict]:
 
     Not the peak (third review 2026-10-15, S2): it counts file cache the
     kernel frees by itself, so one large import left the warning red until a
-    restart.  None when the cgroup cannot be read, or — with
-    ``require_peak`` — has no peak."""
+    restart.  None when the cgroup cannot be read."""
     current = _read_int(CGROUP / "memory.current")
     if current is None:
         return None
     peak = _read_int(CGROUP / "memory.peak")
-    if peak is None and require_peak:
-        return None
     limit = _read_int(CGROUP / "memory.max")
     own = _read_keyed(CGROUP / "memory.stat").get("anon")
     judged = own if own is not None else current
@@ -182,26 +190,39 @@ def _reports_dir() -> Path:
     return Path(settings.UPLOAD_DIR) / REPORTS_DIR
 
 
+def instance_name() -> str:
+    """This worker instance: its container's host name (Docker sets it to
+    the container id), letters, digits, ``-`` and ``_`` only."""
+    raw = socket.gethostname() or f"pid{os.getpid()}"
+    return "".join(c for c in raw if c.isalnum() or c in "-_")[:40] or f"pid{os.getpid()}"
+
+
 def write_worker_report(name: str) -> None:
-    """Leave this worker's memory beside its heartbeat, at most every
-    ``REPORT_MIN_INTERVAL_SECONDS``.  Called from the heartbeat: it must never
-    raise and never matter — no report is written where the kernel keeps no
-    peak, and any failure is silent."""
+    """Leave this worker's report beside its heartbeat — that it is alive,
+    and its memory where the kernel says — at most every
+    ``REPORT_MIN_INTERVAL_SECONDS``, in a file of its own
+    (``<queue>.<instance>.json``).  Called from the heartbeat: it must never
+    raise and never matter — any failure is silent."""
     global _last_report
     now = time.monotonic()
     if _last_report and now - _last_report < REPORT_MIN_INTERVAL_SECONDS:
         return
     _last_report = now
     try:
-        memory = process_memory(require_peak=True)
-        if memory is None or not name.replace("-", "").replace("_", "").isalnum():
+        if not name.replace("-", "").replace("_", "").isalnum():
             return
+        instance = instance_name()
         folder = _reports_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{name}.json"
-        tmp = folder / f".{name}.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps({"name": name, "at": time.time(), "memory": memory}))
+        target = folder / f"{name}.{instance}.json"
+        tmp = folder / f".{name}.{instance}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({
+            "name": name, "instance": instance, "at": time.time(), "memory": process_memory(),
+        }))
         os.replace(tmp, target)        # a reader never sees half a report
+        # The one-file-per-queue report of before 2.519.0 would read as a
+        # worker silent since the upgrade.
+        (folder / f"{name}.json").unlink(missing_ok=True)
     except Exception:
         return
 
@@ -218,19 +239,26 @@ def worker_reports() -> List[dict]:
     for path in files:
         try:
             data = json.loads(path.read_text())
-            memory = data["memory"]
+            if "instance" not in data:
+                continue                  # a report from before 2.519.0
             age = max(0.0, now - float(data["at"]))
+            if age > REPORT_FORGET_SECONDS:
+                continue
+            memory = data.get("memory")
             out.append({
                 "name": str(data["name"])[:60],
+                "instance": str(data["instance"])[:40],
                 "age_seconds": round(age, 1),
                 "stale": age > REPORT_STALE_SECONDS,
-                "current_bytes": int(memory["current_bytes"]),
-                "own_bytes": int(memory["own_bytes"]) if memory.get("own_bytes") is not None else None,
-                "peak_bytes": int(memory["peak_bytes"]),
-                "limit_bytes": int(memory["limit_bytes"]) if memory.get("limit_bytes") else None,
-                "oom_kills": int(memory.get("oom_kills") or 0),
-                "near_limit": bool(memory.get("near_limit")),
+                # Null throughout where the worker could not read its memory.
+                "memory_read": memory is not None,
+                "current_bytes": int(memory["current_bytes"]) if memory else None,
+                "own_bytes": int(memory["own_bytes"]) if memory and memory.get("own_bytes") is not None else None,
+                "peak_bytes": int(memory["peak_bytes"]) if memory and memory.get("peak_bytes") is not None else None,
+                "limit_bytes": int(memory["limit_bytes"]) if memory and memory.get("limit_bytes") else None,
+                "oom_kills": int(memory.get("oom_kills") or 0) if memory else 0,
+                "near_limit": bool(memory.get("near_limit")) if memory else False,
             })
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             continue
     return out

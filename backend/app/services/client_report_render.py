@@ -78,11 +78,33 @@ def file_slug(text: Optional[str], fallback: str = "report") -> str:
     return (slug or fallback)[:60]
 
 
-def live_evidence_resolver(db: Session, project_id: int):
+#: Attachments read per statement when a resolver is handed the ids up front.
+RESOLVE_BATCH = 1000
+
+
+def live_evidence_resolver(db: Session, project_id: int, dataset: Optional[dict] = None):
     """The live attachments: a DRAFT's images, and those of a document that
-    is never frozen (a contact's remediation list)."""
+    is never frozen (a contact's remediation list).
+
+    Given the ``dataset``, every image it names is read up front, a thousand
+    to a statement, this project's only (review 2026-10-21, A3: one ``get``
+    per image made the freshness check — asked on every focus of the report
+    page — a statement per screenshot).  An id it did not name is still
+    looked up on its own."""
+    known: dict = {}
+    if dataset is not None:
+        ids = sorted(_attachment_ids(dataset, set()))
+        for start in range(0, len(ids), RESOLVE_BATCH):
+            for att in db.query(NoteAttachment).filter(
+                NoteAttachment.id.in_(ids[start:start + RESOLVE_BATCH]),
+                NoteAttachment.project_id == project_id,
+            ):
+                known[att.id] = att
+        known.update({i: None for i in ids if i not in known})
+
     def resolve(item: dict) -> Optional[Path]:
-        att = db.get(NoteAttachment, item.get("attachment_id"))
+        att_id = item.get("attachment_id")
+        att = known[att_id] if att_id in known else db.get(NoteAttachment, att_id)
         if att is None or att.project_id != project_id:
             return None
         return attachment_file(att)
@@ -139,7 +161,7 @@ def inputs_fingerprint(db: Session, report: Report, dataset: dict) -> str:
     # check cost seconds with thousands of screenshots, and a file deleted
     # between the existence check and the read was a 500 (review 2026-10-14,
     # R2).
-    resolve = live_evidence_resolver(db, report.project_id)
+    resolve = live_evidence_resolver(db, report.project_id, dataset)
     for att_id in sorted(_attachment_ids(dataset, set())):
         path = resolve({"attachment_id": att_id})
         digest.update(f"image:{att_id}\0".encode("ascii"))
@@ -218,7 +240,8 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
         template.path, template.entry, dataset, wanted, out_dir,
         basename=basename,
         resolve_evidence=(
-            _issued_evidence_resolver(db, report) if issued else live_evidence_resolver(db, report.project_id)
+            _issued_evidence_resolver(db, report) if issued
+            else live_evidence_resolver(db, report.project_id, dataset)
         ),
         postprocess=template.postprocess,
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,

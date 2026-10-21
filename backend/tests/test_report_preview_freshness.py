@@ -104,7 +104,7 @@ def test_todays_date_is_not_an_input_and_an_images_file_is(db_session, test_proj
     image.write_bytes(b"one")
     files = {7: image}
     monkeypatch.setattr(client_report_render, "live_evidence_resolver",
-                        lambda db, project_id: lambda item: files.get(item["attachment_id"]))
+                        lambda db, project_id, dataset=None: lambda item: files.get(item["attachment_id"]))
     dataset = {"report": {"date": "2026-10-13", "title": "Draft"},
                "findings": [{"images": [{"attachment_id": 7, "caption": "A share"}]}]}
     yesterday = client_report_render.inputs_fingerprint(db_session, report, dataset)

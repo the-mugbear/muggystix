@@ -541,7 +541,7 @@ Every primitive lives under `src/components/ui/`:
 - Feedback: `Alert` (info / success / warning / destructive / default) / `Tooltip` / `InfoTip` / `InlineLoader`
 - Layout: `Tabs` / `Accordion` / `Separator` / `Avatar`
 - Overlay: `Dialog` / `ConfirmDialog` (`src/components/ConfirmDialog.tsx`, always via `useConfirm`) / `SideSheet` / `Popover` / `DropdownMenu`
-- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed) / `CodeBlock` / `SeverityBar` / `BreakableName`
+- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed) / `CodeBlock` / `SeverityBar` (inside a card or a cell) / `DistributionBar` (a population split into parts, in a section: heading row with the whole, one 12px rail with no numbers in it, a row of count · share and links under it — Posture's scanner observations by severity and promoted findings by status both use it, 5.414.0; a new split in a section uses it, never its own bar) / `BreakableName`
 
 ### 37. Suggested Shared Utilities
 These are good candidates for standardization if repeated:

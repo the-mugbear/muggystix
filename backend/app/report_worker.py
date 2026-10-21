@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 
 from app import worker_loop
 from app.services.report_job_service import ReportJobService
@@ -77,10 +78,12 @@ def main() -> None:
         # B-OPS-3 — the import worker cannot say it went silent; this one can.
         from app.db.session import SessionLocal
         from app.services.operational_alerts import alert_silent_workers
-        from app.services.resource_metrics import worker_reports
+        from app.services.resource_metrics import STARTED_AT, instance_name, worker_reports
 
         with SessionLocal() as db:
-            alert_silent_workers(db, "report_jobs", worker_reports())
+            alert_silent_workers(
+                db, instance_name(), worker_reports(), running_for=time.monotonic() - STARTED_AT,
+            )
             db.commit()
 
     worker_loop.run_listen_loop(

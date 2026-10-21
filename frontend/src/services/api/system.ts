@@ -81,10 +81,15 @@ export interface ProcessMemory {
   near_limit: boolean;
 }
 
-export interface WorkerMemory extends ProcessMemory {
+export interface WorkerMemory extends Omit<ProcessMemory, 'current_bytes'> {
   /** The queue the worker serves: `ingestion_jobs` or `report_jobs`. */
   name: string;
-  peak_bytes: number;
+  /** Its container (5.414.0): replicas of one queue report apart. */
+  instance: string;
+  /** False: the worker reports that it is alive but could not read its
+   *  memory — every memory figure is then null (5.414.0). */
+  memory_read: boolean;
+  current_bytes: number | null;
   age_seconds: number;
   /** No report for two minutes: killed, stopped or wedged. */
   stale: boolean;

@@ -48,6 +48,7 @@ from app.services.url_validator import (
     require_public_http_url,
     resolve_host_guarded,
     safe_request,
+    RequestBudgetExceeded,
     ResponseTooLarge,
 )
 
@@ -187,13 +188,14 @@ def _test_nessus(
     target = f"{base_url.rstrip('/')}/server/properties"
     try:
         resp = safe_request(
-            "GET", target, allow_private=True, timeout=10.0, verify=False, headers=headers,
+            "GET", target, allow_private=True, timeout=10.0, total_timeout=10.0, verify=False,
+            headers=headers,
         )
     except ResponseTooLarge:
         return {"ok": False, "message": "Nessus returned an oversized response."}
     except httpx.ConnectError as exc:
         return {"ok": False, "message": f"Could not connect to Nessus: {exc}"}
-    except httpx.TimeoutException:
+    except (httpx.TimeoutException, RequestBudgetExceeded):
         return {
             "ok": False,
             "message": "Connection to Nessus timed out after 10 seconds.",
@@ -239,12 +241,12 @@ def _test_ollama(base_url: str) -> dict:
     """Hit ``/api/version`` — no auth, fastest possible round-trip."""
     target = f"{base_url.rstrip('/')}/api/version"
     try:
-        resp = safe_request("GET", target, allow_private=True, timeout=5.0, verify=False)
+        resp = safe_request("GET", target, allow_private=True, timeout=5.0, total_timeout=5.0, verify=False)
     except ResponseTooLarge:
         return {"ok": False, "message": "Ollama returned an oversized response."}
     except httpx.ConnectError as exc:
         return {"ok": False, "message": f"Could not connect to Ollama: {exc}"}
-    except httpx.TimeoutException:
+    except (httpx.TimeoutException, RequestBudgetExceeded):
         return {"ok": False, "message": "Connection to Ollama timed out after 5 seconds."}
     if resp.status_code >= 400:
         return {
@@ -430,7 +432,7 @@ def _gsa_reachability(base_url: str) -> dict:
     """No credentials to check: confirm something answers, and say so plainly
     rather than letting a reachability pass read as a verified login."""
     try:
-        resp = safe_request("GET", base_url, allow_private=True, timeout=10.0, verify=False)
+        resp = safe_request("GET", base_url, allow_private=True, timeout=10.0, total_timeout=10.0, verify=False)
     except ResponseTooLarge:
         return {
             "ok": None,
@@ -438,7 +440,7 @@ def _gsa_reachability(base_url: str) -> dict:
         }
     except httpx.ConnectError as exc:
         return {"ok": False, "message": f"Could not connect: {exc}"}
-    except httpx.TimeoutException:
+    except (httpx.TimeoutException, RequestBudgetExceeded):
         return {"ok": False, "message": "Connection timed out after 10 seconds."}
     except httpx.HTTPError as exc:
         return {"ok": False, "message": f"HTTP error talking to the server: {type(exc).__name__}"}

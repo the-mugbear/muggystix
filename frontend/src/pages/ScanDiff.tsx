@@ -14,7 +14,7 @@
  * View is a link (middle-click, copy), and a failure says so with Retry.
  */
 import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, GitCompareArrows } from 'lucide-react';
 
@@ -32,9 +32,11 @@ import PostureLead from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { buildHostsUrl } from '../utils/drilldownLinks';
@@ -370,42 +372,69 @@ const Comparison: React.FC<{ diff: ScanDiffResponse }> = ({ diff }) => {
 const ScanPicker: React.FC = () => {
   const navigate = useNavigate();
   const projectId = useProjectId();
-  const [aSel, setASel] = useState('');
-  const [bSel, setBSel] = useState('');
+  // The scans chosen, kept whole: a search that no longer lists one must not
+  // take it out of its picker (review 2026-10-21, B3).
+  const [aScan, setAScan] = useState<Scan | null>(null);
+  const [bScan, setBScan] = useState<Scan | null>(null);
+  // The newest PICKER_LIMIT scans, or the newest that match the search — the
+  // Scans page's own search (file name, tool…), on the server, so a scan
+  // older than the newest 200 can be found and compared.
+  const [find, setFind] = useState('');
+  const search = useDebouncedValue(find.trim(), 300);
   const list = useQuery({
-    queryKey: ['getScans', projectId, {}, { limit: PICKER_LIMIT }],
-    queryFn: ({ signal }) => getScans(projectId, 0, PICKER_LIMIT, { signal }),
+    queryKey: ['getScans', projectId, { search }, { limit: PICKER_LIMIT }],
+    queryFn: ({ signal }) => getScans(projectId, 0, PICKER_LIMIT, { search: search || undefined, signal }),
+    placeholderData: keepPreviousData,
   });
   const scans: Scan[] | null = list.data ?? null;
+  const aSel = aScan ? String(aScan.id) : '';
+  const bSel = bScan ? String(bScan.id) : '';
   const canCompare = !!aSel && !!bSel && aSel !== bSel;
 
-  const pick = (id: string, label: string, value: string, onChange: (v: string) => void, placeholder: string) => (
-    <div className="flex min-w-0 flex-col gap-xxs">
-      <Label htmlFor={id}>{label}</Label>
-      <Select value={value} onValueChange={onChange} disabled={!scans}>
-        <SelectTrigger id={id} className="w-full"><SelectValue placeholder={placeholder} /></SelectTrigger>
-        <SelectContent>
-          {(scans ?? []).map((s) => (
-            <SelectItem key={s.id} value={String(s.id)}>{scanLabel(s)}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
+  const pick = (
+    id: string, label: string, chosen: Scan | null, onChange: (s: Scan | null) => void, placeholder: string,
+  ) => {
+    const options = [...(chosen && !(scans ?? []).some((s) => s.id === chosen.id) ? [chosen] : []), ...(scans ?? [])];
+    return (
+      <div className="flex min-w-0 flex-col gap-xxs">
+        <Label htmlFor={id}>{label}</Label>
+        <Select value={chosen ? String(chosen.id) : ''} disabled={!scans}
+          onValueChange={(v) => onChange(options.find((s) => String(s.id) === v) ?? null)}>
+          <SelectTrigger id={id} className="w-full"><SelectValue placeholder={placeholder} /></SelectTrigger>
+          <SelectContent>
+            {options.map((s) => (
+              <SelectItem key={s.id} value={String(s.id)}>{scanLabel(s)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    );
+  };
 
+  const capped = !!scans && scans.length >= PICKER_LIMIT;
   return (
     <PostureSection
       title="Pick two scans"
-      description={`A is the baseline (earlier), B the comparison (later).${scans && scans.length >= PICKER_LIMIT ? ` The lists hold the newest ${PICKER_LIMIT.toLocaleString()} scans.` : ''}`}
+      description={`A is the baseline (earlier), B the comparison (later).${capped
+        ? ` The lists hold the newest ${PICKER_LIMIT.toLocaleString()} scans${search ? ' that match' : ''} — search to find an older one.`
+        : ''}`}
     >
       {list.isError ? (
         <FailedRead message={queryErrorText(list.error, 'Could not load the scans.') ?? 'Could not load the scans.'} onRetry={() => void list.refetch()} />
-      ) : scans && scans.length < 2 ? (
+      ) : scans && !search && scans.length < 2 ? (
         <p className="text-metadata text-muted-foreground">This project needs at least two scans to compare.</p>
       ) : (
         <div className="flex max-w-2xl flex-col gap-sm" data-testid="compare-picker">
-          {pick('compare-a', 'Baseline (A)', aSel, setASel, 'Choose the baseline scan')}
-          {pick('compare-b', 'Comparison (B)', bSel, setBSel, 'Choose the comparison scan')}
+          <div className="flex min-w-0 flex-col gap-xxs">
+            <Label htmlFor="compare-find">Find a scan</Label>
+            <Input id="compare-find" type="search" value={find} onChange={(e) => setFind(e.target.value)}
+              placeholder="File name or tool — narrows both lists" />
+            {search && scans && scans.length === 0 && (
+              <p className="text-caption text-muted-foreground">No scan matches “{search}”.</p>
+            )}
+          </div>
+          {pick('compare-a', 'Baseline (A)', aScan, setAScan, 'Choose the baseline scan')}
+          {pick('compare-b', 'Comparison (B)', bScan, setBScan, 'Choose the comparison scan')}
           {aSel && bSel && aSel === bSel && <p className="text-caption text-destructive">Choose two different scans.</p>}
           <div>
             <Button disabled={!canCompare} onClick={() => navigate(`${COMPARE_PATH}?a=${aSel}&b=${bSel}`)}>

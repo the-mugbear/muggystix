@@ -250,6 +250,11 @@ PROVIDER_UNREACHABLE = (
 )
 
 
+#: The whole of a provider's connection test, not just each read (review
+#: 2026-10-21, A1): it runs in an API request.
+TEST_CONNECTION_SECONDS = 15.0
+
+
 def _did_not_answer(where: str, provider: LLMProvider, exc: BaseException) -> str:
     """The ONE reading of "the provider did not answer" — refused, timed out,
     did not resolve, a blocked address, an unreadable body: log the reason
@@ -285,7 +290,7 @@ def test_connection(provider: LLMProvider) -> Dict[str, Any]:
         if ptype == LLMProviderType.OPENAI.value or ptype == LLMProviderType.OPENAI_COMPATIBLE.value:
             url = (provider.base_url or "https://api.openai.com").rstrip("/") + "/v1/models"
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0, headers=headers)
+            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0, total_timeout=TEST_CONNECTION_SECONDS, headers=headers)
             r.raise_for_status()
             return {"ok": True, "detail": "Model list fetched successfully."}
         if ptype == LLMProviderType.ANTHROPIC.value:
@@ -300,7 +305,7 @@ def test_connection(provider: LLMProvider) -> Dict[str, Any]:
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "hi"}],
             }
-            r = safe_request("POST", url, allow_private=allow_private, timeout=15.0, headers=headers, json=body)
+            r = safe_request("POST", url, allow_private=allow_private, timeout=15.0, total_timeout=TEST_CONNECTION_SECONDS, headers=headers, json=body)
             r.raise_for_status()
             return {"ok": True, "detail": "Anthropic endpoint responded."}
         if ptype == LLMProviderType.AZURE_OPENAI.value:
@@ -308,13 +313,13 @@ def test_connection(provider: LLMProvider) -> Dict[str, Any]:
                 return {"ok": False, "detail": "Azure OpenAI requires a base URL."}
             url = provider.base_url.rstrip("/") + "/openai/models?api-version=2024-02-01"
             headers = {"api-key": api_key or ""}
-            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0, headers=headers)
+            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0, total_timeout=TEST_CONNECTION_SECONDS, headers=headers)
             r.raise_for_status()
             return {"ok": True, "detail": "Azure OpenAI deployment reachable."}
         if ptype == LLMProviderType.OLLAMA.value:
             base = provider.base_url or "http://localhost:11434"
             url = base.rstrip("/") + "/api/tags"
-            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0)
+            r = safe_request("GET", url, allow_private=allow_private, timeout=15.0, total_timeout=TEST_CONNECTION_SECONDS)
             r.raise_for_status()
             tags = r.json().get("models", [])
             return {
@@ -461,6 +466,9 @@ class LLMAdapter:
     """Static description of one provider's transport + response shape."""
     build_request: Callable[..., Tuple[str, Dict[str, str], Dict[str, Any]]]
     parse_response: Callable[[Dict[str, Any]], str]
+    # Each phase (connect, each read) — and, doubled, the whole request: a
+    # server that trickles bytes inside every read timeout must not hold an
+    # API worker thread for as long as it likes (review 2026-10-21, A1).
     timeout_seconds: float = 60.0
     allow_private: bool = False
     required_provider_fields: Tuple[str, ...] = ()
@@ -533,7 +541,7 @@ def chat_completion(
         r = safe_request(
             "POST", url,
             allow_private=adapter.allow_private, timeout=adapter.timeout_seconds,
-            headers=headers, json=body,
+            total_timeout=adapter.timeout_seconds * 2, headers=headers, json=body,
         )
         r.raise_for_status()
         data = r.json()

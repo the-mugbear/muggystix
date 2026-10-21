@@ -414,7 +414,7 @@ def run_job(db: Session, job: ReportJob) -> Tuple[bytes, str, str]:
         files = quarto_render.render(
             template.path, template.entry, dataset, [fmt], Path(tmp),
             basename=f"remediation-{project}-{slug}-{dataset['report']['as_of']}",
-            resolve_evidence=client_report_render.live_evidence_resolver(db, job.project_id),
+            resolve_evidence=client_report_render.live_evidence_resolver(db, job.project_id, dataset),
             postprocess=template.postprocess, timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
             asset_files=templates.asset_files(template),
             on_progress=worker_loop.touch_heartbeat,

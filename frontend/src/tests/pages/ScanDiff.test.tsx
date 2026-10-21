@@ -4,7 +4,7 @@
  * lists, every Open and View is a link, a list says "the first N of M", and a
  * failed read says so with Retry.
  */
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -104,9 +104,30 @@ describe('Compare scans', () => {
     api.getScans.mockResolvedValue(Array.from({ length: 200 }, (_, i) => ({ id: i + 1, filename: `s${i}.xml`, created_at: null })));
     renderAt('/scans/compare?a=3&b=3');
     expect(await screen.findByTestId('compare-picker')).toBeInTheDocument();
-    expect(screen.getByText(/The lists hold the newest 200 scans\./)).toBeInTheDocument();
+    expect(screen.getByText(/The lists hold the newest 200 scans — search to find an older one\./)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Compare/ })).toBeDisabled();
     expect(api.compareScans).not.toHaveBeenCalled();
+  });
+
+  // Review 2026-10-21, B3: the picker listed the newest 200 and nothing else,
+  // so an older baseline could only be compared by editing the address.
+  it('a search on the server reaches a scan older than the newest 200, and a chosen scan stays chosen', async () => {
+    const newest = Array.from({ length: 200 }, (_, i) => ({ id: 1000 - i, filename: `s${i}.xml`, created_at: null }));
+    const old = { id: 7, filename: 'baseline-2025.xml', created_at: null };
+    api.getScans.mockImplementation((_p: number, _s: number, _l: number, opts?: { search?: string }) =>
+      Promise.resolve(opts?.search ? (opts.search === 'baseline' ? [old] : []) : newest));
+    renderAt('/scans/compare');
+    expect(await screen.findByTestId('compare-picker')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Find a scan'), { target: { value: 'baseline' } });
+    await waitFor(() => expect(api.getScans).toHaveBeenCalledWith(1, 0, 200, expect.objectContaining({ search: 'baseline' })));
+    fireEvent.click(screen.getByLabelText('Baseline (A)'));
+    fireEvent.click(await screen.findByRole('option', { name: /baseline-2025\.xml/ }));
+
+    // Another search that does not list it: still the baseline.
+    fireEvent.change(screen.getByLabelText('Find a scan'), { target: { value: 'nothing' } });
+    expect(await screen.findByText('No scan matches “nothing”.')).toBeInTheDocument();
+    expect(screen.getByLabelText('Baseline (A)')).toHaveTextContent('baseline-2025.xml');
   });
 
   it('a failed scan list says so with Retry; one scan is not enough', async () => {

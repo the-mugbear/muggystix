@@ -106,19 +106,42 @@ def silent_after_seconds() -> float:
     return max(settings.INGESTION_STALL_TIMEOUT + STALL_GRACE_S, settings.REPORT_RENDER_TIMEOUT_SECONDS) + 300
 
 
-def alert_silent_workers(db: Session, own_name: str, reports: Iterable[dict]) -> int:
-    """Each worker checks the others' reports (``resource_metrics.worker_reports``)."""
+def alert_silent_workers(
+    db: Session, own_instance: str, reports: Iterable[dict], *, running_for: float,
+) -> int:
+    """Each worker checks the others' reports (``resource_metrics.worker_reports``):
+    an instance silent past ``silent_after_seconds`` — another replica of its
+    own queue included — and, once this worker has run that long itself, a
+    queue with NO report at all (review 2026-10-21, A2: a worker that never
+    reported, or whose report was overwritten by a healthy replica, was never
+    alerted on).  Never itself."""
     sent = 0
     threshold = silent_after_seconds()
+    reports = list(reports)
+    replicas: dict = {}
     for report in reports:
-        if report.get("name") == own_name or float(report.get("age_seconds", 0)) <= threshold:
+        replicas[report["name"]] = replicas.get(report["name"], 0) + 1
+    for report in reports:
+        if report.get("instance") == own_instance or float(report.get("age_seconds", 0)) <= threshold:
             continue
         minutes = int(report.get("age_seconds", 0) // 60)
         label = WORKER_LABELS.get(report["name"], report["name"])
+        which = f" (container {report.get('instance')})" if replicas[report["name"]] > 1 else ""
         sent += raise_alert(
-            db, f"worker_silent:{report['name']}",
-            f"The {label} worker has not reported for {minutes} min",
+            db, f"worker_silent:{report['name']}:{report.get('instance')}",
+            f"The {label} worker{which} has not reported for {minutes} min",
             "It was stopped, killed (out of memory?) or is stuck: the jobs it runs wait. System settings "
-            "shows every worker; `docker compose ps` and `docker compose logs` on the host say why.",
+            "shows every worker; `docker compose ps` and `docker compose logs` on the host say why. "
+            "A worker you scaled away stops being listed a day after it last reported.",
         )
+    if running_for > threshold:
+        for queue, label in WORKER_LABELS.items():
+            if queue in replicas:
+                continue
+            sent += raise_alert(
+                db, f"worker_missing:{queue}",
+                f"The {label} worker has not reported since this server started",
+                "No report from it at all: it is not running, or cannot write to the uploads folder its "
+                "reports go in. `docker compose ps` and `docker compose logs` on the host say which.",
+            )
     return sent

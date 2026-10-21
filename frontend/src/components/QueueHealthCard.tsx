@@ -227,18 +227,25 @@ export const assessProcessMemory = (m: ProcessMemory, label: string, limitSettin
   return { tone: 'ok', headline: `${label} memory — ${memoryLine(m)}` };
 };
 
-export const assessWorker = (w: WorkerMemory): Verdict => {
+/** `replicas`: how many workers serve this one's queue — with more than one,
+ *  each is named by its container (5.414.0). */
+export const assessWorker = (w: WorkerMemory, replicas = 1): Verdict => {
   const known = WORKER_LABEL[w.name] ?? { label: w.name, limit: 'its memory limit' };
+  const label = replicas > 1 ? `${known.label} (${w.instance})` : known.label;
+  const memory = w.memory_read && w.current_bytes != null ? { ...w, current_bytes: w.current_bytes } : null;
   if (w.stale) {
     return {
       tone: 'warn',
-      headline: `${known.label} is not reporting — last heard ${formatAge(w.age_seconds)} ago`
-        + ` (then: ${memoryLine(w)})`,
+      headline: `${label} is not reporting — last heard ${formatAge(w.age_seconds)} ago`
+        + (memory ? ` (then: ${memoryLine(memory)})` : ''),
       action: 'It is stopped, was killed, or is stuck in one step. On the host: "docker compose ps" and '
         + '"docker compose logs" for that worker.',
     };
   }
-  return assessProcessMemory(w, known.label, known.limit);
+  if (!memory) {
+    return { tone: 'ok', headline: `${label} — reporting; its memory cannot be read on this host` };
+  }
+  return assessProcessMemory(memory, label, known.limit);
 };
 
 export const assessDatabase = (d: DatabaseSnapshot): Verdict => {
@@ -376,7 +383,10 @@ export const QueueHealthCard: React.FC = () => {
             {metrics.backend_memory && (
               <VerdictRow verdict={assessProcessMemory(metrics.backend_memory, 'API', 'BACKEND_MEM_LIMIT')} />
             )}
-            {metrics.workers.map((w) => <VerdictRow key={w.name} verdict={assessWorker(w)} />)}
+            {metrics.workers.map((w) => (
+              <VerdictRow key={`${w.name}.${w.instance}`}
+                verdict={assessWorker(w, metrics.workers.filter((o) => o.name === w.name).length)} />
+            ))}
             {metrics.database && <VerdictRow verdict={assessDatabase(metrics.database)} />}
             <p className="text-caption text-muted-foreground">
               Checked {formatTimestamp(metrics.generated_at)}

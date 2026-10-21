@@ -22,11 +22,15 @@ import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { InfoTip } from '../ui/info-tip';
-import SeverityBar from '../ui/SeverityBar';
+import DistributionBar from '../ui/DistributionBar';
+import { SEVERITY_HSL, SEVERITY_LABEL } from '../../utils/severity';
 import { UnavailableLine } from '../operations/QueueParts';
 import PostureSection from './PostureSection';
 
 /** One coverage state: its count opens exactly its hosts (`scope:` DSL). */
+/** The severities a scanner observation is counted under here (informational is not). */
+const HOST_SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
+
 const ScopeStateLink: React.FC<{ n: number | undefined; q: string; label: string }> = ({ n, q, label }) => {
   const count = n ?? 0;
   return count > 0 ? (
@@ -88,33 +92,32 @@ const ExposureSection: React.FC = () => {
             <Loader2 className="size-4 animate-spin" aria-hidden /> Counting scanner observations…
           </p>
         ) : vuln && actionableTotal > 0 ? (
-          <div className="max-w-3xl" aria-busy={statsLoading || undefined}>
-            <div className="mb-xs flex flex-wrap items-baseline justify-between gap-x-md gap-y-xxs">
-              <h3 className="inline-flex items-center gap-xxs text-metadata font-semibold text-foreground">
+          <div aria-busy={statsLoading || undefined}>
+            <DistributionBar
+              ariaLabel="Scanner observations by severity"
+              title={<>
                 Scanner observations by severity
                 <InfoTip text="One per scanner check per port, as imported — not yet judged, and a host usually carries several. Each severity opens the hosts carrying at least one observation of it; that host count is under the number." />
-              </h3>
-              <Link
-                to={buildHostsUrl({ q: 'kind:vulnerability,misconfiguration,informational' })}
-                className="text-caption tabular-nums text-muted-foreground hover:text-info hover:underline"
-              >
-                {actionableTotal.toLocaleString()} observations, informational excluded
-                {' · '}{(vuln.hosts_with_vulnerabilities ?? 0).toLocaleString()} hosts carry one
-              </Link>
-            </div>
-            <SeverityBar
-              variant="summary"
-              counts={vuln}
-              total={actionableTotal}
-              ariaLabel="Scanner observations by severity"
-              // SeverityBar never renders info, but the callback is typed
-              // over all severities — guard so the type narrows to HostSeverity.
-              segmentHref={(sev) => (sev === 'info' ? null : buildHostsUrl({ severity: sev }))}
-              // The counts are observations, the links hosts: the link says so.
-              linkLabel={(sev) => {
+              </>}
+              summary={
+                <Link
+                  to={buildHostsUrl({ q: 'kind:vulnerability,misconfiguration,informational' })}
+                  className="hover:text-info hover:underline"
+                >
+                  {actionableTotal.toLocaleString()} observations, informational excluded
+                  {' · '}{(vuln.hosts_with_vulnerabilities ?? 0).toLocaleString()} hosts carry one
+                </Link>
+              }
+              // Informational is left out (it dwarfs real severities). The
+              // counts are observations, the links hosts: the link says so.
+              parts={HOST_SEVERITIES.map((sev) => {
                 const n = vuln.hosts_by_severity?.[sev];
-                return n == null ? null : `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
-              }}
+                return {
+                  key: sev, label: SEVERITY_LABEL[sev], count: vuln[sev], color: SEVERITY_HSL[sev],
+                  href: buildHostsUrl({ severity: sev }),
+                  opens: n == null ? null : `${n.toLocaleString()} host${n === 1 ? '' : 's'}`,
+                };
+              })}
             />
           </div>
         ) : stats ? (

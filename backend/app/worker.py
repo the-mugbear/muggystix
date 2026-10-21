@@ -152,7 +152,7 @@ def main() -> None:
         from app.db.session import SessionLocal
         from app.services import operational_alerts
         from app.services.queue_metrics_service import warn_if_disk_low, warn_if_ingestion_backlog_high
-        from app.services.resource_metrics import worker_reports
+        from app.services.resource_metrics import STARTED_AT, instance_name, worker_reports
 
         with SessionLocal() as db:
             # B-OPS-3 — what was a log line nobody tails is also in the
@@ -163,7 +163,9 @@ def main() -> None:
             disk = warn_if_disk_low()
             if disk:
                 operational_alerts.alert_disk_low(db, disk)
-            operational_alerts.alert_silent_workers(db, "ingestion_jobs", worker_reports())
+            operational_alerts.alert_silent_workers(
+                db, instance_name(), worker_reports(), running_for=time.monotonic() - STARTED_AT,
+            )
             db.commit()
 
     def _sweep_webhooks() -> None:

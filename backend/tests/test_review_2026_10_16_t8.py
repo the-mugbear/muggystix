@@ -51,16 +51,40 @@ def test_a_worker_alerts_on_another_that_went_silent_never_on_itself_or_a_busy_o
     _user(db_session, 9_700_011, "t8-admin2", UserRole.ADMIN)
     long_silence = OA.silent_after_seconds() + 60
     reports = [
-        {"name": "ingestion_jobs", "age_seconds": long_silence},          # itself: never
-        {"name": "report_jobs", "age_seconds": long_silence},             # silent: alerted
-        {"name": "other_jobs", "age_seconds": OA.silent_after_seconds() - 1},  # busy, not silent
+        {"name": "ingestion_jobs", "instance": "me", "age_seconds": long_silence},       # itself: never
+        {"name": "report_jobs", "instance": "r1", "age_seconds": long_silence},          # silent: alerted
+        {"name": "other_jobs", "instance": "o1", "age_seconds": OA.silent_after_seconds() - 1},  # busy
     ]
-    assert OA.alert_silent_workers(db_session, "ingestion_jobs", reports) > 0
+    assert OA.alert_silent_workers(db_session, "me", reports, running_for=0) > 0
     db_session.commit()
     titles = {n.title for n in db_session.query(Notification).filter(
         Notification.source_type.like("operational:worker_silent:%"))}
     assert len(titles) == 1 and next(iter(titles)).startswith("The report worker has not reported for")
-    assert _alerts(db_session, "worker_silent:other_jobs") == []
+    assert _alerts(db_session, "worker_silent:other_jobs:o1") == []
+
+
+def test_a_silent_replica_is_seen_beside_a_healthy_one_and_a_queue_that_never_reported_is_too(db_session):
+    """Review 2026-10-21, A2: two replicas wrote one file, so a healthy one
+    hid a dead one; and a queue whose worker never wrote a report was never
+    alerted on."""
+    _user(db_session, 9_700_012, "t8-admin3", UserRole.ADMIN)
+    threshold = OA.silent_after_seconds()
+    reports = [
+        {"name": "ingestion_jobs", "instance": "me", "age_seconds": 3},
+        {"name": "ingestion_jobs", "instance": "w2", "age_seconds": threshold + 60},
+    ]
+    # Just started: a missing report worker may simply not have written yet.
+    assert OA.alert_silent_workers(db_session, "me", reports, running_for=10) > 0
+    db_session.commit()
+    (silent,) = {n.title for n in db_session.query(Notification).filter(
+        Notification.source_type.like("operational:worker_silent:%"))}
+    assert silent.startswith("The import worker (container w2) has not reported for")
+    assert _alerts(db_session, "worker_missing:report_jobs") == []
+
+    assert OA.alert_silent_workers(db_session, "me", reports, running_for=threshold + 1) > 0
+    db_session.commit()
+    assert _alerts(db_session, "worker_missing:report_jobs")
+    assert _alerts(db_session, "worker_missing:ingestion_jobs") == []
 
 
 def test_the_silence_threshold_outlasts_any_quiet_step():

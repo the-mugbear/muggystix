@@ -65,9 +65,9 @@ describe('QueueHealthCard', () => {
         current_bytes: 0.9 * GB, own_bytes: 0.6 * GB, peak_bytes: 1.2 * GB, limit_bytes: 2 * GB, oom_kills: 0, near_limit: false,
       },
       workers: [
-        { name: 'ingestion_jobs', current_bytes: 3.8 * GB, own_bytes: 3.7 * GB, peak_bytes: 3.9 * GB, limit_bytes: 4 * GB,
+        { name: 'ingestion_jobs', instance: 'w1', memory_read: true, current_bytes: 3.8 * GB, own_bytes: 3.7 * GB, peak_bytes: 3.9 * GB, limit_bytes: 4 * GB,
           oom_kills: 0, near_limit: true, age_seconds: 3, stale: false },
-        { name: 'report_jobs', current_bytes: 0.2 * GB, own_bytes: null, peak_bytes: 0.4 * GB, limit_bytes: 2 * GB,
+        { name: 'report_jobs', instance: 'r1', memory_read: true, current_bytes: 0.2 * GB, own_bytes: null, peak_bytes: 0.4 * GB, limit_bytes: 2 * GB,
           oom_kills: 0, near_limit: false, age_seconds: 400, stale: true },
       ],
       database: { size_bytes: 1.7 * GB, connections: 14, max_connections: 120, connections_high: false },
@@ -96,13 +96,34 @@ describe('QueueHealthCard', () => {
         current_bytes: 3.6 * GB, own_bytes: 0.5 * GB, peak_bytes: 3.9 * GB, limit_bytes: 4 * GB, oom_kills: 0, near_limit: false,
       },
       workers: [
-        { name: 'ingestion_jobs', current_bytes: 1 * GB, own_bytes: 0.8 * GB, peak_bytes: 4 * GB, limit_bytes: 4 * GB,
+        { name: 'ingestion_jobs', instance: 'w1', memory_read: true, current_bytes: 1 * GB, own_bytes: 0.8 * GB, peak_bytes: 4 * GB, limit_bytes: 4 * GB,
           oom_kills: 2, near_limit: false, age_seconds: 3, stale: false },
       ],
     });
     render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
     expect(await screen.findByText(/^API memory — 0\.5 GB of a 4\.0 GB limit/)).toBeInTheDocument();
     expect(screen.getByText(/^Ingestion worker was killed at its memory limit 2 times since it started/)).toBeInTheDocument();
+  });
+
+  // Review 2026-10-21, A2: replicas of one queue report apart, and a worker
+  // that cannot read its memory still says it is alive.
+  it('names each replica of a queue, and a worker whose memory cannot be read', async () => {
+    const GB = 1024 ** 3;
+    mocked.getQueueMetrics.mockResolvedValue({
+      ...metrics(),
+      workers: [
+        { name: 'ingestion_jobs', instance: 'w1', memory_read: true, current_bytes: 1 * GB, own_bytes: 0.8 * GB,
+          peak_bytes: 1 * GB, limit_bytes: 4 * GB, oom_kills: 0, near_limit: false, age_seconds: 3, stale: false },
+        { name: 'ingestion_jobs', instance: 'w2', memory_read: false, current_bytes: null, own_bytes: null,
+          peak_bytes: null, limit_bytes: null, oom_kills: 0, near_limit: false, age_seconds: 400, stale: true },
+        { name: 'report_jobs', instance: 'r1', memory_read: false, current_bytes: null, own_bytes: null,
+          peak_bytes: null, limit_bytes: null, oom_kills: 0, near_limit: false, age_seconds: 2, stale: false },
+      ],
+    });
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+    expect(await screen.findByText(/^Ingestion worker \(w1\) memory — 0\.8 GB of a 4\.0 GB limit/)).toBeInTheDocument();
+    expect(screen.getByText('Ingestion worker (w2) is not reporting — last heard 7m ago')).toBeInTheDocument();
+    expect(screen.getByText('Report worker — reporting; its memory cannot be read on this host')).toBeInTheDocument();
   });
 
   it('warns about low host memory, high load and connections nearly used up — and says nothing for what was not read', async () => {
