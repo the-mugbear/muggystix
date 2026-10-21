@@ -134,12 +134,15 @@ class FindingResponse(BaseModel):
     # stands, so confirmation on one is never read as confirmation on all.
     endpoint_status_counts: Dict[str, int] = {}
     # v2.375.0 — who recorded the finding (the promoter / creator), and whether
-    # the CALLER may rename or delete it: its author, a project admin, or a
-    # global admin.  Severity, owner and status stay open to any analyst — they
-    # are triage, not authored content.
+    # the CALLER may rename it and edit its report text (``can_modify``: its
+    # author, its owner — 2.519.0 —, a project admin or a global admin) or
+    # delete it (``can_delete``: the author or an admin, not the owner).
+    # Severity, owner and status stay open to any analyst — they are triage,
+    # not authored content.
     created_by_id: Optional[int] = None
     created_by_name: Optional[str] = None
     can_modify: bool = False
+    can_delete: bool = False
     # v2.379.0 — the caller is a project (or global) admin: may mark ANY
     # evidence image for the report, not only their own uploads.
     viewer_is_project_admin: bool = False

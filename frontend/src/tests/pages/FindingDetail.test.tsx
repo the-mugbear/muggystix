@@ -695,6 +695,14 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
     expect(screen.queryByRole('button', { name: /Delete/ })).toBeNull();
   });
 
+  it('offers its owner Rename but not Delete (an owner is assigned by someone else)', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, can_delete: false, owner_id: 1, owner_name: 'tester' }));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    expect(screen.getByRole('button', { name: /Rename/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete/ })).toBeNull();
+  });
+
   it('renames in place', async () => {
     mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
     mocked.updateFinding.mockResolvedValue(finding({ can_modify: true, title: 'TLS 1.0 on portal' }));
@@ -742,7 +750,7 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
   });
 
   it('deletes only after confirmation, then returns to the list', async () => {
-    mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, can_delete: true }));
     mocked.deleteFinding.mockResolvedValue(undefined);
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');
@@ -765,7 +773,7 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
   const refused = { response: { status: 409, data: { detail: REFUSAL } } };
 
   it('a refused delete says the server’s reason and stays on the finding', async () => {
-    mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, can_delete: true }));
     mocked.deleteFinding.mockRejectedValue(refused);
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');

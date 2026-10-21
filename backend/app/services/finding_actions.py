@@ -28,15 +28,24 @@ from app.services.report_text import REPORT_TEXT_FIELDS
 
 @dataclass
 class FindingActor:
-    """Who is acting, as far as authored-content rights go (v2.375.0): a
-    finding's report text and title are its author's, or a project admin's."""
+    """Who is acting, as far as authored-content rights go (v2.375.0).
+
+    A finding's report text and title are written by its author, its OWNER or
+    a project admin (2.519.0, owner 2026-10-21): an analyst made owner of a
+    finding someone else registered could not edit the finding they now own,
+    and was still told about every proposal on it.  Deleting the finding stays
+    its author's or a project admin's — an owner is assigned by someone else."""
     user_id: int
     is_project_admin: bool
 
+    def _is(self, user_id: Optional[int]) -> bool:
+        return user_id is not None and user_id == self.user_id
+
     def may_modify(self, finding: Finding) -> bool:
-        return self.is_project_admin or (
-            finding.created_by_id is not None and finding.created_by_id == self.user_id
-        )
+        return self.is_project_admin or self._is(finding.created_by_id) or self._is(finding.owner_id)
+
+    def may_delete(self, finding: Finding) -> bool:
+        return self.is_project_admin or self._is(finding.created_by_id)
 
 
 def finding_actor(db: Session, project_id: int, user: User) -> FindingActor:
@@ -57,7 +66,15 @@ def require_modify(actor: FindingActor, finding: Finding, what: str) -> None:
     if not actor.may_modify(finding):
         raise HTTPException(
             status_code=403,
-            detail=f"Only the finding's author or a project admin can {what}.",
+            detail=f"Only the finding's author, its owner or a project admin can {what}.",
+        )
+
+
+def require_delete(actor: FindingActor, finding: Finding) -> None:
+    if not actor.may_delete(finding):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the finding's author or a project admin can delete it.",
         )
 
 

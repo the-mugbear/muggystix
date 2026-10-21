@@ -26,7 +26,7 @@ from app.services.finding_service import (
     FindingService, endpoint_segments, load_retest_requests, validate_severity,
 )
 from app.services.finding_actions import (
-    FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_modify,
+    FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_delete, require_modify,
 )
 from app.services import finding_needs, remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
@@ -133,6 +133,7 @@ def _serialize(
             if finding.created_by else None
         ),
         can_modify=viewer.may_modify(finding) if viewer is not None else False,
+        can_delete=viewer.may_delete(finding) if viewer is not None else False,
         viewer_is_project_admin=viewer.is_project_admin if viewer is not None else False,
         report_text=_report_text(finding) if with_report_text else None,
         created_at=finding.created_at, updated_at=finding.updated_at,
@@ -336,8 +337,8 @@ def update_finding(
     # title/severity/owner edits are not — they're attributes, not lifecycle.
     finding = _load(db, project, finding_id)
     if body.title is not None:
-        # v2.375.0 — the title is authored content: its author (or a project
-        # admin) renames it.  Severity and owner stay triage, open to any
+        # v2.375.0 — the title is authored content: its author, its owner
+        # (2.519.0) or a project admin renames it.  Severity and owner stay triage, open to any
         # analyst.  Validated before any other field is applied.
         title = body.title.strip()
         if not title:
@@ -352,11 +353,6 @@ def update_finding(
         # the policy: it goes on those hosts' timelines, in this transaction
         # (nothing on an installation that does not track remediation).
         remediation_service.severity_changed(db, finding, previous, finding.severity, viewer.user_id)
-    # Owner: distinguish "field omitted" from "explicitly set to null" so
-    # selecting Unassigned (owner_id: null) actually clears ownership instead of
-    # being silently ignored. A non-null owner must be a valid project assignee.
-    if "owner_id" in body.model_fields_set:
-        finding.owner_id = resolve_project_assignee(db, project.id, body.owner_id)
     # v2.379.0 — report text is authored content too: same rule as the title
     # (applied by the shared service, v2.436.0).
     sent = body.model_fields_set
@@ -364,6 +360,14 @@ def update_finding(
         finding, viewer,
         {f: getattr(body, f) for f in (*REPORT_TEXT_FIELDS, "cvss_vector", "cvss_score") if f in sent},
     )
+    # Owner: distinguish "field omitted" from "explicitly set to null" so
+    # selecting Unassigned (owner_id: null) actually clears ownership instead of
+    # being silently ignored. A non-null owner must be a valid project assignee.
+    # LAST (2.519.0): the owner may edit the title and the text, and both are
+    # judged by the owner the finding had when the request came in — a request
+    # that makes its sender the owner does not let that same request edit them.
+    if "owner_id" in body.model_fields_set:
+        finding.owner_id = resolve_project_assignee(db, project.id, body.owner_id)
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 
@@ -388,7 +392,7 @@ def delete_finding(
     set a status instead — that keeps the record.  The deletion itself is
     written to the audit log, since the finding's own history goes with it."""
     finding = _load(db, project, finding_id)
-    require_modify(viewer, finding, "delete it")
+    require_delete(viewer, finding)
     summary = {
         "project_id": project.id, "title": finding.title, "severity": finding.severity,
         "status": finding.status, "source": finding.source,

@@ -292,10 +292,13 @@ const FindingDetail: React.FC = () => {
     ownerChange.mutate(ownerId);
   };
 
-  // v5.256.0 — authored content: the finding's author (or a project admin)
-  // renames or deletes it; the server decides and says so in `can_modify`.
-  // Severity, owner and status above stay open to any analyst (triage).
+  // v5.256.0 — authored content, decided by the server: the finding's author,
+  // its owner or a project admin renames it and edits its report text
+  // (`can_modify`); only the author or a project admin deletes it
+  // (`can_delete` — an owner is assigned by someone else). Severity, owner and
+  // status above stay open to any analyst (triage).
   const canModify = canManage && !!finding?.can_modify;
+  const canDelete = canManage && !!finding?.can_delete;
   // v5.260.0 — images are opt-in for the client report: the uploader marks
   // theirs, a project admin any (the server enforces the same rule).
   // The finding's images, loaded once for the page: each image's caption and
@@ -497,14 +500,18 @@ const FindingDetail: React.FC = () => {
         ) : (
           <>
             <h1 className="min-w-0 flex-1 break-words text-page-title font-semibold">{finding.title}</h1>
-            {canModify && (
+            {(canModify || canDelete) && (
               <div className="flex shrink-0 items-center gap-xs">
-                <Button variant="ghost" size="sm" onClick={() => setTitleDraft(finding.title)}>
-                  <Pencil className="size-4" aria-hidden /> Rename
-                </Button>
-                <Button variant="ghost" size="sm" className="text-destructive" onClick={() => void handleDelete()}>
-                  <Trash2 className="size-4" aria-hidden /> Delete
-                </Button>
+                {canModify && (
+                  <Button variant="ghost" size="sm" onClick={() => setTitleDraft(finding.title)}>
+                    <Pencil className="size-4" aria-hidden /> Rename
+                  </Button>
+                )}
+                {canDelete && (
+                  <Button variant="ghost" size="sm" className="text-destructive" onClick={() => void handleDelete()}>
+                    <Trash2 className="size-4" aria-hidden /> Delete
+                  </Button>
+                )}
               </div>
             )}
           </>

@@ -90,11 +90,14 @@ export interface Finding {
   hosts: FindingHostInfo[];
   /** v5.225.0 — {open, remediated, retest} over the endpoint rows. */
   endpoint_status_counts?: Partial<Record<FindingHostStatus, number>>;
-  /** v5.256.0 — who recorded it, and whether the caller may rename or delete
-   *  it (its author or a project admin). Triage is not gated by this. */
+  /** v5.256.0 — who recorded it, and whether the caller may rename it and
+   *  edit its report text (`can_modify`: its author, its owner or a project
+   *  admin) or delete it (`can_delete`: its author or a project admin).
+   *  Triage is not gated by these. */
   created_by_id?: number | null;
   created_by_name?: string | null;
   can_modify?: boolean;
+  can_delete?: boolean;
   /** v5.260.0 — what the client report says (Markdown). Single-finding
    *  responses only; the list sends null. Edited under `can_modify`. */
   report_text?: FindingReportText | null;

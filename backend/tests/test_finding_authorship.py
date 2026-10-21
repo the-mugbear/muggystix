@@ -212,3 +212,49 @@ def test_a_comment_is_addressed_through_its_own_finding(client, test_project):
     wrong = f"/api/v1/projects/{test_project.id}/findings/{b['id']}/notes/{note['id']}"
     assert client.patch(wrong, json={"body": "x"}).status_code == 404
     assert client.delete(wrong).status_code == 404
+
+
+def test_the_owner_may_edit_the_finding_they_were_given_but_not_delete_it(client, test_project, people, act_as):
+    """2026-10-21: an analyst made owner of a finding someone else registered
+    could not edit its fields — while every proposal about it was sent to
+    them to decide."""
+    act_as(people["alice"])
+    f = _create(client, test_project)
+    url = f"/api/v1/projects/{test_project.id}/findings/{f['id']}"
+
+    act_as(people["bob"])
+    assert client.patch(url, json={"description": "Bob's words"}).status_code == 403
+
+    act_as(people["alice"])
+    r = client.patch(url, json={"owner_id": people["bob"].id})
+    assert r.status_code == 200, r.text
+
+    act_as(people["bob"])
+    row = client.get(url).json()
+    assert (row["can_modify"], row["can_delete"]) == (True, False)
+    r = client.patch(url, json={"title": "SMB signing not required", "description": "Bob's words"})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "SMB signing not required"
+    assert r.json()["report_text"]["description"] == "Bob's words"
+    r = client.delete(url)
+    assert r.status_code == 403 and "author or a project admin can delete" in r.json()["detail"]
+
+    # Ownership moves on: the right goes with it.
+    act_as(people["alice"])
+    assert client.patch(url, json={"owner_id": None}).status_code == 200
+    act_as(people["bob"])
+    assert client.get(url).json()["can_modify"] is False
+    assert client.patch(url, json={"description": "again"}).status_code == 403
+
+
+def test_taking_ownership_does_not_let_the_same_request_edit_the_text(client, test_project, people, act_as):
+    act_as(people["alice"])
+    f = _create(client, test_project)
+    url = f"/api/v1/projects/{test_project.id}/findings/{f['id']}"
+
+    act_as(people["bob"])
+    r = client.patch(url, json={"owner_id": people["bob"].id, "description": "Bob's words"})
+    assert r.status_code == 403, r.text
+    act_as(people["alice"])
+    row = client.get(url).json()
+    assert row["owner_id"] is None and not (row["report_text"] or {}).get("description")

@@ -3,7 +3,7 @@
  * the issue: description, impact, recommendation, steps to reproduce,
  * references and CVSS.  Markdown, written by people: seeded once at promotion
  * from the scanner row or source note, then edited here by the finding's
- * author or a project admin (the server's `can_modify`, same as renaming).
+ * author, its owner or a project admin (the server's `can_modify`, same as renaming).
  *
  * v5.290.0 — shown rendered, under the report's own rules (SafeMarkdown: no
  * raw HTML, no images, web/mail links only, headings as bold text); before,
@@ -99,7 +99,7 @@ const nothingWritten = (t: FindingReportText | null | undefined): boolean =>
 
 interface Props {
   finding: Finding;
-  /** Analyst+ AND the server's can_modify (author / project admin). */
+  /** Analyst+ AND the server's can_modify (author / owner / project admin). */
   canEdit: boolean;
   /** Analyst+: may ask for an AI draft (a proposal changes nothing). */
   canPropose?: boolean;
