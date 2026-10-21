@@ -1,8 +1,8 @@
 """v2.379.0 — a finding's report text and the report-image opt-in.
 
 Report text (description, impact, recommendation, references, steps to
-reproduce, CVSS) is authored content: the finding's author, a project admin or
-a global admin edits it — the rename rule.  It is seeded once at promotion from
+reproduce, CVSS) is edited by any project analyst or admin (2.519.0; it was
+the author's) — the rename rule.  It is seeded once at promotion from
 the scanner row or the source note and never rewritten by a later
 corroborating scanner.  A 3.x / 2.0 vector decides the score.
 """
@@ -116,7 +116,7 @@ def _url(project, fid=None):
     return base if fid is None else f"{base}/{fid}"
 
 
-def test_report_text_is_the_authors_and_triage_stays_open(client, test_project, people, act_as):
+def test_report_text_is_any_analysts_and_triage_stays_open(client, test_project, people, act_as):
     act_as(people["alice"])
     f = client.post(_url(test_project), json={"title": "Weak TLS", "severity": "medium"}).json()
     url = _url(test_project, f["id"])
@@ -131,11 +131,12 @@ def test_report_text_is_the_authors_and_triage_stays_open(client, test_project, 
     assert text["description"] == "TLS 1.0 is **enabled**."
     assert text["cvss_score"] == 5.9 and text["cvss_score_from_vector"] is True
 
+    # 2.519.0: any analyst writes it, not only its author.
     act_as(people["bob"])
-    r = client.patch(url, json={"description": "Bob's words"})
-    assert r.status_code == 403, r.text
-    assert "report text" in r.json()["detail"]
-    # Triage, plus the unchanged text resent by a form, is not refused.
+    r = client.patch(url, json={"impact": "Bob's words"})
+    assert r.status_code == 200, r.text
+    assert r.json()["report_text"]["impact"] == "Bob's words"
+    # Triage, plus the unchanged text resent by a form.
     r = client.patch(url, json={
         "severity": "low", "description": "TLS 1.0 is **enabled**.",
         "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N",

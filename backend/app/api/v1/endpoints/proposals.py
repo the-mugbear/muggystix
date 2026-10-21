@@ -1,9 +1,9 @@
 """Agent proposals and evidence records — the reviewer's side (v2.436.0).
 
 Mounted under ``/projects/{project_id}``.  Any member reads; deciding needs
-project analyst, and accepting report text needs what editing it needs — the
-finding's author or a project admin (the same rule, applied by the same
-service).  Accepting runs the change as the person who accepts it.
+project analyst, and accepting report text needs what editing it needs (the
+same rule, applied by the same service — any analyst since 2.519.0).
+Accepting runs the change as the person who accepts it.
 """
 from __future__ import annotations
 

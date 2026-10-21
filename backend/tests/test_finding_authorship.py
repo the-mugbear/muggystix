@@ -1,8 +1,9 @@
-"""v2.375.0 — authored content on a finding belongs to its author.
+"""v2.375.0 — who may change a finding, and a comment.
 
-A finding's title and the finding itself (delete) may be changed by the
-finding's author or a project admin; a comment's text only by the comment's
-author.  Triage (severity, owner, status) stays open to any analyst.
+A finding's title and report text are any project analyst's (2.519.0; they
+were the author's and a project admin's); the finding itself (delete) only
+its author's or a project admin's; a comment's text only the comment's
+author's.  Triage (severity, owner, status) is any analyst's.
 """
 from __future__ import annotations
 
@@ -56,27 +57,33 @@ def _create(client, project, title="SMB signing disabled"):
     return r.json()
 
 
-def test_the_author_may_rename_and_others_may_not(client, test_project, people, act_as):
+def test_any_analyst_may_rename_and_a_reader_may_not(client, db_session, test_project, people, act_as):
+    """2.519.0 (owner 2026-10-21): any analyst may set a finding's owner, so
+    the title and report text are any analyst's too — not only the author's."""
     act_as(people["alice"])
     f = _create(client, test_project)
     assert f["created_by_id"] == people["alice"].id
     assert f["created_by_name"] == "Alice"
-    assert f["can_modify"] is True
+    assert (f["can_modify"], f["can_delete"]) == (True, True)
     url = f"/api/v1/projects/{test_project.id}/findings/{f['id']}"
 
     r = client.patch(url, json={"title": "  SMB signing not required  "})
     assert r.status_code == 200, r.text
     assert r.json()["title"] == "SMB signing not required"
 
+    # Bob neither recorded it nor owns it.
     act_as(people["bob"])
-    assert client.get(url).json()["can_modify"] is False
-    r = client.patch(url, json={"title": "Bob's title"})
-    assert r.status_code == 403, r.text
-    assert client.get(url).json()["title"] == "SMB signing not required"
-    # Triage stays open to any analyst — including resending the title unchanged.
-    r = client.patch(url, json={"severity": "low", "title": "SMB signing not required"})
+    row = client.get(url).json()
+    assert (row["owner_id"], row["can_modify"], row["can_delete"]) == (None, True, False)
+    r = client.patch(url, json={"title": "SMB signing off", "description": "Bob's words"})
     assert r.status_code == 200, r.text
-    assert r.json()["severity"] == "low"
+    assert r.json()["title"] == "SMB signing off"
+    assert r.json()["report_text"]["description"] == "Bob's words"
+
+    auditor = _member(db_session, test_project, 204, "audrey", ProjectRole.AUDITOR)
+    act_as(auditor)
+    assert client.get(url).json()["can_modify"] is False
+    assert client.patch(url, json={"title": "Audrey's title"}).status_code == 403
 
     act_as(people["padmin"])
     assert client.get(url).json()["can_modify"] is True
@@ -214,47 +221,15 @@ def test_a_comment_is_addressed_through_its_own_finding(client, test_project):
     assert client.delete(wrong).status_code == 404
 
 
-def test_the_owner_may_edit_the_finding_they_were_given_but_not_delete_it(client, test_project, people, act_as):
-    """2026-10-21: an analyst made owner of a finding someone else registered
-    could not edit its fields — while every proposal about it was sent to
-    them to decide."""
+def test_the_owner_may_not_delete_a_finding_someone_else_recorded(client, test_project, people, act_as):
+    """An owner is assigned by someone else: being given a finding is not
+    being allowed to remove it."""
     act_as(people["alice"])
     f = _create(client, test_project)
     url = f"/api/v1/projects/{test_project.id}/findings/{f['id']}"
+    assert client.patch(url, json={"owner_id": people["bob"].id}).status_code == 200
 
     act_as(people["bob"])
-    assert client.patch(url, json={"description": "Bob's words"}).status_code == 403
-
-    act_as(people["alice"])
-    r = client.patch(url, json={"owner_id": people["bob"].id})
-    assert r.status_code == 200, r.text
-
-    act_as(people["bob"])
-    row = client.get(url).json()
-    assert (row["can_modify"], row["can_delete"]) == (True, False)
-    r = client.patch(url, json={"title": "SMB signing not required", "description": "Bob's words"})
-    assert r.status_code == 200, r.text
-    assert r.json()["title"] == "SMB signing not required"
-    assert r.json()["report_text"]["description"] == "Bob's words"
+    assert client.get(url).json()["can_delete"] is False
     r = client.delete(url)
     assert r.status_code == 403 and "author or a project admin can delete" in r.json()["detail"]
-
-    # Ownership moves on: the right goes with it.
-    act_as(people["alice"])
-    assert client.patch(url, json={"owner_id": None}).status_code == 200
-    act_as(people["bob"])
-    assert client.get(url).json()["can_modify"] is False
-    assert client.patch(url, json={"description": "again"}).status_code == 403
-
-
-def test_taking_ownership_does_not_let_the_same_request_edit_the_text(client, test_project, people, act_as):
-    act_as(people["alice"])
-    f = _create(client, test_project)
-    url = f"/api/v1/projects/{test_project.id}/findings/{f['id']}"
-
-    act_as(people["bob"])
-    r = client.patch(url, json={"owner_id": people["bob"].id, "description": "Bob's words"})
-    assert r.status_code == 403, r.text
-    act_as(people["alice"])
-    row = client.get(url).json()
-    assert row["owner_id"] is None and not (row["report_text"] or {}).get("description")

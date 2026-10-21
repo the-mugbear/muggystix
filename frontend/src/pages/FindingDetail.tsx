@@ -292,11 +292,10 @@ const FindingDetail: React.FC = () => {
     ownerChange.mutate(ownerId);
   };
 
-  // v5.256.0 — authored content, decided by the server: the finding's author,
-  // its owner or a project admin renames it and edits its report text
-  // (`can_modify`); only the author or a project admin deletes it
-  // (`can_delete` — an owner is assigned by someone else). Severity, owner and
-  // status above stay open to any analyst (triage).
+  // Decided by the server: any project analyst or admin renames the finding
+  // and edits its report text (`can_modify`, 5.412.3); only its author or a
+  // project admin deletes it (`can_delete` — an owner is assigned by someone
+  // else).
   const canModify = canManage && !!finding?.can_modify;
   const canDelete = canManage && !!finding?.can_delete;
   // v5.260.0 — images are opt-in for the client report: the uploader marks
@@ -685,7 +684,7 @@ const FindingDetail: React.FC = () => {
       )}
 
       <FindingReportTextCard
-        finding={finding} canEdit={canModify} canPropose={canManage}
+        finding={finding} canEdit={canModify}
         images={findingImages}
         drafts={proposals.textByField}
         canDecide={canManage}

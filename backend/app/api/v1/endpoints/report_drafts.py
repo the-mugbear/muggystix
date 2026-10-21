@@ -150,8 +150,8 @@ def draft_finding_text(
     list (review 2026-09-23 B-Ops-5).  Since v2.437.0 the draft is a set of
     ``finding_text`` proposals (source ``llm_draft``, the provider's model),
     exactly what an MCP agent produces: one review path, one UI.  Proposing
-    changes nothing, so any analyst may draft; accepting still needs the
-    finding's author or a project admin."""
+    changes nothing, so any analyst may draft; accepting is any analyst's
+    too (2.519.0)."""
     finding = (
         db.query(Finding)
         .options(selectinload(Finding.hosts).selectinload(FindingHost.host))

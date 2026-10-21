@@ -8,8 +8,8 @@ attributed.  What the agent DID (ran X against Y, got Z) is an evidence
 record: direct, immutable, no plan needed.
 
 Accepting runs the SAME code a person's click runs, as the person accepting,
-so the authored-content rule (only the author or a project admin writes a
-finding's report text) still decides who may accept report text.
+so the report-text rule (any project analyst or admin writes a finding's
+report text, 2.519.0) still decides who may accept report text.
 """
 from __future__ import annotations
 
@@ -288,20 +288,22 @@ def test_a_draft_keeps_the_text_it_was_written_against_and_says_when_the_field_c
     assert (impact["base_recorded"], impact["base_value"], impact["changed_since_proposed"]) == (False, None, None)
 
 
-def test_only_the_author_or_a_project_admin_accepts_report_text(client, db_session, test_project):
-    """The authored-content rule decides, through the same code as an edit.
-    The refusal leaves the proposal pending, with no error recorded (it is
-    about who asked, not about the proposal)."""
+def test_a_reader_cannot_decide_report_text(client, db_session, test_project):
+    """The report-text rule decides, through the same code as an edit: an
+    auditor cannot accept, a viewer cannot reject.  The refusal leaves the
+    proposal pending, with no error recorded (it is about who asked, not
+    about the proposal).  An analyst who is not the author accepts:
+    ``test_report_finding_text_draft.py``."""
     key, _ = _start(client, test_project)
     host = _host(db_session, test_project)
     finding = _finding(client, test_project, host)  # authored by the admin
     pid = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
         "finding_id": finding["id"], "fields": {"description": "x"}}).json()["proposals"][0]["id"]
 
-    analyst = _member(db_session, test_project, 411, "prop-analyst")
+    auditor = _member(db_session, test_project, 411, "prop-auditor", ProjectRole.AUDITOR)
     viewer = _member(db_session, test_project, 412, "prop-viewer", ProjectRole.VIEWER)
     try:
-        app.dependency_overrides[get_current_user] = lambda: analyst
+        app.dependency_overrides[get_current_user] = lambda: auditor
         assert client.post(f"{_base(test_project)}/proposals/{pid}/accept", json={}).status_code == 403
         app.dependency_overrides[get_current_user] = lambda: viewer
         assert client.post(f"{_base(test_project)}/proposals/{pid}/reject", json={}).status_code == 403

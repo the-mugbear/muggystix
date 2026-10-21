@@ -337,9 +337,10 @@ def update_finding(
     # title/severity/owner edits are not — they're attributes, not lifecycle.
     finding = _load(db, project, finding_id)
     if body.title is not None:
-        # v2.375.0 — the title is authored content: its author, its owner
-        # (2.519.0) or a project admin renames it.  Severity and owner stay triage, open to any
-        # analyst.  Validated before any other field is applied.
+        # v2.375.0 — the title is authored content; since 2.519.0 any
+        # analyst renames it (as they edit its report text), while delete
+        # stays the author's or an admin's.  Validated before any other field
+        # is applied.
         title = body.title.strip()
         if not title:
             raise HTTPException(status_code=422, detail="A finding's title cannot be empty.")
@@ -363,9 +364,6 @@ def update_finding(
     # Owner: distinguish "field omitted" from "explicitly set to null" so
     # selecting Unassigned (owner_id: null) actually clears ownership instead of
     # being silently ignored. A non-null owner must be a valid project assignee.
-    # LAST (2.519.0): the owner may edit the title and the text, and both are
-    # judged by the owner the finding had when the request came in — a request
-    # that makes its sender the owner does not let that same request edit them.
     if "owner_id" in body.model_fields_set:
         finding.owner_id = resolve_project_assignee(db, project.id, body.owner_id)
     db.commit()

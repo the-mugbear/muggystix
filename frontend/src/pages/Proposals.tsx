@@ -3,7 +3,7 @@
  * this project, for a person to accept or reject: report text, new findings,
  * promoting or dismissing scanner observations, endpoint status.  Accepting
  * applies the change as you; the server decides whether you may (report text
- * needs the finding's author or a project admin) and says so if not.
+ * needs project analyst or admin) and says so if not.
  *
  * Sections, not cards (UI_STYLE_GUIDE §7): a lead sentence, one strip of
  * measures (pending by kind — each opens its list), then the list.

@@ -2,8 +2,8 @@
 AI drafting: ``POST /reports/draft/finding-text`` drafts Markdown for one
 finding's empty sections.  Since v2.437.0 the draft is a set of
 ``finding_text`` PROPOSALS (source ``llm_draft``) — the same thing an MCP
-agent produces, reviewed in the same place.  Nothing is written until the
-finding's author (or a project admin) accepts."""
+agent produces, reviewed in the same place.  Nothing is written until a
+project analyst or admin accepts."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -107,9 +107,10 @@ def test_drafts_only_the_empty_required_sections_and_writes_nothing(client, db_s
     assert r.status_code == 502
 
 
-def test_any_analyst_may_draft_but_only_the_author_accepts_and_is_told(client, db_session, test_project, llm):
+def test_any_analyst_may_draft_and_accept_and_the_author_is_told(client, db_session, test_project, llm):
     """Proposing changes nothing, so a colleague may draft (v2.437.0); the
-    author is notified and decides; a viewer cannot draft."""
+    author is notified; any analyst decides (2.519.0 — it was the author's);
+    a viewer cannot draft."""
     from app.db.models_project import Notification
     answer, _ = llm
     answer["content"] = '{"impact": "x", "recommendation": "y", "description": "z"}'
@@ -125,13 +126,13 @@ def test_any_analyst_may_draft_but_only_the_author_accepts_and_is_told(client, d
     app.dependency_overrides[get_current_user] = lambda: bob
     r = client.post(_url(test_project), json={"finding_id": fid})
     assert r.status_code == 200, r.text
-    pid = r.json()["proposals"][0]["id"]
+    first, second = (p["id"] for p in r.json()["proposals"][:2])
     assert client.post(_url(test_project), json={"finding_id": 999999}).status_code == 404
-    # Bob cannot accept text on Alice's finding; Alice can.
+    # Bob may accept text on Alice's finding, as Alice may.
     base = f"/api/v1/projects/{test_project.id}/proposals"
-    assert client.post(f"{base}/{pid}/accept", json={}).status_code == 403
+    assert client.post(f"{base}/{first}/accept", json={}).status_code == 200
     app.dependency_overrides[get_current_user] = lambda: alice
-    assert client.post(f"{base}/{pid}/accept", json={}).status_code == 200
+    assert client.post(f"{base}/{second}/accept", json={}).status_code == 200
 
     # ONE notification for Alice, not one per proposal, pointing at the finding.
     notes = db_session.query(Notification).filter(

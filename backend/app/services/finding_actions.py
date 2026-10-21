@@ -30,19 +30,21 @@ from app.services.report_text import REPORT_TEXT_FIELDS
 class FindingActor:
     """Who is acting, as far as authored-content rights go (v2.375.0).
 
-    A finding's report text and title are written by its author, its OWNER or
-    a project admin (2.519.0, owner 2026-10-21): an analyst made owner of a
-    finding someone else registered could not edit the finding they now own,
-    and was still told about every proposal on it.  Deleting the finding stays
-    its author's or a project admin's — an owner is assigned by someone else."""
+    A finding's title and report text are any project analyst's (2.519.0,
+    owner 2026-10-21): any analyst may set a finding's owner, so a rule of
+    "the author or the owner" was one request away from "any analyst" and
+    only got in the way — an analyst given a finding someone else registered
+    could not edit it, while its proposals were sent to them.  Deleting the
+    finding stays its author's or a project admin's."""
     user_id: int
     is_project_admin: bool
+    is_project_analyst: bool
 
     def _is(self, user_id: Optional[int]) -> bool:
         return user_id is not None and user_id == self.user_id
 
     def may_modify(self, finding: Finding) -> bool:
-        return self.is_project_admin or self._is(finding.created_by_id) or self._is(finding.owner_id)
+        return self.is_project_analyst
 
     def may_delete(self, finding: Finding) -> bool:
         return self.is_project_admin or self._is(finding.created_by_id)
@@ -50,7 +52,7 @@ class FindingActor:
 
 def finding_actor(db: Session, project_id: int, user: User) -> FindingActor:
     if user.role == UserRole.ADMIN:
-        return FindingActor(user_id=user.id, is_project_admin=True)
+        return FindingActor(user_id=user.id, is_project_admin=True, is_project_analyst=True)
     role = (
         db.query(ProjectMembership.role)
         .filter(ProjectMembership.project_id == project_id, ProjectMembership.user_id == user.id)
@@ -59,6 +61,7 @@ def finding_actor(db: Session, project_id: int, user: User) -> FindingActor:
     return FindingActor(
         user_id=user.id,
         is_project_admin=bool(role) and check_permissions(role, ProjectRole.ADMIN.value),
+        is_project_analyst=bool(role) and check_permissions(role, ProjectRole.ANALYST.value),
     )
 
 
@@ -66,7 +69,7 @@ def require_modify(actor: FindingActor, finding: Finding, what: str) -> None:
     if not actor.may_modify(finding):
         raise HTTPException(
             status_code=403,
-            detail=f"Only the finding's author, its owner or a project admin can {what}.",
+            detail=f"Only a project analyst or admin can {what}.",
         )
 
 

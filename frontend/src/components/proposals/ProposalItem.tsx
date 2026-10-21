@@ -2,8 +2,8 @@
  * One proposal (v5.316.0): what it would change, who proposed it (agent
  * session + model, or an in-app draft), why, and — while pending — Accept,
  * Accept and edit (report text), Reject.  Accepting runs the change as the
- * person clicking; the server decides whether they may (report text: the
- * finding's author or a project admin), and a refusal is shown here.
+ * person clicking; the server decides whether they may (report text: a
+ * project analyst or admin), and a refusal is shown here.
  *
  * Shared by the finding page and the Proposals page.
  *

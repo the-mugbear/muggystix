@@ -218,7 +218,7 @@ export const agentInstruction = {
     + 'show me the command before you run it, mark the test in_progress (host_tests_update), run it, record '
     + 'what came back with record_evidence (host_test_id and a request_key), and mark the test done.',
   /** 5.317.0 — review a finding's write-up and write what is missing, as
-   *  proposals (the finding's author accepts or rejects them). */
+   *  proposals (a person accepts or rejects them). */
   reviewFinding: (findingId: number, missing: string[] = []): string => {
     const gaps = missing.length > 0 ? ` Still empty: ${missing.join(', ')}.` : '';
     // 5.318.0 — "propose improvements" produced critiques; a proposal's text

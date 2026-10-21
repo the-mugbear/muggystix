@@ -91,7 +91,7 @@ export interface Finding {
   /** v5.225.0 — {open, remediated, retest} over the endpoint rows. */
   endpoint_status_counts?: Partial<Record<FindingHostStatus, number>>;
   /** v5.256.0 — who recorded it, and whether the caller may rename it and
-   *  edit its report text (`can_modify`: its author, its owner or a project
+   *  edit its report text (`can_modify`: any project analyst or
    *  admin) or delete it (`can_delete`: its author or a project admin).
    *  Triage is not gated by these. */
   created_by_id?: number | null;

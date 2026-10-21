@@ -2,8 +2,9 @@
  * The finding's report text (v5.260.0) — what the client report says about
  * the issue: description, impact, recommendation, steps to reproduce,
  * references and CVSS.  Markdown, written by people: seeded once at promotion
- * from the scanner row or source note, then edited here by the finding's
- * author, its owner or a project admin (the server's `can_modify`, same as renaming).
+ * from the scanner row or source note, then edited here by any project
+ * analyst or admin (the server's `can_modify`, same as renaming; 5.412.3 — it
+ * was the finding's author's, and a writer who was not was told so here).
  *
  * v5.290.0 — shown rendered, under the report's own rules (SafeMarkdown: no
  * raw HTML, no images, web/mail links only, headings as bold text); before,
@@ -15,8 +16,7 @@
  *
  * 5.316.0 — "Draft empty sections" produces PROPOSALS (one per section),
  * reviewed in the finding's Proposals section exactly like an agent's; it no
- * longer fills the editor.  Any analyst may draft; accepting stays the
- * author's or a project admin's.
+ * longer fills the editor.  Any analyst may draft and accept.
  *
  * 5.334.0 — pending drafts are reviewed HERE, in the section they would
  * change (`FieldDraftsReview`: the current text beside the draft).  A section
@@ -99,10 +99,8 @@ const nothingWritten = (t: FindingReportText | null | undefined): boolean =>
 
 interface Props {
   finding: Finding;
-  /** Analyst+ AND the server's can_modify (author / owner / project admin). */
+  /** Analyst+ AND the server's can_modify: may write, draft and ask an agent. */
   canEdit: boolean;
-  /** Analyst+: may ask for an AI draft (a proposal changes nothing). */
-  canPropose?: boolean;
   /** Open in the editor (the Reports page's "missing report text" links). */
   startEditing?: boolean;
   /** 5.317.0 — "Work on this with your agent" (the page supplies it, so the
@@ -125,7 +123,7 @@ interface Props {
 const NO_DRAFTS = new Map<string, Proposal[]>();
 
 const FindingReportTextCard: React.FC<Props> = ({
-  finding, canEdit, canPropose = canEdit, startEditing = false, agentAction, images,
+  finding, canEdit, startEditing = false, agentAction, images,
   drafts = NO_DRAFTS, canDecide = false, onProposalDecided, onDirtyChange,
 }) => {
   const toast = useToast();
@@ -179,9 +177,6 @@ const FindingReportTextCard: React.FC<Props> = ({
   // Empty sections an AI draft may fill and nobody has drafted yet.
   const undrafted = DRAFTABLE.filter((k) => !(text?.[k] ?? '').trim() && draftsFor(k).length === 0);
   const waiting = [...drafts.values()].reduce((n, list) => n + list.length, 0);
-  // A writer of the project who is neither this finding's author nor a
-  // project admin: the server refuses their edit, so the page says whose it is.
-  const notTheirs = canPropose && !canEdit;
 
   // Draft the required sections still empty as proposals — the same review
   // path an agent's drafts take; nothing is written until one is accepted.
@@ -274,28 +269,20 @@ const FindingReportTextCard: React.FC<Props> = ({
           </>
         )}
         // Only what is specific to THIS finding is said under the heading.
-        description={missing.length > 0 || waiting > 0 || notTheirs ? (
+        description={missing.length > 0 || waiting > 0 ? (
           <>
             {missing.length > 0 && (
               <>Still empty: <span className="text-foreground">{missing.join(', ')}</span>.{' '}</>
-            )}
-            {/* Why there is no Edit here: status, severity and owner above are
-                any analyst's, so the missing control read as a fault. */}
-            {notTheirs && (
-              <span data-testid="report-text-not-yours">
-                Written by the finding&apos;s author{finding.created_by_name ? ` (${finding.created_by_name})` : ''} or
-                a project admin — you can propose text for them to review.{' '}
-              </span>
             )}
             {waiting > 0 && (
               <span className="text-info">{waiting === 1 ? '1 draft is' : `${waiting} drafts are`} waiting for review in the sections below.</span>
             )}
           </>
         ) : undefined}
-        actions={canEdit || canPropose ? (
+        actions={canEdit ? (
           <>
-            {canPropose && agentAction}
-            {canPropose && undrafted.length > 0 && (
+            {agentAction}
+            {undrafted.length > 0 && (
               <Button variant="ghost" size="sm" onClick={draftEmpty} disabled={drafting || saving}
                 title="Draft the empty sections with your LLM provider, as proposals to review; nothing changes until one is accepted">
                 {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
