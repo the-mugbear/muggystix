@@ -48,11 +48,12 @@ import re
 import shutil
 from collections import defaultdict
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple, Union
 
 from sqlalchemy import and_, exists, func, or_
-from sqlalchemy.orm import Session, load_only, noload, selectinload
+from sqlalchemy.orm import Session, noload
 
 from app.core.config import settings
 
@@ -245,13 +246,41 @@ def _endpoint_order(fh: FindingHost):
     """A finding's systems in address order (10.0.0.2 before 10.0.0.10; an
     address that does not parse after), then by name, then by row."""
     address = fh.host.ip_address if fh.host is not None else ""
+    name = fh.name.fqdn if getattr(fh, "name", None) is not None else ""
+    return (_address_order(address), name or "", fh.id or 0)
+
+
+@lru_cache(maxsize=65536)
+def _address_order(address: str) -> tuple:
+    """An address's place in address order — parsed once per address, not
+    once per endpoint (a host is on many findings)."""
     try:
         parsed = ipaddress.ip_address(address)
-        by_address = (0, parsed.version, int(parsed), "")
+        return (0, parsed.version, int(parsed), "")
     except ValueError:
-        by_address = (1, 0, 0, address)
-    name = fh.name.fqdn if getattr(fh, "name", None) is not None else ""
-    return (by_address, name or "", fh.id or 0)
+        return (1, 0, 0, address)
+
+
+class _EndpointHost(NamedTuple):
+    ip_address: str
+    hostname: Optional[str]
+
+
+class _EndpointName(NamedTuple):
+    fqdn: str
+
+
+class _EndpointRow(NamedTuple):
+    """A finding's endpoint as the report reads it: the columns of its
+    ``finding_hosts`` row, its host's address and name, its DNS name — the
+    attributes of a FindingHost entity it is used in place of (R2)."""
+    id: int
+    host_id: int
+    name_id: Optional[int]
+    port_id: Optional[int]
+    host_status: str
+    host: Optional[_EndpointHost]
+    name: Optional[_EndpointName]
 
 
 def endpoint_key(fh: FindingHost) -> str:
@@ -868,39 +897,60 @@ class ClientReportService:
     # Live state
     # ------------------------------------------------------------------
     def _included(self, project_id: int) -> List[Finding]:
-        # Only the host columns an endpoint prints.  Host's relationships are
-        # lazy="selectin", so loading the entity dragged in every port,
-        # scanner row (with its plugin output), note and tag of every
-        # affected host — on each draft view, save, preview and inside the
-        # issue lock (review 2026-09-23 C7).
+        """The findings a report includes, each with ``_report_endpoints``
+        (its endpoints that are not false positives, in address order) and
+        ``_has_endpoints`` (it has any endpoint row at all).
+
+        The endpoints are COLUMNS, not entities (R2, 2026-10-22): with 1,000
+        findings × 200 endpoints, building the FindingHost / Host / DNSName
+        objects took 5.7 of a draft read's 7.0 s, the SQL 0.1 s.  An endpoint
+        row answers what an entity did for everything here (``_EndpointRow``);
+        ``Finding.hosts`` is never read (it is plain lazy — a reader would
+        load it per finding)."""
+        from app.db.models import DNSName
+
         findings = (
             self.db.query(Finding)
-            .options(
-                selectinload(Finding.hosts).selectinload(FindingHost.host).options(
-                    load_only(Host.id, Host.ip_address, Host.hostname),
-                    noload(Host.ports), noload(Host.vulnerabilities),
-                    noload(Host.notes), noload(Host.tag_assignments),
-                ),
-                selectinload(Finding.hosts).selectinload(FindingHost.name),
-                noload(Finding.vulnerabilities),
-            )
+            .options(noload(Finding.vulnerabilities))
             .filter(Finding.project_id == project_id, Finding.status.in_(INCLUDED_STATUSES))
             .all()
         )
+        endpoints: Dict[int, list] = defaultdict(list)
+        # One per host, shared by its endpoints on every finding.
+        hosts: Dict[int, Optional[_EndpointHost]] = {}
+        for (finding_id, row_id, host_id, name_id, port_id, host_status,
+             ip_address, hostname, fqdn) in (
+            self.db.query(
+                FindingHost.finding_id, FindingHost.id, FindingHost.host_id, FindingHost.name_id,
+                FindingHost.port_id, FindingHost.host_status, Host.ip_address, Host.hostname, DNSName.fqdn,
+            )
+            .join(Finding, Finding.id == FindingHost.finding_id)
+            .outerjoin(Host, Host.id == FindingHost.host_id)
+            .outerjoin(DNSName, DNSName.id == FindingHost.name_id)
+            .filter(Finding.project_id == project_id, Finding.status.in_(INCLUDED_STATUSES))
+        ):
+            if host_id not in hosts:
+                hosts[host_id] = _EndpointHost(ip_address, hostname) if ip_address is not None else None
+            endpoints[finding_id].append(_EndpointRow(
+                row_id, host_id, name_id, port_id, host_status, hosts[host_id],
+                _EndpointName(fqdn) if fqdn is not None else None,
+            ))
         out = []
         for f in findings:
+            rows = endpoints.get(f.id, ())
             # In address order: ``Finding.hosts`` has no order of its own, so an
             # unrelated endpoint write could reorder the affected systems — a
             # preview then read as out of date, and an issued table's order
             # was chance (review 2026-10-14, suspected).
             live = sorted(
-                (fh for fh in f.hosts if fh.host_status != FindingHostStatus.FALSE_POSITIVE.value),
+                (fh for fh in rows if fh.host_status != FindingHostStatus.FALSE_POSITIVE.value),
                 key=_endpoint_order,
             )
             # Every endpoint judged a false positive: nothing is left to report.
-            if f.hosts and not live:
+            if rows and not live:
                 continue
             f._report_endpoints = live  # type: ignore[attr-defined]
+            f._has_endpoints = bool(rows)  # type: ignore[attr-defined]
             out.append(f)
         out.sort(key=_sort_key)
         return out
@@ -1067,7 +1117,7 @@ class ClientReportService:
         # lists for it — an endpoint row that is not a false positive, which
         # is what `_report_endpoints` holds (`listed_findings`).  One with no
         # endpoint at all takes every record.
-        loose = {f.id for f in findings if not f.hosts}
+        loose = {f.id for f in findings if not f._has_endpoints}
         on_a_listed_system = exists().where(
             FindingHost.finding_id == EvidenceRecord.finding_id,
             FindingHost.host_id == EvidenceRecord.host_id,
@@ -1778,7 +1828,13 @@ class ClientReportService:
         return ledger
 
     def summary(self, report: Report) -> dict:
-        """What the report page shows before (draft) or after (issued) issuing."""
+        """What the report page shows before (draft) or after (issued) issuing.
+
+        An issued report's comes from its snapshot, loaded whole (R2,
+        measured 2026-10-22 on a 24 MB snapshot: 105 ms).  Taking the keys in
+        the database is slower, not faster — ``reports.snapshot`` is ``json``,
+        and each ``->`` parses the whole text again (summary alone 49 ms, the
+        summary and the two detail keys 260 ms)."""
         if report.status != ReportStatus.DRAFT and report.snapshot:
             return dict((report.snapshot or {}).get("summary") or {})
         try:
