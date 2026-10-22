@@ -252,11 +252,10 @@ def build_search_predicate(db: Session, search: str, project_id: Optional[int] =
     name/product (and service→port aliases) via a Port subquery — exactly
     the behaviour the /hosts quick-search box has always had.
 
-    ``project_id`` (review 2026-10-01 R19) confines the Port subquery to the
-    project.  The subquery sits under an ``OR``, so Postgres runs it whole,
-    once, before looking at a single host: unscoped, that was a substring
-    scan of EVERY project's ports for the count, the page and each facet.
-    The matches are unchanged — the outer query is the project's already.
+    The port half is a correlated EXISTS on the outer query's host (R4,
+    2026-10-22), so it reads only the ports of the hosts the outer query
+    considers — the project's.  ``project_id`` is kept for the callers; it
+    confined the ``IN (subquery)`` this replaced (review 2026-10-01 R19).
     """
     escaped_search = escape_like(search)
     host_search_conditions = [
@@ -285,12 +284,13 @@ def build_search_predicate(db: Session, search: str, project_id: Optional[int] =
         ])
 
     if port_search_conditions:
-        search_port_subquery = db.query(models.Host.id).join(models.Port).filter(or_(*port_search_conditions))
-        if project_id is not None:
-            search_port_subquery = search_port_subquery.filter(models.Host.project_id == project_id)
+        # A correlated EXISTS on the outer query's host (R4, 2026-10-22): it
+        # was ``Host.id IN`` a join of hosts and ports, run whole under the OR.
+        # Reached through the project's hosts, so ``project_id`` no longer
+        # needs to confine it; the hosts matched are the same.
         return or_(
             or_(*host_search_conditions),
-            models.Host.id.in_(search_port_subquery),
+            P.host_has_port(or_(*port_search_conditions)),
         )
     return or_(*host_search_conditions)
 

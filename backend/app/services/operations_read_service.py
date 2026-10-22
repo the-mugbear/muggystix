@@ -500,7 +500,9 @@ def compute_investigation_queue(
         *untouched_filter,
         or_(models.Host.first_seen.is_(None), models.Host.first_seen <= new_cutoff),
         has_high_value_port,
-        ~models.Host.id.in_(db.query(Vulnerability.host_id).filter(or_(is_crit, is_expl))),
+        # Correlated on the host, so confined to the project's hosts (R4: a
+        # NOT IN over every project's critical and exploitable rows).
+        ~P._host_has(Vulnerability.host_id, or_(is_crit, is_expl)),
     )
     changed_ids = changed_since_prior_scan_query(db, tier4_candidates).distinct().subquery("changed_ids")
 
@@ -512,11 +514,11 @@ def compute_investigation_queue(
     # Each set is JOINED once and its column referenced: an ``IN (subquery)``
     # used in both a column and the CASE is planned once per use, and the
     # change detector ran three times (~500 ms instead of ~150 ms).
-    hv_hosts = (
-        db.query(models.Port.host_id.label("hid")).filter(high_value_open).distinct().subquery("hv_hosts")
-    )
+    # "Has a high-value port open" is the correlated EXISTS the tier-4
+    # candidates use, asked once, in the CASE (R4: it was a DISTINCT over every
+    # project's open ports, joined on each queue read).
     is_changed = changed_ids.c.hid.isnot(None)
-    new_high_value = and_(models.Host.first_seen > new_cutoff, hv_hosts.c.hid.isnot(None))
+    new_high_value = and_(models.Host.first_seen > new_cutoff, has_high_value_port)
     per_host = (
         db.query(
             models.Host.id.label("hid"),
@@ -535,7 +537,6 @@ def compute_investigation_queue(
         )
         .outerjoin(vuln_sig, vuln_sig.c.hid == models.Host.id)
         .outerjoin(conflict_sig, conflict_sig.c.hid == models.Host.id)
-        .outerjoin(hv_hosts, hv_hosts.c.hid == models.Host.id)
         .outerjoin(changed_ids, changed_ids.c.hid == models.Host.id)
         .filter(*untouched_filter)
         .subquery("per_host")

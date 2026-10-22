@@ -276,12 +276,13 @@ def assessed_host_ids(
     from these sets, restricted to each site's in-scope hosts.  ``domains``
     builds only those keys (see ``eligible_host_ids``)."""
     def with_auth() -> Set[int]:
-        netexec_host_ids = db.query(NetexecResult.host_id)
+        # Correlated on the host (R4): it was ``Host.id IN`` every project's
+        # NetExec rows, under the OR.
         return _ids(db, (
             db.query(models.Host.id)
             .filter(
                 models.Host.project_id == project_id,
-                or_(models.Host.smb_signing.isnot(None), models.Host.id.in_(netexec_host_ids)),
+                or_(models.Host.smb_signing.isnot(None), _host_has(NetexecResult.host_id)),
             )
         ))
 

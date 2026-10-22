@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 from app.db import models
 from app.db.models_findings import ACTIVE_FINDING_STATUSES, Finding
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.services.host_test_queries import tested_host_ids
+from app.services.host_query_predicates import tested_predicate
 from app.services.attention_service import (
     compute_project_attention, compute_site_attention,
 )
@@ -319,7 +319,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
     # Validated hosts — distinct hosts with an executed test result (raw count;
     # there is no persisted "test-worthy" denominator, so this is NOT a ratio).
     validated_hosts = db.query(models.Host.id).filter(
-        models.Host.project_id == project_id, models.Host.id.in_(tested_host_ids(project_id)),
+        models.Host.project_id == project_id, tested_predicate(project_id),
     ).count()
 
     signals = _gather_signals(

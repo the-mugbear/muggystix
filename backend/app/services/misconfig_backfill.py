@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Dict, List, Optional
 
-from sqlalchemy import or_
+from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -64,10 +64,12 @@ def backfill_misconfigs(
 
     # v2.415.0 — nxc prints a line only for a host that answered; hosts
     # imported before 2.413.0 from nxc alone were left "unknown".
-    answered = _hosts(db.query(NetexecResult.host_id), NetexecResult.host_id).distinct().subquery()
+    hosts = db.query(models.Host)
+    if project_id:
+        hosts = hosts.filter(models.Host.project_id == project_id)
     marked = (
-        db.query(models.Host)
-        .filter(models.Host.id.in_(db.query(answered.c.host_id)),
+        hosts
+        .filter(exists().where(NetexecResult.host_id == models.Host.id),
                 or_(models.Host.state.is_(None), models.Host.state == "unknown"))
         .update({models.Host.state: "up"}, synchronize_session=False)
     )

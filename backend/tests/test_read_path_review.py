@@ -11,6 +11,7 @@ import importlib.util
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import List
 
 import pytest
 from sqlalchemy import String, cast, event, func, literal, or_
@@ -194,6 +195,47 @@ def test_scoped_search_matches_the_unscoped_search(db_session, port_estate, term
     )
 
 
+def _old_search_predicate(db, search, project_id=None):
+    """``build_search_predicate`` as it stood before R4 (2026-10-22): the port
+    half was ``Host.id IN`` a join of hosts and ports, confined by ``project_id``."""
+    from app.services.host_query import MAX_PORT, SERVICE_PORT_MAPPINGS
+
+    escaped = escape_like(search)
+    host_conditions = [
+        column.ilike(f'%{escaped}%', escape='\\')
+        for column in (models.Host.ip_address, models.Host.hostname, models.Host.os_name, models.Host.os_family)
+    ]
+    port_conditions = []
+    is_number = P.is_id(search)
+    if is_number and int(search) <= MAX_PORT:
+        port_conditions.append(models.Port.port_number == int(search))
+    service_ports = SERVICE_PORT_MAPPINGS.get(search.lower().strip())
+    if service_ports:
+        port_conditions.append(models.Port.port_number.in_(service_ports))
+    if not is_number:
+        port_conditions += [
+            models.Port.service_name.ilike(f'%{escaped}%', escape='\\'),
+            models.Port.service_product.ilike(f'%{escaped}%', escape='\\'),
+        ]
+    if not port_conditions:
+        return or_(*host_conditions)
+    ports = db.query(models.Host.id).join(models.Port).filter(or_(*port_conditions))
+    if project_id is not None:
+        ports = ports.filter(models.Host.project_id == project_id)
+    return or_(or_(*host_conditions), models.Host.id.in_(ports))
+
+
+@pytest.mark.parametrize("term", ["ssh", "OpenSSH", "22", "nginx", "10.9.0", "http", "zzz", "8080", "%", "99999"])
+def test_search_predicate_matches_the_in_subquery_form_it_replaced(db_session, port_estate, term):
+    pid, _other, _hosts, _foreign = port_estate
+    new = build_search_predicate(db_session, term, pid)
+    old = _old_search_predicate(db_session, term, pid)
+    assert _ids(db_session, pid, new) == _ids(db_session, pid, old), term
+    assert _ids(db_session, pid, ~new) == _ids(db_session, pid, ~old), term
+    sql = str(db_session.query(models.Host.id).filter(new).statement.compile(dialect=db_session.get_bind().dialect))
+    assert " IN (SELECT" not in sql, sql
+
+
 def _old_port_predicate(db, **kwargs):
     """The port predicates as they stood before R19: ``Host.id IN`` an
     uncorrelated join of every project's hosts and ports."""
@@ -243,11 +285,15 @@ def test_port_filters_never_reach_postgres_as_in_or_not_in(db_session, test_user
 
 
 def test_search_keeps_its_port_subquery_inside_the_project(db_session, test_user, port_estate):
+    """Since R4 (2026-10-22) the search's port half is correlated on the
+    outer query's host — the project's — instead of an ``IN`` over a join
+    that had to repeat the project filter."""
     pid, _other, _hosts, _foreign = port_estate
     sql = str(build_filtered_host_query(db_session, test_user, project_id=pid, search="ssh")
               .with_entities(models.Host.id).statement.compile(dialect=db_session.get_bind().dialect))
-    # once for the outer query, once inside the port subquery
-    assert sql.count("hosts_v2.project_id") == 2, sql
+    assert "EXISTS (SELECT" in sql and "ports_v2.host_id = hosts_v2.id" in sql, sql
+    assert " IN (SELECT" not in sql, sql
+    assert sql.count("FROM hosts_v2") == 1 and "JOIN hosts_v2" not in sql, sql
 
 
 # ---------------------------------------------------------------------------
@@ -1183,6 +1229,74 @@ def test_no_host_predicate_is_an_in_subquery_any_more():
             if "Host.id.in_(" in source or "Host.id.notin_(" in source or "Host.id.not_in(" in source:
                 offenders.append(f"{module.__name__}.{function.name}")
     assert offenders == []
+
+
+# ``Host.id IN (subquery)`` that stays, each with its reason (R4, 2026-10-22).
+# A new entry needs one; "it is fast today" is not a reason.
+_HOST_ID_IN_SUBQUERY_KEPT = {
+    # A DELETE confined to ONE scan's history rows, at the top level (no OR,
+    # no NOT): Postgres plans it as a semi-join driven by the scan's rows, and
+    # the cleanup's guards are written against this shape.
+    "ingestion_service.delete_partial_scan",
+}
+
+_SUBQUERY_WORDS = ("query(", "select(", "subquery(", "with_entities(", ".union(", "exists(")
+_LITERAL_CALLS = {"list", "sorted", "set", "tuple", "frozenset"}
+
+
+def _host_id_in_subqueries(path: Path) -> List[str]:
+    """``<…>Host.id.in_ / notin_ / not_in`` calls in ``path`` whose argument is a
+    query: a call (other than ``list(…)`` and its kind) or a name the function
+    assigned from one (at any of its assignments)."""
+    import ast
+
+    def is_query(value: ast.AST, *, a_call_is: bool) -> bool:
+        if isinstance(value, (ast.List, ast.Set, ast.Tuple, ast.ListComp, ast.SetComp, ast.Subscript)):
+            return False
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id in _LITERAL_CALLS:
+            return False
+        return (a_call_is and isinstance(value, ast.Call)) or any(
+            word in ast.unparse(value) for word in _SUBQUERY_WORDS)
+
+    tree = ast.parse(path.read_text())
+    found = []
+    for function in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        assigned: dict = {}
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        assigned.setdefault(target.id, []).append(node.value)
+        for node in ast.walk(function):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("in_", "notin_", "not_in") and node.args):
+                continue
+            if not ast.unparse(node.func.value).endswith("Host.id"):
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Name):
+                hit = any(is_query(value, a_call_is=False) for value in assigned.get(arg.id, []))
+            else:
+                hit = is_query(arg, a_call_is=True)
+            if hit:
+                found.append(f"{path.stem}.{function.name}")
+    return found
+
+
+def test_no_service_filters_hosts_by_an_in_subquery():
+    """The rule above, for every module in ``app/services`` (R4, 2026-10-22):
+    the Operations queue still ran ``NOT IN`` over every project's critical
+    and exploitable rows, and a DISTINCT over every project's open ports, on
+    each read — outside the two modules the test above reads.  A host
+    condition over a child table is ``_host_has`` / ``host_has_port`` (a
+    correlated EXISTS, confined to the project by the outer query's hosts).
+    A literal id list (``Host.id.in_(page_ids)``) is not a subquery and is
+    not refused."""
+    services = Path(__file__).resolve().parents[1] / "app" / "services"
+    found = [name for path in sorted(services.rglob("*.py")) for name in _host_id_in_subqueries(path)]
+    assert sorted(set(found) - _HOST_ID_IN_SUBQUERY_KEPT) == []
+    # An exception whose code has gone leaves the list with it.
+    assert _HOST_ID_IN_SUBQUERY_KEPT <= set(found)
 
 
 # ---------------------------------------------------------------------------
