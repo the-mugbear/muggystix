@@ -139,7 +139,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "What are our critical findings?" | `assist_list_findings` — project-wide, with `severity_counts` |
 | "What has nobody picked up?" | `assist_list_findings` with `unowned=true` (findings nobody owns) · `assist_count_hosts` with `q=has:critical AND assigned:none` (hosts with a critical scanner observation and nobody assigned — a different question) |
 | "What do we already know about this host?" | `assist_get_host_notes` (paged) |
-| "Which scanner rows are on this host?" | `assist_get_host_vulnerabilities` — raw scanner observations, not findings; each row says whether a finding covers it on this host |
+| "Which scanner rows are on this host?" | `assist_get_host_vulnerabilities` — raw scanner observations, not findings; each row says whether a finding covers it on this host, and which scans saw it and when (`scan_id`, `last_seen_scan_id`, `observed_at`) |
 | "Every web interface on this host, not just the ten on host detail?" | `assist_list_host_web_interfaces` |
 | "What did NetExec find on this host, and was it read right?" | `assist_list_host_access` — each result's interpreted fields beside the tool's line |
 | "Which lines did BlueStick not read?" | `assist_list_uninterpreted_lines` — per import, as redacted shapes; see `documentation/PARSE_AUDIT_BRIEF.md` |

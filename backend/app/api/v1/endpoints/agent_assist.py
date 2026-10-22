@@ -95,6 +95,7 @@ from app.services.note_attachment_service import require_readable_file
 from app.services.agent_prompt_service import PROMPT_VERSION
 from app.services.posture_service import compute_posture
 from app.services.scan_inventory_filters import apply_scan_inventory_filters
+from app.services.scan_time import scan_time_for_api
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.subnet_insight_service import compute_subnet_insights
 
@@ -1344,6 +1345,19 @@ def get_assist_host_vulnerabilities(
         s = v.source
         return s.value if hasattr(s, "value") else str(s)
 
+    # When each row was observed: the run time of the latest scan that
+    # reported it, one lookup for the page (D6).
+    seen_by = {v.id: v.last_seen_scan_id or v.scan_id for v in rows}
+    scan_times = {}
+    wanted_scans = {sid for sid in seen_by.values() if sid is not None}
+    if wanted_scans:
+        scan_times = {
+            sid: scan_time_for_api(start, source)
+            for sid, start, source in db.query(
+                models.Scan.id, models.Scan.start_time, models.Scan.time_source,
+            ).filter(models.Scan.id.in_(wanted_scans))
+        }
+
     findings = []
     for v in rows:
         num, svc = port_map.get(v.port_id, (None, None))
@@ -1362,6 +1376,9 @@ def get_assist_host_vulnerabilities(
             solution=(v.solution or None) and v.solution[:_DESC_CAP],
             evidence=(v.plugin_output or None) and v.plugin_output[:_EVIDENCE_CAP],
             check_id=v.check_id,
+            scan_id=v.scan_id,
+            last_seen_scan_id=v.last_seen_scan_id,
+            observed_at=scan_times.get(seen_by[v.id]),
             **{
                 key: value for key, value in _vuln_coverage(v, coverage).items()
                 if key != "finding_match"

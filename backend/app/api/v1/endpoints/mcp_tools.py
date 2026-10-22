@@ -334,8 +334,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "finding id. `finding_id` / `finding_status` name the finding that "
             "covers the issue; `finding_on_this_host` false means it covers other "
             "hosts only, so the row is unjudged here; `finding_endpoint_status` is "
-            "this host's own state on it. cve, plugin_id or search narrow to one "
-            "issue."
+            "this host's own state on it. scan_id / last_seen_scan_id / observed_at say "
+            "which scans reported it and when the latest ran. cve, plugin_id or search "
+            "narrow to one issue."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/vulnerabilities",

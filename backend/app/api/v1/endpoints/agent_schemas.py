@@ -157,6 +157,19 @@ class AssistFinding(BaseModel):
         "This host's own state on that finding (open / remediated / retest / "
         "false_positive); null when the host is not on it."
     ))
+    # Review 2026-10-10 stream, D6 — where and when the scanner saw it.
+    scan_id: Optional[int] = Field(None, description=(
+        "The scan that first recorded this row (assist_list_scans; null once that scan is deleted)."
+    ))
+    last_seen_scan_id: Optional[int] = Field(None, description=(
+        "The most recent scan that reported this row again (null = only the first)."
+    ))
+    observed_at: Optional[datetime] = Field(None, description=(
+        "When the scanner observed it: the run time of the latest scan that reported "
+        "it (last_seen_scan_id, else scan_id), as that scan states it — UTC with an "
+        "offset, or the tool's own zone-less clock. Null when the scan file carries "
+        "no time. A date of provenance, not of freshness."
+    ))
 
 
 class AssistFindingsResponse(AgentPage):
