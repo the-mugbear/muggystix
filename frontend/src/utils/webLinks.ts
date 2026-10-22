@@ -1,4 +1,5 @@
 import type { Host, Port } from '../services/api';
+import { webScheme } from './webPort';
 
 export interface HostWebLink {
   protocol: 'http' | 'https';
@@ -7,29 +8,7 @@ export interface HostWebLink {
   label: string;
 }
 
-const HTTPS_PORTS = new Set([443, 8443, 9443, 9444, 4443]);
-const HTTP_PORTS = new Set([80, 8080, 8081, 8000, 8008, 8888, 9090, 8181]);
-
 const isOpenPort = (port: Port) => port.state?.toLowerCase() === 'open';
-
-const isLikelyHttps = (port: Port) => {
-  if (HTTPS_PORTS.has(port.port_number)) {
-    return true;
-  }
-  const name = port.service_name?.toLowerCase() || '';
-  return name.includes('https') || name.includes('ssl');
-};
-
-const isLikelyHttp = (port: Port) => {
-  if (HTTP_PORTS.has(port.port_number)) {
-    return true;
-  }
-  const name = port.service_name?.toLowerCase() || '';
-  if (name.includes('https')) {
-    return false;
-  }
-  return name.includes('http') || name.includes('web');
-};
 
 /**
  * Validate that a host label is safe to interpolate into a URL authority.
@@ -82,37 +61,19 @@ export const getHostWebLinks = (host: Host): HostWebLink[] => {
     return [];
   }
 
+  // One link per open web port, its scheme from `utils/webPort` (the one
+  // rule, R1d — this list had its own two port sets).
   const links: HostWebLink[] = [];
-  const seen = new Set<string>();
-
   ports.forEach((port) => {
-    if (isLikelyHttps(port)) {
-      const key = `https-${port.port_number}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        links.push({
-          protocol: 'https',
-          port: port.port_number,
-          url: buildUrl(hostLabel, 'https', port.port_number),
-          label: `${hostLabel}${port.port_number === 443 ? '' : `:${port.port_number}`}`,
-        });
-      }
-    }
-  });
-
-  ports.forEach((port) => {
-    if (isLikelyHttp(port)) {
-      const key = `http-${port.port_number}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        links.push({
-          protocol: 'http',
-          port: port.port_number,
-          url: buildUrl(hostLabel, 'http', port.port_number),
-          label: `${hostLabel}${port.port_number === 80 ? '' : `:${port.port_number}`}`,
-        });
-      }
-    }
+    const protocol = webScheme(port);
+    if (!protocol) return;
+    const defaultPort = protocol === 'https' ? 443 : 80;
+    links.push({
+      protocol,
+      port: port.port_number,
+      url: buildUrl(hostLabel, protocol, port.port_number),
+      label: `${hostLabel}${port.port_number === defaultPort ? '' : `:${port.port_number}`}`,
+    });
   });
 
   return links.sort((a, b) => {

@@ -31,6 +31,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/toolti
 import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { formatHostForUrl } from '../utils/webLinks';
+import { webScheme, type WebPortLike } from '../utils/webPort';
 import { ScanTimeSourceNote } from '../components/scans/ScanTimeCells';
 import ScannedPorts from '../components/scans/ScannedPorts';
 import { describeScanRun, describeUpload } from '../utils/scanTime';
@@ -41,39 +42,30 @@ const hostStateVariant = (s: string | null): BadgeTone =>
 const portStateVariant = (s: string | null): BadgeTone =>
   s === 'open' ? 'success' : s === 'closed' ? 'destructive' : s === 'filtered' ? 'warning' : 'muted';
 
-// v4.7.8 — web-link detection is now SERVICE-AWARE, not a bare
-// 80/443 check.  httpx (and any service-detecting scan) commonly
-// finds web services on non-standard ports — 8080, 8443, 3000,
-// 8000, etc.  Pre-fix `isWebPort` only matched 80/443 so those got
-// no link, and `getWebUrl` keyed `https` solely off port===443 so
-// an 8443 service was mislabelled `http`.  We now consult the
-// port's detected service_name first and fall back to a known
-// web-port set.
-const WEB_PORT_FALLBACK = new Set([80, 443, 8080, 8443, 8000, 8008, 8888, 3000, 81, 4443, 9443]);
-type WebPortLike = { port_number: number; service_name?: string | null };
-
-const isWebPort = (port: WebPortLike): boolean => {
-  const svc = (port.service_name || '').toLowerCase();
-  if (svc.includes('http') || svc === 'https' || svc.includes('ssl/http')) return true;
-  return WEB_PORT_FALLBACK.has(port.port_number);
+// A port's web link: `utils/webPort` decides whether it is a web port and
+// which scheme (the one rule, the server's web-targets rule — R1d).  The URL
+// always carries the port, so a host with both 80 and 443 shows two visibly
+// different links.
+const getWebUrl = (ip: string, port: WebPortLike): string | null => {
+  const scheme = webScheme(port);
+  return scheme ? `${scheme}://${formatHostForUrl(ip)}:${port.port_number}` : null;
 };
 
-const isHttpsPort = (port: WebPortLike): boolean => {
-  const svc = (port.service_name || '').toLowerCase();
-  if (svc.includes('https') || svc.includes('ssl')) return true;
-  return [443, 8443, 9443, 4443].includes(port.port_number);
-};
-
-// v4.7.8 — the URL now ALWAYS carries the port.  Pre-fix the port was
-// stripped for 80/443, so a host with both 80 and 443 web services
-// rendered as two near-identical links to the same host with no port
-// visible — the operator-reported symptom.  An explicit `:80` / `:443`
-// is technically redundant but unambiguous, and every link in the
-// row is now visibly distinct.
-const getWebUrl = (ip: string, port: WebPortLike): string => {
-  const protocol = isHttpsPort(port) ? 'https' : 'http';
-  return `${protocol}://${formatHostForUrl(ip)}:${port.port_number}`;
-};
+const WebLinkButton: React.FC<{ url: string }> = ({ url }) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
+        aria-label={`Open ${url} in new tab`}
+      >
+        <ExternalLink className="size-3.5 text-primary" aria-hidden />
+      </Button>
+    </TooltipTrigger>
+    <TooltipContent>Open {url}</TooltipContent>
+  </Tooltip>
+);
 
 
 /** Rows a page of each of the page's lists. */
@@ -541,30 +533,9 @@ const ScanDetail: React.FC = () => {
                               <div className="flex items-center gap-xs">
                                 <span>{host.ports.filter((p) => p.state === 'open').length}</span>
                                 {host.ports
-                                  .filter((p) => p.state === 'open' && isWebPort(p))
-                                  .map((p) => (
-                                    <Tooltip key={p.id}>
-                                      <TooltipTrigger asChild>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          onClick={() =>
-                                            window.open(
-                                              getWebUrl(host.ip_address, p),
-                                              '_blank',
-                                              'noopener,noreferrer',
-                                            )
-                                          }
-                                          aria-label={`Open ${getWebUrl(host.ip_address, p)} in new tab`}
-                                        >
-                                          <ExternalLink className="size-3.5 text-primary" aria-hidden />
-                                        </Button>
-                                      </TooltipTrigger>
-                                      <TooltipContent>
-                                        Open {getWebUrl(host.ip_address, p)}
-                                      </TooltipContent>
-                                    </Tooltip>
-                                  ))}
+                                  .filter((p) => p.state === 'open')
+                                  .map((p) => ({ id: p.id, url: getWebUrl(host.ip_address, p) }))
+                                  .map(({ id, url }) => url && <WebLinkButton key={id} url={url} />)}
                               </div>
                             </TableCell>
                           </TableRow>
@@ -616,7 +587,9 @@ const ScanDetail: React.FC = () => {
                       </TableHeader>
                       <TableBody>
                         {ports.map((port) => {
-                          const webPort = { port_number: port.port_number, service_name: port.service_name };
+                          const webUrl = port.state_at_scan === 'open'
+                            ? getWebUrl(port.ip_address, { port_number: port.port_number, service_name: port.service_name })
+                            : null;
                           return (
                             <TableRow key={`${port.host_id}-${port.port_number}-${port.protocol}`}>
                               <TableCell>
@@ -633,29 +606,7 @@ const ScanDetail: React.FC = () => {
                               <TableCell>
                                 <div className="flex items-center gap-xs">
                                   <span>{port.port_number}</span>
-                                  {port.state_at_scan === 'open' && isWebPort(webPort) && (
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          onClick={() =>
-                                            window.open(
-                                              getWebUrl(port.ip_address, webPort),
-                                              '_blank',
-                                              'noopener,noreferrer',
-                                            )
-                                          }
-                                          aria-label={`Open ${getWebUrl(port.ip_address, webPort)} in new tab`}
-                                        >
-                                          <ExternalLink className="size-3.5 text-primary" aria-hidden />
-                                        </Button>
-                                      </TooltipTrigger>
-                                      <TooltipContent>
-                                        Open {getWebUrl(port.ip_address, webPort)}
-                                      </TooltipContent>
-                                    </Tooltip>
-                                  )}
+                                  {webUrl && <WebLinkButton url={webUrl} />}
                                 </div>
                               </TableCell>
                               <TableCell>{port.protocol ?? '—'}</TableCell>
