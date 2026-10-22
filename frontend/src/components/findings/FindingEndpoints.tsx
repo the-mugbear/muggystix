@@ -48,7 +48,7 @@ import { selectAllState } from '../../utils/selection';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import { useProjectId } from '../../hooks/useProjectId';
 import EndpointStateBar from './EndpointStateBar';
-import { findingAsSent, putFindingAnswer } from './findingCache';
+import { putFindingAnswer } from './findingCache';
 import { jumpTargetStyle } from '../SectionJumpBar';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -126,13 +126,10 @@ const FindingEndpoints: React.FC<Props> = ({
   // history the change appended to is read again.  The queue below orders
   // THIS table's changes only: a rename or a report-text save made while an
   // endpoint change is on its way writes the same record, and the endpoint's
-  // older snapshot would put the old title back.  So each change notes the
-  // record it is sent over (`sentOver`, taken when its turn comes) and its
-  // answer goes on the record only if nothing else wrote it meanwhile —
-  // otherwise the finding is read again (`putFindingAnswer`).
-  const sentOver = () => findingAsSent(queryClient, projectId, finding.id);
-  const applyAnswer = (updated: Finding, sent: ReturnType<typeof sentOver> | undefined) =>
-    putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
+  // older snapshot would put the old title back.  So an answer goes on the
+  // record only over a lower revision (`putFindingAnswer`).
+  const applyAnswer = (updated: Finding) =>
+    putFindingAnswer(queryClient, projectId, updated, { history: true });
   const rootRef =useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [stateFilter, setStateFilter] = useState<EndpointStateFilter>('all');
@@ -313,8 +310,7 @@ const FindingEndpoints: React.FC<Props> = ({
       try {
         // The route answers with the finding: the row is updated from it, not
         // from a second read of thousands of endpoints.
-        const sent = sentOver();
-        applyAnswer(await setEndpoint.mutateAsync({ rowId: row.id, hostStatus }), sent);
+        applyAnswer(await setEndpoint.mutateAsync({ rowId: row.id, hostStatus }));
         // A row given its own state is no longer part of "these, together".
         setSelected((prev) => {
           if (!prev.has(row.id)) return prev;
@@ -355,11 +351,8 @@ const FindingEndpoints: React.FC<Props> = ({
     // Behind any single-row change still on its way (the same queue), so its
     // answer is the newest when it is applied.
     let results: PromiseSettledResult<Finding>[] = [];
-    // The record the bulk change is sent over, taken when its turn comes.
-    let sent: ReturnType<typeof sentOver> | undefined;
     try {
       await enqueue(async () => {
-        sent = sentOver();
         results = await runLimited(chunks, 1, (ids) =>
           setEndpoints.mutateAsync({ finding_host_ids: ids, host_status: hostStatus, summary }));
       });
@@ -380,7 +373,7 @@ const FindingEndpoints: React.FC<Props> = ({
       }
     });
     const done = doneIds.length;
-    if (latest) applyAnswer(latest, sent);
+    if (latest) applyAnswer(latest);
     // Only what this request changed leaves the selection: what it could not
     // change stays ticked, and so does anything ticked since it started.
     if (done > 0) {
@@ -796,7 +789,7 @@ const FindingEndpoints: React.FC<Props> = ({
         onOpenChange={(open) => { if (!open) setRetesting(null); }}
         // Behind any change still on its way, like the table's own writes.
         onRecorded={(updated, fixed) => {
-          void enqueue(async () => { applyAnswer(updated, sentOver()); });
+          void enqueue(async () => { applyAnswer(updated); });
           toast.success(fixed ? 'Retest recorded: remediated on this host.' : 'Retest recorded: still present on this host.');
         }}
       />

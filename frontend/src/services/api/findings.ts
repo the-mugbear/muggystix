@@ -109,6 +109,9 @@ export interface Finding {
   needs?: FindingNeedItem[] | null;
   created_at: string;
   updated_at: string | null;
+  /** One more for every committed write of the finding: of two answers
+   *  about one finding, the higher is the newer (`findingCache`). */
+  revision: number;
 }
 
 export interface FindingReportText {

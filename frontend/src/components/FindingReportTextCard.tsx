@@ -51,7 +51,7 @@ import { Label } from './ui/label';
 import MarkdownField from './MarkdownField';
 import SafeMarkdown from './SafeMarkdown';
 import FieldDraftsReview from './proposals/FieldDraftsReview';
-import { findingAsSent, putFindingAnswer } from './findings/findingCache';
+import { putFindingAnswer } from './findings/findingCache';
 
 export const REPORT_TEXT_FIELDS: Array<{ key: FindingReportTextField; label: string; hint: string; rows: number }> = [
   { key: 'description', label: 'Description', hint: 'What the issue is, in the client’s terms.', rows: 6 },
@@ -210,17 +210,15 @@ const FindingReportTextCard: React.FC<Props> = ({
 
   const saver = useMutation({
     mutationFn: (payload: FindingReportTextUpdate) => updateFinding(projectId, finding.id, payload),
-    onMutate: () => { setError(null); return findingAsSent(queryClient, projectId, finding.id); },
-    onSuccess: (updated, _payload, sent) => {
+    onMutate: () => { setError(null); },
+    onSuccess: (updated) => {
       // The route answers with the finding: it goes onto the page's cached
-      // record, and the history is read again (each changed section has its
-      // line there, 5.413.0) —
-      // unless another write reached the record while this one was out, in
-      // which case the finding is read again (`putFindingAnswer`).
+      // record over a lower revision (`putFindingAnswer`), and the history is
+      // read again (each changed section has its line there, 5.413.0).
       // Saved text may place or release an image: where each one is placed
       // is read again.  A draft report's summary counts this finding's
       // missing text (the bar a report's checklist opens this page with).
-      putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
+      putFindingAnswer(queryClient, projectId, updated, { history: true });
       void invalidateReads(queryClient, 'getFindingImages', 'getClientReport');
       setDraft(null);
       toast.success('Report text saved.');

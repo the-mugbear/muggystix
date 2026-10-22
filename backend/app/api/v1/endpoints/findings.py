@@ -138,6 +138,7 @@ def _serialize(
         viewer_is_project_admin=viewer.is_project_admin if viewer is not None else False,
         report_text=_report_text(finding) if with_report_text else None,
         created_at=finding.created_at, updated_at=finding.updated_at,
+        revision=finding.revision,
     )
 
 
@@ -568,9 +569,11 @@ def set_finding_endpoint_statuses(
         host_status=body.host_status, actor_id=current_user.id,
         note=(body.summary or "").strip() or None,
     )
-    # Built before the commit, which expires the finding and its 500 rows.
+    # Built before the commit, which expires the finding and its 500 rows —
+    # all but its revision, which the commit counts (one row read back).
     data = _serialize(finding, viewer)
     db.commit()
+    data.revision = finding.revision
     return data
 
 

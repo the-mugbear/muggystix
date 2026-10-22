@@ -59,7 +59,7 @@ import FindingEndpoints from '../components/findings/FindingEndpoints';
 import { FindingEditDisclosure } from '../components/findings/FindingEditChange';
 import ReportDraftBar, { reportParam } from '../components/findings/ReportDraftBar';
 import {
-  findingAsSent, findingHistoryKey, findingKey, putFinding, putFindingAnswer,
+  findingHistoryKey, findingKey, keepNewerFinding, putFindingAnswer,
 } from '../components/findings/findingCache';
 import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
 import { useFindingProposals } from '../hooks/useFindingProposals';
@@ -131,9 +131,15 @@ const FindingDetail: React.FC = () => {
   // The finding is ONE query.  Every write route answers with the finding,
   // and whatever sent the write — this page, the endpoint table, the report
   // text, the "Add hosts" dialog — puts that answer on this record itself
-  // (`putFinding`): no second read of thousands of endpoints.
+  // (`putFindingAnswer`): no second read of thousands of endpoints.  Of two
+  // records the higher `revision` is the newer, so a read taken before a
+  // write whose answer has landed keeps that answer (`keepNewerFinding`).
   // The skeleton shows only while there is no finding yet.
-  const findingQuery = useQuery({ queryKey: findingKey(projectId, id), queryFn: ({ signal }) => getFinding(projectId, id, signal) });
+  const findingQuery = useQuery({
+    queryKey: findingKey(projectId, id),
+    queryFn: ({ signal }) => getFinding(projectId, id, signal),
+    structuralSharing: keepNewerFinding,
+  });
   const finding = findingQuery.data ?? null;
   // The finding's title leads the browser tab ("Finding · <project>" was
   // every finding's).
@@ -148,11 +154,6 @@ const FindingDetail: React.FC = () => {
   const [summaryPrompt, setSummaryPrompt] = useState<{ status: FindingStatus } | null>(null);
   const [summaryText, setSummaryText] = useState('');
   const [addHostsOpen, setAddHostsOpen] = useState(false);
-
-  // A write of this page's own: the answer goes on the record (C2); the
-  // history is read again only when the write appended to it.
-  const replaceFinding = (updated: Finding, appendsHistory = true) =>
-    putFinding(queryClient, projectId, updated, { history: appendsHistory });
 
   // An accepted proposal changed the finding (text, an endpoint).  The
   // decision asks for the finding, its history, its images and the pending
@@ -212,43 +213,26 @@ const FindingDetail: React.FC = () => {
   // C2 — a status or severity edit shows at once from the route's answer: the
   // page stays mounted (so the comment composer keeps its draft), the finding
   // is not read a second time, and only the edited control shows it is busy —
-  // for a status until its history trail is back.
-  //
-  // One case reads the finding again instead.  The answer is the finding as
-  // it stood when THIS change committed; if the record was written or is
-  // being read while the request was out (a proposal accepted meanwhile),
-  // which of the two is newer is not known, and laying the answer over it
-  // could put the page back to an older finding.  `sentOver` is the record
-  // the request was sent over.
-  const refetchFinding = findingQuery.refetch;
+  // for a status until its history trail is back.  The answer goes on the
+  // record only over a lower revision (`putFindingAnswer`): one that crossed
+  // a newer write (a proposal accepted meanwhile) is simply older.
   const refetchHistory = historyQuery.refetch;
   const warnNotRefreshed = (error: unknown) =>
     toast.warning(formatApiError(error, 'Saved, but the page could not refresh — reload to see the change.'));
-  const showAnswer = async (updated: Finding, sentOver: Finding | undefined, appendsHistory: boolean) => {
-    const record = queryClient.getQueryState<Finding>(findingKey(projectId, id));
-    if (record?.fetchStatus === 'idle' && record.data === sentOver) {
-      replaceFinding(updated, false);
-      if (!appendsHistory) return;
-      const h = await refetchHistory();
-      if (h.isError) warnNotRefreshed(h.error);
-      return;
-    }
-    const [f, h] = await Promise.all([refetchFinding(), refetchHistory()]);
-    if (f.isError) warnNotRefreshed(f.error);
-    else if (h.isError) warnNotRefreshed(h.error);
+  const showAnswer = async (updated: Finding) => {
+    putFindingAnswer(queryClient, projectId, updated, { history: false });
+    const h = await refetchHistory();
+    if (h.isError) warnNotRefreshed(h.error);
   };
-  const recordAsSent = () => ({ sentOver: queryClient.getQueryData<Finding>(findingKey(projectId, id)) });
   const statusChange = useMutation({
     mutationFn: (v: { status: FindingStatus; summary?: string }) => setFindingStatus(projectId, id, v.status, v.summary),
-    onMutate: recordAsSent,
-    onSuccess: (updated, _v, sent) => showAnswer(updated, sent.sentOver, true), // status + history trail together
+    onSuccess: (updated) => showAnswer(updated), // status + history trail together
     onError: (err) => toast.error(formatApiError(err, 'Failed to update status.')),
   });
   const severityChange = useMutation({
     mutationFn: (severity: FindingSeverity) => updateFinding(projectId, id, { severity }),
-    onMutate: recordAsSent,
-    onSuccess: async (updated, severity, sent) => {
-      await showAnswer(updated, sent.sentOver, true); // headline badge + its line on the history (5.413.0)
+    onSuccess: async (updated, severity) => {
+      await showAnswer(updated); // headline badge + its line on the history (5.413.0)
       toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update severity.')),
@@ -281,9 +265,8 @@ const FindingDetail: React.FC = () => {
 
   const ownerChange = useMutation({
     mutationFn: (ownerId: number | null) => updateFinding(projectId, id, { owner_id: ownerId }),
-    onMutate: () => findingAsSent(queryClient, projectId, id),
-    onSuccess: (updated, ownerId, sent) => {
-      putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
+    onSuccess: (updated, ownerId) => {
+      putFindingAnswer(queryClient, projectId, updated, { history: true });
       toast.success(ownerId == null ? 'Owner cleared.' : `Owner set to ${updated.owner_name ?? 'user'}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update owner.')),
@@ -327,9 +310,8 @@ const FindingDetail: React.FC = () => {
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const rename = useMutation({
     mutationFn: (title: string) => updateFinding(projectId, id, { title }),
-    onMutate: () => findingAsSent(queryClient, projectId, id),
-    onSuccess: (updated, _title, sent) => {
-      putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
+    onSuccess: (updated) => {
+      putFindingAnswer(queryClient, projectId, updated, { history: true });
       setTitleDraft(null);
       toast.success('Finding renamed.');
     },
@@ -362,18 +344,16 @@ const FindingDetail: React.FC = () => {
       { host_id: v.row.host_id, name_id: v.row.name_id ?? null, host_status: v.row.host_status,
         retest_requested_at: v.row.retest_requested_at ?? null },
     ]),
-    onMutate: () => findingAsSent(queryClient, projectId, id),
-    onSuccess: (reverted, v, sent) => {
-      putFindingAnswer(queryClient, projectId, reverted, sent, { history: true });
+    onSuccess: (reverted, v) => {
+      putFindingAnswer(queryClient, projectId, reverted, { history: true });
       toast.success(`Put ${v.label} back on the finding.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to undo the removal.')),
   });
   const removeEndpoint = useMutation({
     mutationFn: (v: { row: FindingHostInfo; label: string }) => removeFindingEndpoint(projectId, id, v.row.id),
-    onMutate: () => findingAsSent(queryClient, projectId, id),
-    onSuccess: (updated, v, sent) => {
-      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
+    onSuccess: (updated, v) => {
+      putFindingAnswer(queryClient, projectId, updated, { history: false });
       toast.success(`Removed ${v.label} from the finding.`, {
         action: { label: 'Undo', onClick: () => restoreEndpoint.mutate(v) },
       });
