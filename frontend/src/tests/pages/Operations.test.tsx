@@ -159,6 +159,7 @@ const session = (over: Record<string, unknown> = {}) => ({
   prompt_version: '1.13.0',
   purpose: 'SMB review',
   key_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+  key_state: 'live',
   renewable_until: new Date(Date.now() + 86_400_000).toISOString(),
   ...over,
 });
@@ -1071,7 +1072,7 @@ describe('Operations page', () => {
               sessions: [
                 session(),
                 // The key ran out, the session did not: resumable — never "active".
-                session({ id: 100, key_expires_at: new Date(Date.now() - 3_600_000).toISOString() }),
+                session({ id: 100, key_expires_at: new Date(Date.now() - 3_600_000).toISOString(), key_state: 'resumable' }),
               ],
             }
           : {

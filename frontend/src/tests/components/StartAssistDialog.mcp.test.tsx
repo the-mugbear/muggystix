@@ -169,6 +169,7 @@ describe('StartAssistDialog', () => {
     const live = {
       id: 86, status: 'active', can_end: true, can_resume: true,
       key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+      key_state: 'live',
     } as unknown as AgentSessionRow;
     render(
       <MemoryRouter>

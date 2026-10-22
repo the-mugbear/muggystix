@@ -41,7 +41,7 @@ const inAnHour = () => new Date(Date.now() + 3_600_000).toISOString();
 const anHourAgo = () => new Date(Date.now() - 3_600_000).toISOString();
 const session = (over = {}) => ({
   id: 79, project_id: 1, status: 'active', user_id: 7,
-  key_expires_at: inAnHour(), ...over,
+  key_expires_at: inAnHour(), key_state: 'live', ...over,
 });
 const listed = (...sessions: object[]) => ({ project_id: 1, sessions, total: sessions.length });
 
@@ -103,8 +103,8 @@ describe('useAgentTask', () => {
     // Still stored as active, but nothing can use them: the key ran out, or
     // was revoked. Those wait on Agent Sessions to be resumed.
     api.listAgentSessions.mockResolvedValue(listed(
-      session({ key_expires_at: anHourAgo() }),
-      session({ id: 80, key_expires_at: null }),
+      session({ key_expires_at: anHourAgo(), key_state: 'resumable' }),
+      session({ id: 80, key_expires_at: null, key_state: 'resumable' }),
     ));
     let give!: (t: string) => Promise<void>;
     render(<Harness onReady={(g) => { give = g; }} />);

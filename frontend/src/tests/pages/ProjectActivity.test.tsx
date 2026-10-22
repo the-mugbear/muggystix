@@ -62,6 +62,7 @@ const session = (overrides: Record<string, unknown> = {}) => ({
   prompt_version: '2.13.1',
   purpose: 'map the DMZ',
   key_expires_at: ahead(20 * HOUR),
+  key_state: 'live',
   renewable_until: ahead(6 * 24 * HOUR),
   end_reason: null,
   feedback_count: 0,
@@ -172,7 +173,7 @@ describe('Agent Sessions', () => {
   });
 
   it('says a session is waiting to be resumed when its key ran out, without a spinner of work', async () => {
-    const stale = session({ key_expires_at: ago(6 * HOUR), last_activity_at: null, host_test_count: 0, evidence_count: 0 });
+    const stale = session({ key_expires_at: ago(6 * HOUR), key_state: 'resumable', last_activity_at: null, host_test_count: 0, evidence_count: 0 });
     serve([stale], [stale]);
     renderPage();
 
@@ -202,7 +203,7 @@ describe('Agent Sessions', () => {
 
   it('opens the resume dialog on the same session', async () => {
     const user = userEvent.setup();
-    const live = session({ key_expires_at: ago(HOUR) });
+    const live = session({ key_expires_at: ago(HOUR), key_state: 'resumable' });
     serve([live], [live]);
     renderPage();
 
@@ -296,7 +297,7 @@ describe('Agent Sessions', () => {
 
   it('an old session still stored active, with nothing left to act on it, reads Expired like any other', async () => {
     const stuck = legacyRun({
-      status: 'active', completed_at: null, key_expires_at: null, renewable_until: ago(24 * HOUR),
+      status: 'active', completed_at: null, key_expires_at: null, renewable_until: ago(24 * HOUR), key_state: 'ended',
       can_end: true, can_resume: false,
     });
     serve([], [stuck]);
