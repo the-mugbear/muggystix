@@ -111,10 +111,15 @@ def clear(db: Session, *, user_id: int, project_id: int, kind: str) -> None:
     _mine(db, user_id, project_id, kind).delete(synchronize_session=False)
 
 
-def run_and_record(db: Session, project_id: int, user: User, text: str, *, by_agent: bool = False) -> Dict[str, Any]:
+def run_and_record(db: Session, project_id: int, user: User, text: str, *, by_agent: bool = False,
+                   after: Optional[str] = None) -> Dict[str, Any]:
     """``query_service.run``, recorded in the person's Query history — the
     answer's size, or the refusal (and re-raised).  A timeout or any other
-    failure is not a query to correct, so it is not recorded."""
+    failure is not a query to correct, so it is not recorded.  A later page
+    of a listing (``after``) is the same query read further, not a run: it
+    is not recorded."""
+    if after is not None:
+        return query_service.run(db, project_id, user, text, after=after)
     try:
         answer = query_service.run(db, project_id, user, text)
     except DSLError as exc:

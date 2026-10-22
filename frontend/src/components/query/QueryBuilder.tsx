@@ -1,16 +1,29 @@
 /**
  * The Query page's builder (5.406.0): pickers that WRITE the query — a
  * dataset, Hosts-language terms, column conditions, a grouping and its
- * measure, an order and a size — shown as the text they make, which Run
- * hands to the page exactly as if it had been typed (`utils/queryBuilder`).
- * The language stays the one thing the server reads; the builder is a way to
+ * measure (or `top`), an order and a size (`utils/queryBuilder`).  The
+ * language stays the one thing the server reads; the builder is a way to
  * learn it, not a second request shape.
+ *
+ * 5.418.0 (review 2026-10-16, Q9 — "the builder and the editor are two
+ * minds"): it opens on the EDITOR's query, as the server reads it
+ * (`GET /query/parse`; the grammar is not copied here), every change is
+ * written into the editor, and the editor's Run is the one Run.  A query the
+ * builder cannot show whole says why and is left alone until the reader
+ * starts over.
  */
 import React, { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Plus, X } from 'lucide-react';
 
+import { parseQueryForBuilder } from '../../services/api';
 import type { QuerySchema } from '../../services/api';
-import { BUILDER_OPS, buildQuery, type BuilderCondition, type BuilderSpec } from '../../utils/queryBuilder';
+import { useProjectId } from '../../hooks/useProjectId';
+import { queryErrorText } from '../../lib/query';
+import {
+  BUILDER_OPS, MEASURES, blankSpec, buildQuery, specFromShape,
+  type BuilderCondition, type BuilderSpec, type MeasureFn,
+} from '../../utils/queryBuilder';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 import { Input } from '../ui/input';
@@ -18,34 +31,77 @@ import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 
 const NONE = '__none';
-const MEASURES = ['count', 'dc', 'min', 'max', 'avg', 'sum'] as const;
 const MAX_CONDITIONS = 8;
 const MAX_GROUPS = 3;
 
-const blank = (dataset: string): BuilderSpec => ({
-  dataset, terms: '', conditions: [], by: [], measure: { fn: 'count', column: 'host' }, mostFirst: true, head: 20,
-});
+export const QueryBuilder: React.FC<{
+  schema: QuerySchema;
+  /** The editor's text when the builder opened — what it starts from. */
+  seed: string;
+  /** Writes the builder's query into the editor. */
+  onChange: (text: string) => void;
+}> = ({ schema, seed, onChange }) => {
+  const projectId = useProjectId();
+  const text = seed.trim();
+  const parsed = useQuery({
+    queryKey: ['parseQueryForBuilder', projectId, text],
+    queryFn: ({ signal }) => parseQueryForBuilder(projectId, text, signal),
+    enabled: text !== '',
+  });
+  // The reader's edits over the server's reading (never copied into state).
+  const [edits, setEdits] = useState<BuilderSpec | null>(null);
+  const first = schema.datasets[0]?.name ?? 'hosts';
+  const seeded = text === '' ? blankSpec(first) : parsed.data?.shape ? specFromShape(parsed.data.shape) : null;
+  const spec = edits ?? seeded;
 
-export const QueryBuilder: React.FC<{ schema: QuerySchema; onRun: (text: string) => void }> = ({ schema, onRun }) => {
-  const [spec, setSpec] = useState<BuilderSpec>(() => blank(schema.datasets[0]?.name ?? 'hosts'));
+  if (spec === null) {
+    return (
+      <div className="flex min-w-0 flex-col gap-xs border-l-2 border-border pl-sm" data-testid="query-builder">
+        {parsed.isPending ? (
+          <p role="status" className="text-caption text-muted-foreground">Reading the query above…</p>
+        ) : (
+          <p className="break-words text-caption text-muted-foreground" data-testid="builder-cannot">
+            {parsed.isError
+              ? `The query above does not read: ${queryErrorText(parsed.error, 'it could not be read')}.`
+              : parsed.data?.reason}
+          </p>
+        )}
+        {!parsed.isPending && (
+          <div>
+            <Button variant="outline" size="sm" onClick={() => { const next = blankSpec(first); setEdits(next); onChange(buildQuery(next, typesOf(schema, first))); }}>
+              Start a new query in the builder
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+  return <Pickers schema={schema} spec={spec} onSpec={(next) => { setEdits(next); onChange(buildQuery(next, typesOf(schema, next.dataset))); }} />;
+};
+
+const typesOf = (schema: QuerySchema, dataset: string): Record<string, string> =>
+  Object.fromEntries((schema.datasets.find((d) => d.name === dataset)?.columns ?? []).map((c) => [c.name, c.type]));
+
+const Pickers: React.FC<{ schema: QuerySchema; spec: BuilderSpec; onSpec: (spec: BuilderSpec) => void }> = ({ schema, spec, onSpec }) => {
   const dataset = schema.datasets.find((d) => d.name === spec.dataset) ?? schema.datasets[0];
   const columns = useMemo(() => dataset?.columns ?? [], [dataset]);
-  const types = useMemo(() => Object.fromEntries(columns.map((c) => [c.name, c.type])), [columns]);
-  const text = buildQuery(spec, types);
-  const set = (patch: Partial<BuilderSpec>) => setSpec((s) => ({ ...s, ...patch }));
+  const set = (patch: Partial<BuilderSpec>) => onSpec({ ...spec, ...patch });
   const setCondition = (i: number, patch: Partial<BuilderCondition>) =>
     set({ conditions: spec.conditions.map((c, j) => (j === i ? { ...c, ...patch } : c)) });
   const numeric = columns.filter((c) => c.type === 'int' || c.type === 'float');
-  const measureColumns = spec.measure.fn === 'avg' || spec.measure.fn === 'sum'
+  const fn = spec.measure.fn;
+  const measureColumns = fn === 'avg' || fn === 'sum'
     ? numeric
-    : columns.filter((c) => spec.measure.fn === 'dc' || (c.type !== 'bool' && c.type !== 'enum'));
+    : columns.filter((c) => fn === 'dc' || fn === 'values' || (c.type !== 'bool' && c.type !== 'enum'));
+  const grouped = spec.by.length > 0;
 
   return (
     <div className="flex min-w-0 flex-col gap-sm border-l-2 border-border pl-sm" data-testid="query-builder">
+      <p className="text-caption text-muted-foreground">The builder writes the query above; Run runs it.</p>
       <div className="flex flex-wrap items-end gap-sm">
         <div>
           <Label htmlFor="builder-dataset">Dataset</Label>
-          <Select value={spec.dataset} onValueChange={(v) => setSpec(blank(v))}>
+          <Select value={spec.dataset} onValueChange={(v) => onSpec(blankSpec(v))}>
             <SelectTrigger id="builder-dataset" className="w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
               {schema.datasets.map((d) => <SelectItem key={d.name} value={d.name}>{d.name}</SelectItem>)}
@@ -127,21 +183,24 @@ export const QueryBuilder: React.FC<{ schema: QuerySchema; onRun: (text: string)
             </Select>
           </div>
         ))}
-        {spec.by.length > 0 && (
+        {grouped && (
           <>
             <div>
               <Label htmlFor="builder-measure">Measure</Label>
-              <Select value={spec.measure.fn} onValueChange={(v) => set({ measure: { fn: v as BuilderSpec['measure']['fn'], column: (v === 'avg' || v === 'sum') ? (numeric[0]?.name ?? '') : 'host' } })}>
+              <Select value={fn} onValueChange={(v) => set({ measure: {
+                fn: v as MeasureFn,
+                column: (v === 'avg' || v === 'sum') ? (numeric[0]?.name ?? '') : (v === 'count' || v === 'top' ? '' : 'host'),
+              } })}>
                 <SelectTrigger id="builder-measure" className="w-28"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {MEASURES.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
-            {spec.measure.fn !== 'count' && (
+            {fn !== 'count' && fn !== 'top' && (
               <div>
                 <Label htmlFor="builder-measure-column">of</Label>
-                <Select value={spec.measure.column || NONE} onValueChange={(v) => set({ measure: { ...spec.measure, column: v === NONE ? '' : v } })}>
+                <Select value={spec.measure.column || NONE} onValueChange={(v) => set({ measure: { ...spec.measure, column: v === NONE ? '' : v, as: null } })}>
                   <SelectTrigger id="builder-measure-column" className="w-40"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {measureColumns.map((x) => <SelectItem key={x.name} value={x.name}>{x.name}</SelectItem>)}
@@ -149,28 +208,20 @@ export const QueryBuilder: React.FC<{ schema: QuerySchema; onRun: (text: string)
                 </Select>
               </div>
             )}
-            <div className="flex items-center gap-xs pb-xs">
-              <Checkbox id="builder-most-first" checked={spec.mostFirst} onCheckedChange={(v) => set({ mostFirst: v === true })} />
-              <Label htmlFor="builder-most-first">Most first</Label>
-            </div>
+            {fn !== 'top' && fn !== 'values' && (
+              <div className="flex items-center gap-xs pb-xs">
+                <Checkbox id="builder-most-first" checked={spec.mostFirst} onCheckedChange={(v) => set({ mostFirst: v === true })} />
+                <Label htmlFor="builder-most-first">Most first</Label>
+              </div>
+            )}
           </>
         )}
         <div>
-          <Label htmlFor="builder-head">At most</Label>
+          <Label htmlFor="builder-head">{grouped && fn === 'top' ? 'Top' : 'At most'}</Label>
           <Input id="builder-head" type="number" min={0} className="w-24" value={spec.head || ''}
-            onChange={(e) => set({ head: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} placeholder="all" />
+            onChange={(e) => set({ head: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+            placeholder={grouped && fn === 'top' ? '10' : 'all'} />
         </div>
-      </div>
-
-      <div className="flex min-w-0 flex-wrap items-center gap-sm">
-        <code className="min-w-0 flex-1 break-all rounded-control bg-muted/40 px-xs py-xxs font-mono text-caption text-foreground"
-          data-testid="builder-text">
-          {text}
-        </code>
-        <Button size="sm" onClick={() => onRun(text)}
-          disabled={spec.by.length > 0 && spec.measure.fn !== 'count' && !spec.measure.column}>
-          Run this query
-        </Button>
       </div>
     </div>
   );

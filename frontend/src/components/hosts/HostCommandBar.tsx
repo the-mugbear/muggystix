@@ -8,10 +8,12 @@ import {
   Loader2,
   RefreshCw,
   Search,
+  Sigma,
   Sparkles,
   Star,
   X,
 } from 'lucide-react';
+import { Link as RouterLink } from 'react-router-dom';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -53,6 +55,9 @@ export interface HostCommandBarProps {
    *  to be ANDed with them, so "SMB signing not required" under the project's
    *  FTP default listed FTP hosts only. */
   onApplyTemplate?: (q: string, label: string) => void;
+  /** The committed query as a Query-page address (`hosts <q>`; review Q7),
+   *  offered while no other condition narrows the list. */
+  queryHref?: string;
 }
 
 export interface HostCommandBarHandle {
@@ -84,6 +89,7 @@ const HostCommandBar = forwardRef<HostCommandBarHandle, HostCommandBarProps>(fun
   valueLabels,
   otherConditions = false,
   onApplyTemplate,
+  queryHref,
 }, ref) {
   const [draft, setDraft] = useState(value);
   const [focused, setFocused] = useState(false);
@@ -505,6 +511,16 @@ const HostCommandBar = forwardRef<HostCommandBarHandle, HostCommandBarProps>(fun
           >
             <Link2 className="size-4" aria-hidden />
           </Button>
+          {/* Review 2026-10-16, Q7 — the same hosts in Query (`hosts <q>`), to
+              group and count them.  Only while the query alone is the list: a
+              chip or a view narrows it in a way Query does not write. */}
+          {queryHref && !otherConditions && (
+            <Button asChild variant="outline" size="sm">
+              <RouterLink to={queryHref} aria-label="Open these hosts in Query" data-testid="hosts-open-in-query">
+                <Sigma className="size-4" aria-hidden /> Query
+              </RouterLink>
+            </Button>
+          )}
 
           {/* Syntax help */}
           <Popover>

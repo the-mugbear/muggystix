@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence
 
-from sqlalchemy import and_, cast, func, literal_column, or_, false
+from sqlalchemy import and_, case, cast, func, literal_column, or_, false
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import exists
 from sqlalchemy.sql.elements import ColumnElement
@@ -133,16 +133,36 @@ def subnet_predicate(values: Sequence[str]) -> Optional[ColumnElement]:
 SCOPE_COVERAGE_STATES = ("subnet", "name", "none")
 
 
+#: The three coverage states, in the order a host is tested for them.
+SCOPE_COVERAGE_STATES = ("subnet", "name", "none")
+
+
+def _scope_coverage_parts(project_id) -> tuple:
+    """(in a scope subnet, reached by an in-scope name) — the two tests the
+    coverage states are made of.  ``project_id`` may be a column
+    (``Host.project_id``) where the project is the row's."""
+    from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
+
+    mapped = exists().where(models.HostSubnetMapping.host_id == models.Host.id)
+    return mapped, host_reachable_via_in_scope_name_condition(project_id)
+
+
+def scope_coverage_expression() -> ColumnElement:
+    """A host's coverage state as ONE value — ``subnet`` / ``name`` / ``none``
+    — from the same two tests ``scope_coverage_predicate`` filters by: the
+    Query page's ``hosts`` column ``scope`` (review Q2), so ``| stats count
+    by scope`` and ``scope:<state>`` count the same hosts."""
+    mapped, by_name = _scope_coverage_parts(models.Host.project_id)
+    return case((mapped, "subnet"), (by_name, "name"), else_="none")
+
+
 def scope_coverage_predicate(values: Sequence[str], project_id: int) -> ColumnElement:
     """Host in any of the given coverage states (v2.424.0): ``subnet`` — in a
     scope subnet; ``name`` — no subnet, but an in-scope name currently
     resolves to it; ``none`` — neither (``out_of_scope_count``'s rule).
     The three partition the project's hosts, so Operations' coverage line
     adds up and each count opens its own list."""
-    from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
-
-    mapped = exists().where(models.HostSubnetMapping.host_id == models.Host.id)
-    by_name = host_reachable_via_in_scope_name_condition(project_id)
+    mapped, by_name = _scope_coverage_parts(project_id)
     conditions = []
     for value in {v.strip().lower() for v in values}:
         if value == "subnet":

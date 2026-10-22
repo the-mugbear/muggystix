@@ -155,7 +155,8 @@ _STATUS_SORT = case(
     (Finding.status == "false_positive", 4), (Finding.status == "accepted_risk", 5),
     else_=6,
 )
-_HOST_COUNT_SORT = (
+# Also the Query page's `findings` column `hosts` (review Q1): one count.
+HOST_COUNT_EXPR = (
     select(func.count(FindingHost.id))
     .where(FindingHost.finding_id == Finding.id)
     .correlate(Finding).scalar_subquery()
@@ -172,7 +173,7 @@ _SORT_COLUMNS = {
     "severity": _SEVERITY_SORT,
     "status": _STATUS_SORT,
     "title": Finding.title,
-    "host_count": _HOST_COUNT_SORT,
+    "host_count": HOST_COUNT_EXPR,
     "source": Finding.source,
     "created_at": Finding.created_at,
     "owner": _OWNER_SORT,

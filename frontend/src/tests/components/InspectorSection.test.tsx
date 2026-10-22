@@ -45,6 +45,16 @@ describe('InspectorSection', () => {
     expect(screen.getByText('body')).toBeInTheDocument();
   });
 
+  // Review 2026-10-16, O4 / O7: a `#weakness-…` link opens the section the
+  // reader collapsed, so the row it names can open.
+  it('a section the address names something in opens, whatever was remembered', () => {
+    const first = renderSection();
+    fireEvent.click(screen.getByRole('button', { name: /Ports/ }));
+    first.unmount();
+    render(<InspectorSection id="host-detail-x" title="Ports" forceOpen><p>body</p></InspectorSection>);
+    expect(screen.getByText('body')).toBeInTheDocument();
+  });
+
   it('still toggles when storage is unavailable', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });

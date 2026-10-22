@@ -37,10 +37,41 @@ export interface QueryAnswer {
   /** An empty answer whose `where` compares text with `=`: that `=` is exact,
    *  and how many rows would match ignoring case. */
   hint?: string | null;
+  /** A listing: where these rows begin in the whole answer (0 = its first row). */
+  start?: number;
+  /** A listing with rows past these (and no `head`): the next page's `after`. */
+  next_after?: string | null;
+  /** A `hosts` listing with no `where`: the Hosts-page query listing exactly
+   *  these hosts ("" = every host); null otherwise. */
+  hosts_q?: string | null;
 }
 
-export const runQuery = async (projectId: number, q: string, signal?: AbortSignal): Promise<QueryAnswer> =>
-  (await api.get<QueryAnswer>(`${projectPath(projectId)}/query`, { params: { q }, signal })).data;
+/** `after` = a listing's next page (the previous page's `next_after`, 5.418.0). */
+export const runQuery = async (
+  projectId: number, q: string, after: string | null, signal?: AbortSignal,
+): Promise<QueryAnswer> =>
+  (await api.get<QueryAnswer>(`${projectPath(projectId)}/query`, {
+    params: { q, after: after ?? undefined }, signal,
+  })).data;
+
+/** A query as the builder shows it — the server's grammar, read once
+ *  (review Q9); `shape` null with a `reason` when the builder cannot show
+ *  all of it.  A query that does not read is a 400 with `position`. */
+export interface BuilderShape {
+  dataset: string;
+  terms: string;
+  conditions: { column: string; op: string; value: string }[];
+  by: string[];
+  measure: { fn: string; column: string; as: string | null };
+  most_first: boolean;
+  /** head N (0: none); for top, its limit. */
+  head: number;
+}
+
+export const parseQueryForBuilder = async (
+  projectId: number, q: string, signal?: AbortSignal,
+): Promise<{ shape: BuilderShape | null; reason: string | null }> =>
+  (await api.get(`${projectPath(projectId)}/query/parse`, { params: { q }, signal })).data;
 
 /** The answer as CSV (auditor and above; a listing up to 50,000 rows) — saved
  *  as `query-<dataset>.csv`; answers the file name and, when it is not the

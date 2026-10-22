@@ -6,6 +6,7 @@ observations, and the saved / shared ones.
   goes into the caller's history (``query_history_service``, v2.512.0).
 * ``GET /query/history``, ``DELETE /query/history[/{id}]`` — that history.
 * ``GET /query/values`` — a text column's values, for the editor.
+* ``GET /query/parse`` — a query as the builder shows it.
 * ``GET /query/schema`` — datasets, columns, commands and caps.
 * ``GET / POST /queries/saved``, ``PATCH / DELETE /queries/saved/{id}``.
 
@@ -68,17 +69,77 @@ class QueryAnswer(BaseModel):
         description="An empty answer whose `where` compares text with `=`: that `=` is exact and "
                     "case-sensitive, and how many rows would match ignoring case",
     )
+    start: int = Field(0, description="A listing: where these rows begin in the whole answer (0 = its first row)")
+    next_after: Optional[str] = Field(
+        None, description="A listing with more rows past these (and no `head`): pass it as `after` for the next page",
+    )
+    hosts_q: Optional[str] = Field(
+        None,
+        description="A `hosts` listing with no `where`: the Hosts-page query listing exactly these hosts "
+                    "(\"\" = every host); null for any other answer",
+    )
+
+
+# One declaration for both doors (the page's and the agents').
+QUERY_AFTER = Query(
+    None, min_length=1, max_length=2000,
+    description="A listing's next page: the `next_after` of the page before. The cap is the page's size; "
+                "`total` stays the whole answer and `start` says where the page begins.",
+)
 
 
 @router.get("/query", response_model=QueryAnswer, summary="Run a query (a pipe query language)")
 def run_query(
     q: str = QUERY_TEXT,
+    after: Optional[str] = QUERY_AFTER,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     user: User = Depends(get_current_user),
 ):
-    """Run it, and record it in the caller's history (a refused query too)."""
-    return query_history_service.run_and_record(db, project.id, user, q)
+    """Run it, and record it in the caller's history (a refused query too).
+    A later page (``after``) is not recorded again."""
+    return query_history_service.run_and_record(db, project.id, user, q, after=after)
+
+
+class BuilderCondition(BaseModel):
+    column: str
+    op: str
+    value: str
+
+
+class BuilderMeasure(BaseModel):
+    fn: str = Field(..., description="count, dc, min, max, avg, sum, values — or top")
+    column: str = ""
+    # The answer's name for it when the query names it (`as x`).
+    as_: Optional[str] = Field(None, alias="as")
+
+    model_config = {"populate_by_name": True}
+
+
+class BuilderShape(BaseModel):
+    dataset: str
+    terms: str
+    conditions: List[BuilderCondition]
+    by: List[str]
+    measure: BuilderMeasure
+    most_first: bool
+    head: int = Field(..., description="head N (0: none); for top, its limit")
+
+
+class QueryParseOut(BaseModel):
+    shape: Optional[BuilderShape] = Field(None, description="What the builder shows; null when it cannot show all of it")
+    reason: Optional[str] = None
+
+
+@router.get("/query/parse", response_model=QueryParseOut, response_model_by_alias=True,
+            summary="A query as the page's builder shows it (no database read)")
+def parse_query_for_builder(q: str = QUERY_TEXT):
+    """The builder opens on the editor's query (review Q9): the grammar is the
+    server's, so the page asks here rather than parsing the text itself.  A
+    query that does not read is a 400 with its ``position``, as on Run; one
+    the builder cannot show whole says why (``reason``).  A typing aid — no
+    agent route."""
+    return query_service.builder_shape(q)
 
 
 class QueryHistoryEntryOut(BaseModel):

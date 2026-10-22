@@ -24,6 +24,7 @@ const api = vi.hoisted(() => ({
   getQueryColumnValues: vi.fn(),
   getHostQuerySchema: vi.fn(),
   suggestHostQueryValues: vi.fn(),
+  parseQueryForBuilder: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() };
@@ -85,7 +86,7 @@ describe('Query page', () => {
     api.runQuery.mockResolvedValue(ROWS);
     renderAt('/query?q=hosts');
     expect(await screen.findByTestId('query-answer')).toBeInTheDocument();
-    expect(api.runQuery).toHaveBeenCalledWith(9, 'hosts', expect.any(AbortSignal));
+    expect(api.runQuery).toHaveBeenCalledWith(9, 'hosts', null, expect.any(AbortSignal));
     expect(screen.getByTestId('query-count')).toHaveTextContent('The first 1 of 120 rows · hosts');
     // A null is a dash, never "null".
     expect(within(screen.getByTestId('query-answer')).getByText('—')).toBeInTheDocument();
@@ -99,7 +100,25 @@ describe('Query page', () => {
     fireEvent.change(screen.getByLabelText('Query'), { target: { value: '  ports | stats dc(host) as hosts by service ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run' }));
     await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('ports | stats dc(host) as hosts by service'));
-    expect(api.runQuery).toHaveBeenCalledWith(9, 'ports | stats dc(host) as hosts by service', expect.any(AbortSignal));
+    expect(api.runQuery).toHaveBeenCalledWith(9, 'ports | stats dc(host) as hosts by service', null, expect.any(AbortSignal));
+  });
+
+  // Q14 — an empty page teaches: three examples, from the schema, inline.
+  it('an empty page shows the first example of three datasets', async () => {
+    api.getQuerySchema.mockResolvedValue({
+      datasets: ['hosts', 'ports', 'observations', 'findings'].map((name) => ({
+        name, description: name, default_fields: [], columns: [], examples: [`${name} | stats count`, `${name} | head 1`],
+      })),
+      commands: [], caps: { rows: 500, groups: 1000, values: 20 },
+    });
+    api.runQuery.mockResolvedValue(STATS);
+    renderAt('/query');
+    const examples = await screen.findByTestId('query-examples');
+    await waitFor(() => expect(within(examples).getAllByRole('button')).toHaveLength(3));
+    expect(within(examples).getAllByRole('button').map((b) => b.textContent))
+      .toEqual(['hosts | stats count', 'ports | stats count', 'observations | stats count']);
+    fireEvent.click(within(examples).getByRole('button', { name: 'ports | stats count' }));
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('ports | stats count'));
   });
 
   it('Ctrl + Enter runs it', async () => {
@@ -243,22 +262,116 @@ describe('Query page — suggestions in the editor (5.406.0)', () => {
   });
 });
 
-describe('Query page — the builder (5.406.0)', () => {
-  it('writes the query text, and Run runs exactly that text', async () => {
+describe('Query page — the builder (5.406.0; one mind with the editor since 5.418.0)', () => {
+  it('writes the editor’s text, no head on a listing, and the editor’s Run is the one Run', async () => {
     api.runQuery.mockResolvedValue(ROWS);
     renderAt('/query');
     fireEvent.click(screen.getByRole('button', { name: 'Builder' }));
     const builder = await screen.findByTestId('query-builder');
-    expect(within(builder).getByTestId('builder-text')).toHaveTextContent('ports | head 20');
+    expect(api.parseQueryForBuilder).not.toHaveBeenCalled();   // nothing to read
+    expect(within(builder).queryByRole('button', { name: /Run/ })).not.toBeInTheDocument();
     fireEvent.change(within(builder).getByLabelText('Hosts-language terms (optional)'), { target: { value: 'has:web' } });
     fireEvent.click(within(builder).getByRole('button', { name: 'Add a condition' }));
     expect(within(builder).getAllByTestId('builder-condition')).toHaveLength(1);
-    // An unfinished condition writes nothing.
-    expect(within(builder).getByTestId('builder-text')).toHaveTextContent('ports has:web | head 20');
-    fireEvent.click(within(builder).getByRole('button', { name: 'Run this query' }));
-    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('ports has:web | head 20'));
-    // The editor holds what the builder wrote.
-    await waitFor(() => expect(screen.getByLabelText('Query')).toHaveValue('ports has:web | head 20'));
+    // An unfinished condition writes nothing; a listing gets no head.
+    expect(screen.getByLabelText('Query')).toHaveValue('ports has:web');
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('ports has:web'));
+  });
+
+  it('opens on the editor’s query as the server reads it', async () => {
+    api.runQuery.mockResolvedValue(STATS);
+    api.parseQueryForBuilder.mockResolvedValue({
+      shape: {
+        dataset: 'ports', terms: 'has:web', conditions: [{ column: 'service', op: '=', value: 'ssh' }],
+        by: ['service'], measure: { fn: 'top', column: '', as: null }, most_first: false, head: 5,
+      },
+      reason: null,
+    });
+    renderAt(`/query?q=${encodeURIComponent('ports has:web | where service="ssh" | top limit=5 service')}`);
+    await screen.findByTestId('query-answer');
+    fireEvent.click(screen.getByRole('button', { name: 'Builder' }));
+    // The panel reads the query first, then shows the pickers (a new element).
+    await waitFor(() => expect(within(screen.getByTestId('query-builder')).getByLabelText('Hosts-language terms (optional)')).toHaveValue('has:web'));
+    const builder = screen.getByTestId('query-builder');
+    expect(api.parseQueryForBuilder).toHaveBeenCalledWith(9, 'ports has:web | where service="ssh" | top limit=5 service', expect.any(AbortSignal));
+    expect(within(builder).getByLabelText('Top')).toHaveValue(5);
+    fireEvent.change(within(builder).getByLabelText('Top'), { target: { value: '7' } });
+    expect(screen.getByLabelText('Query')).toHaveValue('ports has:web | where service="ssh" | top limit=7 service');
+  });
+
+  it('says when it cannot show the query, and leaves it alone until asked to start over', async () => {
+    api.runQuery.mockResolvedValue(STATS);
+    api.parseQueryForBuilder.mockResolvedValue({ shape: null, reason: 'The builder has no place for an OR; edit the text instead.' });
+    const q = 'ports | where service="a" OR service="b"';
+    renderAt(`/query?q=${encodeURIComponent(q)}`);
+    await screen.findByTestId('query-answer');
+    fireEvent.click(screen.getByRole('button', { name: 'Builder' }));
+    expect(await screen.findByTestId('builder-cannot')).toHaveTextContent('no place for an OR');
+    expect(screen.getByLabelText('Query')).toHaveValue(q);
+    fireEvent.click(screen.getByRole('button', { name: 'Start a new query in the builder' }));
+    expect(screen.getByLabelText('Query')).toHaveValue('ports');
+  });
+});
+
+describe('Query page — paging, pivots and values (review 2026-10-16, Q5 / Q7 / Q13)', () => {
+  it('a listing past the cap pages by key, the page in the address', async () => {
+    api.runQuery.mockImplementation(async (_p: number, _q: string, after: string | null) => (after
+      ? { ...ROWS, total: 3, limit: 2, rows: [['10.0.0.3', null]], start: 2, next_after: null }
+      : { ...ROWS, total: 3, limit: 2, rows: [['10.0.0.1', null], ['10.0.0.2', null]], start: 0, next_after: 'K2' }));
+    renderAt('/query?q=hosts');
+    expect(await screen.findByTestId('query-count')).toHaveTextContent('Rows 1–2 of 3');
+    fireEvent.click(screen.getByRole('button', { name: 'Next 1 rows' }));
+    await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('after=K2'));
+    expect(await screen.findByText('Rows 3–3 of 3', { exact: false })).toBeInTheDocument();
+    expect(api.runQuery).toHaveBeenLastCalledWith(9, 'hosts', 'K2', expect.any(AbortSignal));
+    // A new run starts at the first rows.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the first rows' }));
+    await waitFor(() => expect(screen.getByTestId('search')).not.toHaveTextContent('after='));
+  });
+
+  it('a hosts listing opens on Hosts', async () => {
+    api.runQuery.mockResolvedValue({ ...ROWS, hosts_q: 'port:445 site:HQ' });
+    renderAt('/query?q=hosts');
+    expect(await screen.findByTestId('query-open-on-hosts'))
+      .toHaveAttribute('href', `/hosts?${new URLSearchParams({ q: 'port:445 site:HQ' })}`);
+  });
+
+  it('no Hosts link when the answer is not a Hosts list', async () => {
+    api.runQuery.mockResolvedValue({ ...ROWS, hosts_q: null });
+    renderAt('/query?q=hosts');
+    await screen.findByTestId('query-answer');
+    expect(screen.queryByTestId('query-open-on-hosts')).not.toBeInTheDocument();
+  });
+
+  it('a values() cell wraps the first values, and "+N more" opens the group', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => `10.0.0.${i + 1}`);
+    api.runQuery.mockResolvedValue({
+      ...STATS, columns: [{ name: 'service', type: 'text' }, { name: 'ips', type: 'list' }],
+      rows: [['ssh', many]], drilldowns: ['ports | where service="ssh"'], truncated_values: [], by: ['service'],
+    });
+    renderAt(`/query?q=${encodeURIComponent(STATS.query)}`);
+    const cell = await screen.findByTestId('query-values-cell');
+    expect(cell).toHaveTextContent(many.slice(0, 8).join(', '));
+    expect(cell).not.toHaveTextContent('10.0.0.9,');
+    expect(within(cell).getByRole('link', { name: '+4 more' }))
+      .toHaveAttribute('href', `/query?q=${encodeURIComponent('ports | where service="ssh"')}`);
+    expect(cell.firstElementChild?.className).toMatch(/line-clamp-3/);
+  });
+});
+
+describe('Query page — un-sharing another member’s query (review I8)', () => {
+  it('says the admin will not see it any more', async () => {
+    api.listSavedQueries.mockResolvedValue([{
+      id: 4, name: 'Their query', description: null, query: 'hosts', shared: true, created_by: 'dana',
+      mine: false, can_modify: true, created_at: null, updated_at: null,
+    }]);
+    renderAt('/query');
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByTestId('unshare-note')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByLabelText('Share with the project'));
+    expect(within(dialog).getByTestId('unshare-note')).toHaveTextContent("Un-sharing makes it dana's private query");
   });
 });
 
@@ -269,9 +382,9 @@ describe('Query page — external review 2026-10-16', () => {
       rows: [['ssh', ['a', 'b']], ['http', ['c']]], truncated_values: [[0, 'names']], by: ['service'],
     });
     renderAt(`/query?q=${encodeURIComponent(STATS.query)}`);
-    const table = await screen.findByTestId('query-answer');
-    expect(within(table).getByText('a, b … (the first 2)')).toBeInTheDocument();
-    expect(within(table).getByText('c')).toBeInTheDocument();
+    const cells = await screen.findAllByTestId('query-values-cell');
+    expect(cells[0]).toHaveTextContent('a, b +more (the list stops at 2)');
+    expect(cells[1]).toHaveTextContent(/^c$/);
   });
 
   it('a downloaded CSV that is not the whole answer says how much it holds', async () => {

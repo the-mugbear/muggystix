@@ -12,11 +12,12 @@ language and describe the row's host, and the project scope is the host's.
 """
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Type
 from urllib.parse import quote
 
-from sqlalchemy import cast, or_, select
+from sqlalchemy import and_, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Query, Session, aliased
 
@@ -24,6 +25,17 @@ from app.db.models import DNSName, Host, Port, WebInterface
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingSeverity, FindingSource, FindingStatus
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource, severity_rank
+from app.services import host_query_predicates as P
+from app.services.engagement_metrics_service import observation_judged_on_host
+from app.services.finding_service import HOST_COUNT_EXPR
+from app.services.subnet_insight_service import host_site_expression
+
+
+class ScopeCoverage(enum.Enum):
+    """A host's scope coverage — the DSL's ``scope:`` values, one per host."""
+    SUBNET = "subnet"
+    NAME = "name"
+    NONE = "none"
 
 
 @dataclass
@@ -163,6 +175,34 @@ def _names(db: Session, project_id: int) -> Query:
     return db.query(DNSName).filter(DNSName.project_id == project_id)
 
 
+# --- Columns read through the app's one rule for them (review 2026-10-16,
+# Q1 / Q2: a question the Hosts page and the Observations page answer could
+# not be grouped here) --------------------------------------------------------
+
+# Open ports: the Hosts language's `has:open_ports` condition, counted.
+_OPEN_PORTS = (
+    select(func.count(Port.id))
+    .where(Port.host_id == Host.id, *P.port_match_conditions(require_open=True))
+    .correlate(Host)
+    .scalar_subquery()
+)
+
+# The scanner finding of the row's issue (what the Observations list names):
+# by the issue key it dedups on, or the row it was promoted from.  Whether it
+# covers THIS row's host is `judged`, never this.
+_ISSUE_FINDING = (
+    select(func.min(Finding.id))
+    .where(
+        Finding.project_id == Host.project_id,
+        Finding.source == FindingSource.SCANNER.value,
+        or_(Finding.vuln_id == Vulnerability.id,
+            and_(Vulnerability.issue_key.isnot(None), Finding.dedup_key == Vulnerability.issue_key)),
+    )
+    .correlate(Vulnerability, Host)
+    .scalar_subquery()
+)
+
+
 def _host_link(row: tuple) -> Optional[str]:
     return f"/hosts/{row[0]}" if row[0] is not None else None
 
@@ -182,10 +222,18 @@ DATASETS: Dict[str, Dataset] = {
             QueryColumn("smb_signing", Host.smb_signing, "text", "SMB signing as a scanner reported it."),
             QueryColumn("first_seen", Host.first_seen, "datetime", "When an import first recorded the host."),
             QueryColumn("last_seen", Host.last_seen, "datetime", "When an import last recorded the host."),
+            QueryColumn("site", host_site_expression(), "text",
+                        "The site of its most specific site-bearing scope subnet, as the Hosts list shows it "
+                        "(null: none). The search term site: matches any of its subnets' sites."),
+            QueryColumn("scope", P.scope_coverage_expression(), "enum",
+                        "subnet (in a scope subnet), name (reached only by an in-scope name) or none — "
+                        "the search term scope:.", enum=ScopeCoverage, enum_as_text=True),
+            QueryColumn("open_ports", _OPEN_PORTS, "int", "How many open ports it has (has:open_ports is > 0)."),
         ),
         default_fields=["ip", "hostname", "state", "os", "os_family"],
         default_sort=["ip"],
         examples=[
+            "hosts | stats count by site, scope",
             "hosts | stats count by os_family",
             "hosts has:critical | stats count by state, os_family",
             "hosts port:445 | where isnull(smb_signing) | table ip, hostname, os",
@@ -245,10 +293,16 @@ DATASETS: Dict[str, Dataset] = {
             QueryColumn("service", Port.service_name, "text", "The port's service."),
             QueryColumn("first_seen", Vulnerability.first_seen, "datetime", "When an import first recorded it."),
             QueryColumn("last_seen", Vulnerability.last_seen, "datetime", "When an import last recorded it."),
+            QueryColumn("judged", observation_judged_on_host(), "bool",
+                        "A finding of its issue includes this host (false: not yet judged here) — "
+                        "the Scanner observations page's rule."),
+            QueryColumn("finding", _ISSUE_FINDING, "int",
+                        "The issue's finding (null: none yet). It may leave this host out: see judged."),
         ),
         default_fields=["ip", "hostname", "port", "severity", "title", "cve", "source"],
         default_sort=["-severity", "ip"],
         examples=[
+            'observations | where judged=false AND severity="critical" | stats count by ip, hostname | sort -count',
             "observations | stats dc(host) as hosts, count by severity",
             'observations | where severity IN ("critical", "high") | stats dc(host) as hosts by title | sort -hosts | head 20',
             "observations has:web | where exploitable=true | table ip, port, title, cve",
@@ -275,6 +329,8 @@ DATASETS: Dict[str, Dataset] = {
             QueryColumn("owner", _Owner.username, "text", "The owner's username (null: nobody owns it)."),
             QueryColumn("cvss", Finding.cvss_score, "float", "The CVSS base score."),
             QueryColumn("issue", Finding.dedup_key, "text", "The issue key a scanner finding stands for."),
+            QueryColumn("hosts", HOST_COUNT_EXPR, "int",
+                        "Its endpoints (affected systems) — the Findings list's host count."),
             QueryColumn("created_at", Finding.created_at, "datetime", "When it was made."),
             QueryColumn("updated_at", Finding.updated_at, "datetime", "When it last changed."),
         ),

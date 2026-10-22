@@ -769,7 +769,7 @@ describe('Findings — empty states', () => {
     expect(screen.getByRole('button', { name: 'Include closed ones' })).toBeInTheDocument();
     // 5.404.0 — the observations are an Inventory page: what still waits.
     expect(screen.getByRole('link', { name: 'Promote from scanner observations' }))
-      .toHaveAttribute('href', '/observations?obs_pending=1');
+      .toHaveAttribute('href', '/observations?obs_judged=waiting');
   });
 
   it('blames the filters only when the analyst set one', async () => {
@@ -803,7 +803,7 @@ describe('Findings — the old Scanner observations view', () => {
         </MemoryRouter>
       </TooltipProvider>,
     );
-    expect(await screen.findByTestId('observations-page')).toHaveTextContent('obs_severity=high&obs_pending=1');
+    expect(await screen.findByTestId('observations-page')).toHaveTextContent('obs_severity=high&obs_judged=waiting');
     expect(api.listFindings).not.toHaveBeenCalled();
   });
 });

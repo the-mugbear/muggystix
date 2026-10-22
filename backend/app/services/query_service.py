@@ -16,8 +16,10 @@ Read-only; the statement timeout is ``get_db``'s.
 """
 from __future__ import annotations
 
+import base64
 import enum
 import ipaddress
+import json
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -283,6 +285,9 @@ class _Plan:
     # columns kept, by index).
     having: list = field(default_factory=list)
     keep: Optional[List[int]] = None
+    # A listing's order as (expression, descending) — the key a page's
+    # `after` continues from (the row's own id last, so it is unique).
+    keyset: list = field(default_factory=list)
 
 
 def _plan_rows(ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
@@ -291,13 +296,17 @@ def _plan_rows(ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
     cols = [_column(ds, n, p) for n, p in zip(names, positions)]
     links = ds.link_exprs if ds.link else []
     order = []
+    keyset = []
     sorts = pipe.sorts or [(s.lstrip("-"), s.startswith("-"), 0) for s in ds.default_sort]
     for name, desc, pos in sorts:
         key = _sort_key(_column(ds, name, pos))
         order.append(key.desc().nullslast() if desc else key.asc().nullslast())
+        keyset.append((key, desc))
     # The row's own id last: a listing is stable from one run to the next.
     order.append(ds.base_id.asc())
+    keyset.append((ds.base_id, False))
     return dict(
+        keyset=keyset,
         kind="rows",
         selected=[c.expr for c in cols],
         out_cols=[{"name": c.name, "type": c.type} for c in cols],
@@ -309,15 +318,95 @@ def _plan_rows(ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
     )
 
 
-def _run_rows(query, ds: Dataset, plan: _Plan) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# A listing's pages: key-set, never OFFSET (review 2026-10-16, Q5)
+# ---------------------------------------------------------------------------
+
+def _encode_key(values: List[Any]) -> str:
+    """The last row's sort key as an opaque `after` token."""
+    out = []
+    for v in values:
+        if isinstance(v, datetime):
+            out.append(["t", v.isoformat()])
+        elif isinstance(v, enum.Enum):
+            out.append(["e", v.name])
+        elif isinstance(v, Decimal):
+            out.append(["n", str(v)])
+        else:
+            out.append(["v", v])
+    return base64.urlsafe_b64encode(json.dumps(out, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def _decode_key(token: str, keyset: list) -> List[Any]:
+    unreadable = QueryError("`after` is not a place in this listing — start again from its first rows")
+    try:
+        raw = json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+    except (ValueError, TypeError):
+        raise unreadable
+    if not isinstance(raw, list) or len(raw) != len(keyset):
+        raise unreadable
+    values = []
+    for item, (key, _desc) in zip(raw, keyset):
+        if not isinstance(item, list) or len(item) != 2 or item[0] not in ("t", "e", "n", "v"):
+            raise unreadable
+        tag, value = item
+        try:
+            if tag == "t":
+                value = datetime.fromisoformat(value)
+            elif tag == "e":
+                value = key.type.enum_class[value]
+            elif tag == "n":
+                value = Decimal(value)
+        except (AttributeError, KeyError, TypeError, ValueError, ArithmeticError):
+            raise unreadable
+        if tag == "v" and not (value is None or isinstance(value, (str, int, float, bool))):
+            raise unreadable
+        values.append(value)
+    return values
+
+
+def _after(keyset: list, values: List[Any]):
+    """The rows strictly after the key ``values`` in the listing's order —
+    each key ascending or descending, NULLS LAST, as ``_plan_rows`` orders."""
+    arms = []
+    for i, ((key, desc), value) in enumerate(zip(keyset, values)):
+        if value is None:
+            continue  # nulls are last: nothing is past a null in this key
+        bound = literal(value, type_=key.type)
+        beyond = or_(key < bound if desc else key > bound, key.is_(None))
+        same = [k.is_(None) if v is None else k == literal(v, type_=k.type)
+                for (k, _), v in zip(keyset[:i], values[:i])]
+        arms.append(and_(*same, beyond))
+    return or_(*arms) if arms else literal(False)
+
+
+def _run_rows(query, ds: Dataset, plan: _Plan, after: Optional[str] = None,
+              paged: bool = True) -> Dict[str, Any]:
+    """A listing.  ``after`` continues from the place a previous page's
+    ``next_after`` named; ``total`` is still the whole answer and ``start``
+    says where this page begins in it.  ``paged`` (no `head`): only then is
+    there a next page to name."""
+    whole = query
+    if after is not None:
+        query = query.filter(_after(plan.keyset, _decode_key(after, plan.keyset)))
+    keys = [key for key, _ in plan.keyset]
     result = (
-        query.with_entities(*plan.selected, *plan.links, func.count().over().label("_total"))
+        query.with_entities(*plan.selected, *plan.links, *keys, func.count().over().label("_total"))
         .order_by(*plan.order)
         .limit(plan.limit)
         .all()
     )
-    total = int(result[0]._total) if result else 0
+    remaining = int(result[0]._total) if result else 0
+    if after is None:
+        total = remaining
+    else:
+        total = int(whole.with_entities(func.count()).order_by(None).scalar() or 0)
+    start = total - remaining
     width = len(plan.selected)
+    links_end = width + len(plan.links)
+    next_after = None
+    if paged and result and remaining > len(result):
+        next_after = _encode_key(list(result[-1][links_end:links_end + len(keys)]))
     return {
         "kind": "rows",
         "columns": plan.out_cols,
@@ -327,9 +416,11 @@ def _run_rows(query, ds: Dataset, plan: _Plan) -> Dict[str, Any]:
         "capped": plan.capped,
         "drilldowns": None,
         # Each row's page (the host, the finding, the endpoint) — the dataset's.
-        "links": [ds.link(tuple(r[width:width + len(plan.links)])) for r in result] if plan.links else None,
+        "links": [ds.link(tuple(r[width:links_end])) for r in result] if plan.links else None,
         "by": None,
         "truncated_values": [],
+        "start": start,
+        "next_after": next_after,
     }
 
 
@@ -573,19 +664,139 @@ def check(text: str) -> None:
     _plan(text, ROW_CAP)
 
 
-def run(db: Session, project_id: int, user: User, text: str, *, row_cap: Optional[int] = None) -> Dict[str, Any]:
+def _hosts_q(ds: Dataset, pipe: Pipeline) -> Optional[str]:
+    """The Hosts-page query whose list is exactly this answer's rows (review
+    Q7: `hosts <terms>` ↔ `/hosts?q=<terms>`): a `hosts` listing with no
+    `where` — its rows are the hosts its search terms match ("" for every
+    host).  None for any other answer."""
+    if ds.name != "hosts" or pipe.wheres or pipe.aggregate is not None:
+        return None
+    terms = [t.strip() for t, _ in pipe.searches if t.strip()]
+    if len(terms) <= 1:
+        return terms[0] if terms else ""
+    # Several search commands are one host's terms, ANDed (as `_filtered` reads them).
+    return " AND ".join(f"({t})" for t in terms)
+
+
+def run(db: Session, project_id: int, user: User, text: str, *, row_cap: Optional[int] = None,
+        after: Optional[str] = None) -> Dict[str, Any]:
     """The answer to one query, in one statement.  ``row_cap`` is the most
-    rows a listing returns (default ``ROW_CAP``; the CSV export's is larger)."""
+    rows a listing returns (default ``ROW_CAP``; the CSV export's is larger).
+    ``after`` (a listing's ``next_after``) is the next page of it: the rows
+    past that place, the cap still the page's size."""
     pipe, ds, plan = _plan(text, ROW_CAP if row_cap is None else row_cap)
+    if after is not None:
+        if plan.kind != "rows":
+            raise QueryError("`after` pages a listing — a stats or top answer has no next page")
+        if pipe.head is not None:
+            raise QueryError("`after` pages a listing without `head` — `head` already says how many rows")
     query = _filtered(db, project_id, user, ds, plan)
     if isinstance(pipe.aggregate, Top) and pipe.having:
         # `top … | where …`: the percent stays of every row — `top` computes
         # it before the where (the window would be of the kept groups).
         rows_total = query.with_entities(func.count()).order_by(None).statement.correlate(None).scalar_subquery()
         plan = replace(plan, **_plan_grouped(ds, pipe, top_total=rows_total))
-    answer = _run_grouped(query, pipe, plan) if plan.kind == "stats" else _run_rows(query, ds, plan)
+    if plan.kind == "stats":
+        answer = _run_grouped(query, pipe, plan)
+    else:
+        answer = _run_rows(query, ds, plan, after=after, paged=pipe.head is None)
     hint = _case_hint(db, project_id, user, ds, pipe, plan) if answer["total"] == 0 else None
-    return {"query": text, "dataset": ds.name, **answer, "hint": hint}
+    return {"query": text, "dataset": ds.name, **answer, "hint": hint, "hosts_q": _hosts_q(ds, pipe)}
+
+
+# ---------------------------------------------------------------------------
+# The builder's reading of a query (review Q9): the grammar is here, so the
+# page's builder asks rather than parsing the text a second time.
+# ---------------------------------------------------------------------------
+
+BUILDER_OPS = ("=", "!=", "<", "<=", ">", ">=")
+
+
+def _builder_conditions(cond, out: list) -> Optional[str]:
+    """Flatten an AND of simple comparisons into the builder's rows; the
+    reason it cannot, else None."""
+    if isinstance(cond, BoolOp):
+        if cond.op != "and":
+            return "an OR"
+        for child in cond.children:
+            reason = _builder_conditions(child, out)
+            if reason:
+                return reason
+        return None
+    if isinstance(cond, Compare) and cond.op in BUILDER_OPS:
+        value = cond.value
+        out.append({"column": cond.column, "op": cond.op,
+                    "value": ("true" if value else "false") if isinstance(value, bool) else str(value)})
+        return None
+    if isinstance(cond, Like):
+        if "%" not in cond.pattern:
+            return "a like() with no %"  # the builder's like matches part of a value
+        out.append({"column": cond.column, "op": "like", "value": cond.pattern})
+        return None
+    if isinstance(cond, IsNull):
+        out.append({"column": cond.column, "op": "isnotnull" if cond.negated else "isnull", "value": ""})
+        return None
+    if isinstance(cond, InList):
+        return "an IN list"
+    if isinstance(cond, NotCond):
+        return "a NOT"
+    return "a condition it has no row for"  # pragma: no cover
+
+
+def builder_shape(text: str) -> Dict[str, Any]:
+    """What the page's builder shows for a query: ``{"shape": …}`` when it
+    can show all of it, else ``{"shape": None, "reason": …}`` — never a
+    builder that silently drops part of the query.  Refuses (``QueryError``)
+    whatever ``check`` refuses; reads no database."""
+    pipe, _ds, _plan_ = _plan(text, ROW_CAP)
+
+    def cannot(reason: str) -> Dict[str, Any]:
+        return {"shape": None, "reason": f"The builder has no place for {reason}; edit the text instead."}
+
+    terms = [t.strip() for t, _ in pipe.searches if t.strip()]
+    conditions: list = []
+    for cond in pipe.wheres:
+        reason = _builder_conditions(cond, conditions)
+        if reason:
+            return cannot(reason)
+    if pipe.fields is not None:
+        return cannot("a column list (fields / table)")
+    if pipe.having or pipe.answer_fields is not None:
+        return cannot("a command after stats or top")
+    shape: Dict[str, Any] = {
+        "dataset": pipe.dataset,
+        "terms": terms[0] if len(terms) == 1 else " AND ".join(f"({t})" for t in terms),
+        "conditions": conditions,
+        "by": [],
+        "measure": {"fn": "count", "column": "", "as": None},
+        "most_first": False,
+        "head": pipe.head or 0,
+    }
+    agg = pipe.aggregate
+    if agg is None:
+        if pipe.sorts:
+            return cannot("the order of a listing")
+        return {"shape": shape}
+    if isinstance(agg, Top):
+        if pipe.sorts or pipe.head:
+            return cannot("sort or head after top")
+        shape.update(by=list(agg.columns), measure={"fn": "top", "column": "", "as": None}, head=agg.limit)
+        return {"shape": shape}
+    if len(agg.aggregates) != 1:
+        return cannot("more than one measure")
+    measure = agg.aggregates[0]
+    if measure.func == "count" and measure.column is not None:
+        return cannot("count(column)")
+    shape.update(by=list(agg.by),
+                 measure={"fn": measure.func, "column": measure.column or "",
+                          "as": None if measure.alias == (measure.func if measure.column is None
+                                                          else f"{measure.func}({measure.column})")
+                          else measure.alias})
+    if pipe.sorts:
+        if len(pipe.sorts) != 1 or not pipe.sorts[0][1] or pipe.sorts[0][0] != measure.alias:
+            return cannot("an order other than the measure, most first")
+        shape["most_first"] = True
+    return {"shape": shape}
 
 
 VALUES_SUGGEST_CAP = 20
