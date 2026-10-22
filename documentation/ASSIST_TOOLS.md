@@ -361,12 +361,12 @@ A new payload field on an existing read is preferred to a new tool.
 
 **A list a caller can page answers the one page.** Arguments `limit` and
 `offset`; answer `{items, total, limit, offset, returned, has_more}` beside
-whatever else the read says, built by `agent_schemas.agent_page` (the model
-subclasses `AgentPage`). Where the page's service already counts the list the
-call pages, `total` is that figure — never a second count beside it. The envelope belongs to the
-agents' route: the page's route and the shared service keep their own answer
-(the two router factories two doors share, host tests and remediation, take the
-envelope as an argument on the agents' mount). Add the route to
+whatever else the read says, built by `agent_schemas.agent_page` — which is `services/paging.page_envelope`,
+the one place the arithmetic is written (the model subclasses `AgentPage`).
+Where the page's service already counts the list the call pages, `total` is
+that figure — never a second count beside it. A page's route keeps its own
+answer, except the two router factories two doors share (host tests and
+remediation), whose services answer the envelope on every door. Add the route to
 `tests/test_agent_list_paging.py` — as paged, or with the reason it is not
 (today: evidence gaps and the scan comparison
 carry a capped list with its count and no `offset`; one client report pages its

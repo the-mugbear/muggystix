@@ -353,8 +353,10 @@ def test_skip_is_an_unknown_argument_over_mcp(client, test_project, tool, argume
     assert "skip" in str(refused)
 
 
-def test_the_page_routes_two_doors_share_still_answer_their_own_shape(client, test_project):
-    """The envelope is the AGENTS' door: the people's routes of the two shared
-    router factories answer what they did (the frontend reads them)."""
+def test_the_page_routes_two_doors_share_answer_the_one_envelope(client, test_project):
+    """Review 2026-10-10, R1f: the two shared router factories' lists answer
+    the service's page envelope on BOTH doors (``services/paging``) — the
+    people's answer gained ``limit`` / ``offset`` / ``returned`` beside what it
+    said; the agents' door no longer recomputes anything."""
     tests = client.get(f"/api/v1/projects/{test_project.id}/host-tests").json()
-    assert tests == {"items": [], "total": 0, "has_more": False}
+    assert tests == {"items": [], "total": 0, "limit": 50, "offset": 0, "returned": 0, "has_more": False}

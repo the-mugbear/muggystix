@@ -26,6 +26,7 @@ from app.db.models_remediation import RemediationDaily, RemediationEvent, TRACKE
 from app.db.models_reports import Report, ReportStatus
 from app.schemas.remediation_schemas import APPLY_MAX_TARGETS, NOTE_MAX_CHARS, ApplyBody, ApplyRow, NoteIn
 from app.services import remediation_policy as deadlines
+from app.services.paging import page_envelope
 from app.services.client_report_service import INCLUDED_STATUSES, told_by_report
 from app.services.notification_service import display_name
 from app.services.scope_targets_service import ip_order_by
@@ -262,8 +263,8 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
         .order_by(*_order(db, group, state_of, due)).offset(offset).limit(limit).all()
     )
     items = [_item(r, today) for r in rows]
-    return {"items": items, "total": total, "has_more": offset + len(items) < total,
-            "limit": limit, "offset": offset, "status_counts": _status_counts(state_counts),
+    return {**page_envelope(items, total=total, limit=limit, offset=offset),
+            "status_counts": _status_counts(state_counts),
             "state_counts": state_counts, "verification_counts": verification_counts,
             "flag_counts": flag_counts, "severity_counts": severity_counts, "overdue_ages": overdue_ages,
             "not_followed_up": not_followed_up,
@@ -1054,8 +1055,7 @@ def list_events(db, project_id: int, host_id: int, user_id: Optional[int], *,
     rows = (query.options(joinedload(RemediationEvent.author))
             .order_by(RemediationEvent.occurred_at.desc(), RemediationEvent.id.desc())
             .offset(offset).limit(limit).all())
-    return {"items": [serialize_event(row, user_id) for row in rows], "total": total,
-            "has_more": offset + len(rows) < total, "limit": limit, "offset": offset}
+    return page_envelope([serialize_event(row, user_id) for row in rows], total=total, limit=limit, offset=offset)
 
 
 def serialize_event(row: RemediationEvent, user_id: Optional[int]) -> dict:

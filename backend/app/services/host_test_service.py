@@ -13,6 +13,7 @@ from app.db.models_auth import User
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 from app.services.dns_name_service import InvalidName, normalize_fqdn
+from app.services.paging import page_envelope
 from app.services.project_assignee import load_project_assignee
 
 
@@ -267,7 +268,8 @@ def list_tests(db, project_id, user_id, *, host_id=None, status=None, label=None
         query.options(*_serialized_loads())
         .order_by(HostTest.created_at.desc(), HostTest.id.desc()).offset(offset).limit(limit).all()
     )
-    return {"items": _serialize_loaded(db, rows), "total": total, "has_more": offset + len(rows) < total}
+    # The page envelope (``services/paging``), the same answer on both doors.
+    return page_envelope(_serialize_loaded(db, rows), total=total, limit=limit, offset=offset)
 
 
 def _display(user):

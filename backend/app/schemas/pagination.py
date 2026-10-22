@@ -34,6 +34,8 @@ from typing import Generic, List, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.services.paging import rows_remain
+
 T = TypeVar("T")
 
 
@@ -65,5 +67,5 @@ class Paginated(BaseModel, Generic[T]):
             total=total,
             skip=skip,
             limit=limit,
-            has_more=skip + len(items) < total,
+            has_more=rows_remain(skip, len(items), total),
         )

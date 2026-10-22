@@ -21,7 +21,9 @@ from app.services.scan_time import scan_time_for_api
 # ---------------------------------------------------------------------------
 
 #: The words every agent list a caller can page answers with, beside ``items``.
-PAGE_KEYS = ("items", "total", "limit", "offset", "returned", "has_more")
+#: The envelope and its arithmetic are ``services/paging`` (review 2026-10-10
+#: R1f); ``agent_page`` is that function under the name the routes use.
+from app.services.paging import PAGE_KEYS, page_envelope as agent_page  # noqa: E402,F401
 
 
 class AgentPage(BaseModel):
@@ -42,30 +44,6 @@ class AgentRowsPage(AgentPage):
     """A page whose rows a service serializes itself (evidence, proposals,
     the scope's entries)."""
     items: List[Any] = Field(default_factory=list)
-
-
-def agent_page(items: List[Any], *, total: int, limit: int, offset: int) -> Dict[str, Any]:
-    """The envelope of one page: ``{items, total, limit, offset, returned,
-    has_more}``.  ``total`` is the caller's own count for the list it paged
-    (the service's figure, never a second count made here)."""
-    total = int(total or 0)
-    returned = len(items)
-    return {
-        "items": items,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "returned": returned,
-        "has_more": offset + returned < total,
-    }
-
-
-def as_agent_page(answer: Dict[str, Any], *, limit: int, offset: int) -> Dict[str, Any]:
-    """A list answer a service builds for a page AND for agents (``items``,
-    ``total`` and whatever else it says), in the agents' page.  For the router
-    factories two doors share (host tests, remediation): the people's route
-    answers the service's own dict, the agents' route this."""
-    return {**answer, **agent_page(answer["items"], total=answer["total"], limit=limit, offset=offset)}
 
 
 # ---------------------------------------------------------------------------

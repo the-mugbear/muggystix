@@ -23,6 +23,7 @@ from app.schemas.schemas import (
     OutOfScopeHost,
     DNSRecord,
 )
+from app.services.paging import rows_remain
 from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
 from app.services.host_query_predicates import renamed_in_scan_condition
@@ -1236,7 +1237,7 @@ def get_import_history(
         total=total,
         batch_total=int(batch_total),
         scan_total=int(scan_total),
-        has_more=skip + len(page) < total,
+        has_more=rows_remain(skip, len(page), total),
     )
 
 
