@@ -9,7 +9,6 @@ processes one job at a time, keeping parsing fully isolated from the API.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import logging
 import os
 import re
@@ -30,7 +29,6 @@ from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.parsers import content_detection as _cd  # v2.27.0 — content sniffers extracted
 from app.db.models import IngestionJob
 # Imported as a module (not `from … import SessionLocal`) so tests can rebind
 # app.db.session.SessionLocal onto the test engine and have these background
@@ -38,7 +36,8 @@ from app.db.models import IngestionJob
 from app.db import session as _session_module
 from app.db.session import is_statement_timeout
 from app.parsers.cut_short import TruncatedFile, begin_read, end_read
-from app.services.format_registry import format_label
+from app.services import format_registry
+from app.services.format_registry import FallbackAttempt, ParserDescriptor, format_label
 from app.services.ingestion_stall import StallWatchdog, exit_worker, stall_message, stall_statement_timeout
 from app.services.parse_error_service import log_parse_error
 from app.services.job_transitions import JobNotTransitionable, JobTransitions
@@ -889,83 +888,19 @@ def delete_partial_scan(
     }
 
 
-ParserDescriptor = Tuple[str, Type, str]
-
-
-class FallbackAttempt(tuple):
-    """A parser the dispatcher tries WITHOUT having recognised the content —
-    the XML branch's "try the others" tail.  Still a plain
-    ``(file_type, parser_class, description)`` to every consumer (and to the
-    dispatch contract tests); the staged review reads ``fallback`` so an
-    attempt nothing recognised is never shown as "recognised by structure"."""
-    fallback = True
-
-
-def _fallback(file_type: str, parser_class: Type, description: str) -> ParserDescriptor:
-    return FallbackAttempt((file_type, parser_class, description))
-
-
 def build_parser_dispatch_map() -> Dict[Type, Type]:
-    """Every parser class the dispatcher can construct, keyed by itself.
-
-    This MUST contain every parser class ``_build_parsing_attempts`` can emit
-    (except ``NessusIntegrationService``, which the executor dispatches on its
-    own path) — a class that is detected but missing here dies at dispatch with
-    "Unsupported parser class".  That is exactly how RDAP and testssl broke:
-    both were wired into detection but never registered for dispatch.
-
-    Kept as one function so detection and dispatch can be checked against each
-    other by ``tests/test_parser_dispatch_contract.py``.  Imports stay lazy
-    (this runs at parse time, not import time) so a parser module that fails to
-    import degrades to "unavailable" instead of breaking the whole service.
+    """Every parser class the dispatcher can construct, keyed by itself: the
+    classes ``format_registry.FORMATS`` names, except the ones the executor
+    dispatches on its own path (``NessusIntegrationService``).  Built from the
+    one registry detection reads, so a detected class can no longer be missing
+    here ("Unsupported parser class" — how RDAP and testssl once broke).
+    Imports stay lazy (this runs at parse time): a parser module that fails to
+    import is left out instead of breaking the whole service.
     """
-    from app.parsers.nmap_parser import NmapXMLParser
-    from app.parsers.eyewitness_parser import EyewitnessParser
-    from app.parsers.masscan_parser import MasscanParser
-    from app.parsers.dns_parser import DNSParser
-    from app.parsers.netexec_parser import NetexecParser
-    from app.parsers.naabu_parser import NaabuParser
-    from app.parsers.rustscan_parser import RustScanParser
-    from app.parsers.openvas_parser import OpenVASParser
-    from app.parsers.amass_parser import AmassParser
-    from app.parsers.nikto_parser import NiktoParser
-    from app.parsers.smbmap_parser import SMBMapParser
-    from app.parsers.bloodhound_parser import BloodHoundParser
-
-    dispatch: Dict[Type, Type] = {
-        NmapXMLParser: NmapXMLParser,
-        EyewitnessParser: EyewitnessParser,
-        MasscanParser: MasscanParser,
-        DNSParser: DNSParser,
-        NetexecParser: NetexecParser,
-        NaabuParser: NaabuParser,
-        RustScanParser: RustScanParser,
-        OpenVASParser: OpenVASParser,
-        AmassParser: AmassParser,
-        NiktoParser: NiktoParser,
-        SMBMapParser: SMBMapParser,
-        BloodHoundParser: BloodHoundParser,
+    return {
+        cls: cls for cls in format_registry.parser_classes()
+        if cls.__name__ not in format_registry.OWN_PATH_CLASSES
     }
-    # Optional parsers — same set appended in _build_parsing_attempts' JSON /
-    # .gnmap branches.  Keep the two lists in lockstep (the contract test fails
-    # the build if they drift).
-    for module_path, class_name in (
-        ("app.parsers.gnmap_parser", "GnmapParser"),
-        ("app.parsers.dirbuster_parser", "DirBusterParser"),
-        ("app.parsers.httpx_parser", "HttpxParser"),
-        ("app.parsers.dnsx_parser", "DnsxParser"),
-        ("app.parsers.whatweb_parser", "WhatwebParser"),
-        ("app.parsers.testssl_parser", "TestsslParser"),
-        ("app.parsers.rdap_parser", "RdapParser"),
-        ("app.parsers.nuclei_parser", "NucleiParser"),
-    ):
-        try:
-            module = importlib.import_module(module_path)
-            cls = getattr(module, class_name)
-            dispatch[cls] = cls
-        except ImportError:
-            pass
-    return dispatch
 
 
 class ParseFailure(RuntimeError):
@@ -2645,23 +2580,11 @@ class IngestionService:
     def _build_parsing_attempts(
         self, job: IngestionJob, sample: bytes
     ) -> Iterable[ParserDescriptor]:
-        from app.parsers.nmap_parser import NmapXMLParser
-        from app.parsers.eyewitness_parser import EyewitnessParser
-        from app.parsers.masscan_parser import MasscanParser
-        from app.parsers.dns_parser import DNSParser
-        from app.parsers.netexec_parser import NetexecParser
-        from app.parsers.naabu_parser import NaabuParser
-        from app.parsers.rustscan_parser import RustScanParser
-        from app.parsers.openvas_parser import OpenVASParser
-        from app.parsers.amass_parser import AmassParser
-        from app.parsers.nikto_parser import NiktoParser
-        from app.parsers.smbmap_parser import SMBMapParser
-        from app.parsers.bloodhound_parser import BloodHoundParser
-        from app.parsers.dirbuster_parser import DirBusterParser
-        from app.services.nessus_integration_service import NessusIntegrationService
-
+        """``(file_type, parser_class, description)`` in the order they are
+        tried.  What recognises each format, and the order per extension, is
+        ``format_registry`` (the one parser registry); this adds only the
+        operator's override."""
         filename = job.original_filename.lower()
-        attempts: List[ParserDescriptor] = []
 
         # v2.351.0 — an operator override is the whole attempt list: exactly
         # the chosen parser, no fallback.  Falling through to another parser
@@ -2681,190 +2604,11 @@ class IngestionService:
             parser_class, description = resolved
             return [(str(override), parser_class, description)]
 
-        if filename.endswith(".nessus") or (
-            filename.endswith(".xml") and _cd.is_nessus_sample(sample)
-        ):
-            attempts.append(("nessus_xml", NessusIntegrationService, "Nessus vulnerability scan"))
-
-        if filename.endswith(".xml"):
-            # v2.45.1 — dispatcher ordered by structural specificity.
-            # The bug history that drives this ordering:
-            #
-            #   1. Pre-fix: looks_like_openvas matched "openvas" or
-            #      "greenbone" anywhere in the body, so nmap XML
-            #      whose NSE script output captured cert subjects
-            #      ("Greenbone AG" via ssl-cert) or page titles
-            #      ("OpenVAS Scan" via http-title) routed to
-            #      OpenVASParser before nmap got a chance.  Operators
-            #      had to sanitize their own scan output as a workaround.
-            #
-            #   2. Masscan emits XML with root element <nmaprun
-            #      scanner="masscan">, sharing the root tag with
-            #      genuine nmap output.  Root-element check alone
-            #      can't distinguish them — must inspect the scanner
-            #      attribute via looks_like_masscan_xml.
-            #
-            # Decision tree:
-            #   * is_masscan_xml (scanner="masscan") → masscan first.
-            #   * is_openvas (root=<report>/<openvas-results> OR
-            #     filename match) → openvas first.
-            #   * is_nmap_root (root=<nmaprun> without masscan attr)
-            #     → nmap first.
-            #   * No structural match → fall through to legacy
-            #     "try every parser" order (nmap, openvas, masscan, nessus).
-            is_masscan_xml = _cd.looks_like_masscan_xml(sample)
-            is_openvas = _cd.looks_like_openvas(sample, filename)
-            is_nmap_root = _cd.looks_like_nmap_xml(sample)
-
-            if is_masscan_xml:
-                attempts.append(("masscan_xml", MasscanParser, "Masscan XML file"))
-                # Nmap parser as fallback — masscan's XML format is a
-                # subset of nmap's, so nmap may still produce useful
-                # data if masscan parser hiccups on a malformed edge.
-                attempts.append(_fallback("nmap_xml", NmapXMLParser, "Nmap XML file"))
-            elif is_openvas:
-                attempts.append(("openvas_xml", OpenVASParser, "OpenVAS/Greenbone XML report"))
-                attempts.append(_fallback("nmap_xml", NmapXMLParser, "Nmap XML file"))
-            elif is_nmap_root:
-                attempts.append(("nmap_xml", NmapXMLParser, "Nmap XML file"))
-                # Openvas root excludes nmaprun by construction, so
-                # don't try openvas here; masscan as last fallback.
-                attempts.append(_fallback("masscan_xml", MasscanParser, "Masscan XML file"))
-            else:
-                # No structural signal — keep the pre-v2.45.1 try-everything
-                # order.  Every one of these is a FALLBACK: nothing was
-                # recognised, and the staged review must not say otherwise
-                # (an unrelated .xml used to read "Nmap XML · recognised by
-                # structure" and be marked ready).
-                attempts.append(_fallback("nmap_xml", NmapXMLParser, "Nmap XML file"))
-                attempts.append(_fallback("openvas_xml", OpenVASParser, "OpenVAS/Greenbone XML report"))
-                attempts.append(_fallback("masscan_xml", MasscanParser, "Masscan XML file"))
-
-            # Always include Nessus as a last-ditch attempt — covers
-            # .xml files that are actually .nessus exports mislabeled.
-            attempts.append(_fallback("nessus_xml", NessusIntegrationService, "Nessus vulnerability scan"))
-        elif filename.endswith(".gnmap"):
-            try:
-                from app.parsers.gnmap_parser import GnmapParser
-
-                attempts.append(("nmap_gnmap", GnmapParser, "Nmap .gnmap file"))
-            except ImportError as exc:
-                logger.warning("Gnmap parser unavailable: %s", exc)
-        elif filename.endswith((".json", ".jsonl", ".ndjson")):
-            # httpx first because it has a very specific content
-            # signature (``tech`` + ``webserver`` + ``url``) that rarely
-            # false-positives.  Must come before other JSON probes.
-            from app.parsers.httpx_parser import HttpxParser, looks_like_httpx
-            if looks_like_httpx(sample, filename):
-                attempts.append(("httpx_json", HttpxParser, "httpx web fingerprint (JSON/JSONL)"))
-            # v2.140.0 — whatweb web fingerprint.  Distinct signature
-            # (``target`` + ``plugins`` dict) so it sits beside httpx with
-            # no risk of cross-matching the other JSON probes.
-            from app.parsers.whatweb_parser import WhatwebParser, looks_like_whatweb
-            if looks_like_whatweb(sample, filename):
-                attempts.append(("whatweb_json", WhatwebParser, "whatweb web fingerprint (JSON/JSONL)"))
-            # testssl.sh TLS assessment — a flat findings array (id + finding +
-            # severity) that no other JSON probe emits, so it sits beside the
-            # web-fingerprint probes with no cross-match risk.
-            from app.parsers.testssl_parser import TestsslParser, looks_like_testssl
-            if looks_like_testssl(sample, filename):
-                attempts.append(("testssl_json", TestsslParser, "testssl.sh TLS assessment (JSON)"))
-            # v2.411.0 — Nuclei results (template-id + info / matched-at).
-            from app.parsers.nuclei_parser import NucleiParser
-            if _cd.looks_like_nuclei(sample, filename):
-                attempts.append(("nuclei_json", NucleiParser, "Nuclei results (JSON/JSONL)"))
-            if _cd.looks_like_bloodhound(sample, filename):
-                attempts.append(("bloodhound_json", BloodHoundParser, "BloodHound/SharpHound JSON export"))
-            if _cd.looks_like_amass(sample, filename):
-                attempts.append(("amass_json", AmassParser, "Amass/Subfinder JSON output"))
-            # v2.88.0 — dnsx JSON output (closes #44).  Operators run
-            # dnsx terminal-side against operator-supplied resolvers;
-            # we ingest the resulting records and feed PTR answers
-            # back into Host.hostname.
-            if _cd.looks_like_dnsx(sample, filename):
-                from app.parsers.dnsx_parser import DnsxParser
-                attempts.append(("dnsx_json", DnsxParser, "dnsx DNS resolution JSON"))
-            # RDAP network registration — provenance for a netblock (who it
-            # is registered to, which ASN/org/country). Egress happens
-            # operator-side via scripts/rdap-lookup.py; we only ingest.
-            if _cd.looks_like_rdap(sample, filename):
-                from app.parsers.rdap_parser import RdapParser
-                attempts.append(("rdap_json", RdapParser, "RDAP network registration (JSON/NDJSON)"))
-            if _cd.looks_like_naabu(sample, filename):
-                attempts.append(("naabu_json", NaabuParser, "Naabu JSON output"))
-            if _cd.looks_like_netexec(sample, filename):
-                from app.parsers.netexec_parser import NetexecParser as NetexecJsonParser
-
-                attempts.append(("netexec_json", NetexecJsonParser, "NetExec JSON output"))
-            if "masscan" in filename or _cd.looks_like_masscan_json(sample):
-                attempts.append(("masscan_json", MasscanParser, "Masscan JSON file"))
-            if "eyewitness" in filename or "report" in filename or _cd.looks_like_eyewitness_json(sample):
-                attempts.append(("eyewitness_json", EyewitnessParser, "EyeWitness report"))
-            if _cd.looks_like_nikto(sample, filename):
-                attempts.append(("nikto_json", NiktoParser, "Nikto JSON report"))
-            if _cd.looks_like_smbmap(sample, filename):
-                attempts.append(("smbmap_json", SMBMapParser, "SMBMap JSON output"))
-            if _cd.looks_like_dirbuster(sample, filename):
-                attempts.append(("dirbuster_json", DirBusterParser, "Web content discovery JSON"))
-        elif filename.endswith(".zip"):
-            # EyeWitness bundle — contains report JSON + screenshots.
-            # The parser does its own zip extraction; we just route here.
-            attempts.append(("eyewitness_zip", EyewitnessParser, "EyeWitness bundle (zip with report + screenshots)"))
-        elif filename.endswith(".csv"):
-            # v2.353.0 — the header recognises an EyeWitness CSV; the
-            # filename is now only a hint.
-            if "eyewitness" in filename or "report" in filename or _cd.looks_like_eyewitness_csv(sample):
-                attempts.append(("eyewitness_csv", EyewitnessParser, "Eyewitness report"))
-            if _cd.looks_like_nikto(sample, filename):
-                attempts.append(("nikto_csv", NiktoParser, "Nikto CSV report"))
-            if _cd.looks_like_dirbuster(sample, filename):
-                attempts.append(("dirbuster_csv", DirBusterParser, "Web content discovery CSV"))
-            # Gate dns_csv on a positive header heuristic.  The previous
-            # unconditional append turned any unrecognised CSV into a
-            # silent `tool_name='dns'` scan with zero records — the
-            # DNSParser creates the Scan row before validating headers
-            # and only raises if the file has NO header at all.  An
-            # arbitrary CSV with arbitrary headers therefore passed.
-            if _cd.looks_like_dns_csv(sample):
-                attempts.append(("dns_csv", DNSParser, "DNS records CSV file"))
-        elif filename.endswith(".txt"):
-            if _cd.looks_like_rustscan(sample, filename):
-                attempts.append(("rustscan_output", RustScanParser, "RustScan output file"))
-            if _cd.looks_like_smbmap(sample, filename):
-                attempts.append(("smbmap_output", SMBMapParser, "SMBMap output file"))
-            if _cd.looks_like_nikto(sample, filename):
-                # Nikto's JSON saved as .txt is labelled as the JSON it is;
-                # the parser reads it by content (v2.424.1).
-                if sample.lstrip(b"\xef\xbb\xbf").lstrip()[:1] in (b"[", b"{"):
-                    attempts.append(("nikto_json", NiktoParser, "Nikto JSON report"))
-                else:
-                    attempts.append(("nikto_output", NiktoParser, "Nikto text report"))
-            if _cd.looks_like_amass(sample, filename):
-                attempts.append(("amass_output", AmassParser, "Amass/Subfinder output file"))
-            if _cd.looks_like_netexec(sample, filename):
-                attempts.append(("netexec_output", NetexecParser, "NetExec output file"))
-            if _cd.looks_like_naabu(sample, filename):
-                attempts.append(("naabu_output", NaabuParser, "Naabu output file"))
-            if _cd.looks_like_dirbuster(sample, filename):
-                attempts.append(("dirbuster_output", DirBusterParser, "Web content discovery output"))
-            if _cd.looks_like_masscan_list(sample):
-                attempts.append(("masscan_list", MasscanParser, "Masscan list output file"))
-            if _cd.looks_like_gnmap(sample):
-                try:
-                    from app.parsers.gnmap_parser import GnmapParser
-                    attempts.append(("gnmap_txt", GnmapParser, "Greppable scan output (.txt)"))
-                except ImportError as exc:
-                    logger.warning("Gnmap parser unavailable for .txt greppable detection: %s", exc)
-            # Previously a final `if not attempts: append masscan_list`
-            # turned any unrecognised .txt into a completed
-            # `tool_name='masscan'` scan with zero hosts (MasscanParser
-            # treats empty input as success — `db.commit(); return scan`).
-            # That fallback is gone: if `looks_like_masscan_list`
-            # didn't fire above, this isn't a masscan list.  An empty
-            # ``attempts`` list now triggers `_process_job`'s
-            # "Unsupported file type or format" parse_error path.
-
-        return attempts
+        # Nothing recognised = an empty list, which ``_process_job`` reports as
+        # "Unsupported file type or format" — never a catch-all parser (an
+        # unconditional masscan-list / dns-csv append once turned any .txt or
+        # .csv into an empty completed scan).
+        return format_registry.detect(filename, sample)
 
     def _read_sample(self, path: Path, size: int = 64 * 1024) -> bytes:
         with path.open("rb") as handle:

@@ -14,6 +14,7 @@ behaviour survives were rewritten against host tests and evidence records.)
 """
 from __future__ import annotations
 
+import importlib
 import uuid
 
 import pytest
@@ -824,42 +825,21 @@ def test_v2_27_0_host_serialization_module_surface():
 def test_v2_27_0_content_detection_module_surface():
     """parsers/content_detection.py exposes the looks_like_*
     predicates + is_nessus_sample, all as module-level functions
-    (previously bound to IngestionService).  Pin the surface so an
-    accidental rename or deletion is caught.
-
-    v2.65.0 — added `looks_like_dns_csv` to the expected set; the
-    DNS-CSV detector landed sometime between v2.27.0 and now and the
-    test wasn't bumped, so this pin was reading as "test broken"
-    rather than "drift caught".
+    (previously bound to IngestionService).  The surface is generated
+    from the one parser registry (H-g, backlog 2026-10-22): the sniffers
+    ``format_registry`` names ARE the module's public predicates — one
+    added without a format, or a format naming one that was renamed or
+    deleted, fails here.  No literal list to bump when a parser lands.
     """
     from app.parsers import content_detection
+    from app.services.format_registry import CONTENT_DETECTION, sniffers
     public = sorted(
         x for x in dir(content_detection)
         if x.startswith("looks_like_") or x == "is_nessus_sample"
     )
-    assert public == [
-        "is_nessus_sample",
-        "looks_like_amass",
-        "looks_like_bloodhound",
-        "looks_like_dirbuster",
-        "looks_like_dns_csv",
-        "looks_like_dnsx",  # added v2.88.0 — dnsx JSON/JSONL (closes #44)
-        "looks_like_eyewitness_csv",  # added v2.353.0 — CSV by header, not filename
-        "looks_like_eyewitness_json",
-        "looks_like_gnmap",
-        "looks_like_masscan_json",
-        "looks_like_masscan_list",
-        "looks_like_masscan_xml",
-        "looks_like_naabu",
-        "looks_like_netexec",
-        "looks_like_nikto",
-        "looks_like_nmap_xml",  # added v2.45.1 — structural root-element check
-        "looks_like_nuclei",  # added v2.411.0 — Nuclei results (template-id + info / matched-at)
-        "looks_like_openvas",
-        "looks_like_rdap",  # added v2.237.0 — RDAP network registration
-        "looks_like_rustscan",
-        "looks_like_smbmap",
-    ]
+    assert public == sorted(n for n, m in sniffers().items() if m == CONTENT_DETECTION)
+    for name, module in sniffers().items():
+        assert callable(getattr(importlib.import_module(module), name)), name
     assert content_detection.looks_like_gnmap(b"# Nmap 7.94 scan initiated\nHost: 10.0.0.1")
 
 

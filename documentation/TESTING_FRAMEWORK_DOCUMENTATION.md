@@ -213,7 +213,8 @@ Update these WITH the change, never around it:
 |---|---|
 | `test_schema_fk_ondelete_contract.py` | every model `ForeignKey` (its table and `ondelete=…`) against the chain-built test database's catalog, both ways — no hand-kept map |
 | `test_test_schema_is_the_chain.py` | the test database is at the chain's head; the active-key, one-target and DNS-observation constraints exist there, refuse what they exist to refuse, and are declared on their models |
-| `test_parser_dispatch_contract.py`, `test_ingestion_format_chain.py`, `test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface` | the three-place parser registration: detection → dispatch → `format_registry.FORMATS` |
+| `test_parser_dispatch_contract.py`, `test_ingestion_format_chain.py`, `test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface` | detection, dispatch and the public sniffers are all built from the one parser registry, `format_registry.py` (every key reachable, every detected class dispatchable, the `looks_like_*` surface == the registry's sniffers) |
+| `test_parser_registry_old_equals_new.py` | every attempt list detection gave a corpus of samples before the registry became the one source (`fixtures/parser_attempts_before_registry.json`) |
 | `test_parser_coverage.py` | every format has an entry in `app/data/parser_coverage.json` (the "What BlueStick reads" page), and what it claims matches what the parsers write |
 | `test_host_list_query_budget.py`, `test_ingestion_query_budget.py`, `test_host_loading.py` | the /hosts list does not issue a query per host; ingestion dedup stays linear in host count; querying hosts is one statement |
 | `test_host_query_suggest.py::test_every_value_source_is_enumerable_or_deliberately_not` | every `/hosts` DSL field has a value source the autocomplete enumerates, or is `enum`/`window`/`free` on purpose |

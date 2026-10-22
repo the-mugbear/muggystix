@@ -285,11 +285,13 @@ def test_a_recognised_xml_keeps_its_fallbacks_labelled(client, db_session, test_
 def test_fallback_attempts_are_still_plain_descriptors():
     """The marker must not change what the worker and the dispatch contract
     see: a 3-tuple that unpacks as (file_type, parser_class, description)."""
-    from app.services.ingestion_service import FallbackAttempt, _fallback
+    from app.parsers.nmap_parser import NmapXMLParser
+    from app.services.format_registry import FallbackAttempt, detect
 
-    attempt = _fallback("nmap_xml", object, "Nmap XML file")
+    # An .xml nothing recognises: every attempt is a fallback.
+    attempt = detect("upload.xml", b'<?xml version="1.0"?><foo/>')[0]
     file_type, parser_class, description = attempt
-    assert (file_type, parser_class, description) == ("nmap_xml", object, "Nmap XML file")
+    assert (file_type, parser_class, description) == ("nmap_xml", NmapXMLParser, "Nmap XML file")
     assert isinstance(attempt, tuple) and isinstance(attempt, FallbackAttempt) and attempt.fallback is True
 
 

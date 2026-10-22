@@ -84,6 +84,17 @@ def test_every_detected_parser_can_be_dispatched():
             )
 
 
+def test_dispatch_is_built_from_the_registry_detection_reads():
+    """H-g (backlog 2026-10-22): detection and dispatch read ONE list, so the
+    map is every class the registry names, less the own-path ones — a parser
+    can no longer be detected and missing here."""
+    from app.services.format_registry import FORMATS, OWN_PATH_CLASSES, resolve_parser
+
+    named = {resolve_parser(k)[0] for k in FORMATS}
+    assert set(build_parser_dispatch_map()) == {c for c in named if c.__name__ not in OWN_PATH_CLASSES}
+    assert {c.__name__ for c in named} - {c.__name__ for c in build_parser_dispatch_map()} == set(OWN_PATH_CLASSES)
+
+
 def test_nuclei_results_route_to_nuclei_only():
     """Nuclei was advertised as ingestible with no parser (a nuclei upload was
     "not recognised"); its records share host/url/port with httpx."""
