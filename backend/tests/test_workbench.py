@@ -80,12 +80,15 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # work" runs its per-row lookups (hosts, pending proposals) too.
     from app.db.models_findings import Finding, FindingHost
     from app.db.models_host_tests import HostTest
-    finding = Finding(project_id=test_project.id, title="needs me", severity="high",
-                      status="open", source="manual", owner_id=1, created_by_id=1)
-    db_session.add(finding)
-    db_session.flush()
     # On the reviewed host: the first one stays untouched, so the queue runs.
-    db_session.add(FindingHost(finding_id=finding.id, host_id=reviewed.id))
+    # The endpoint goes in with its finding, in one flush: this session is
+    # also the request's, and an endpoint added to an already-flushed finding
+    # would have the read's commit count the finding's revision (backlog
+    # 2026-10-22, H-f) — a statement of this setup, not of the read.
+    finding = Finding(project_id=test_project.id, title="needs me", severity="high",
+                      status="open", source="manual", owner_id=1, created_by_id=1,
+                      hosts=[FindingHost(host_id=reviewed.id)])
+    db_session.add(finding)
     db_session.add(HostTest(
         project_id=test_project.id, host_id=reviewed.id, priority="high", tool="t",
         description="d", rationale="r", status="proposed", source="person",
