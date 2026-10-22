@@ -15,7 +15,7 @@ from app.schemas.dns_names import (
     ScopeDomainPage,
     ScopeDomainRow,
 )
-from app.services import dns_name_service
+from app.services import dns_name_service, scope_coverage
 from app.services.default_scope import get_or_create_default_scope
 from app.services.host_query_common import escape_like
 from app.api.deps import get_current_user
@@ -512,37 +512,21 @@ def get_scope_coverage(
         .scalar() or 0
     )
     total_hosts = db.query(func.count(models.Host.id)).filter(models.Host.project_id == project.id).scalar() or 0
-    scoped_hosts = (
-        db.query(func.count(func.distinct(HostSubnetMapping.host_id)))
-        .join(models.Host, models.Host.id == HostSubnetMapping.host_id)
-        .filter(models.Host.project_id == project.id)
-        .scalar() or 0
-    )
-
-    # v2.322.0 — domain scope.  Hosts an in-scope name resolves to (and that
-    # no subnet covers) are a third state: not counted as scoped, not
-    # reported as out of scope.
     total_domains = (
         db.query(func.count(ScopeDomain.id))
         .join(Scope, Scope.id == ScopeDomain.scope_id)
         .filter(Scope.project_id == project.id)
         .scalar() or 0
     )
-    name_reachable_cond = dns_name_service.host_reachable_via_in_scope_name_condition(project.id)
-    name_reachable_hosts = 0
-    if total_domains:
-        name_reachable_hosts = (
-            db.query(func.count(models.Host.id))
-            .outerjoin(HostSubnetMapping, HostSubnetMapping.host_id == models.Host.id)
-            .filter(
-                models.Host.project_id == project.id,
-                HostSubnetMapping.host_id.is_(None),
-                name_reachable_cond,
-            )
-            .scalar() or 0
-        )
-
-    out_of_scope_count = max(total_hosts - scoped_hosts - name_reachable_hosts, 0)
+    # The three coverage states (v2.322.0: a host an in-scope name resolves
+    # to, and no subnet covers, is neither scoped nor out of scope), each
+    # counted with the predicate of the list it opens — the DSL's
+    # ``scope:subnet|name|none``, which ``/hosts?out_of_scope_only=true``
+    # applies.  They were an arithmetic of their own here (review 2026-10-10
+    # R1a); ``test_scope_coverage_one_rule.py`` pins old == new.
+    scoped_hosts = scope_coverage.coverage_state_count(db, project.id, scope_coverage.COVERAGE_SUBNET)
+    name_reachable_hosts = scope_coverage.coverage_state_count(db, project.id, scope_coverage.COVERAGE_NAME)
+    out_of_scope_count = scope_coverage.coverage_state_count(db, project.id, scope_coverage.COVERAGE_NONE)
     coverage_percentage = (
         (scoped_hosts / total_hosts) * 100 if total_hosts > 0 else 0.0
     )
@@ -558,12 +542,10 @@ def get_scope_coverage(
             models.Host.last_updated_scan_id,
             scan_alias.filename.label("scan_filename"),
         )
-        .outerjoin(HostSubnetMapping, HostSubnetMapping.host_id == models.Host.id)
         .outerjoin(scan_alias, scan_alias.id == models.Host.last_updated_scan_id)
-        .filter(HostSubnetMapping.host_id.is_(None))
-        .filter(~name_reachable_cond)
         .filter(models.Host.project_id == project.id)
-        .order_by(models.Host.last_seen.desc().nullslast())
+        .filter(scope_coverage.coverage_state_condition(scope_coverage.COVERAGE_NONE, project.id))
+        .order_by(models.Host.last_seen.desc().nullslast(), models.Host.id.desc())
         .limit(limit)
         .all()
     )

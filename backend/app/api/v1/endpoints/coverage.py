@@ -245,20 +245,18 @@ def get_project_coverage(
     hosts_outside_scope = scope_coverage.out_of_scope_count(db, project.id)
     # v2.424.0 — the other two coverage states, so the three add up to the
     # project's hosts (Operations read "400 discovered" + "18 outside" of 419
-    # and never said where the last one was).  Same predicate as `scope:`.
-    from app.services.host_query_predicates import scope_coverage_predicate
-
-    def _coverage_count(state: str) -> int:
-        return db.query(func.count(Host.id)).filter(
-            Host.project_id == project.id, scope_coverage_predicate([state], project.id),
-        ).scalar() or 0
-
+    # and never said where the last one was).  Same predicate as `scope:`
+    # (``scope_coverage.coverage_state_count``, which the Scope page counts with).
     # "Has scope" is a declared subnet or domain — the definition
     # ``out_of_scope_count`` above and the Hosts rows use — not a Scope row,
     # which may be empty.
     has_scope = scope_coverage.project_has_any_scope(db, project.id)
-    hosts_in_subnet_scope = _coverage_count("subnet") if has_scope else 0
-    hosts_name_scope_only = _coverage_count("name") if has_scope else 0
+    hosts_in_subnet_scope = (
+        scope_coverage.coverage_state_count(db, project.id, scope_coverage.COVERAGE_SUBNET) if has_scope else 0
+    )
+    hosts_name_scope_only = (
+        scope_coverage.coverage_state_count(db, project.id, scope_coverage.COVERAGE_NAME) if has_scope else 0
+    )
 
     return ProjectCoverageResponse(
         project_id=project.id,
