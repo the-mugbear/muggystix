@@ -996,7 +996,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "list_evidence": {
         "description": (
-            "Evidence records, newest first, paged, with a 2 KB preview of each raw output. "
+            "Evidence records, newest first, paged, with a 2 KB preview of each raw output "
+            "(preview=false leaves the previews out: a page of summaries, outcomes and sizes). "
             "The full output: read_evidence_raw, in pieces, or curl GET /agent/evidence/{id}/raw "
             "with your key."
         ),

@@ -115,6 +115,14 @@ def list_evidence(
     ),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    preview: bool = Query(
+        True,
+        description=(
+            "false: leave out each record's 2,000-character output preview "
+            "(`raw_output_preview` is null; `raw_output_truncated_in_preview` then says "
+            "whether there is output to read whole with /evidence/{id}/raw or /raw-chunk)."
+        ),
+    ),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -122,9 +130,10 @@ def list_evidence(
     rows, total = evidence.list_evidence(
         db, agent.project_id, host_id=host_id, finding_id=finding_id,
         host_test_id=host_test_id, agent_session_id=agent_session_id,
-        limit=limit, offset=offset,
+        limit=limit, offset=offset, with_preview=preview,
     )
-    return agent_page([evidence.serialize_evidence(r) for r in rows], total=total, limit=limit, offset=offset)
+    return agent_page([evidence.serialize_evidence(r, preview=preview) for r in rows],
+                      total=total, limit=limit, offset=offset)
 
 
 @router.get("/evidence/{evidence_id}/raw", response_class=PlainTextResponse, summary="An evidence record's full raw output")

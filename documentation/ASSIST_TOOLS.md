@@ -182,7 +182,7 @@ when `tier` is passed.
 | Counts and groups across hosts, ports or scanner observations | `assist_query` (a pipe query: `… \| stats dc(host) by service`), `assist_query_schema`; the team's saved queries: `assist_list_saved_queries`; the operator's Query history (every run recorded, agents' labelled): `assist_query_history` |
 | Scanner issues not yet judged, across the project | `assist_list_scanner_observations` → `assist_list_observation_hosts`; what the scanner wrote about one: `assist_get_scanner_observation` |
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` |
-| What the team tested, and what it showed | `host_tests_list` (`host_id=` — the tests proposed for the host, with status and evidence counts) and `list_evidence` (`host_id=` or `host_test_id=` — what was run and what came back) |
+| What the team tested, and what it showed | `host_tests_list` (`host_id=` — the tests proposed for the host, with status and evidence counts) and `list_evidence` (`host_id=` or `host_test_id=` — what was run and what came back; `preview=false` for outcomes and summaries without the 2 KB output previews) |
 | Who was told about a finding on a host, and where the fix stands | the `remediation_*` tools, where the installation has turned remediation tracking on ([MCP.md](MCP.md) §2); 404 where it has not |
 | What values this project uses | `assist_get_vocabulary` |
 | Named assets (FQDNs), whether they are in scope, and what they resolve to | `assist_list_names` |

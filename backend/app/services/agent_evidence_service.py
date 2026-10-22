@@ -15,7 +15,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, defer, joinedload
 from sqlalchemy.exc import IntegrityError
 
 from app.db import models
@@ -226,7 +226,12 @@ def list_evidence(
     unlinked: bool = False,
     limit: int = 50,
     offset: int = 0,
+    with_preview: bool = True,
 ) -> Tuple[List[EvidenceRecord], int]:
+    """``with_preview=False`` leaves the 2,000-character preview unread (the
+    agents' ``preview=false``: a list of 50 records was up to 100 KB of
+    previews nobody asked for — review 2026-10-10 stream, D8); serialize such
+    rows with ``serialize_evidence(row, preview=False)``."""
     q = db.query(EvidenceRecord).filter(EvidenceRecord.project_id == project_id)
     if unlinked:
         # Records that answer no test (the host page lists those on their own;
@@ -241,8 +246,11 @@ def list_evidence(
     if host_test_id is not None:
         q = q.filter(EvidenceRecord.host_test_id == host_test_id)
     total = q.count()
+    options = [joinedload(EvidenceRecord.host), joinedload(EvidenceRecord.recorded_by)]
+    if not with_preview:
+        options.append(defer(EvidenceRecord.raw_output_preview))
     rows = (
-        q.options(joinedload(EvidenceRecord.host), joinedload(EvidenceRecord.recorded_by))
+        q.options(*options)
         .order_by(EvidenceRecord.created_at.desc(), EvidenceRecord.id.desc())
         .offset(offset).limit(limit).all()
     )
@@ -444,8 +452,20 @@ def create_finding_from_evidence(
     return finding, vuln is not None
 
 
-def serialize_evidence(record: EvidenceRecord) -> dict:
+def serialize_evidence(record: EvidenceRecord, *, preview: bool = True) -> dict:
+    """One record.  ``preview=False`` answers ``raw_output_preview: null``
+    without reading it, and ``raw_output_truncated_in_preview`` then says
+    whether there is any output to read whole (``/raw``, ``/raw-chunk``)."""
     host = record.host
+    if not preview:
+        return {
+            **_serialize_evidence(record, host, None),
+            "raw_output_truncated_in_preview": bool(record.raw_output_bytes),
+        }
+    return _serialize_evidence(record, host, record.raw_output_preview)
+
+
+def _serialize_evidence(record: EvidenceRecord, host, raw_output_preview) -> dict:
     return {
         "id": record.id,
         "host_id": record.host_id,
@@ -457,14 +477,14 @@ def serialize_evidence(record: EvidenceRecord) -> dict:
         "command": record.command,
         "outcome": record.outcome,
         "summary": record.summary,
-        "raw_output_preview": record.raw_output_preview,
+        "raw_output_preview": raw_output_preview,
         "raw_output_bytes": record.raw_output_bytes,
         "raw_output_sha256": record.raw_output_sha256,
         # Bytes against bytes: comparing the preview's characters with the
         # byte size flagged any short non-ASCII output as cut.
         "raw_output_truncated_in_preview": bool(
-            record.raw_output_bytes and record.raw_output_preview is not None
-            and len(record.raw_output_preview.encode("utf-8", errors="replace")) < record.raw_output_bytes
+            record.raw_output_bytes and raw_output_preview is not None
+            and len(raw_output_preview.encode("utf-8", errors="replace")) < record.raw_output_bytes
         ),
         "observed_ip": record.observed_ip,
         "executed_at": record.executed_at,

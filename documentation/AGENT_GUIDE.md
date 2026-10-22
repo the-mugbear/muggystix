@@ -347,7 +347,7 @@ An address can be reassigned and a name can resolve somewhere new. Where that is
 | `executed_at` | No | When it ran. |
 | `agent_model` | No | The model you are running as. |
 
-`GET /agent/evidence` (MCP `list_evidence`) lists records newest first: filters `host_id`, `finding_id`, `host_test_id`, `agent_session_id`; paged (`limit` default 50, max 500).
+`GET /agent/evidence` (MCP `list_evidence`) lists records newest first: filters `host_id`, `finding_id`, `host_test_id`, `agent_session_id`; paged (`limit` default 50, max 500). `preview=false` leaves each record's 2,000-character preview out (`raw_output_preview` is null and `raw_output_truncated_in_preview` says whether there is output to read whole) — for a long list of outcomes and summaries.
 
 ### Retesting a host
 

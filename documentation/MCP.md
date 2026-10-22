@@ -242,7 +242,8 @@ Three things an assist agent is routinely asked for, and how each is served:
 ### Evidence and proposals
 
 `record_evidence` / `list_evidence` record and read what the agent ran against a
-host and what came back; `get_evidence` reads one record (with the output's size
+host and what came back (`list_evidence preview=false` leaves the 2 KB output
+previews out of a long list); `get_evidence` reads one record (with the output's size
 and `raw_output_sha256`), and `read_evidence_raw` its raw output in pieces
 (`offset` 0, then each `next_offset` until null; the pieces joined hash to
 `sha256`) — or `curl GET /agent/evidence/{id}/raw` for the whole. Context about

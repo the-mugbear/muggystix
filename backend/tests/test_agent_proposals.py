@@ -111,6 +111,31 @@ def test_evidence_is_recorded_directly_with_its_raw_output_in_the_row(client, db
     assert not (tmp_path / "evidence").exists()
 
 
+def test_an_agent_can_list_evidence_without_the_previews(client, db_session, test_project):
+    """Review 2026-10-10 stream, D8: every list carried a 2 KB preview per
+    record.  ``preview=false`` leaves them out; everything else is the same."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    for i, raw in enumerate(("x" * 5000, "", None)):
+        body = {"host_id": host.id, "tool": "nmap", "outcome": "info", "summary": f"run {i}"}
+        if raw is not None:
+            body["raw_output"] = raw
+        assert client.post("/api/v1/agent/evidence", headers=key, json=body).status_code == 201
+    full = client.get("/api/v1/agent/evidence", headers=key).json()
+    bare = client.get("/api/v1/agent/evidence", headers=key, params={"preview": "false"}).json()
+    assert [r["raw_output_preview"] for r in bare["items"]] == [None, None, None]
+    assert [r["raw_output_truncated_in_preview"] for r in bare["items"]] == [
+        bool(r["raw_output_bytes"]) for r in full["items"]]
+    assert bare["items"][-1]["raw_output_truncated_in_preview"] is True
+    drop = {"raw_output_preview", "raw_output_truncated_in_preview"}
+    assert [{k: v for k, v in r.items() if k not in drop} for r in bare["items"]] == [
+        {k: v for k, v in r.items() if k not in drop} for r in full["items"]]
+    assert {k: v for k, v in bare.items() if k != "items"} == {k: v for k, v in full.items() if k != "items"}
+    assert "preview" in TOOLS["list_evidence"]["input_schema"]["properties"]
+
+
 def test_evidence_output_goes_with_its_host(client, db_session, test_project):
     """The raw output is part of the row, so deleting the host (or project)
     removes it — no file is left behind."""
