@@ -553,6 +553,20 @@ class ReconJobStatus(BaseModel):
         "They can also choose it themselves on Ingestion results. Null when "
         "the upload did not fail or failed without a parse error (a cancel)."
     ))
+    # A finished import's completeness (acceptance run 2026-10-22: a kept cut
+    # upload polled as plain "completed").  "Partial" is not a status: it is a
+    # completed job whose parsing stopped early, as Ingestion results shows it.
+    partial: bool = Field(False, description=(
+        "True when the import completed but parsing stopped early, so what came "
+        "after that point in the file is NOT in the project (a kept cut-short "
+        "upload always finishes this way). parser_warnings says where it stopped."
+    ))
+    skipped_count: int = Field(0, description=(
+        "Records the parser skipped while importing the rest (0 = none)."
+    ))
+    parser_warnings: Optional[str] = Field(None, description=(
+        "The parser's warning text for a partial or degraded import, else null."
+    ))
     # Derived timing so the agent can see where an upload spent its time
     # without polling repeatedly.  Both are None until the relevant
     # transition has happened: ``queue_age_s`` (created -> started) once the

@@ -284,6 +284,10 @@ def test_an_agreed_request_imports_what_the_file_holds_and_is_recorded(
     run_next(db_session)
     polled = client.get(f"{UPLOADS}/{job_id}", headers=headers).json()
     assert polled["status"] == "completed" and polled["failure_kind"] is None
+    # The agent's poll says it is partial, not only the database (acceptance
+    # run 2026-10-22: the poll read as a plain "completed").
+    assert polled["partial"] is True
+    assert "it ends after 3 complete hosts" in polled["parser_warnings"]
     job = job_row(db_session, job_id)
     assert job.partial is True
     assert "it ends after 3 complete hosts" in job.parser_warnings

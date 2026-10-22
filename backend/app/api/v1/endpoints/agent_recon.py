@@ -432,6 +432,9 @@ def _job_status(db: Session, job: models.IngestionJob) -> ReconJobStatus:
         parse_error_id=job.parse_error_id,
         last_error=job.last_error,
         failure_kind=failure_kind(job, parse_error),
+        partial=bool(job.partial),
+        skipped_count=job.skipped_count or 0,
+        parser_warnings=job.parser_warnings,
         queue_age_s=_seconds_between(job.created_at, job.started_at),
         parse_s=_seconds_between(job.started_at, job.completed_at),
     )
