@@ -33,6 +33,7 @@ from app.db.models_agent import Agent
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User
 from app.db.models_findings import FindingSeverity, FindingSource
+from app.api.downloads import attachment
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.params import FindingHostStateParam, FindingNeedsParam
 from app.schemas.findings import FindingNeed
@@ -645,9 +646,7 @@ def download_assist_hosts_ndjson(
     return StreamingResponse(
         _iter_assist_hosts_ndjson(db, query, operator_id=request.state.key_operator_id),
         media_type="application/x-ndjson",
-        headers={
-            "Content-Disposition": f"attachment; filename=assist-project-{request.state.agent_project_id}-hosts.jsonl"
-        },
+        headers=attachment(f"assist-project-{request.state.agent_project_id}-hosts.jsonl"),
     )
 
 
@@ -1440,11 +1439,7 @@ def download_assist_report_context(
     return StreamingResponse(
         _stream(),
         media_type="application/x-ndjson",
-        headers={
-            "Content-Disposition": (
-                f"attachment; filename=assist-project-{request.state.agent_project_id}-report-context.jsonl"
-            ),
-        },
+        headers=attachment(f"assist-project-{request.state.agent_project_id}-report-context.jsonl"),
     )
 
 

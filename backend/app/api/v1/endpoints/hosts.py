@@ -23,6 +23,7 @@ from sqlalchemy import or_, and_, case, distinct, func, true
 
 from app.core.config import settings
 from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
+from app.api.downloads import attachment
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.api.params import HostFilterParams
@@ -1890,7 +1891,7 @@ def get_tool_ready_hosts(
     total_count = query.order_by(None).with_entities(func.count(models.Host.id)).scalar() or 0
     content_type, filename = _get_content_type_and_filename(format)
     response_headers = {
-        "Content-Disposition": f"attachment; filename={filename}",
+        **attachment(filename),
         "X-Tool-Ready-Total": str(total_count),
     }
 
