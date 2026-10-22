@@ -82,9 +82,9 @@ SCANNER_ISSUE_PREDICATE = (
 class Finding(Base):
     __tablename__ = "findings"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(
-        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True,
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False,
     )
     title = Column(String(500), nullable=False)
     severity = Column(String(20), nullable=False, index=True)   # FindingSeverity
@@ -194,9 +194,9 @@ class FindingHost(Base):
     the truth, and retest deltas are per-host."""
     __tablename__ = "finding_hosts"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     finding_id = Column(
-        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True,
+        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False,
     )
     host_id = Column(
         Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True,
@@ -293,9 +293,9 @@ class FindingVulnerability(Base):
     """
     __tablename__ = "finding_vulnerabilities"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     finding_id = Column(
-        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True,
+        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False,
     )
     vuln_id = Column(
         Integer, ForeignKey("vulnerabilities.id", ondelete="CASCADE"),
@@ -319,7 +319,7 @@ class FindingStatusHistory(Base):
     shared it, was dropped in v2.447.0."""
     __tablename__ = "finding_status_history"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     finding_id = Column(
         Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True,
     )

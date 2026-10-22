@@ -18,9 +18,9 @@ from app.db.session import Base
 class Host(Base):
     __tablename__ = "hosts_v2"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    ip_address = Column(String, nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    ip_address = Column(String, nullable=False)
     # DISPLAY name only (v2.322.0).  A host may legitimately carry many names
     # (every vhost behind a load balancer); those live as DNSName rows bound
     # through dns_records observations.  This column is the one name shown in
@@ -112,9 +112,9 @@ class Host(Base):
 class Port(Base):
     __tablename__ = "ports_v2"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
-    port_number = Column(Integer, nullable=False, index=True)
+    port_number = Column(Integer, nullable=False)
     protocol = Column(String, nullable=False)
     state = Column(String)
     reason = Column(String)
@@ -174,7 +174,7 @@ class Port(Base):
 class Script(Base):
     __tablename__ = "scripts_v2"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=False)
     script_id = Column(String, nullable=False)
     output = Column(Text)
@@ -201,7 +201,7 @@ class Script(Base):
 class HostScript(Base):
     __tablename__ = "host_scripts_v2"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     script_id = Column(String, nullable=False)
     output = Column(Text)
@@ -252,7 +252,7 @@ class HostScanHistory(Base):
     """Track which scans have seen each host for audit purposes"""
     __tablename__ = "host_scan_history"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     discovered_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -304,7 +304,7 @@ class PortScanHistory(Base):
     """Track port state changes over time"""
     __tablename__ = "port_scan_history"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=False)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     discovered_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -327,9 +327,9 @@ class PortScanHistory(Base):
     __table_args__ = (
         UniqueConstraint('port_id', 'scan_id', name='uq_port_scan'),
         Index('idx_port_scan_discovered', 'discovered_at'),
-        # uq_port_scan covers port_id (leading) but not scan_id.
-        # Hot path: "what ports did this scan observe?".
-        Index('idx_port_scan_history_scan', 'scan_id'),
+        # uq_port_scan covers port_id (leading) but not scan_id.  Hot path:
+        # "what ports did this scan observe?" — served by this index's lead
+        # (a scan_id-only one duplicated it until revision a5d9c3e1f7b2).
         # review 2026-10-01 (N9) — the Scans summary counts the ports each
         # scan saw OPEN; with the state in the index that is an index-only
         # count instead of a heap visit per observation.
@@ -364,8 +364,8 @@ SCAN_TIME_SOURCES = (SCAN_TIME_TOOL_RUN, SCAN_TIME_TOOL_RECORDS, SCAN_TIME_TOOL_
 class Scan(Base):
     __tablename__ = "scans"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     filename = Column(String, nullable=False)
     scan_type = Column(String)
     tool_name = Column(String)
@@ -424,7 +424,7 @@ class ScanBatch(Base):
     """
     __tablename__ = "scan_batches"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     label = Column(String(200), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -452,8 +452,8 @@ class Scope(Base):
     # same revision; it held `__default__` or a seed's label nobody chose).
     __table_args__ = (UniqueConstraint("project_id", name="uq_scopes_project"),)
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     description = Column(Text)
     uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -486,8 +486,8 @@ class ScopeDomain(Base):
     """
     __tablename__ = "scope_domains"
 
-    id = Column(Integer, primary_key=True, index=True)
-    scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=False)
     # Normalised (lowercase, no trailing dot, IDN as punycode) — same rules as
     # DNSName.fqdn so membership is a plain string compare.
     domain = Column(String(253), nullable=False, index=True)
@@ -506,7 +506,7 @@ class ScopeDomain(Base):
 class Subnet(Base):
     __tablename__ = "subnets"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     # A CIDR is in the scope once (``uq_subnets_scope_cidr``, a4f8c2e6b0d1).
     # The constraint is on the STORED TEXT, which every writer normalises with
     # ``str(ipaddress.ip_network(value, strict=False))`` (``scopes._validate_cidr``,
@@ -570,8 +570,8 @@ class Site(Base):
     """
     __tablename__ = "sites"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     # 1 = most critical … 4 = least.  Auto-created/backfilled sites default to
     # 3 (neutral, weight ×1.0) until an operator rates them.
@@ -594,8 +594,8 @@ class Site(Base):
 class HostSubnetMapping(Base):
     __tablename__ = "host_subnet_mappings"
 
-    id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     subnet_id = Column(Integer, ForeignKey("subnets.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -611,7 +611,7 @@ class HostSubnetMapping(Base):
 class ScanInfo(Base):
     __tablename__ = "scan_info"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     type = Column(String)
     protocol = Column(String)
@@ -650,11 +650,13 @@ class WebInterface(Base):
     """
     __tablename__ = "web_interfaces"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     # Scope — per-host + per-port for rollup; scan kept for audit trail.
-    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True, index=True)
+    # host_id and scan_id are served by idx_web_interface_host and the
+    # leading column of uq_web_interface_scan_url_source_ip.
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True)
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="SET NULL"), nullable=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
 
     # Tool that produced this row.
@@ -684,7 +686,7 @@ class WebInterface(Base):
     # ["Nginx 1.18.0", "React", "Bootstrap"]).  Wappalyzer categories
     # preserved in raw.  Null when the tool didn't report any.
     technologies = Column(JSON)
-    favicon_hash = Column(String(64), index=True)  # mmh3 hash; indexed for cross-host clustering
+    favicon_hash = Column(String(64))  # mmh3 hash; idx_web_interface_favicon serves cross-host clustering
     tls_info = Column(JSON)  # raw blob: {issuer, subject, not_after, sni, ...}
     # Promoted cert predicates (v2.205.0) — parsed once at ingest from tls_info
     # so "expired"/"self-signed" are typed, indexable columns instead of a
@@ -749,11 +751,11 @@ class WebPath(Base):
     """
     __tablename__ = "web_paths"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="SET NULL"), nullable=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)  # leads uq_web_paths_scan_url
     source = Column(String(32), nullable=False)          # ffuf | gobuster | feroxbuster | dirsearch | dirbuster
     url = Column(String, nullable=False)                 # the full URL requested
     path = Column(String, nullable=False, index=True)    # its path, for search / filtering
@@ -789,8 +791,8 @@ class DNSName(Base):
     """
     __tablename__ = "dns_names"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     fqdn = Column(String(253), nullable=False, index=True)
     kind = Column(String(16), nullable=False, default="fqdn")
     # first_seen = earliest observation of any kind; last_seen = latest.  Both
@@ -847,8 +849,8 @@ class DNSRecord(Base):
     """
     __tablename__ = "dns_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     # The named asset this observation is about.  Nullable only for legacy
     # rows with no project (a name needs a project); every new row sets it.
     name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -921,8 +923,8 @@ class DNSRecord(Base):
 class ParseError(Base):
     __tablename__ = "parse_errors"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     filename = Column(String, nullable=False)
     file_type = Column(String)  # nmap_xml, eyewitness_json, masscan_xml, etc.
     file_size = Column(Integer)  # in bytes
@@ -939,8 +941,8 @@ class ParseError(Base):
 class IngestionJob(Base):
     __tablename__ = "ingestion_jobs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     filename = Column(String, nullable=False)
     original_filename = Column(String, nullable=False)
     storage_path = Column(String, nullable=False)
@@ -1072,8 +1074,8 @@ class ReportJob(Base):
     """
     __tablename__ = "report_jobs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # What to generate.
@@ -1123,7 +1125,7 @@ class FollowStatus(str, enum.Enum):
 class HostFollow(Base):
     __tablename__ = "host_follows"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     # No default, here or in the database: every writer names the status it
@@ -1182,8 +1184,8 @@ class HostTag(Base):
     """
     __tablename__ = "host_tags"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(60), nullable=False)
     # Palette key (e.g. "red", "blue") resolved to a colour by the
     # frontend — keeps the backend free of presentation concerns.
@@ -1202,8 +1204,8 @@ class HostTagAssignment(Base):
     """Many-to-many link between a host and a project tag."""
     __tablename__ = "host_tag_assignments"
 
-    id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     tag_id = Column(Integer, ForeignKey("host_tags.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1228,8 +1230,8 @@ class SubnetLabel(Base):
     """
     __tablename__ = "subnet_labels"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(60), nullable=False)
     # Palette key (e.g. "red", "blue") — same convention HostTag uses;
     # frontend resolves to a colour so the backend stays presentation-free.
@@ -1248,8 +1250,8 @@ class SubnetLabelAssignment(Base):
     """Many-to-many link between a subnet and a project subnet label."""
     __tablename__ = "subnet_label_assignments"
 
-    id = Column(Integer, primary_key=True, index=True)
-    subnet_id = Column(Integer, ForeignKey("subnets.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    subnet_id = Column(Integer, ForeignKey("subnets.id", ondelete="CASCADE"), nullable=False)
     label_id = Column(Integer, ForeignKey("subnet_labels.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1278,8 +1280,8 @@ class HostFilterView(Base):
     """
     __tablename__ = "host_filter_views"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(120), nullable=False)
     filter_json = Column(JSON, nullable=False)
@@ -1324,8 +1326,8 @@ class SavedQuery(Base):
     the edits."""
     __tablename__ = "saved_queries"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(120), nullable=False)
     description = Column(Text, nullable=True)
@@ -1355,8 +1357,8 @@ class QueryHistory(Base):
     corrected.  ``created_at`` is the first run."""
     __tablename__ = "query_history"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     kind = Column(String(16), nullable=False, server_default="hosts")
     q = Column(Text, nullable=False)
@@ -1392,8 +1394,8 @@ class OperationsCursor(Base):
     """
     __tablename__ = "operations_cursors"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     # Null until the operator's first "mark seen" — treated as "never
     # visited", so the first diff reports everything as new.
@@ -1417,8 +1419,8 @@ class ActivityCursor(Base):
     """
     __tablename__ = "activity_cursors"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1433,7 +1435,7 @@ class ActivityCursor(Base):
 class Annotation(Base):
     __tablename__ = "annotations"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     # Foundation phase 2 — Annotation generalized beyond hosts.  An
     # annotation targets exactly ONE entity (host / port / scan / scope /
     # project / finding); the other target columns are null.  (A test plan
@@ -1547,7 +1549,7 @@ class NoteAttachment(Base):
         CheckConstraint("annotation_id IS NOT NULL OR project_id IS NOT NULL", name="ck_note_attachment_owner"),
     )
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     # NULL (v2.495.0): an image of the project's REPORT text — the system
     # description — uploaded on the Reports page, not attached to a note.  It
     # lives here so every image a report prints shares one id space (one

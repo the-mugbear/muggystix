@@ -18,7 +18,6 @@ from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
 from app.parsers.xml_stream_helpers import strip_namespace
 import logging
 import re
-from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -141,56 +140,15 @@ def credentialed_status(host_properties: Dict[str, str], vulnerabilities: Iterab
 
 
 class NessusParser:
-    """Parser for Nessus XML vulnerability scan files"""
+    """Streams a Nessus XML file host by host (``iter_file``).
 
-    def __init__(self):
-        self.severity_mapping = {
-            0: "Info",
-            1: "Low",
-            2: "Medium",
-            3: "High",
-            4: "Critical"
-        }
+    Streaming is the only way in: the whole-file ``parse_file`` /
+    ``parse_content`` paths and the statistics they built (review 2026-10-10,
+    R7) read a large export whole and had no caller but themselves.
+    """
 
-    def parse_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
-        """Parse Nessus XML file and return structured data"""
-        try:
-            scan_info, hosts_iter = self.iter_file(file_path)
-            hosts = list(hosts_iter)
-        except ET.ParseError as e:
-            logger.error(f"XML parsing error: {e}")
-            raise ValueError(f"Invalid XML format: {e}")
-        except ValueError:
-            raise
-        except Exception as e:
-            logger.error(f"Error parsing Nessus file: {e}")
-            raise
-
-        stats = self._generate_scan_stats(hosts)
-        scan_info = self._finalize_scan_info(scan_info, file_path)
-
-        return {
-            'scan_info': scan_info,
-            'hosts': hosts,
-            'statistics': stats,
-            'parser_type': 'nessus',
-            'parser_version': '1.0'
-        }
-
-    def parse_content(self, content: str) -> Dict[str, Any]:
-        """Parse Nessus XML content and return structured data"""
-        try:
-            root = DET.fromstring(content)
-        except ET.ParseError as e:
-            logger.error(f"XML parsing error: {e}")
-            raise ValueError(f"Invalid XML format: {e}")
-        except Exception as e:
-            logger.error(f"Error parsing Nessus content: {e}")
-            raise
-
-        if root.tag != 'NessusClientData_v2':
-            raise ValueError("Not a valid Nessus XML file")
-        return self._parse_nessus_data(root)
+    #: Nessus severity number → the risk factor an item without one is given.
+    severity_mapping = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
 
     def iter_file(self, file_path: str) -> Tuple[Dict[str, Any], Iterable[NessusHost]]:
         """Stream hosts from a Nessus XML file without loading everything into memory."""
@@ -267,47 +225,6 @@ class NessusParser:
                 source.close()
 
         return scan_info, host_generator()
-
-    def _parse_nessus_data(self, root: ET.Element) -> Dict[str, Any]:
-        """Parse the main Nessus data structure"""
-        scan_info = {}
-        hosts = []
-
-        # Parse scan metadata
-        policy = root.find('.//Policy')
-        if policy is not None:
-            scan_info['policy_name'] = policy.find('policyName').text if policy.find('policyName') is not None else None
-
-        # Parse report metadata
-        report = root.find('.//Report')
-        if report is not None:
-            scan_info['report_name'] = report.get('name', 'Unknown')
-
-        # Parse hosts
-        for report_host in root.findall('.//ReportHost'):
-            try:
-                host = self._parse_host(report_host)
-                if host:
-                    hosts.append(host)
-            except Exception as e:
-                logger.warning(f"Error parsing host: {e}")
-                continue
-
-        # Generate scan statistics
-        stats = self._generate_scan_stats(hosts)
-
-        return {
-            'scan_info': scan_info,
-            'hosts': hosts,
-            'statistics': stats,
-            'parser_type': 'nessus',
-            'parser_version': '1.0'
-        }
-
-    def _finalize_scan_info(self, scan_info: Dict[str, Any], file_path: str) -> Dict[str, Any]:
-        if 'scan_name' not in scan_info:
-            scan_info['scan_name'] = Path(file_path).stem
-        return scan_info
 
     def _parse_host(self, report_host: ET.Element) -> Optional[NessusHost]:
         """Parse a single host from the report"""
@@ -556,107 +473,3 @@ class NessusParser:
 
         return False
 
-    def _generate_scan_stats(self, hosts: List[NessusHost]) -> Dict[str, Any]:
-        """Generate statistics from the parsed scan data"""
-        total_hosts = len(hosts)
-        total_vulns = sum(len(host.vulnerabilities) for host in hosts)
-
-        # Count vulnerabilities by severity
-        severity_counts = {severity: 0 for severity in self.severity_mapping.values()}
-
-        for host in hosts:
-            for vuln in host.vulnerabilities:
-                severity_name = self.severity_mapping.get(vuln.severity, "Info")
-                severity_counts[severity_name] += 1
-
-        # Count hosts with vulnerabilities by severity
-        hosts_by_severity = {severity: 0 for severity in self.severity_mapping.values()}
-
-        for host in hosts:
-            host_severities = set()
-            for vuln in host.vulnerabilities:
-                severity_name = self.severity_mapping.get(vuln.severity, "Info")
-                host_severities.add(severity_name)
-
-            for severity in host_severities:
-                hosts_by_severity[severity] += 1
-
-        # Count exploitable vulnerabilities
-        exploitable_vulns = sum(
-            1 for host in hosts
-            for vuln in host.vulnerabilities
-            if vuln.exploitable
-        )
-
-        # Count unique CVEs
-        unique_cves = set()
-        for host in hosts:
-            for vuln in host.vulnerabilities:
-                unique_cves.update(vuln.cve_list)
-
-        # Operating system distribution
-        os_distribution = {}
-        for host in hosts:
-            if host.operating_system:
-                # Normalize OS name
-                os_key = self._normalize_os_name(host.operating_system)
-                os_distribution[os_key] = os_distribution.get(os_key, 0) + 1
-
-        return {
-            'total_hosts': total_hosts,
-            'total_vulnerabilities': total_vulns,
-            'vulnerability_counts': severity_counts,
-            'hosts_by_severity': hosts_by_severity,
-            'exploitable_vulnerabilities': exploitable_vulns,
-            'unique_cves': len(unique_cves),
-            'cve_list': sorted(list(unique_cves)),
-            'os_distribution': os_distribution,
-            'scan_date': datetime.utcnow().isoformat()
-        }
-
-    def _normalize_os_name(self, os_name: str) -> str:
-        """Normalize operating system name for consistent grouping"""
-        os_lower = os_name.lower()
-
-        if 'windows' in os_lower:
-            if 'server' in os_lower:
-                if '2019' in os_lower:
-                    return 'Windows Server 2019'
-                elif '2016' in os_lower:
-                    return 'Windows Server 2016'
-                elif '2012' in os_lower:
-                    return 'Windows Server 2012'
-                elif '2008' in os_lower:
-                    return 'Windows Server 2008'
-                else:
-                    return 'Windows Server (Other)'
-            else:
-                if '10' in os_lower:
-                    return 'Windows 10'
-                elif '11' in os_lower:
-                    return 'Windows 11'
-                elif '7' in os_lower:
-                    return 'Windows 7'
-                else:
-                    return 'Windows (Other)'
-        elif 'linux' in os_lower:
-            if 'ubuntu' in os_lower:
-                return 'Ubuntu Linux'
-            elif 'centos' in os_lower:
-                return 'CentOS Linux'
-            elif 'redhat' in os_lower or 'rhel' in os_lower:
-                return 'Red Hat Linux'
-            elif 'debian' in os_lower:
-                return 'Debian Linux'
-            else:
-                return 'Linux (Other)'
-        elif 'vmware' in os_lower:
-            return 'VMware ESXi'
-        elif 'cisco' in os_lower:
-            return 'Cisco IOS'
-        else:
-            return os_name[:50]  # Truncate long OS names
-
-    def get_supported_extensions(self) -> List[str]:
-        """Return list of supported file extensions"""
-        return ['.nessus', '.xml']

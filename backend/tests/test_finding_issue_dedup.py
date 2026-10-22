@@ -107,8 +107,9 @@ def test_distinct_cves_stay_distinct_findings(
 ):
     """Dedup must not over-reach: different CVEs are different problems."""
     host = _host(db_session, test_project.id, "10.60.0.2")
-    a = _vuln(db_session, host, scan_id, cve_id="CVE-2021-44228", title="Log4j RCE")
-    b = _vuln(db_session, host, scan_id, cve_id="CVE-2021-45046", title="Log4j RCE")
+    # Two plugins (one per CVE) under one title: two scanner rows.
+    a = _vuln(db_session, host, scan_id, cve_id="CVE-2021-44228", title="Log4j RCE", plugin_id="155999")
+    b = _vuln(db_session, host, scan_id, cve_id="CVE-2021-45046", title="Log4j RCE", plugin_id="156032")
 
     svc = FindingService(db_session)
     fa, _ = svc.promote_vulnerability(vuln=a, project_id=test_project.id, actor_id=test_user.id)

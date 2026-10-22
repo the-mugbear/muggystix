@@ -384,7 +384,8 @@ class NetexecParser:
         scan = models.Scan(
             filename=filename,
             scan_type='netexec',
-            tool_name='netexec'
+            tool_name='netexec',
+            project_id=self._project_id,
         )
         self.db.add(scan)
         self.db.flush()

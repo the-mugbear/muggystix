@@ -56,28 +56,21 @@ _UNMODELABLE_INDEXES = frozenset({
 def _include_object(object_, name, type_, reflected, compare_to):
     """Exclude indexes that have no faithful model representation.
 
-    Three classes are ignored in BOTH directions (reflected DB + metadata) so
+    Two classes are ignored in BOTH directions (reflected DB + metadata) so
     autogenerate never proposes to add or drop them:
 
     * ``ix_trgm_*`` — the pg_trgm GIN evidence indexes (extension-dependent).
     * ``_UNMODELABLE_INDEXES`` — partial / expression / GIN / GiST indexes that
       live only in hand-written migrations.
-    * a single-column index on a primary-key ``id`` column — a PK already has a
-      unique btree, so ``ix_<table>_id`` is redundant. Older tables carry it
-      (from the historical create_all), newer ones don't (migration-built);
-      ignoring it stops that split from reading as drift and stops ``index=True``
-      on a PK proposing a fresh redundant index.
+
+    (A third, the ``ix_<table>_id`` index duplicating a primary key, went in
+    revision a5d9c3e1f7b2: no table carries one and no model declares one, so
+    a new ``index=True`` on a primary key is drift ``alembic check`` reports.)
     """
     if type_ == "index":
         if name and name.startswith("ix_trgm_"):
             return False
         if name in _UNMODELABLE_INDEXES:
-            return False
-        try:
-            cols = list(object_.columns)
-        except Exception:  # pragma: no cover - defensive
-            cols = []
-        if name and name.endswith("_id") and len(cols) == 1 and cols[0].name == "id":
             return False
     return True
 

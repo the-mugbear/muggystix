@@ -40,6 +40,7 @@ class GnmapParser:
             filename=filename,
             tool_name='nmap',
             scan_type='nmap_gnmap',
+            project_id=self._project_id,
         )
 
         # Save scan to get ID

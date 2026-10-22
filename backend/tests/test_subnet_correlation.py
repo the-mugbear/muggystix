@@ -61,21 +61,6 @@ def test_scan_correlation_stays_within_the_scans_project(db_session, test_projec
     assert got[only_in_other.id] == set()
 
 
-def test_scan_project_falls_back_to_its_hosts_when_the_scan_row_has_none(db_session, test_project):
-    other = _other_project(db_session)
-    _scope_with_subnets(db_session, other.id, ["0.0.0.0/0"])
-    mine = _scope_with_subnets(db_session, test_project.id, ["192.0.2.0/24"])
-
-    scan, (h,) = _scan_with_hosts(db_session, test_project.id, ["192.0.2.7"])
-    scan.project_id = None  # legacy row
-    db_session.commit()
-
-    SubnetCorrelationService(db_session).batch_correlate_scan_hosts_to_subnets(scan.id)
-
-    got = _mappings_by_host(db_session, [h.id], {v: k for k, v in mine.items()})
-    assert got[h.id] == {"192.0.2.0/24"}
-
-
 def test_project_without_subnets_clears_stale_mappings(db_session, test_project):
     """Re-correlating a project with no subnets must drop whatever its hosts
     still carry — previously the empty-subnet early return left stale (and

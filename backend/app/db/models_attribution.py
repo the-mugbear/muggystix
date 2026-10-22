@@ -40,10 +40,10 @@ class AttributionSource:
 class NetworkAttribution(Base):
     __tablename__ = "network_attributions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(
         Integer, ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        nullable=False,
     )
     # The registered netblock this record describes, as CIDR text. Stored as
     # text rather than Postgres INET so the SQLite test path keeps working;
@@ -103,10 +103,10 @@ class HostNetworkAttribution(Base):
     """
     __tablename__ = "host_network_attributions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     host_id = Column(
         Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        nullable=False,
     )
     attribution_id = Column(
         Integer, ForeignKey("network_attributions.id", ondelete="CASCADE"),

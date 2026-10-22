@@ -41,7 +41,7 @@ def _host(db, pid, ip, first_seen):
 def _vuln(db, host, scan, severity, created_at):
     # Vulnerability.created_at is a naive column.
     db.add(Vulnerability(
-        title="obs", severity=severity, source=VulnerabilitySource.MANUAL,
+        title=f"obs {severity.value}", severity=severity, source=VulnerabilitySource.MANUAL,
         host_id=host.id, scan_id=scan.id, created_at=created_at.replace(tzinfo=None),
     ))
     db.flush()

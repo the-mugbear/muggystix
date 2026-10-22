@@ -194,10 +194,12 @@ class HostDeduplicationService:
                 del cache[key]
         self._reset_working_set()
 
-    def find_or_create_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
+    def find_or_create_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int) -> Host:
         """
-        Find existing host by IP (within the same project) or create new one.
+        Find existing host by IP within ``project_id`` or create new one.
         Updates existing host with new information using conflict resolution.
+        A host always belongs to a project (``hosts_v2.project_id`` is NOT
+        NULL since e3b7a1c9d5f0); there is no project-less lookup.
 
         Handles concurrent inserts: if another session creates the same IP
         between our SELECT and INSERT, we catch the UniqueViolation, rollback
@@ -208,6 +210,8 @@ class HostDeduplicationService:
         load balancer's forty vhosts all survive as relationships instead of
         one display name plus thirty-nine "conflicts".
         """
+        if project_id is None:
+            raise ValueError("find_or_create_host needs the project the host belongs to")
         host = self._find_or_create_host_inner(ip_address, scan_id, host_data, project_id)
         self._record_name_observations(host, ip_address, scan_id, host_data)
         return host
@@ -222,8 +226,6 @@ class HostDeduplicationService:
         SCANNER ("a scanner reported this name for this address").
         """
         project_id = host.project_id
-        if project_id is None:
-            return
         # A parser that has ALREADY written this host's name observations
         # (dnsx / amass / DNS CSV write them with resolver + TTL detail the
         # dedup service doesn't have) says so, or we'd add a second, poorer
@@ -267,7 +269,7 @@ class HostDeduplicationService:
                 self._name_cache.forget(journal)
                 logger.warning("name observation %r for %s skipped: %s", name, ip_address, exc)
 
-    def _find_or_create_host_inner(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
+    def _find_or_create_host_inner(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int) -> Host:
         # v2.90.3 (code review NEW C) — suppress the eager loads
         # inherited from Host.* lazy="selectin" relationships.  The
         # dedup lookup only needs Host.id + scalar fields to decide
@@ -286,10 +288,8 @@ class HostDeduplicationService:
                 noload(Host.notes),
                 noload(Host.tag_assignments),
             )
-            .filter(Host.ip_address == ip_address)
+            .filter(Host.ip_address == ip_address, Host.project_id == project_id)
         )
-        if project_id is not None:
-            host_query = host_query.filter(Host.project_id == project_id)
         existing_host = host_query.first()
 
         if existing_host:
@@ -297,8 +297,7 @@ class HostDeduplicationService:
         else:
             # Create new host
             new_host = self._create_new_host(ip_address, scan_id, host_data)
-            if project_id is not None:
-                new_host.project_id = project_id
+            new_host.project_id = project_id
             # The savepoint opens BEFORE the add: begin_nested() flushes what
             # is pending, and with the host already added that flush — the
             # INSERT that loses a concurrent race — ran outside the try below,
@@ -347,10 +346,8 @@ class HostDeduplicationService:
                             noload(Host.notes),
                             noload(Host.tag_assignments),
                         )
-                        .filter(Host.ip_address == ip_address)
+                        .filter(Host.ip_address == ip_address, Host.project_id == project_id)
                     )
-                    if project_id is not None:
-                        fallback_query = fallback_query.filter(Host.project_id == project_id)
                     existing_host = fallback_query.first()
                     if existing_host:
                         updated_host = self._update_and_record_existing_host(

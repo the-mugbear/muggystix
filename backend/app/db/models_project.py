@@ -40,7 +40,7 @@ class Project(Base):
     """A project isolates an engagement's scans, hosts, scopes, and findings."""
     __tablename__ = "projects"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     name = Column(String(100), unique=True, nullable=False, index=True)
     slug = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(Text)
@@ -111,8 +111,8 @@ class ProjectMembership(Base):
     """Per-project role assignment for a user."""
     __tablename__ = "project_memberships"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String(20), nullable=False, default=ProjectRole.VIEWER.value)  # see ProjectRole
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -130,7 +130,7 @@ class Notification(Base):
     """In-app notification for mentions, assignments, status changes, etc."""
     __tablename__ = "notifications"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
     type = Column(String(50), nullable=False)  # mention, note_reply, host_note, finding_comment, assignment, proposal, scan_update, report_ready, report_failed, retest, system (older rows: status_change)
@@ -169,7 +169,7 @@ class NoteMention(Base):
     """Records an @mention of a user in a host note."""
     __tablename__ = "note_mentions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     note_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -193,7 +193,7 @@ class WebhookConfig(Base):
     """
     __tablename__ = "webhook_configs"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     url = Column(String(1000), nullable=False)
@@ -241,7 +241,7 @@ class WebhookDelivery(Base):
     """
     __tablename__ = "webhook_deliveries"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     webhook_config_id = Column(
         Integer, ForeignKey("webhook_configs.id", ondelete="CASCADE"),
         nullable=False, index=True,
@@ -256,7 +256,7 @@ class WebhookDelivery(Base):
     payload = Column(JSON, nullable=False)
     status = Column(
         String(20), nullable=False,
-        default=WebhookDeliveryStatus.PENDING.value, index=True,
+        default=WebhookDeliveryStatus.PENDING.value,
     )
     attempts = Column(Integer, nullable=False, default=0)
     max_attempts = Column(Integer, nullable=False, default=6)

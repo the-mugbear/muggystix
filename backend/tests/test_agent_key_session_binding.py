@@ -53,14 +53,16 @@ def test_no_route_mints_an_unscoped_key(client, db_session, test_project):
     )
 
 
-def test_an_unscoped_key_cannot_authenticate(client, db_session, test_project, test_agent):
-    """Fail closed for a key that predates the removal.
+def test_an_unscoped_key_cannot_exist(db_session, test_agent):
+    """A key with no session cannot be stored at all (revision f4c8b2d0e6a1).
 
-    Stopping the minting is not enough on its own: a legacy unbound key would
-    otherwise keep full write authority over every plan, with no UI and no API
-    left to rotate or revoke it.  Authentication rejects it outright."""
+    Stopping the minting was not enough on its own: a legacy unbound key kept
+    full write authority over every plan, so authentication carried a branch
+    refusing it.  The schema now refuses the row — ``agent_session_id`` and
+    ``agent_id`` are NOT NULL — and the branch is gone."""
     import hashlib
-    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy.exc import IntegrityError
 
     raw = "nm_agent_orphaned_global_key_fixture"
     db_session.add(APIKey(
@@ -68,11 +70,16 @@ def test_an_unscoped_key_cannot_authenticate(client, db_session, test_project, t
         name="orphaned-global",
         key_hash=hashlib.sha256(raw.encode()).hexdigest(),
         key_prefix=raw[:14],
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
     ))
-    db_session.commit()
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+    db_session.rollback()
 
-    resp = client.get("/api/v1/agent/project", headers={"X-API-Key": raw})
-    assert resp.status_code == 403, resp.text
-    # Post-contract the rejection is about the missing session binding.
-    assert "not bound to a session" in resp.json()["detail"].lower()
+
+def test_a_key_has_no_operator_or_scopes_columns():
+    """``user_id`` (operator / service keys) and ``scopes`` (never enforced)
+    went with the keys they were for."""
+    columns = set(APIKey.__table__.columns.keys())
+    assert "user_id" not in columns and "scopes" not in columns
+    assert not APIKey.__table__.columns["agent_id"].nullable
+    assert not APIKey.__table__.columns["agent_session_id"].nullable

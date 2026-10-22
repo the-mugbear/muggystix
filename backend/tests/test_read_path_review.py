@@ -511,14 +511,19 @@ def test_plugin_monoculture_is_counted_in_sql_and_reads_titles_only_for_survivor
     scan = _scan(db_session, pid, "nessus")
     outside = _host(db_session, pid, "192.168.50.1")  # in the project, in no subnet
 
-    def vuln(host, plugin, title, severity=VulnerabilitySeverity.HIGH):
+    def vuln(host, plugin, title, severity=VulnerabilitySeverity.HIGH, port_id=None):
         db_session.add(Vulnerability(host_id=host.id, scan_id=scan.id, plugin_id=plugin, title=title,
-                                     severity=severity, source=VulnerabilitySource.NESSUS))
+                                     severity=severity, source=VulnerabilitySource.NESSUS, port_id=port_id))
 
     for host in hosts:                       # every in-scope host, both sites
         vuln(host, "1001", "Shared SSL problem")
         vuln(host, "9001", "Service detection", VulnerabilitySeverity.INFO)  # info: never systemic
-    vuln(hosts[0], "1001", "Shared SSL problem")   # a second row on one host is still one host
+    # A second row of the plugin on one host (on a port: one identity is one
+    # row) is still one host.
+    port = models.Port(host_id=hosts[0].id, port_number=443, protocol="tcp", state="open")
+    db_session.add(port)
+    db_session.flush()
+    vuln(hosts[0], "1001", "Shared SSL problem", port_id=port.id)
     for host in hosts[:3]:                   # one site only: systemic count, not estate-wide
         vuln(host, "2002", "One-site problem")
     vuln(hosts[0], "3003", "A one-off")      # below the host floor

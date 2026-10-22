@@ -56,7 +56,7 @@ class ToolRegistryEntry(Base):
 
     id = Column(Integer, primary_key=True)
     # The binary as invoked — the join key against a reported `command_run`.
-    name = Column(String(64), nullable=False, index=True)
+    name = Column(String(64), nullable=False)  # unique: uq_tool_registry_name
 
     # --- human knowledge (the reference page renders these) ---
     description = Column(Text, nullable=False)
@@ -67,7 +67,7 @@ class ToolRegistryEntry(Base):
     kali = Column(Boolean, nullable=False, server_default="false")
 
     # --- catalogue state ---
-    status = Column(String(16), nullable=False, server_default=TOOL_REFERENCE, index=True)
+    status = Column(String(16), nullable=False, server_default=TOOL_REFERENCE)  # leads idx_tool_registry_status_name
     # Whether running it can disturb a target (exploit checks, brute force,
     # heavy crawling) — advice an operator reads, not a gate.
     intrusive = Column(Boolean, nullable=True)

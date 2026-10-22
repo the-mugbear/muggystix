@@ -143,10 +143,6 @@ class ScanDeletionImpact(BaseModel):
     )
 
 
-class CountResponse(BaseModel):
-    total: int = Field(..., ge=0, description="Total count")
-
-
 class ScanUploader(BaseModel):
     user_id: int
     username: str
@@ -2132,31 +2128,3 @@ def get_scan_host_snapshots(
         )
     except ScanNotInProject:
         raise HTTPException(status_code=404, detail="Scan not found")
-
-
-@router.get(
-    "/{scan_id}/hosts/count",
-    response_model=CountResponse,
-    responses={**_AUTH_RESPONSES, 404: {"description": "Scan not found"}},
-    summary="Count hosts in scan",
-)
-def get_scan_hosts_count(
-    scan_id: int,
-    state: Optional[str] = None,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Get total count of hosts for a scan (for pagination)."""
-    scan = db.query(models.Scan).filter(
-        models.Scan.id == scan_id,
-        models.Scan.project_id == project.id,
-    ).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    query = db.query(models.Host).join(models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id).filter(models.HostScanHistory.scan_id == scan_id)
-    if state:
-        query = query.filter(models.Host.state == state)
-
-    count = query.count()
-    return {"total": count}

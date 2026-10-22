@@ -44,7 +44,8 @@ def _host(db, project_id, ip, *, ports=(), first_seen=None, last_seen=None, tool
 
 def _vuln(db, host, scan, severity, exploitable=False):
     db.add(Vulnerability(
-        host_id=host.id, scan_id=scan.id, title="v", severity=severity,
+        # One title per severity: one identity is one row.
+        host_id=host.id, scan_id=scan.id, title=f"v {severity.value}", severity=severity,
         source=VulnerabilitySource.NESSUS, exploitable=exploitable,
     ))
     db.flush()

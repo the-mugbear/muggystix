@@ -2364,7 +2364,9 @@ class IngestionService:
         filename = job.original_filename
         job_id = job.id
 
-        project_id = options.get("project_id")
+        # The job's own project (NOT NULL since e3b7a1c9d5f0) when the options
+        # do not name one — the rule the two other readers of a job use.
+        project_id = options.get("project_id") or job.project_id
         # v2.28.1 — initialise so every branch (Nessus, generic parser
         # dispatch) hands back a defined value.  Previously only the
         # generic branch assigned `parse_stats`, so the Nessus path
@@ -2476,7 +2478,8 @@ class IngestionService:
                 # the next parse starts its own report.
                 read_report = end_read(_reading)
             rejected_json_lines = read_report.rejected_lines
-            # Ensure scan and all hosts are tagged with the project
+            # Ensure the scan is tagged with the project (every parser stamps
+            # it at creation; this is the backstop for one that did not).
             if project_id and scan:
                 scan.project_id = project_id
             # v2.46.4 — provenance: agents pass the exact invocation as

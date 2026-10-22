@@ -14,7 +14,7 @@ class HostConfidence(Base):
     """Track confidence metadata for host fields"""
     __tablename__ = "host_confidence"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     field_name = Column(String, nullable=False)  # hostname, os_name, state, etc.
 
@@ -49,7 +49,7 @@ class PortConfidence(Base):
     """Track confidence metadata for port/service fields"""
     __tablename__ = "port_confidence"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=False)
     field_name = Column(String, nullable=False)  # service_name, service_version, state, etc.
 
@@ -81,7 +81,7 @@ class ConflictHistory(Base):
     """Track historical conflicts and resolutions"""
     __tablename__ = "conflict_history"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
 
     # What was in conflict — real FKs (de-polymorphized from the old
     # object_type/object_id pair, which had no referential integrity and left
@@ -131,7 +131,7 @@ class NetexecResult(Base):
     """Store netexec-specific enumeration results"""
     __tablename__ = "netexec_results"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
 
