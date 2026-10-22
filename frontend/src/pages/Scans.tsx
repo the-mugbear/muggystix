@@ -1,48 +1,13 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import {
-  keepPreviousData, useMutation, useMutationState, useQuery, useQueryClient,
-} from '@tanstack/react-query';
+import React, { useRef, useState, useCallback, useMemo } from 'react';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import {
-  AlertCircle,
-  AlertTriangle,
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  MoreHorizontal,
-  GitCompareArrows,
-  Hourglass,
-  Loader2,
-  Info,
-  Trash2,
-  Upload,
-  PauseCircle,
-} from 'lucide-react';
+import { AlertCircle, ChevronDown, GitCompareArrows, Loader2, Upload } from 'lucide-react';
 import { useListQuery } from '../hooks/useListQuery';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
-import { invalidateReads, pollEvery, rememberFor, useLastSettled } from '../lib/query';
-import { INGESTION_JOB_READS } from '../utils/ingestionReads';
-import {
-  anyStillRunning, bannerRows, completedScanIds, jobIdsToAsk, mergeFollowed, settledJobs,
-  type BannerEntry, type BannerStatus, type FollowedJobs,
-} from '../utils/uploadBanner';
+import { invalidateReads } from '../lib/query';
 import {
   getScans,
   getScansSummary,
-  deleteScan,
-  getScanDeletionImpact,
-  getIngestionJobsByIds,
-  getRecentIngestionJobs,
-  getStagedIngestionJobs,
-  dismissIngestionJob,
-  cancelIngestionJob,
-  discardIngestionJob,
-  discardStagedJobs,
-  retryIngestionJob,
-  getScanCommandExplanation,
   getScanBatches,
   getImportHistory,
 } from '../services/api';
@@ -51,80 +16,35 @@ import type {
   IngestionJob,
   ScanBatchSummary,
   ImportHistoryEntry,
+  ScanInventorySummary,
 } from '../services/api';
-import LastUpdated from '../components/LastUpdated';
 import { TableSkeleton } from '../components/PageSkeleton';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
-import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
-import {
-  hostsWithWorkCount,
-  hostsWithWorkRefusal,
-  importRunningNotice,
-  importRunningRefusal,
-  type HostsWithWorkRefusal,
-} from '../utils/scanDeletion';
-import HostsWithWorkWarning from '../components/scans/HostsWithWorkWarning';
 import { useScanInventoryMarker } from '../components/scans/useScanInventoryMarker';
-// From the barrel, like every other call here: a direct submodule import
-// bypasses a page test's mock and loads the real HTTP client.
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { Badge } from '../components/ui/badge';
-import { BreakableName } from '../components/ui/breakable-name';
 import { Button } from '../components/ui/button';
 import PostureLead from '../components/posture/PostureLead';
 import PostureSection from '../components/posture/PostureSection';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '../components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { formatDate, formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
-import ScanContribution from '../components/scans/ScanContribution';
 import ScansViewTabs from '../components/scans/ScansViewTabs';
-import ImportResult from '../components/scans/ImportResult';
-import KeepTruncatedImport from '../components/scans/KeepTruncatedImport';
-import { isCutShort } from '../utils/truncatedImport';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
-import { ScanBatchRow } from '../components/scans/ScanBatchList';
-import { ROW_LINK_CLASS, ScanRowActions } from '../components/scans/ScanRowActions';
+import DeleteScanDialog from '../components/scans/DeleteScanDialog';
+import { IngestionQueue, QUEUE_READS, useIngestionQueue } from '../components/scans/IngestionQueue';
+import { UploadBanner, useUploadBanner } from '../components/scans/UploadBanner';
+import ImportHistoryTable, {
+  SCANS_SORT_COLUMNS, type ScansSortBy, type ScansSortOrder,
+} from '../components/scans/ImportHistoryTable';
 import { hydrateHistoryRows, orderHistoryRows } from '../utils/importHistory';
 import { importResultsPath } from '../utils/importResultsPath';
-import { SCAN_TIME_HEADING, ScanWhenCell, ViewerZoneHint, type ScanTimeColumn } from '../components/scans/ScanTimeCells';
-import { formatDuration } from '../utils/scanTime';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../components/ui/dialog';
+import type { ScanTimeColumn } from '../components/scans/ScanTimeCells';
 import { ListFilterBar, ListFilterSearch } from '../components/ListFilterBar';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../components/ui/table';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { InfoTip } from '../components/ui/info-tip';
 import { cn } from '../utils/cn';
-
-/** A queue row's status, in words beside its icon. */
-const JOB_STATUS_LABEL: Record<string, string> = {
-  staged: 'Needs review',
-  queued: 'Queued',
-  processing: 'Processing',
-  failed: 'Failed',
-  completed: 'Completed',
-};
 
 /** One page of the import history as the page lists it.  Grouped by upload it
  *  is the server's ORDER (`entries`) with the rows that order names, fetched
@@ -143,170 +63,35 @@ interface HistoryPage {
   hasMore: boolean;
 }
 
-/** What the ingestion queue strip reads. */
-const QUEUE_READS = ['getRecentIngestionJobs', 'getStagedIngestionJobs'] as const;
 /** What lists or counts the imported files. */
 const INVENTORY_READS = [
   'getImportHistory', 'getScans', 'getScansSummary', 'getBatchUnimportedJobs',
 ] as const;
-/** The key of the four writes to ONE job of the queue (retry, cancel,
- *  dismiss, discard): what is in flight is read back per job. */
-const QUEUE_JOB_ACTION = ['scansQueueJobAction'] as const;
 
-/** How often the queue is read again while a job is queued or processing. */
-const ACTIVE_QUEUE_POLL_MS = 5000;
-/** How often the queue's "Auto" switch reads it again when nothing is running. */
-const AUTO_QUEUE_POLL_MS = 15_000;
-const holdsActiveJob = (jobs: IngestionJob[] | undefined): boolean =>
-  !!jobs?.some((j) => j.status === 'queued' || j.status === 'processing');
+// All filtering and sorting is server-side: a project can hold far more scans
+// than one page, and filtering the loaded page would silently miss matching
+// scans further down.  The page is "Load more"; 250 files covers most
+// installations in one page (a button at the bottom of a 100-row table was
+// not noticed).
+const SCAN_LIMIT = 250;
+// History rows per page. Each page's rows are fetched by id, and the id list
+// rides in the query string, so this stays well under its cap.
+const HISTORY_PAGE = 100;
+const DATE_RANGE_PRESETS: ReadonlyArray<{ label: string; days: number | null }> = [
+  { label: 'All time', days: null },
+  { label: 'Last 7d', days: 7 },
+  { label: 'Last 30d', days: 30 },
+  { label: 'Last 90d', days: 90 },
+];
 
-export default function Scans() {
-  const navigate = useNavigate();
-  const toast = useToast();
-  const queryClient = useQueryClient();
-  const projectId = useProjectId();
-  const [confirmDialog, confirm] = useConfirm();
-  const invalidate = useCallback((names: readonly string[]) => {
-    void invalidateReads(queryClient, ...names);
-  }, [queryClient]);
-  const refreshQueue = useCallback(() => invalidate(QUEUE_READS), [invalidate]);
-  const refreshInventory = useCallback(() => invalidate(INVENTORY_READS), [invalidate]);
-
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [scanToDelete, setScanToDelete] = useState<Scan | null>(null);
-  // Hosts the delete removes that carry people's work: the reader's tick, and
-  // the server's refusal when it found such hosts the dialog had not shown.
-  const [workReviewed, setWorkReviewed] = useState(false);
-  const [workRefusal, setWorkRefusal] = useState<HostsWithWorkRefusal | null>(null);
-  // The server's words when it refused the delete because an import is
-  // running in the project; the preview says the same before the click.
-  const [importRefusal, setImportRefusal] = useState<string | null>(null);
-  // What the delete will remove, asked while the dialog is open — and again
-  // after a refusal.  Hosts are deduplicated across scans, so this is rarely a
-  // blanket wipe.
-  const deleteId = scanToDelete?.id ?? null;
-  const impactQuery = useQuery({
-    queryKey: ['getScanDeletionImpact', projectId, deleteId],
-    queryFn: async ({ signal }) => {
-      const impact = await getScanDeletionImpact(projectId, deleteId as number, signal);
-      // An answer that is not about this scan is not a summary of it.
-      if (impact?.scan_id !== deleteId) throw new Error('The removal summary is not about this scan.');
-      return impact;
-    },
-    enabled: deleteDialogOpen && deleteId != null,
-  });
-  const impactLoading = impactQuery.isFetching;
-  const impactError = !impactLoading && impactQuery.isError;
-  // While it is read again the previous answer is not shown: the delete waits.
-  const deletionImpact = !impactLoading && !impactQuery.isError ? impactQuery.data ?? null : null;
-  const importRunning = importRunningNotice(deletionImpact);
-  // Known from the preview; from the refusal when the preview could not be
-  // read.  While the preview is loading it is not known, and the delete waits.
-  const hostsWithWork = deletionImpact
-    ? hostsWithWorkCount(deletionImpact)
-    : !impactLoading && workRefusal
-      ? workRefusal.hosts_with_work
-      : 0;
-
-  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
-  // The results banner: one entry per file the review dialog (or the staged
-  // queue's "Review and import") has STARTED, followed by job id to its import
-  // result (v5.222.0, design review item 5):
-  //   received → processing → imported | partial | failed
-  // v5.247.0 — the transfer itself, a refused duplicate and "Import again" all
-  // live in UploadReviewDialog / useUploadReview now. This page kept its own
-  // dropzone, uploader, duplicate handling and a stuck-upload watchdog for
-  // them; the dropzone was never attached to an element, so none of it could
-  // run. Removed with their three states ('uploading', 'error', 'duplicate').
-  //
-  // STATE is only what this tab knows and the server does not: which files it
-  // started, and which rows the reader dismissed.  A job's status and message
-  // and a finished file's result are read by the two queries below and laid
-  // over these entries while rendering (`utils/uploadBanner`).
-  const [uploadEntries, setUploadEntries] = useState<BannerEntry[]>([]);
-  // v5.271.0 — staged files handed back to the upload review ("Review N
-  // waiting", a queue row's Review, a batch's Review).  It replaced the
-  // one-file FormatRetryDialog, which made a 26-file drop 26 dialogs.
-  const [reviewResume, setReviewResume] = useState<{ jobs: IngestionJob[] } | null>(null);
-
-  // The ingestion queue: the 25 most recent jobs, and (v5.271.0) EVERY staged
-  // job — the 26th file of a drop was missing from the queue, its Review and
-  // its Discard.  Re-read every 5 s while a job is queued or processing;
-  // otherwise every 15 s when the reader turned the queue's "Auto" switch on
-  // (off when the page opens, and not remembered), and not at all without it.
-  const [autoRefresh, setAutoRefresh] = useState(false);
-  const queuePollMs = (jobs: IngestionJob[] | undefined): number | null => {
-    if (holdsActiveJob(jobs)) return ACTIVE_QUEUE_POLL_MS;
-    return autoRefresh ? AUTO_QUEUE_POLL_MS : null;
-  };
-  const recentQuery = useQuery({
-    queryKey: ['getRecentIngestionJobs', projectId, 25],
-    queryFn: ({ signal }) => getRecentIngestionJobs(projectId, 25, signal),
-    ...pollEvery((query) => queuePollMs(query.state.data)),
-  });
-  const stagedQuery = useQuery({
-    queryKey: ['getStagedIngestionJobs', projectId],
-    queryFn: ({ signal }) => getStagedIngestionJobs(projectId, signal),
-    ...pollEvery(queuePollMs(recentQuery.data)),
-  });
-  // The two are shown together, so the queue never appears first without the
-  // staged files the recent jobs do not reach.
-  const queueRead = !recentQuery.isPending && !stagedQuery.isPending;
-  const recentJobs = useMemo(() => (queueRead ? recentQuery.data ?? [] : []), [queueRead, recentQuery.data]);
-  // The staged list is a completion of the recent one; if it cannot be read,
-  // the queue still shows the staged jobs among the recent.
-  const stagedJobs = useMemo(() => {
-    if (!queueRead) return [];
-    return stagedQuery.isError || !stagedQuery.data
-      ? recentJobs.filter((j) => j.status === 'staged')
-      : stagedQuery.data;
-  }, [queueRead, recentJobs, stagedQuery.isError, stagedQuery.data]);
-  const recentJobsFetched = useMemo(
-    () => (recentQuery.dataUpdatedAt ? new Date(recentQuery.dataUpdatedAt) : null),
-    [recentQuery.dataUpdatedAt],
-  );
-  const recentJobsLoading = recentQuery.isFetching || stagedQuery.isFetching;
-  // v5.270.0 — the queue could not be read: said, never shown as "nothing failed".
-  const recentJobsError = recentQuery.isError;
-
-  const [expandedScanIds, setExpandedScanIds] = useState<number[]>([]);
-
-  // ---------------------------------------------------------------------
-  // Scan Inventory filters + pagination (v4.47.0 QoL pass).
-  //
-  // All filtering and sorting is server-side: the user has projects with
-  // >100 scans, and client-side filtering on the first 100 would silently
-  // miss matching scans further down the list.  The URL persists every
-  // filter so analysts can bookmark / share a filtered view.
-  //
-  // Pagination is "Load more" rather than paged navigation — keeps the
-  // append model simple, avoids needing a server-side total count, and
-  // works smoothly with sort/filter changes (those reset back to skip=0).
-  //
-  // v2.86.2 — bumped initial page from 100 → 250 after a field report
-  // that the page "capped at 100" because the Load More button at the
-  // bottom of the table was off-screen and not noticed.  250 covers the
-  // vast majority of installations in one page; the button stays as
-  // the fallback for the long tail.
-  // ---------------------------------------------------------------------
-  const SCAN_LIMIT = 250;
-  // History rows per page. Each page's rows are fetched by id, and the id
-  // list rides in the query string, so this stays well under its cap.
-  const HISTORY_PAGE = 100;
-  const DATE_RANGE_PRESETS: ReadonlyArray<{ label: string; days: number | null }> = [
-    { label: 'All time', days: null },
-    { label: 'Last 7d', days: 7 },
-    { label: 'Last 30d', days: 30 },
-    { label: 'Last 90d', days: 90 },
-  ];
-  type SortBy = 'created_at' | 'start_time' | 'filename' | 'tool_name' | 'total_hosts' | 'new_hosts';
-  type SortOrder = 'asc' | 'desc';
-
-  // The filters, the sort and the view are the address's (UI_STYLE_GUIDE §39):
-  // read from it on every render — never copied into state — so a link to
-  // this page with other filters (Operations' `?since=`), and Back, are what
-  // the controls show and what the lists are asked for.  A value the address
-  // cannot mean is the default.
+/**
+ * The filters, the sort and the view are the address's (UI_STYLE_GUIDE §39):
+ * read from it on every render — never copied into state — so a link to this
+ * page with other filters (Operations' `?since=`), and Back, are what the
+ * controls show and what the lists are asked for.  A value the address cannot
+ * mean is the default.
+ */
+function useScansAddress() {
   const [urlParams, setUrlParams] = useSearchParams();
   const toolFilter = urlParams.get('tool') || '';
   const dateRangeDays: number | null = (() => {
@@ -315,22 +100,19 @@ export default function Scans() {
     const parsed = parseInt(raw, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   })();
-  const sortBy: SortBy = (() => {
-    const raw = urlParams.get('sort_by') as SortBy | null;
-    return raw && ['created_at', 'start_time', 'filename', 'tool_name', 'total_hosts', 'new_hosts'].includes(raw)
-      ? raw
-      : 'created_at';
+  const sortBy: ScansSortBy = (() => {
+    const raw = urlParams.get('sort_by') as ScansSortBy | null;
+    return raw && SCANS_SORT_COLUMNS.includes(raw) ? raw : 'created_at';
   })();
-  const sortOrder: SortOrder = urlParams.get('sort_order') === 'asc' ? 'asc' : 'desc';
+  const sortOrder: ScansSortOrder = urlParams.get('sort_order') === 'asc' ? 'asc' : 'desc';
   const showBatchFiles = urlParams.get('batch_files') === 'show';
-  // v5.281.0 — who uploaded the file (an agent's uploads are its operator's).
+  // Who uploaded the file (an agent's uploads are its operator's).
   const uploaderFilter: number | null = (() => {
     const parsed = parseInt(urlParams.get('uploaded_by') || '', 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   })();
-  // 5.304.0 — `?since=<ISO>`: the imports since a moment, so Operations'
-  // "8 new imports" opens those 8 (it opened the whole history).  Choosing a
-  // day range replaces it.
+  // `?since=<ISO>`: the imports since a moment, so Operations' "8 new
+  // imports" opens those 8.  Choosing a day range replaces it.
   const sinceIso: string | null = (() => {
     const raw = urlParams.get('since');
     return raw && !Number.isNaN(Date.parse(raw)) ? raw : null;
@@ -350,25 +132,10 @@ export default function Scans() {
       return next;
     }, { replace: true });
   }, [setUrlParams]);
-  const setToolFilter = (tool: string) => setUrlFilters({ tool: tool || null });
-  const setUploaderFilter = (userId: number | null) =>
-    setUrlFilters({ uploaded_by: userId == null ? null : String(userId) });
-  const setShowBatchFiles = (show: boolean) => setUrlFilters({ batch_files: show ? 'show' : null });
   // The search box: `draft` is what is being typed, `value` what is in the
   // address — and so what is asked for.
   const search = useUrlSearchDraft('search');
   const searchValue = search.value;
-  // v5.215.0 — whether informational Nessus observations are skipped: the
-  // project's effective setting (its own choice, else the deployment default),
-  // sent with each upload. UX review 2026-09-24 — changed in Project settings →
-  // Imports; the upload dialog states it and links there.
-  const { currentProject } = useProject();
-  // Importing and retrying are a project analyst's (R32): a viewer or auditor
-  // reads the import history without the write controls.  DELETING a scan is
-  // the project admin's on the server (`deletion-impact` and `DELETE
-  // /scans/{id}`), so an analyst is not offered it either.
-  const { canWrite, isProjectAdmin } = useProjectRole();
-  const skipInformational = currentProject?.skip_informational_effective ?? false;
   const hasActiveFilters = toolFilter !== '' || searchValue !== ''
     || dateRangeDays !== null || sinceIso !== null || uploaderFilter !== null;
   const createdAfterIso = useMemo(() => {
@@ -387,26 +154,94 @@ export default function Scans() {
     }),
     [searchValue, toolFilter, createdAfterIso, uploaderFilter],
   );
-  const [expandedJobIds, setExpandedJobIds] = useState<Set<number>>(new Set());
-
-  const toggleJobExpanded = (id: number) => {
-    setExpandedJobIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // Sorting: the same column again toggles asc / desc; another column sorts
+  // by it, descending.  In the address the defaults (`created_at`, `desc`)
+  // are left out.
+  const sortOn = (column: ScansSortBy) => {
+    if (sortBy === column) {
+      setUrlFilters({ sort_order: sortOrder === 'asc' ? null : 'asc' });
+      return;
+    }
+    setUrlFilters({ sort_by: column === 'created_at' ? null : column, sort_order: null });
   };
+  return {
+    toolFilter,
+    setToolFilter: (tool: string) => setUrlFilters({ tool: tool || null }),
+    dateRangeDays,
+    sinceIso,
+    setDays: (days: number | null) => setUrlFilters({ since: null, days: days == null ? null : String(days) }),
+    uploaderFilter,
+    setUploaderFilter: (userId: number | null) =>
+      setUrlFilters({ uploaded_by: userId == null ? null : String(userId) }),
+    showBatchFiles,
+    setShowBatchFiles: (show: boolean) => setUrlFilters({ batch_files: show ? 'show' : null }),
+    sortBy,
+    sortOrder,
+    sortOn,
+    search,
+    hasActiveFilters,
+    listFilters,
+    clearFilters: () => {
+      // One write for all of them; the box drops what was being typed, so it
+      // is not committed a moment later.
+      search.setDraft('');
+      setUrlFilters({ search: null, tool: null, days: null, since: null, uploaded_by: null });
+    },
+  };
+}
+
+type ScansAddress = ReturnType<typeof useScansAddress>;
+
+export default function Scans() {
+  const navigate = useNavigate();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const projectId = useProjectId();
+  const invalidate = useCallback((names: readonly string[]) => {
+    void invalidateReads(queryClient, ...names);
+  }, [queryClient]);
+  const refreshQueue = useCallback(() => invalidate(QUEUE_READS), [invalidate]);
+  const refreshInventory = useCallback(() => invalidate(INVENTORY_READS), [invalidate]);
+
+  // Deleting a scan: the dialog is about one scan, which stays set while it
+  // closes.
+  const [scanToDelete, setScanToDelete] = useState<Scan | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  // The upload review (choose → review formats → import → results).  Staged
+  // files are handed back to it too ("Review N waiting", a queue row's
+  // Review, a batch's Review).
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [reviewResume, setReviewResume] = useState<{ jobs: IngestionJob[] } | null>(null);
+  const openReview = useCallback((jobs: IngestionJob[]) => {
+    if (jobs.length === 0) return;
+    setReviewResume({ jobs });
+    setUploadDialogOpen(true);
+  }, []);
+
+  const queue = useIngestionQueue(projectId);
+  // An import that finished put the queue — and, when it completed, the lists
+  // and counts of imported files — out of date.
+  const banner = useUploadBanner(projectId, refreshQueue, refreshInventory);
+
+  const address = useScansAddress();
+  const { showBatchFiles, sortBy, sortOrder, listFilters, hasActiveFilters } = address;
+  // The project's effective "skip informational Nessus observations" (its own
+  // choice, else the deployment default), sent with each upload; changed in
+  // Project settings → Imports.
+  const { currentProject } = useProject();
+  // Importing and retrying are a project analyst's (R32): a viewer or auditor
+  // reads the import history without the write controls.  DELETING a scan is
+  // the project admin's on the server (`deletion-impact` and `DELETE
+  // /scans/{id}`), so an analyst is not offered it either.
+  const { canWrite, isProjectAdmin } = useProjectRole();
+  const skipInformational = currentProject?.skip_informational_effective ?? false;
 
   // The import history, a page at a time ("Load more").
-  //   Grouped by upload (v5.239.0): the SERVER decides the order of batches
-  //   and single files together (`GET /scans/history`); a page is that order
-  //   plus its rows, fetched by id from the endpoints that compute them.  They
-  //   were two cards paginated separately, which no client-side merge can put
-  //   in order past the first page.
+  //   Grouped by upload: the SERVER decides the order of batches and single
+  //   files together (`GET /scans/history`); a page is that order plus its
+  //   rows, fetched by id from the endpoints that compute them.
   //   All files: one flat, sortable list of every imported file.
-  // A new filter keeps the rows on screen until its own arrive; a failure is
-  // said as one (it used to read "No scans uploaded yet").
   // On the list hook (`useListQuery`), with what this list needs of it: each
   // page states its own end (`hasMore` — the history's `has_more`; for all
   // files, which has no total, "a full page came back"); every loaded page is
@@ -447,12 +282,12 @@ export default function Scans() {
     },
   );
   const historyPages = historyList.responses;
-  // v5.239.0 — the import history's ORDER (batches and single files together,
-  // newest first), from the server; `scans` and `batches` hold the rows.
+  // The import history's ORDER (batches and single files together, newest
+  // first), from the server; `scans` and `batches` hold the rows (an upload
+  // batch is one row per sweep, its files listed individually only in the
+  // all-files view).
   const history = useMemo(() => historyPages?.flatMap((page) => page.entries) ?? [], [historyPages]);
   const scans = useMemo(() => historyPages?.flatMap((page) => page.scans) ?? [], [historyPages]);
-  // v5.207.0 — upload batches, one row per sweep. Their files leave the flat
-  // inventory unless the operator asks to list them individually.
   const batches = useMemo(() => historyPages?.flatMap((page) => page.batches) ?? [], [historyPages]);
   const historyPartial = !!historyPages?.some((page) => page.partial);
   const historyTotal = historyPages?.[0]?.total ?? null;
@@ -473,8 +308,6 @@ export default function Scans() {
   if (failedNow) lastFailure.current = failedNow;
   else if (!retryingFailedLoad) lastFailure.current = null;
   const historyError = failedNow ?? (retryingFailedLoad ? lastFailure.current : null);
-  const hasMoreScans = historyList.hasMore;
-  const loadingMore = historyList.loadingMore;
   const { loadMore } = historyList;
   const loadMoreScans = useCallback(async () => {
     try {
@@ -496,68 +329,7 @@ export default function Scans() {
   const summaryFailed = summaryQuery.isError || (summaryQuery.isPending && summaryQuery.errorUpdateCount > 0);
   const inventorySummary = summaryFailed ? null : summaryQuery.data ?? null;
 
-  // Per-row tool badge rendered as a clickable filter — same behaviour
-  // as the section-header chips.  stopPropagation so it doesn't also
-  // trigger the row's own expand/click handlers.
-  const renderInlineToolBadge = (scan: Scan) => {
-    const label = scan.tool_name || scan.scan_type || 'Unknown';
-    const toolKey = (label || 'Other').toUpperCase();
-    const active = toolFilter.toLowerCase() === toolKey.toLowerCase();
-    return (
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          setToolFilter(active ? '' : toolKey);
-        }}
-        aria-pressed={active}
-        className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        title={active ? `Clear ${toolKey} filter` : `Show only ${toolKey} scans`}
-      >
-        <Badge variant={active ? 'default' : 'outline'}>{label}</Badge>
-      </button>
-    );
-  };
-
-  // Sortable column header — clicking the same column toggles asc/desc;
-  // clicking a different column switches sort and resets to desc.
-  const handleSort = (column: SortBy) => {
-    // In the address the defaults (`created_at`, `desc`) are left out.
-    if (sortBy === column) {
-      setUrlFilters({ sort_order: sortOrder === 'asc' ? null : 'asc' });
-      return;
-    }
-    setUrlFilters({ sort_by: column === 'created_at' ? null : column, sort_order: null });
-  };
-  const renderSortHeader = (column: SortBy, label: string, className?: string) => {
-    const isSorted = sortBy === column;
-    const ariaSort: React.AriaAttributes['aria-sort'] = isSorted
-      ? sortOrder === 'asc'
-        ? 'ascending'
-        : 'descending'
-      : 'none';
-    return (
-      <TableHead className={className} aria-sort={ariaSort}>
-        <button
-          type="button"
-          onClick={() => handleSort(column)}
-          className="inline-flex items-center gap-xxs rounded-control text-inherit hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={`Sort by ${label}, currently ${
-            isSorted ? (sortOrder === 'asc' ? 'sorted ascending' : 'sorted descending') : 'not sorted'
-          }`}
-        >
-          {label}
-          {!isSorted && <ArrowUpDown className="size-3 opacity-50" aria-hidden />}
-          {isSorted && sortOrder === 'asc' && <ArrowUp className="size-3" aria-hidden />}
-          {isSorted && sortOrder === 'desc' && <ArrowDown className="size-3" aria-hidden />}
-        </button>
-      </TableHead>
-    );
-  };
-
-  // v5.239.0 — the import history's rows, in the server's order.  Grouped by
-  // upload is chronological by definition, so its headers do not sort; the
-  // all-files view keeps the sortable ones.
+  // The import history's rows, in the server's order.
   const historyRows = useMemo(() => orderHistoryRows(history, scans, batches), [history, scans, batches]);
   const tableRows = useMemo(
     () => (listedFlat
@@ -570,306 +342,44 @@ export default function Scans() {
   // the rows ON SCREEN (`listedFlat`): while the other view loads they are
   // still the previous view's, and keep the time they were listed by.
   const timeColumn: ScanTimeColumn = listedFlat && sortBy === 'start_time' ? 'ran' : 'uploaded';
-  const historyHeader = (column: SortBy, label: string, className?: string) =>
-    showBatchFiles
-      ? renderSortHeader(column, label, className)
-      : <TableHead className={className}>{label}</TableHead>;
 
-  // The command's explanation is read by the expanded row itself
-  // (`ScanCommandDetail`), the first time it opens.
-  const toggleScanExpanded = useCallback((scanId: number) => {
-    setExpandedScanIds((prev) => (prev.includes(scanId) ? prev.filter((id) => id !== scanId) : [...prev, scanId]));
-  }, []);
-
-  // v5.248.0 — following the started files is ONE request per tick
-  // (`GET /upload/jobs?ids=`): at once for a file just handed over, then every
-  // 4 s while the tab is visible and one of them is still running.  It was one
-  // GET per job on a fixed interval: 30 files meant 30 requests a tick, and a
-  // hidden tab kept going.
-  //
-  // The key names every job this tab started, dismissed rows included, so it
-  // changes only when a file is started.  A REQUEST names fewer: a job this
-  // reading already knows to be finished (or no longer returned) is not asked
-  // about again — its last reading is carried into the next
-  // (`jobIdsToAsk` / `mergeFollowed`).  This query's own lifecycle: once no
-  // job is running it is DISABLED, not merely left unpolled, so nothing — an
-  // invalidation included — asks again (`Scans.uploadBanner.test.tsx`).
-  const bannerJobIds = useMemo(() => Array.from(new Set(uploadEntries.map((e) => e.jobId))), [uploadEntries]);
-  const followedQuery = useQuery({
-    queryKey: ['getIngestionJobsByIds', projectId, bannerJobIds],
-    queryFn: async ({ signal, client, queryKey }): Promise<FollowedJobs> => {
-      const known = client.getQueryData<FollowedJobs>(queryKey);
-      const ask = jobIdsToAsk(bannerJobIds, known);
-      return mergeFollowed(known, ask, await getIngestionJobsByIds(projectId, ask, signal));
-    },
-    enabled: (query) => bannerJobIds.length > 0 && anyStillRunning(query.state.data),
-    ...pollEvery((query) => (anyStillRunning(query.state.data) ? 4000 : null)),
-  });
-  // While the read for one more file is on its way — or fails — the files
-  // already on the banner keep what was last said about them.
-  const followed = useLastSettled(followedQuery.data, { resetKey: projectId });
-
-  // v5.222.0 / v5.239.1 — the import results of the finished files (the scan
-  // rows' summaries: the same numbers the inventory shows), in ONE request
-  // for the files that finished together.  Its own lifecycle too: a set of
-  // finished files is asked about ONCE — answered or failed, it is disabled,
-  // so neither the banner's poll nor the inventory's refresh (which is by the
-  // name `getScans`) asks again.  A lookup that failed leaves the job's own
-  // message in place of the counts.
-  const resultScanIds = useMemo(() => completedScanIds(followed), [followed]);
-  const resultsQuery = useQuery({
-    queryKey: ['getScans', projectId, 0, resultScanIds.length, { ids: resultScanIds }],
-    queryFn: ({ signal }) => getScans(projectId, 0, resultScanIds.length, { ids: resultScanIds, signal }),
-    enabled: (query) => resultScanIds.length > 0 && query.state.status === 'pending',
-  });
-  const results = useLastSettled(resultsQuery.data, { resetKey: projectId });
-  const uploadRows = useMemo(() => bannerRows(uploadEntries, followed, results), [uploadEntries, followed, results]);
-
-  // An import that finished put the queue — and, when it completed, the lists
-  // and counts of imported files — out of date.  Keyed by the SET of jobs
-  // nothing more is expected of: it changes when a job joins it, so each
-  // finish refreshes once however many later polls report the same job.
-  const { settled: settledJobIds, completed: completedJobIds } = useMemo(() => settledJobs(followed), [followed]);
-  const settledKey = settledJobIds.join(',');
-  const completedKey = completedJobIds.join(',');
-  useEffect(() => {
-    if (settledKey) refreshQueue();
-  }, [settledKey, refreshQueue]);
-  useEffect(() => {
-    if (completedKey) refreshInventory();
-  }, [completedKey, refreshInventory]);
-
-  // v5.207.0 — refresh when ANY scan lands. The job polling above only
-  // follows uploads this tab submitted, so scans from an agent or another
-  // tab raised counters elsewhere while this list stayed stale.  The marker
-  // (a count + the newest id, polled while the tab is visible; the first
-  // answer is the baseline) and its baseline are `useScanInventoryMarker`'s.
+  // Refresh when ANY scan lands: the banner follows only uploads this tab
+  // started, so scans from an agent or another tab raised counters elsewhere
+  // while this list stayed stale.  The marker (a count + the newest id,
+  // polled while the tab is visible; the first answer is the baseline) and
+  // its baseline are `useScanInventoryMarker`'s.
   const inventoryMoved = useCallback(() => {
     refreshInventory();
     refreshQueue();
   }, [refreshInventory, refreshQueue]);
   const inventoryMarker = useScanInventoryMarker(projectId, inventoryMoved);
 
-  const groupedScans = useMemo(
-    () =>
-      scans.reduce<Record<string, Scan[]>>((acc, scan) => {
-        const key = (scan.tool_name || scan.scan_type || 'Other').toUpperCase();
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(scan);
-        return acc;
-      }, {}),
-    [scans],
-  );
-
-  // v5.226.0 — the tool chips count EVERY file matching the search/date
-  // filters, server-side, batched files included.  The loaded `scans` array
-  // is the fallback for an older backend; in grouped mode it holds only the
-  // unbatched files, which is the defect this replaces.
+  // The tool counts are EVERY file matching the search/date filters,
+  // server-side, batched files included.  The loaded `scans` are the fallback
+  // for an older backend (grouped, they hold only the unbatched files).
   const toolChips = useMemo<[string, number][]>(() => {
     const server = inventorySummary?.tool_counts;
     if (server && Object.keys(server).length > 0) {
       return Object.entries(server).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     }
-    return Object.entries(groupedScans)
-      .map(([g, rows]) => [g, rows.length] as [string, number])
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  }, [inventorySummary, groupedScans]);
+    const counts = new Map<string, number>();
+    for (const scan of scans) {
+      const key = (scan.tool_name || scan.scan_type || 'Other').toUpperCase();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [inventorySummary, scans]);
 
-  // Rows render in the order the server returned them (`scans` is used
-  // directly below — no client-side re-sort).  getScans is called with
-  // sortBy/sortOrder and each appended page preserves that order; a
-  // client-side re-sort here previously discarded the server order, so the
-  // filename / host-count headers and created_at-ascending appeared dead —
-  // the arrow flipped but the rows never moved.
-
-  // v4.18.0 — completed jobs are excluded from the Ingestion Queue
-  // display.  Successful ingests already appear in Your Scans below as
-  // the canonical Scan row; showing them twice was duplicate-feeling
-  // and made the queue look perpetually busy.  Keep `queued`,
-  // `processing`, `failed` so the queue is useful for its actual
-  // intent: "what's still in flight or needs my attention?".
-  // v5.271.0 — plus every staged job, which the 25 recent may not reach.
-  // v5.289.0 — minus superseded failures (a later job imported the same
-  // file): they need nothing, and are listed on Ingestion Results.
-  const pendingJobs = useMemo(() => {
-    const recent = recentJobs.filter(
-      (j) => j.status !== 'completed' && j.status !== 'staged' && j.superseded_by_job_id == null,
-    );
-    return [...recent, ...stagedJobs].sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id - a.id,
-    );
-  }, [recentJobs, stagedJobs]);
-  const stagedByBatch = useMemo(() => {
-    const byBatch = new Map<number, IngestionJob[]>();
-    for (const job of stagedJobs) {
-      if (job.batch_id == null) continue;
-      byBatch.set(job.batch_id, [...(byBatch.get(job.batch_id) ?? []), job]);
-    }
-    return byBatch;
-  }, [stagedJobs]);
-  const openReview = useCallback((jobs: IngestionJob[]) => {
-    if (jobs.length === 0) return;
-    setReviewResume({ jobs });
-    setUploadDialogOpen(true);
-  }, []);
-  // v5.239.0 — the queue is a compact strip: its counts are always shown and
-  // the table opens on request.  Whether it is open is a per-browser
-  // convenience; the page works the same if storage is unavailable.
-  const queueCounts = useMemo(() => ({
-    processing: pendingJobs.filter((j) => j.status === 'queued' || j.status === 'processing').length,
-    staged: pendingJobs.filter((j) => j.status === 'staged').length,
-    failed: pendingJobs.filter((j) => j.status === 'failed').length,
-  }), [pendingJobs]);
-  // v5.289.0 — the queue box said "1 failed" (its 25 most recent jobs) while
-  // the lead and Ingestion Results said 4 need attention.  Both now read the
-  // project-wide figure (one definition, server-side); the recent-jobs count
-  // is only the fallback when the summary did not carry it.
-  const needAttention = inventorySummary?.imports_need_attention ?? queueCounts.failed;
-  const [queueOpen, setQueueOpen] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('nm.scans.queueOpen') === '1';
-    } catch {
-      return false;
-    }
-  });
-  const toggleQueue = () => setQueueOpen((open) => {
-    try {
-      localStorage.setItem('nm.scans.queueOpen', open ? '0' : '1');
-    } catch {
-      // Private window / blocked storage: the toggle still works for this visit.
-    }
-    return !open;
-  });
+  // The queue box and the lead read the project-wide figure (one definition,
+  // server-side); the recent-jobs count is only the fallback when the summary
+  // did not carry it.
+  const needAttention = inventorySummary?.imports_need_attention ?? queue.queueCounts.failed;
 
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);
-  // The dialog's preview (`impactQuery`) is read when it opens.  Every read
-  // un-ticks the review box: a tick is about the list on screen.
   const handleDeleteClick = (scan: Scan) => {
     setScanToDelete(scan);
-    setWorkRefusal(null);
-    setImportRefusal(null);
-    setWorkReviewed(false);
     setDeleteDialogOpen(true);
   };
-  const { refetch: reloadImpact } = impactQuery;
-  const deletion = useMutation({
-    mutationFn: ({ scan, confirmed }: { scan: Scan; confirmed: boolean }) =>
-      (confirmed ? deleteScan(projectId, scan.id, { confirmHostsWithWork: true }) : deleteScan(projectId, scan.id)),
-    onSuccess: (_result, { scan }) => {
-      toast.success(`Scan "${scan.filename}" deleted.`);
-      setDeleteDialogOpen(false);
-      setScanToDelete(null);
-      setWorkRefusal(null);
-      refreshInventory();
-      // The inventory marker moves with this delete, and the lists are being
-      // read again already: its new value is the baseline, not a change.
-      inventoryMarker.rebase();
-    },
-    onError: async (err, { scan }) => {
-      const refusal = hostsWithWorkRefusal(err);
-      const importing = importRunningRefusal(err);
-      if (importing) {
-        // An import is running in the project (or holds its lock).  Nothing
-        // was changed: say so in the server's words over a fresh preview,
-        // which also says whether the import is still running.
-        setImportRefusal(importing);
-        setWorkReviewed(false);
-        await reloadImpact();
-      } else if (refusal) {
-        // Hosts this scan removes carry work the reader has not confirmed
-        // (added since the preview, or the preview never loaded).  Show the
-        // server's words over a fresh list and ask again.
-        setWorkRefusal(refusal);
-        setWorkReviewed(false);
-        await reloadImpact();
-      } else {
-        // Keep the dialog open on failure so the reader can retry, and say
-        // what failed: the row is still in the list.
-        toast.error(formatApiError(err, `Failed to delete scan "${scan.filename}".`));
-      }
-    },
-  });
-  // Busy until the preview has been read again after a refusal.
-  const deleteLoading = deletion.isPending;
-  const handleDeleteConfirm = () => {
-    if (!scanToDelete || deleteLoading) return;
-    setImportRefusal(null);
-    deletion.mutate({ scan: scanToDelete, confirmed: workReviewed });
-  };
-
-  // What an operator does to one job of the queue.  Each says what happened
-  // and puts the queue, and the counts and lists of imports that failed, out
-  // of date (`INGESTION_JOB_READS`).  The re-read is
-  // RETURNED from `onSuccess`, so a write stays pending until the queue on
-  // screen is the new one: its control is disabled for that long, and a
-  // second click cannot send the request again for a row that is about to
-  // change or go.
-  const jobsReRead = () => invalidateReads(queryClient, ...INGESTION_JOB_READS);
-  const discardStaged = useMutation({
-    mutationFn: (ids: number[]) => discardStagedJobs(projectId, ids),
-    onSuccess: (res, ids) => {
-      const n = ids.length;
-      toast.info(
-        res.discarded === n
-          ? `Discarded ${res.discarded} staged upload${res.discarded === 1 ? '' : 's'}`
-          : `Discarded ${res.discarded} of ${n}; the rest were no longer staged`,
-      );
-      return jobsReRead();
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged uploads')),
-  });
-  const discardJob = useMutation({
-    mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => discardIngestionJob(projectId, job.id),
-    onSuccess: () => {
-      toast.info('Staged upload discarded');
-      return jobsReRead();
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged upload')),
-  });
-  const cancelJob = useMutation({
-    mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => cancelIngestionJob(projectId, job.id),
-    onSuccess: () => {
-      toast.info('Ingestion cancelled');
-      return jobsReRead();
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Could not cancel ingestion')),
-  });
-  const retryJob = useMutation({
-    mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => retryIngestionJob(projectId, job.id),
-    onSuccess: () => {
-      toast.info('Re-queued for parsing');
-      return jobsReRead();
-    },
-    // 409 when the upload was already cleaned up — the message tells the user
-    // to re-upload.
-    onError: (err) => toast.error(formatApiError(err, 'Could not retry ingestion')),
-  });
-  const dismissJob = useMutation({
-    mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => dismissIngestionJob(projectId, job.id),
-    onSuccess: () => jobsReRead(),
-    onError: (err) => toast.error(formatApiError(err, 'Could not dismiss the failed import')),
-  });
-  // The jobs with one of those four in flight — every one of them, not only
-  // the last started (a mutation's own `variables` name just that one), so a
-  // second row can be acted on while the first is still being answered.  A
-  // staged job is busy as well while "Discard N staged" is discarding it.
-  const jobsWithActionInFlight = useMutationState({
-    filters: { mutationKey: QUEUE_JOB_ACTION, status: 'pending' },
-    select: (mutation) => (mutation.state.variables as IngestionJob | undefined)?.id,
-  });
-  const jobBusy = (job: IngestionJob): boolean =>
-    jobsWithActionInFlight.includes(job.id)
-    || (discardStaged.isPending && discardStaged.variables.includes(job.id));
-
-  // v2.59.0 — Scan Timeline removed from this page and replaced by the
-  // cross-project /tool-activity surface, which plots SOC-correlation
-  // markers using the scan's actual start_time (the SOC use case) rather
-  // than upload time.  See ActivityTimeline component for the
-  // generalised lane-packing + bar-vs-dot rendering.
 
   // The newest upload among what is loaded (the first page is newest first).
   const lastImportAt = [
@@ -894,9 +404,9 @@ export default function Scans() {
     );
   }
 
+  const nothingLoaded = scans.length === 0 && batches.length === 0;
   return (
     <div className="p-md md:p-lg">
-      {confirmDialog}
       <div className="mb-md flex flex-wrap items-start justify-between gap-sm">
         <div>
           <h1 className="text-page-title font-semibold">Scans</h1>
@@ -913,607 +423,48 @@ export default function Scans() {
         </div>
       </div>
       {/* Imported scans | Import results (the "Ingestion Results" page is this
-          page's second view since 5.380.0). */}
+          page's second view). */}
       <ScansViewTabs />
 
-      {/* v5.270.0 — one sentence instead of four stat cards.  "Hosts up" (a
-          scanner's own up flag, not liveness) and "Open services" were totals
-          nobody acts on, and "Queue active" repeated the queue below.  Counts
-          come from the filter-aware /scans/summary (every matching file, not
-          the loaded page). */}
+      {/* One sentence: counts from the filter-aware /scans/summary (every
+          matching file, not the loaded page). */}
       <ScansLead
         files={inventorySummary?.total_files ?? inventorySummary?.total_scans ?? scans.length}
         filesUnknown={summaryFailed}
         filtered={hasActiveFilters}
-        failed={queueCounts.failed}
+        failed={queue.queueCounts.failed}
         needAttention={inventorySummary?.imports_need_attention}
         notImported={inventorySummary?.imports_not_imported}
         byReason={inventorySummary?.imports_not_imported_by_reason}
         superseded={inventorySummary?.imports_superseded}
-        queueUnknown={recentJobsError && recentJobs.length === 0}
+        queueUnknown={queue.recentJobsError && queue.recentJobs.length === 0}
         lastImportAt={lastImportAt}
       />
 
-      {/* Files the operator has started, followed to their import result —
-          aria-live so screen readers announce progress when the dialog has
-          closed (audit C10). */}
-      {uploadRows.length > 0 && (
-        <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
-          {uploadRows.map((p) => {
-            const variant =
-              p.status === 'failed'
-                ? 'destructive'
-                : p.status === 'partial'
-                ? 'warning'
-                : p.status === 'imported'
-                ? 'success'
-                : 'info';
-            const label: Record<BannerStatus, string> = {
-              received: 'Upload received, waiting for the worker',
-              processing: 'Processing',
-              imported: 'Imported',
-              partial: 'Imported with gaps',
-              failed: 'Import failed',
-            };
-            const terminal =
-              p.status === 'imported' || p.status === 'partial' || p.status === 'failed';
-            return (
-              <Alert key={p.key} variant={variant}>
-                <AlertDescription className="flex flex-col gap-xxs">
-                  <div className="flex items-baseline justify-between gap-sm">
-                    <span className="truncate font-semibold">
-                      {label[p.status]}: {p.filename}
-                    </span>
-                    {terminal && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-6 shrink-0"
-                        aria-label={`Dismiss ${p.filename} progress`}
-                        onClick={() =>
-                          setUploadEntries((prev) =>
-                            prev.map((entry) => (entry.key === p.key ? { ...entry, dismissed: true } : entry)))
-                        }
-                      >
-                        <ChevronUp className="size-3" aria-hidden />
-                      </Button>
-                    )}
-                  </div>
-                  {p.status === 'failed' ? (
-                    <div className="flex flex-wrap items-center gap-xs">
-                      <span className="min-w-0 break-words">{p.error || 'Import failed'}</span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          navigate(
-                            p.parseErrorId != null
-                              ? importResultsPath({ error_id: p.parseErrorId })
-                              : importResultsPath({ job_id: p.jobId }),
-                          )
-                        }
-                      >
-                        Why it failed
-                      </Button>
-                    </div>
-                  ) : p.status === 'imported' || p.status === 'partial' ? (
-                    p.result ? (
-                      <ImportResult scan={p.result} />
-                    ) : (
-                      <span className="text-caption text-muted-foreground">
-                        {p.jobMessage || 'Import complete.'}
-                      </span>
-                    )
-                  ) : (
-                    <span className="text-caption text-muted-foreground">
-                      {p.status === 'received'
-                        ? 'The file is stored; parsing starts when a worker picks it up.'
-                        : p.jobMessage || 'Parsing…'}
-                    </span>
-                  )}
-                </AlertDescription>
-              </Alert>
-            );
-          })}
-        </div>
-      )}
+      <UploadBanner banner={banner} />
 
-      {/* Ingestion Queue — v4.18.0: filtered to non-completed jobs only.
-          Pre-fix, every successful upload showed up here AND in "Your
-          Scans" below, which read as duplicate info.  Now the queue
-          shows only what's actionable from a queue perspective:
-          in-flight (`queued` / `processing`) and recent failures.
-          Successful uploads appear exclusively in Your Scans. */}
-      {recentJobsError && pendingJobs.length === 0 && (
-        <p role="status" className="mb-md text-caption text-muted-foreground">
-          The ingestion queue could not be checked — this is not a confirmation that nothing is
-          queued or failed.
-        </p>
-      )}
-      {/* v5.270.0 — a left-rule callout that exists only while something is
-          in flight, waiting for review or failed; not a boxed card. */}
-      {pendingJobs.length > 0 && (
-        <div
-          data-testid="ingestion-queue"
-          className={cn(
-            'mb-md border-l-4 py-xs pl-md',
-            needAttention > 0 ? 'border-l-destructive' : queueCounts.staged > 0 ? 'border-l-warning' : 'border-l-info',
-          )}
-        >
-          <div>
-            <div className="mb-xs flex flex-wrap items-center justify-between gap-xs">
-              {/* v5.239.0 — a compact strip: what is in the queue, in counts,
-                  with the table one click away.  It was a full table above the
-                  import history whenever a single job was in flight. */}
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-xs">
-                  <h2 className="text-metadata font-semibold text-foreground">Ingestion queue</h2>
-                  <span className="text-metadata text-muted-foreground">
-                    {[
-                      queueCounts.processing > 0 ? `${queueCounts.processing} processing` : null,
-                      queueCounts.staged > 0 ? `${queueCounts.staged} waiting for review` : null,
-                    ].filter(Boolean).join(' · ')}
-                    {/* How many imports need attention is the lead's, one line
-                        up, with its link — not said again here. */}
-                  </span>
-                  <button
-                    type="button"
-                    aria-expanded={queueOpen}
-                    aria-controls="ingestion-queue-table"
-                    onClick={toggleQueue}
-                    className="inline-flex items-center gap-xxs rounded text-caption text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {queueOpen ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />}
-                    {queueOpen ? 'Hide recent jobs' : `Show ${pendingJobs.length} recent job${pendingJobs.length === 1 ? '' : 's'}`}
-                  </button>
-                </div>
-                {queueOpen && (
-                  <p className="text-metadata text-muted-foreground">
-                    In-flight uploads, staged files waiting for a format review, and failures among
-                    the recent uploads. Successful uploads appear in Import history below;{' '}
-                    <Link to={importResultsPath()} className="text-primary underline-offset-2 hover:underline">
-                      every import is on Ingestion Results
-                    </Link>
-                    .
-                  </p>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-xs">
-                {/* v5.271.0 — files left waiting (a closed review dialog, a
-                    failed inspection) go back into the review, all at once.
-                    Before, the only visible action here was Discard; the
-                    review was one file per dialog behind "Show jobs". */}
-                {canWrite && stagedJobs.length > 0 && (
-                  <Button size="sm" onClick={() => openReview(stagedJobs)}>
-                    Review {stagedJobs.length} waiting
-                  </Button>
-                )}
-                {/* v5.232.0 — staged files nobody will start (a closed review
-                    dialog, a failed inspection) can be cleared in one go. */}
-                {canWrite && stagedJobs.length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={discardStaged.isPending}
-                    onClick={async () => {
-                      // The ids are captured BEFORE the confirmation and are
-                      // exactly what is sent: the endpoint used to discard
-                      // every staged job the caller could see, whether or
-                      // not this page had listed it (for an admin, other
-                      // people's files too).
-                      const ids = stagedJobs.map((j) => j.id);
-                      const n = ids.length;
-                      const ok = await confirm({
-                        title: 'Discard staged uploads',
-                        body:
-                          `Remove the ${n} staged file${n === 1 ? '' : 's'} listed in this queue? Nothing was imported from them. `
-                          + 'They stay listed in Ingestion Results as discarded.',
-                        resourceName: `${n} staged upload${n === 1 ? '' : 's'}`,
-                        severity: 'warning',
-                        confirmLabel: `Discard ${n}`,
-                      });
-                      if (!ok) return;
-                      discardStaged.mutate(ids);
-                    }}
-                  >
-                    Discard {stagedJobs.length} staged
-                  </Button>
-                )}
-                <LastUpdated
-                  lastFetched={recentJobsFetched}
-                  onRefresh={refreshQueue}
-                  isLoading={recentJobsLoading}
-                  label="ingestion jobs"
-                  intervalMs={AUTO_QUEUE_POLL_MS}
-                  autoRefresh={autoRefresh}
-                  onAutoRefreshChange={setAutoRefresh}
-                />
-              </div>
-            </div>
-            {queueOpen && (
-            <div id="ingestion-queue-table" className="overflow-x-auto">
-              {/* v5.271.0 — fixed layout with an Actions column wide enough
-                  for its buttons: at w-24 a staged row's "Review and import"
-                  was cut to "Review and ir". */}
-              {/* v5.271.1 — Message is the only column without a width, so it
-                  gets what the others leave; with Tool and Duration as
-                  columns that was ~80px at a normal window ("Pro…", one word
-                  per line).  Both are now second lines of File and Submitted:
-                  Tool is "-" on nearly every queue row, Duration on every
-                  staged or queued one. */}
-              <Table className="min-w-[64rem] table-fixed">
-                <TableHeader>
-                  <TableRow>
-                    {/* w-12 (48px) — the expand chevron is a 40px icon
-                        button (control density raised in 4.7.13); the
-                        old w-10 (40px) column clipped it and let it
-                        bleed into the Status column. */}
-                    <TableHead className="w-12" />
-                    <TableHead className="w-36">Status</TableHead>
-                    <TableHead className="w-1/5">File</TableHead>
-                    <TableHead className="w-20 text-right">Size</TableHead>
-                    <TableHead>Message</TableHead>
-                    <TableHead className="w-44">Submitted</TableHead>
-                    <TableHead className="w-44 text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pendingJobs.map((job) => {
-                    const isFailure = job.status === 'failed';
-                    const isExpanded = expandedJobIds.has(job.id);
-
-                    const elapsed = (() => {
-                      if (job.started_at && job.completed_at) {
-                        return formatDuration(
-                          new Date(job.completed_at).getTime() - new Date(job.started_at).getTime(),
-                        );
-                      }
-                      if (job.started_at && job.status === 'processing') {
-                        return `${formatDuration(Date.now() - new Date(job.started_at).getTime())}…`;
-                      }
-                      return '-';
-                    })();
-
-                    // v5.271.0 — under 1 KB in bytes: "0 KB" read as an empty file.
-                    const fileSize = job.file_size
-                      ? job.file_size > 1048576
-                        ? `${(job.file_size / 1048576).toFixed(1)} MB`
-                        : job.file_size < 1024
-                          ? `${job.file_size} B`
-                          : `${(job.file_size / 1024).toFixed(0)} KB`
-                      : '-';
-
-                    // v5.289.0 — the parser's specific cause first; the generic
-                    // "Failed to parse the file …" only when nothing better exists.
-                    const displayMessage = isFailure
-                      ? job.failure_reason || job.error_message || job.message || 'Unknown error'
-                      : job.status === 'staged'
-                        ? 'Not imported yet'
-                        // Prefer the import-count summary ("6 DNS records") over
-                        // the generic "<tool> processed successfully" so the row
-                        // actually shows how much was ingested.
-                        : job.progress || job.message || '-';
-
-                    // Dead-letter / liveness signals (backend already returns
-                    // these). A job that bounced before settling carries a
-                    // retry_count; a 'processing' job whose worker heartbeat has
-                    // gone stale is wedged, not working.
-                    const retried = (job.retry_count ?? 0) > 0;
-                    const STALL_MS = 90_000;
-                    const isStalled =
-                      job.status === 'processing' &&
-                      !!job.last_heartbeat &&
-                      Date.now() - new Date(job.last_heartbeat).getTime() > STALL_MS;
-
-                    // A job can succeed and still have lost data: rows skipped
-                    // as malformed, or a truncated file that stopped the parse
-                    // early. Rendered as plain green "completed", that reads as
-                    // "everything imported" — and for scan data the hosts that
-                    // never parsed look exactly like hosts that were down.
-                    const skipped = job.skipped_count ?? 0;
-                    const isDegraded =
-                      job.status === 'completed' &&
-                      (skipped > 0 || !!job.parser_warnings || !!job.partial);
-                    const canExpand = isFailure || isDegraded;
-
-                    return (
-                      <React.Fragment key={job.id}>
-                        <TableRow className={cn(job.status === 'completed' && 'opacity-75')}>
-                          <TableCell className="p-xxs">
-                            {canExpand && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => toggleJobExpanded(job.id)}
-                                aria-label={
-                                  isExpanded
-                                    ? 'Hide import details'
-                                    : isFailure
-                                      ? 'Show full error message'
-                                      : 'Show import warnings'
-                                }
-                                aria-expanded={isExpanded}
-                              >
-                                {isExpanded ? (
-                                  <ChevronUp className="size-4" aria-hidden />
-                                ) : (
-                                  <ChevronDown className="size-4" aria-hidden />
-                                )}
-                              </Button>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {/* v5.271.0 — icon plus the word.  Icon and colour
-                                alone left a staged row as a grey circle
-                                nobody could read; the word is plain text,
-                                not the badge that once repeated the icon. */}
-                            <span className="inline-flex min-w-0 items-center gap-xxs">
-
-                              {job.status === 'completed' && (
-                                <CheckCircle2 className="size-4 text-success" aria-hidden />
-                              )}
-                              {job.status === 'failed' && (
-                                <AlertCircle className="size-4 text-destructive" aria-hidden />
-                              )}
-                              {job.status === 'processing' && (
-                                <Loader2 className="size-4 animate-spin text-info" aria-hidden />
-                              )}
-                              {job.status === 'queued' && (
-                                <Hourglass className="size-4 text-muted-foreground" aria-hidden />
-                              )}
-                              {/* v5.232.0 — stored, not imported: nothing runs
-                                  until the operator starts it. */}
-                              {job.status === 'staged' && (
-                                <PauseCircle className="size-4 text-muted-foreground" aria-hidden />
-                              )}
-                              <span className="truncate text-caption">
-                                {JOB_STATUS_LABEL[job.status] ?? job.status}
-                              </span>
-                            </span>
-                            {isStalled && (
-                              <Badge
-                                variant="outline"
-                                className="ml-xxs border-warning/40 text-warning"
-                                title="No worker progress in over 90s — the job may be stalled."
-                              >
-                                stalled?
-                              </Badge>
-                            )}
-                            {isDegraded && (
-                              <AlertTriangle
-                                className="ml-xxs inline size-4 text-warning"
-                                aria-label="Imported with warnings — some data may be missing"
-                              />
-                            )}
-                          </TableCell>
-                          <TableCell className="min-w-0">
-                            <BreakableName as="p" name={job.original_filename} title={job.original_filename} />
-                            {job.tool_name && (
-                              <p className="truncate text-caption text-muted-foreground">{job.tool_name}</p>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-right font-mono">{fileSize}</TableCell>
-                          <TableCell>
-                            <div
-                              className={cn(
-                                isFailure && 'text-destructive',
-                                isFailure && !isExpanded && 'truncate',
-                              )}
-                            >
-                              {displayMessage}
-                            </div>
-                            {retried && (
-                              <Badge
-                                variant="outline"
-                                className="mt-xxs border-warning/40 text-warning"
-                                title={job.last_error ? `Most recent failure: ${job.last_error}` : undefined}
-                              >
-                                retried {job.retry_count}×
-                              </Badge>
-                            )}
-                            {isDegraded && (
-                              <div className="mt-xxs flex flex-col gap-xxs">
-                                <Badge
-                                  variant="outline"
-                                  className="w-fit border-warning/40 text-warning"
-                                  title={job.parser_warnings || undefined}
-                                >
-                                  {job.partial
-                                    ? `partial import${skipped > 0 ? ` · ${skipped} skipped` : ''}`
-                                    : skipped > 0
-                                      ? `${skipped} record${skipped === 1 ? '' : 's'} skipped`
-                                      : 'imported with warnings'}
-                                </Badge>
-                                {job.parser_warnings && (
-                                  <p
-                                    className={cn(
-                                      'text-caption text-warning',
-                                      !isExpanded && 'truncate',
-                                      isExpanded && 'whitespace-pre-wrap break-words',
-                                    )}
-                                  >
-                                    {job.parser_warnings}
-                                  </p>
-                                )}
-                              </div>
-                            )}
-                            {job.parse_error_id && (
-                              <button
-                                type="button"
-                                onClick={() => navigate(importResultsPath({ error_id: job.parse_error_id }))}
-                                className="mt-xxs rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              >
-                                <Badge variant="outline" className="cursor-pointer border-destructive/40 text-destructive hover:bg-destructive/10">
-                                  Error #{job.parse_error_id}
-                                </Badge>
-                              </button>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-caption">
-                            <p>{formatTimestamp(job.created_at)}</p>
-                            {elapsed !== '-' && (
-                              <p className="font-mono text-muted-foreground" title="How long the parse ran">ran {elapsed}</p>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {job.scan_id && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => navigate(`/scans/${job.scan_id}`)}
-                                aria-label={`Open scan for ${job.original_filename}`}
-                              >
-                                Open
-                              </Button>
-                            )}
-                            {/* v2.86.2 — failed jobs were stuck in the
-                                queue with no acknowledge path; this
-                                dismiss button writes dismissed_at so
-                                the row drops out on the next refetch.
-                                Preserves the failure for the audit
-                                trail (admins can re-surface dismissed
-                                rows via ?include_dismissed=true). */}
-                            {/* v5.232.0 — a staged job (left behind by a closed
-                                review dialog, or by a failed inspection) had no
-                                action at all here: import it after a format
-                                review, or discard it. */}
-                            {canWrite && job.status === 'staged' && (
-                              <div className="flex flex-wrap justify-end gap-xxs">
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => openReview([job])}
-                                  aria-label={`Review format and import ${job.original_filename}`}
-                                >
-                                  Review
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-destructive"
-                                  disabled={jobBusy(job)}
-                                  onClick={() => discardJob.mutate(job)}
-                                  aria-label={`Discard staged upload ${job.original_filename}`}
-                                >
-                                  Discard
-                                </Button>
-                              </div>
-                            )}
-                            {canWrite && (job.status === 'queued' || job.status === 'processing') && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-destructive"
-                                disabled={jobBusy(job)}
-                                onClick={async () => {
-                                  const ok = await confirm({
-                                    title: 'Cancel ingestion',
-                                    body:
-                                      'Stop parsing this file? Any rows already imported are kept; '
-                                      + 'the job is marked failed. You can re-upload to retry.',
-                                    resourceName: job.original_filename,
-                                    severity: 'warning',
-                                    confirmLabel: 'Cancel job',
-                                  });
-                                  if (!ok) return;
-                                  cancelJob.mutate(job);
-                                }}
-                                aria-label={`Cancel ingestion for ${job.original_filename}`}
-                              >
-                                Cancel
-                              </Button>
-                            )}
-                            {canWrite && isFailure && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={jobBusy(job)}
-                                onClick={() => retryJob.mutate(job)}
-                                aria-label={`Retry failed ingestion for ${job.original_filename}`}
-                              >
-                                Retry
-                              </Button>
-                            )}
-                            {canWrite && isFailure && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={jobBusy(job)}
-                                onClick={() => dismissJob.mutate(job)}
-                                aria-label={`Dismiss failed ingestion for ${job.original_filename}`}
-                              >
-                                Dismiss
-                              </Button>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                        {isFailure && isExpanded && (
-                          <TableRow>
-                            <TableCell colSpan={7} className="bg-accent p-md">
-                              {/* A cut-short file fails the same way on a plain
-                                  Retry: offer what Ingestion results offers. */}
-                              {canWrite && isCutShort(job) && (
-                                <div className="mb-sm">
-                                  {/* Only while the file is kept: past the
-                                      retention sweep the action was a 409
-                                      (third review 2026-10-15, N6). */}
-                                  <KeepTruncatedImport jobId={job.id} filename={job.original_filename}
-                                    fileRetained={job.file_retained} />
-                                </div>
-                              )}
-                              <p className="mb-xxs text-metadata font-semibold text-destructive">
-                                Full error message
-                              </p>
-                              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-card p-sm text-caption">
-                                {displayMessage}
-                              </pre>
-                              {job.last_error && job.last_error !== displayMessage && (
-                                <>
-                                  <p className="mb-xxs mt-sm text-metadata font-semibold text-destructive">
-                                    Most recent failure
-                                    {retried
-                                      ? ` (after ${job.retry_count} ${job.retry_count === 1 ? 'retry' : 'retries'})`
-                                      : ''}
-                                  </p>
-                                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-card p-sm text-caption">
-                                    {job.last_error}
-                                  </pre>
-                                </>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-            )}
-          </div>
-        </div>
-      )}
+      <IngestionQueue
+        projectId={projectId}
+        queue={queue}
+        needAttention={needAttention}
+        canWrite={canWrite}
+        onRefresh={refreshQueue}
+        onReview={openReview}
+      />
 
       <PostureSection title="Import history">
-
-      {/* Scan Timeline moved to /tool-activity in v2.59.0 — that page
-          plots scans by their actual scan_start (SOC-correlation
-          intent) across ALL projects, and adds execution sessions
-          to the same axis.  Per-project scan inventory still
-          lives here in tabular form below. */}
-
       {historyError && (
         <Alert variant="destructive" className="mb-sm" data-testid="history-error">
           <AlertDescription className="flex flex-wrap items-center gap-sm">
             <span className="min-w-0 flex-1 break-words">
               {historyError}
-              {(scans.length > 0 || batches.length > 0) && ' The rows below are from the last successful load.'}
+              {!nothingLoaded && ' The rows below are from the last successful load.'}
             </span>
             <Button size="sm" variant="outline" onClick={refreshInventory}>Retry</Button>
           </AlertDescription>
         </Alert>
       )}
-      {historyError && scans.length === 0 && batches.length === 0 ? null : !hasActiveFilters && scans.length === 0 && batches.length === 0 ? (
+      {historyError && nothingLoaded ? null : !hasActiveFilters && nothingLoaded ? (
         <div className="py-xl text-center">
           <Upload className="mx-auto mb-sm size-16 text-muted-foreground" aria-hidden />
           <p className="text-subheading text-muted-foreground">No scans uploaded yet</p>
@@ -1527,137 +478,25 @@ export default function Scans() {
         </div>
       ) : (
         <div>
-          {/* v5.270.0 — the filters are ONE row: search, tool, range, the
-              Grouped / All files switch, and how much of the list is loaded.
-              (Two rows of upper-case count chips and a paragraph before.) */}
-          {/* v5.294.0 — the shared ListFilterBar every list page uses. */}
-          <ListFilterBar
-            summary={(scans.length > 0 || batches.length > 0) ? (
+          <HistoryFilterBar
+            address={address}
+            toolChips={toolChips}
+            summary={inventorySummary}
+            summaryFailed={summaryFailed}
+            loaded={nothingLoaded ? undefined : (
               <>
-                {/* v2.86.2 — how much of the list is loaded, so a partial view is
-                    never mistaken for the whole one. */}
+                {/* How much of the list is loaded, so a partial view is never
+                    mistaken for the whole one. */}
                 {showBatchFiles
                   ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
                   : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'} · `
                     + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
                     + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
-                {hasMoreScans ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
+                {historyList.hasMore ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
               </>
-            ) : undefined}
-          >
-            <ListFilterSearch
-              value={search.draft}
-              onChange={search.setDraft}
-              placeholder="Search filename, tool, scan type…"
-              label="Search scan inventory"
-            />
-            {/* The list matches a tool whatever its case, so the select does too:
-                a link written `?tool=nmap` shows "nmap (9)", not a blank box
-                (the options' values are the server's spelling, `NMAP`). */}
-            <Select
-              value={toolFilter
-                ? toolChips.find(([g]) => g.toLowerCase() === toolFilter.toLowerCase())?.[0] ?? toolFilter
-                : '__all'}
-              onValueChange={(v) => setToolFilter(v === '__all' ? '' : v)}
-            >
-              <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by tool">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all">
-                  All tools ({summaryFailed ? '—' : (inventorySummary?.total_files ?? scans.length).toLocaleString()})
-                </SelectItem>
-                {toolChips.map(([group, count]) => (
-                  <SelectItem key={group} value={group}>
-                    {group.toLowerCase()} ({summaryFailed ? '—' : count.toLocaleString()})
-                  </SelectItem>
-                ))}
-                {/* A tool picked from a row badge that the counts do not list. */}
-                {toolFilter && !toolChips.some(([g]) => g.toLowerCase() === toolFilter.toLowerCase()) && (
-                  <SelectItem value={toolFilter}>{toolFilter.toLowerCase()}</SelectItem>
-                )}
-              </SelectContent>
-            </Select>
-            <Select
-              value={sinceIso ? 'since' : dateRangeDays == null ? 'all' : String(dateRangeDays)}
-              onValueChange={(v) => {
-                if (v === 'since') return;
-                // A day range replaces `since`.
-                setUrlFilters({ since: null, days: v === 'all' ? null : String(parseInt(v, 10)) });
-              }}
-            >
-              <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by upload date"
-                title={sinceIso ? `Uploaded since ${formatTimestamp(sinceIso)}` : undefined}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {sinceIso && (
-                  <SelectItem value="since">Since {formatDate(sinceIso)}</SelectItem>
-                )}
-                {DATE_RANGE_PRESETS.map((preset) => (
-                  <SelectItem key={preset.label} value={preset.days == null ? 'all' : String(preset.days)}>
-                    {preset.days == null ? 'Any time' : `Last ${preset.days} days`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {/* Who uploaded it — offered once there is more than one uploader
-                (or a link arrived with one chosen). The counts follow the
-                other filters, never this one, so everyone stays listed. */}
-            {((inventorySummary?.uploaders?.length ?? 0) > 1 || uploaderFilter != null) && (
-              <Select
-                value={uploaderFilter == null ? 'anyone' : String(uploaderFilter)}
-                onValueChange={(v) => setUploaderFilter(v === 'anyone' ? null : parseInt(v, 10))}
-              >
-                <SelectTrigger className="h-8 w-44 min-w-0 text-metadata" aria-label="Filter scans by uploader">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="anyone">Uploaded by anyone</SelectItem>
-                  {(inventorySummary?.uploaders ?? []).map((u) => (
-                    // The full name is shown (v5.287.0); the id stays the value.
-                    <SelectItem key={u.user_id} value={String(u.user_id)}>
-                      <span
-                        className="block max-w-56 truncate"
-                        title={u.full_name ? `${u.full_name} (${u.username})` : u.username}
-                      >
-                        {u.full_name || u.username} ({u.files.toLocaleString()})
-                      </span>
-                    </SelectItem>
-                  ))}
-                  {/* Chosen, but none of their files match the other filters. */}
-                  {uploaderFilter != null
-                    && !(inventorySummary?.uploaders ?? []).some((u) => u.user_id === uploaderFilter) && (
-                    <SelectItem value={String(uploaderFilter)}>User #{uploaderFilter} (0)</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
             )}
-            {/* v5.239.0 — one history, two ways to read it. */}
-            <div
-              className="inline-flex overflow-hidden rounded-control border border-border"
-              role="group"
-              aria-label="How the import history is listed"
-            >
-              {([
-                { value: false, label: 'Grouped by upload' },
-                { value: true, label: 'All files' },
-              ] as const).map((opt) => (
-                <button
-                  key={opt.label}
-                  type="button"
-                  aria-pressed={showBatchFiles === opt.value}
-                  onClick={() => setShowBatchFiles(opt.value)}
-                  className={cn(
-                    'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    showBatchFiles === opt.value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
-                  )}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </ListFilterBar>
+            fallbackTotal={scans.length}
+          />
           <p className="mb-xxs text-caption text-muted-foreground">
             {showBatchFiles
               ? 'Every imported file, batched or not. Click a column heading to sort.'
@@ -1670,9 +509,8 @@ export default function Scans() {
             </p>
           )}
           {tableRows.length === 0 ? (
-            // Filter-aware empty state — section header + filters
-            // remain visible so the user can clear or refine without
-            // navigating away.
+            // Filter-aware empty state — the filters remain visible so the
+            // reader can clear or refine without navigating away.
             <div className="flex flex-col items-start gap-xs border-l-4 border-border py-xs pl-md">
                 <p className="flex items-center gap-xs text-subheading font-semibold">
                   <AlertCircle className="size-4 text-muted-foreground" aria-hidden /> No scans match these filters
@@ -1681,266 +519,41 @@ export default function Scans() {
                   Adjust the search, tool, date range or uploader above — or clear them to see every scan
                   in this project.
                 </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    // One write for all of them; the box drops what was
-                    // being typed, so it is not committed a moment later.
-                    search.setDraft('');
-                    setUrlFilters({ search: null, tool: null, days: null, since: null, uploaded_by: null });
-                  }}
-                >
+                <Button variant="outline" size="sm" onClick={address.clearFilters}>
                   Clear filters
                 </Button>
             </div>
           ) : (
-          // v5.270.0 — the table sits in the section, not in a card.
-          <div className="overflow-x-auto">
-              <Table style={{ tableLayout: 'fixed' }}>
-                <TableHeader>
-                  <TableRow>
-                    {/* Grouped by upload is chronological by definition (the
-                        server orders batches and single files together), so
-                        the headers sort only in the all-files view. */}
-                    {/* v5.287.0 — When widened (its time and "run time
-                        unknown" were cut off) and Actions narrowed; batch rows
-                        fill these same five columns. */}
-                    {historyHeader('filename', 'Scan', 'w-[24%]')}
-                    {/* ONE time column, named for the time it shows on every
-                        row (G8; it was "When", and mixed the two): the upload
-                        time — what this history is ordered by — with the
-                        scan's own time on a second line.  In the all-files
-                        view it sorts by either, and sorted by when the scans
-                        ran it IS that time ("Ran"). */}
-                    {showBatchFiles ? (
-                      <TableHead className="w-[18%]">
-                        <span className="inline-flex flex-wrap items-center gap-x-xs">
-                          {SCAN_TIME_HEADING[timeColumn]}
-                          <ViewerZoneHint />
-                          <span className="text-caption font-normal normal-case text-muted-foreground">sort by</span>
-                          {(['start_time', 'created_at'] as const).map((col) => {
-                            const label = col === 'start_time' ? 'Ran' : 'Uploaded';
-                            const sorted = sortBy === col;
-                            return (
-                              <button
-                                key={col}
-                                type="button"
-                                onClick={() => handleSort(col)}
-                                aria-label={`Sort by ${label}, currently ${
-                                  sorted ? (sortOrder === 'asc' ? 'sorted ascending' : 'sorted descending') : 'not sorted'
-                                }`}
-                                className={cn(
-                                  'inline-flex items-center gap-xxs rounded-control text-caption normal-case focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                                  sorted ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
-                                )}
-                              >
-                                {label}
-                                {sorted && (sortOrder === 'asc'
-                                  ? <ArrowUp className="size-3" aria-hidden />
-                                  : <ArrowDown className="size-3" aria-hidden />)}
-                              </button>
-                            );
-                          })}
-                        </span>
-                      </TableHead>
-                    ) : (
-                      // The zone and its explanation ride on the heading (U16):
-                      // they were a second permanent helper line above the table.
-                      <TableHead className="w-[18%]">
-                        <span className="inline-flex flex-wrap items-center gap-x-xs">
-                          {SCAN_TIME_HEADING[timeColumn]}
-                          <ViewerZoneHint />
-                        </span>
-                      </TableHead>
-                    )}
-                    {historyHeader('new_hosts', 'New hosts', 'w-[10%]')}
-                    <TableHead
-                      className="w-[39%]"
-                      title="What this scan added or observed, counted from the rows it wrote. Hover a line for what it counts."
-                    >
-                      What it contributed
-                    </TableHead>
-                    <TableHead className="w-[9%]"><span className="sr-only">Actions</span></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {tableRows.map((row) => {
-                    if (row.kind === 'batch') {
-                      return (
-                        <ScanBatchRow
-                          key={row.key}
-                          batch={row.batch}
-                          stagedJobs={stagedByBatch.get(row.batch.id)}
-                          onReviewStaged={canWrite ? openReview : undefined}
-                          filters={listFilters}
-                          onViewScan={handleViewScan}
-                          colSpan={5}
-                        />
-                      );
-                    }
-                    const scan = row.scan;
-                    const isExpanded = expandedScanIds.includes(scan.id);
-                    const hasCommand = !!(scan.command_line && scan.command_line.trim());
-                    return (
-                      <React.Fragment key={scan.id}>
-                        <TableRow className="align-top">
-                          <TableCell>
-                            <div className="mb-xxs flex items-center gap-xxs">
-                              {hasCommand && (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="-ml-xxs"
-                                      onClick={() => toggleScanExpanded(scan.id)}
-                                      aria-label={isExpanded ? 'Hide command' : 'Show command'}
-                                      aria-expanded={isExpanded}
-                                    >
-                                      {isExpanded ? (
-                                        <ChevronUp className="size-4" aria-hidden />
-                                      ) : (
-                                        <ChevronDown className="size-4" aria-hidden />
-                                      )}
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {isExpanded ? 'Hide command' : 'Show command'}
-                                  </TooltipContent>
-                                </Tooltip>
-                              )}
-                              {/* min-w-0 lets the filename shrink + wrap
-                                  inside the flex row; without it the
-                                  span keeps its content width and a long
-                                  name overflows into the next column. */}
-                              <Link
-                                to={`/scans/${scan.id}`}
-                                className="min-w-0 rounded font-semibold text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              >
-                                <BreakableName name={scan.filename} />
-                              </Link>
-                            </div>
-                            <div className="flex flex-wrap items-center gap-xxs">
-                              {renderInlineToolBadge(scan)}
-                              {scan.version && <Badge variant="outline">v{scan.version}</Badge>}
-                              {/* The host-query DSL's `scan:` predicate takes
-                                  the numeric id, which was previously not
-                                  shown anywhere — operators know the upload by
-                                  its filename. This is where the two meet. */}
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="shrink-0 cursor-default font-mono text-caption text-muted-foreground">
-                                    #{scan.id}
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  Scan id — filter hosts with <code>scan:{scan.id}</code>
-                                </TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </TableCell>
-                          <TableCell className="min-w-0">
-                            <ScanWhenCell scan={scan} primary={timeColumn} />
-                          </TableCell>
-                          {/* What the scan INTRODUCED, out of what it saw:
-                              hosts first discovered here, over every host it
-                              observed (new + already known). */}
-                          <TableCell title="Hosts this scan added to the inventory, out of all the hosts it observed">
-                            {scan.total_hosts === 0 ? (
-                              <span className="text-caption text-muted-foreground">No hosts</span>
-                            ) : (
-                              <>
-                                {scan.new_hosts > 0 ? (
-                                  <span className="tabular-nums font-semibold text-success">+{scan.new_hosts.toLocaleString()}</span>
-                                ) : (
-                                  <span className="tabular-nums text-muted-foreground">0</span>
-                                )}
-                                <p className="mt-xxs text-caption tabular-nums text-muted-foreground">
-                                  of {scan.total_hosts.toLocaleString()} seen
-                                </p>
-                              </>
-                            )}
-                          </TableCell>
-                          {/* v5.205.0 — per-kind contribution (ports, findings,
-                              web interfaces, names, auth), ordered by what the
-                              tool is for. Replaces "Existing hosts" (now the
-                              "of N seen" line) and "Findings / ports". */}
-                          <TableCell className="min-w-0">
-                            <ScanContribution scan={scan} />
-                          </TableCell>
-                          <TableCell>
-                            {/* v5.270.0 — the filename opens the scan; "Hosts" is
-                                a quiet link; delete lives in the row menu, out of
-                                reach of a stray click. */}
-                            <ScanRowActions
-                              link={scan.total_hosts > 0 ? (
-                                <Link
-                                  to={`/hosts?scan_ids=${scan.id}`}
-                                  className={ROW_LINK_CLASS}
-                                  title="Open the Hosts page filtered to this scan"
-                                >
-                                  Hosts
-                                </Link>
-                              ) : null}
-                              menu={
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="size-7 text-muted-foreground"
-                                    aria-label={`More actions for ${scan.filename || `scan ${scan.id}`}`}
-                                  >
-                                    <MoreHorizontal className="size-4" aria-hidden />
-                                  </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end">
-                                  <DropdownMenuItem onSelect={() => handleViewScan(scan.id)}>
-                                    Open scan
-                                  </DropdownMenuItem>
-                                  {isProjectAdmin && (
-                                    <DropdownMenuItem
-                                      onSelect={() => handleDeleteClick(scan)}
-                                      className="text-destructive focus:text-destructive"
-                                    >
-                                      <Trash2 className="size-3.5" aria-hidden /> Delete scan…
-                                    </DropdownMenuItem>
-                                  )}
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-                              }
-                            />
-                          </TableCell>
-                        </TableRow>
-                        {hasCommand && isExpanded && (
-                          <TableRow>
-                            <TableCell colSpan={5} className="py-sm">
-                              <ScanCommandDetail scan={scan} />
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-          </div>
+            <ImportHistoryTable
+              rows={tableRows}
+              sortable={showBatchFiles}
+              timeColumn={timeColumn}
+              sortBy={sortBy}
+              sortOrder={sortOrder}
+              onSort={address.sortOn}
+              toolFilter={address.toolFilter}
+              onToolFilter={address.setToolFilter}
+              stagedByBatch={queue.stagedByBatch}
+              onReviewStaged={canWrite ? openReview : undefined}
+              filters={listFilters}
+              onViewScan={handleViewScan}
+              onDelete={isProjectAdmin ? handleDeleteClick : undefined}
+            />
           )}
 
-          {hasMoreScans && (
+          {historyList.hasMore && (
             <div className="mt-md flex justify-center">
               <Button
                 variant="outline"
                 onClick={loadMoreScans}
-                disabled={loadingMore}
+                disabled={historyList.loadingMore}
               >
-                {loadingMore ? (
+                {historyList.loadingMore ? (
                   <Loader2 className="size-4 animate-spin" aria-hidden />
                 ) : (
                   <ChevronDown className="size-4" aria-hidden />
                 )}
-                {loadingMore ? 'Loading…' : showBatchFiles ? `Load ${SCAN_LIMIT} more` : `Load ${HISTORY_PAGE} more uploads`}
+                {historyList.loadingMore ? 'Loading…' : showBatchFiles ? `Load ${SCAN_LIMIT} more` : `Load ${HISTORY_PAGE} more uploads`}
               </Button>
             </div>
           )}
@@ -1948,10 +561,8 @@ export default function Scans() {
       )}
       </PostureSection>
 
-      {/* Upload dialog — v5.229.0: choose → review formats → import → results
-          (staged-import plan, phase C). The dialog stages and inspects each
-          file; a started file is handed to the banner above by job id.
-          v5.271.0 — also where staged files come back to (`resume`). */}
+      {/* The upload review stages and inspects each file; a started file is
+          handed to the banner above by job id. */}
       <UploadReviewDialog
         open={uploadDialogOpen}
         onOpenChange={(next) => {
@@ -1970,390 +581,189 @@ export default function Scans() {
         onStarted={(started) => {
           // The row is 'received' until the server answers about its job; a
           // key started again takes its row back (dismissed or not).
-          const entry: BannerEntry = { key: started.key, filename: started.filename, jobId: started.jobId };
-          setUploadEntries((prev) => (prev.some((e) => e.key === entry.key)
-            ? prev.map((e) => (e.key === entry.key ? entry : e))
-            : [...prev, entry]));
+          banner.start({ key: started.key, filename: started.filename, jobId: started.jobId });
         }}
       />
 
-      {/* Delete confirmation */}
-      <Dialog
+      <DeleteScanDialog
+        scan={scanToDelete}
         open={deleteDialogOpen}
-        onOpenChange={(next) => !deleteLoading && setDeleteDialogOpen(next)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Scan</DialogTitle>
-          </DialogHeader>
-          <p className="text-metadata">
-            Delete the scan{' '}
-            <span className="font-medium break-words">
-              &quot;{scanToDelete?.filename}&quot;
-            </span>
-            ? This action cannot be undone.
-          </p>
-
-          {/* What gets removed: everything the scan brought that nothing else
-              holds. Hosts are deduplicated across scans, so this is usually
-              NOT a blanket wipe — hosts another scan also has are kept, and on
-              them only what this scan alone created or reported goes. Every
-              figure is the server's preview of its own delete. */}
-          {impactLoading ? (
-            <div className="mt-3 flex items-center gap-2 text-metadata text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-              Calculating exactly what will be removed…
-            </div>
-          ) : impactError ? (
-            <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-metadata text-muted-foreground">
-              <AlertCircle className="size-4 mt-0.5 shrink-0" aria-hidden />
-              <span>
-                Couldn&apos;t load the removal summary. The scan and everything
-                <em> only</em> it brought will still be removed if you continue.
-              </span>
-            </div>
-          ) : deletionImpact ? (
-            <div className="mt-3 rounded-md border border-border p-3">
-              <div className="text-metadata font-medium mb-2">
-                This will permanently remove:
-              </div>
-              <ul className="space-y-1.5 text-metadata">
-                <li className="flex items-center gap-2">
-                  <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
-                  This scan record and its scan history
-                </li>
-                {/* Only what goes is listed: "0 hosts" is not a removal. */}
-                {deletionImpact.hosts_removed > 0 && (
-                  <li className="flex items-baseline gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive self-center" aria-hidden />
-                    <span>
-                      <span className="font-medium">{deletionImpact.hosts_removed.toLocaleString()}</span>{' '}
-                      {deletionImpact.hosts_removed === 1 ? 'host' : 'hosts'} seen only by this scan
-                      {deletionImpact.sample_removed_ips.length > 0 && (
-                        <span className="block text-muted-foreground break-words">
-                          {deletionImpact.sample_removed_ips.join(', ')}
-                          {deletionImpact.hosts_removed > deletionImpact.sample_removed_ips.length &&
-                            `, +${(
-                              deletionImpact.hosts_removed - deletionImpact.sample_removed_ips.length
-                            ).toLocaleString()} more`}
-                        </span>
-                      )}
-                    </span>
-                  </li>
-                )}
-                {deletionImpact.ports_removed > 0 && (
-                  <li className="flex items-center gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
-                    <span>
-                      <span className="font-medium">{deletionImpact.ports_removed.toLocaleString()}</span>{' '}
-                      {deletionImpact.ports_removed === 1 ? 'port' : 'ports'} on those hosts
-                    </span>
-                  </li>
-                )}
-                {(deletionImpact.ports_removed_on_kept_hosts ?? 0) > 0 && (
-                  <li className="flex items-center gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
-                    <span>
-                      <span className="font-medium">
-                        {(deletionImpact.ports_removed_on_kept_hosts ?? 0).toLocaleString()}
-                      </span>{' '}
-                      {deletionImpact.ports_removed_on_kept_hosts === 1 ? 'port' : 'ports'} only this
-                      scan found, on hosts that stay
-                    </span>
-                  </li>
-                )}
-                {/* Observations on the removed hosts go with their host and are
-                    not counted here; one another scan also reported stays. */}
-                {(deletionImpact.vulnerabilities_removed ?? 0) > 0 && (
-                  <li className="flex items-center gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
-                    <span>
-                      <span className="font-medium">
-                        {deletionImpact.vulnerabilities_removed.toLocaleString()}
-                      </span>{' '}
-                      scanner{' '}
-                      {deletionImpact.vulnerabilities_removed === 1 ? 'observation' : 'observations'}{' '}
-                      only this scan reported, on hosts that stay
-                    </span>
-                  </li>
-                )}
-                {deletionImpact.web_interfaces_removed > 0 && (
-                  <li className="flex items-center gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
-                    <span>
-                      <span className="font-medium">
-                        {deletionImpact.web_interfaces_removed.toLocaleString()}
-                      </span>{' '}
-                      web {deletionImpact.web_interfaces_removed === 1 ? 'interface' : 'interfaces'}{' '}
-                      from this scan
-                    </span>
-                  </li>
-                )}
-                {(deletionImpact.dns_records_removed ?? 0) > 0 && (
-                  <li className="flex items-center gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
-                    <span>
-                      <span className="font-medium">
-                        {(deletionImpact.dns_records_removed ?? 0).toLocaleString()}
-                      </span>{' '}
-                      DNS {deletionImpact.dns_records_removed === 1 ? 'record' : 'records'} from this scan
-                    </span>
-                  </li>
-                )}
-                {(deletionImpact.dns_names_removed ?? 0) > 0 && (
-                  <li className="flex items-center gap-2">
-                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
-                    <span>
-                      <span className="font-medium">
-                        {(deletionImpact.dns_names_removed ?? 0).toLocaleString()}
-                      </span>{' '}
-                      {deletionImpact.dns_names_removed === 1 ? 'name' : 'names'} only this scan observed
-                    </span>
-                  </li>
-                )}
-              </ul>
-              {(deletionImpact.vulnerabilities_kept ?? 0) > 0 && (
-                <div
-                  data-testid="observations-kept"
-                  className="mt-2.5 flex items-start gap-2 border-t border-border pt-2.5 text-metadata text-muted-foreground"
-                >
-                  <Info className="size-3.5 mt-0.5 shrink-0" aria-hidden />
-                  <span>
-                    <span className="font-medium text-foreground">
-                      {(deletionImpact.vulnerabilities_kept ?? 0).toLocaleString()}
-                    </span>{' '}
-                    scanner{' '}
-                    {deletionImpact.vulnerabilities_kept === 1 ? 'observation' : 'observations'} only
-                    this scan reported {deletionImpact.vulnerabilities_kept === 1 ? 'is' : 'are'} kept:
-                    a finding or a proposal refers to{' '}
-                    {deletionImpact.vulnerabilities_kept === 1 ? 'it' : 'them'}.
-                  </span>
-                </div>
-              )}
-              {deletionImpact.hosts_kept > 0 && (
-                <div className="mt-2.5 flex items-start gap-2 border-t border-border pt-2.5 text-metadata text-muted-foreground">
-                  <CheckCircle2 className="size-3.5 mt-0.5 shrink-0 text-emerald-600" aria-hidden />
-                  <span>
-                    <span className="font-medium text-foreground">
-                      {deletionImpact.hosts_kept.toLocaleString()}
-                    </span>{' '}
-                    {deletionImpact.hosts_kept === 1 ? 'host' : 'hosts'} another scan also has{' '}
-                    {deletionImpact.hosts_kept === 1 ? 'is' : 'are'} kept.
-                  </span>
-                </div>
-              )}
-              {/* The limit of "a wrong scan leaves nothing behind".  A scan
-                  that touched no host that stays overwrote nothing. */}
-              {deletionImpact.hosts_kept > 0 && (
-                <div
-                  data-testid="not-restored"
-                  className="mt-1.5 flex items-start gap-2 text-metadata text-muted-foreground"
-                >
-                  <AlertCircle className="size-3.5 mt-0.5 shrink-0" aria-hidden />
-                  <span>
-                    What this scan overwrote on hosts, ports and observations that were already
-                    there (OS, host name, service, script output, severity) is not restored:
-                    BlueStick keeps no previous value.
-                  </span>
-                </div>
-              )}
-            </div>
-          ) : null}
-
-          {!impactLoading && (importRefusal || importRunning) && (
-            <div
-              role="alert"
-              data-testid="import-running"
-              className="mt-3 flex min-w-0 items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-metadata"
-            >
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
-              <span className="min-w-0 break-words">{importRefusal ?? importRunning}</span>
-            </div>
-          )}
-
-          {!impactLoading && (
-            <HostsWithWorkWarning
-              count={hostsWithWork}
-              sample={deletionImpact?.hosts_with_work_sample ?? []}
-              message={workRefusal?.message}
-              reviewed={workReviewed}
-              onReviewedChange={setWorkReviewed}
-              disabled={deleteLoading}
-            />
-          )}
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDeleteDialogOpen(false)}
-              disabled={deleteLoading}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDeleteConfirm}
-              disabled={
-                deleteLoading || impactLoading || !!importRunning || (hostsWithWork > 0 && !workReviewed)
-              }
-            >
-              {deleteLoading ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                  Deleting…
-                </>
-              ) : (
-                'Delete'
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onOpenChange={setDeleteDialogOpen}
+        onDeleted={() => {
+          setDeleteDialogOpen(false);
+          setScanToDelete(null);
+          refreshInventory();
+          // The inventory marker moves with this delete, and the lists are being
+          // read again already: its new value is the baseline, not a change.
+          inventoryMarker.rebase();
+        }}
+      />
     </div>
   );
 }
 
 /**
- * A file row's expanded detail: the command that produced the scan and what
- * its arguments mean.  The explanation is read the first time the row opens
- * and kept while the page is in use (a command does not change); a read that
- * failed is asked again the next time the row opens.
+ * The import history's filters, ONE row: search, tool, range, uploader, the
+ * Grouped / All files switch, and how much of the list is loaded.
  */
-export const ScanCommandDetail: React.FC<{ scan: Scan }> = ({ scan }) => {
-  const hasCommand = !!(scan.command_line && scan.command_line.trim());
-  const projectId = useProjectId();
-  const explained = useQuery({
-    queryKey: ['getScanCommandExplanation', projectId, scan.id],
-    queryFn: ({ signal }) => getScanCommandExplanation(projectId, scan.id, signal),
-    enabled: hasCommand,
-    ...rememberFor(30 * 60_000),
-    // This query's own lifecycle: the answer is remembered for the visit, so a
-    // remembered FAILURE would be too.  Opening the row again asks again (the
-    // shared default is not to, so one component's failure is not hidden by
-    // another's mount — here there is one reader, and reopening is the retry).
-    retryOnMount: true,
-  });
-  const explanation = explained.data;
-
-  if (!hasCommand) {
-    return (
-      <div className="rounded-control bg-accent px-md py-sm text-metadata text-muted-foreground">
-        No command line data available for this scan.
-        {scan.tool_name && !['nmap', 'masscan'].includes((scan.tool_name || '').toLowerCase()) && (
-          <> {scan.tool_name} output does not include producing configuration.</>
-        )}
-      </div>
-    );
-  }
-
+const HistoryFilterBar: React.FC<{
+  address: ScansAddress;
+  toolChips: [string, number][];
+  summary: ScanInventorySummary | null;
+  summaryFailed: boolean;
+  /** How much of the list is loaded (absent: nothing is). */
+  loaded: React.ReactNode;
+  /** The file count when the summary has none. */
+  fallbackTotal: number;
+}> = ({ address, toolChips, summary, summaryFailed, loaded, fallbackTotal }) => {
+  const { toolFilter, sinceIso, dateRangeDays, uploaderFilter, showBatchFiles, search } = address;
   return (
-    <div className="flex flex-col gap-sm rounded-control bg-accent px-md py-sm">
-      <div>
-        <p className="mb-xxs text-caption font-semibold text-muted-foreground">Command</p>
-        <div className="break-words rounded-control border border-border bg-card px-sm py-xs font-mono text-caption">
-          {scan.command_line}
-        </div>
-      </div>
-      {(scan.version || scan.tool_name || scan.uploaded_by) && (
-        <div className="flex flex-wrap gap-md text-caption text-muted-foreground">
-          {scan.version && (
-            <span>
-              <strong>Version:</strong> {scan.version}
-            </span>
+    <ListFilterBar summary={loaded}>
+      <ListFilterSearch
+        value={search.draft}
+        onChange={search.setDraft}
+        placeholder="Search filename, tool, scan type…"
+        label="Search scan inventory"
+      />
+      {/* The list matches a tool whatever its case, so the select does too:
+          a link written `?tool=nmap` shows "nmap (9)", not a blank box
+          (the options' values are the server's spelling, `NMAP`). */}
+      <Select
+        value={toolFilter
+          ? toolChips.find(([g]) => g.toLowerCase() === toolFilter.toLowerCase())?.[0] ?? toolFilter
+          : '__all'}
+        onValueChange={(v) => address.setToolFilter(v === '__all' ? '' : v)}
+      >
+        <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by tool">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__all">
+            All tools ({summaryFailed ? '—' : (summary?.total_files ?? fallbackTotal).toLocaleString()})
+          </SelectItem>
+          {toolChips.map(([group, count]) => (
+            <SelectItem key={group} value={group}>
+              {group.toLowerCase()} ({summaryFailed ? '—' : count.toLocaleString()})
+            </SelectItem>
+          ))}
+          {/* A tool picked from a row badge that the counts do not list. */}
+          {toolFilter && !toolChips.some(([g]) => g.toLowerCase() === toolFilter.toLowerCase()) && (
+            <SelectItem value={toolFilter}>{toolFilter.toLowerCase()}</SelectItem>
           )}
-          {scan.tool_name && (
-            <span>
-              <strong>Tool:</strong> {scan.tool_name}
-            </span>
+        </SelectContent>
+      </Select>
+      <Select
+        value={sinceIso ? 'since' : dateRangeDays == null ? 'all' : String(dateRangeDays)}
+        onValueChange={(v) => {
+          if (v === 'since') return;
+          // A day range replaces `since`.
+          address.setDays(v === 'all' ? null : parseInt(v, 10));
+        }}
+      >
+        <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by upload date"
+          title={sinceIso ? `Uploaded since ${formatTimestamp(sinceIso)}` : undefined}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {sinceIso && (
+            <SelectItem value="since">Since {formatDate(sinceIso)}</SelectItem>
           )}
-          {scan.uploaded_by && (
-            <span>
-              <strong>Uploaded by:</strong> {scan.uploaded_by_name || scan.uploaded_by}
-            </span>
-          )}
-        </div>
+          {DATE_RANGE_PRESETS.map((preset) => (
+            <SelectItem key={preset.label} value={preset.days == null ? 'all' : String(preset.days)}>
+              {preset.days == null ? 'Any time' : `Last ${preset.days} days`}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {/* Who uploaded it — offered once there is more than one uploader (or a
+          link arrived with one chosen). The counts follow the other filters,
+          never this one, so everyone stays listed. */}
+      {((summary?.uploaders?.length ?? 0) > 1 || uploaderFilter != null) && (
+        <Select
+          value={uploaderFilter == null ? 'anyone' : String(uploaderFilter)}
+          onValueChange={(v) => address.setUploaderFilter(v === 'anyone' ? null : parseInt(v, 10))}
+        >
+          <SelectTrigger className="h-8 w-44 min-w-0 text-metadata" aria-label="Filter scans by uploader">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="anyone">Uploaded by anyone</SelectItem>
+            {(summary?.uploaders ?? []).map((u) => (
+              // The full name is shown; the id stays the value.
+              <SelectItem key={u.user_id} value={String(u.user_id)}>
+                <span
+                  className="block max-w-56 truncate"
+                  title={u.full_name ? `${u.full_name} (${u.username})` : u.username}
+                >
+                  {u.full_name || u.username} ({u.files.toLocaleString()})
+                </span>
+              </SelectItem>
+            ))}
+            {/* Chosen, but none of their files match the other filters. */}
+            {uploaderFilter != null
+              && !(summary?.uploaders ?? []).some((u) => u.user_id === uploaderFilter) && (
+              <SelectItem value={String(uploaderFilter)}>User #{uploaderFilter} (0)</SelectItem>
+            )}
+          </SelectContent>
+        </Select>
       )}
-      {!explanation && explained.isError && !explained.isFetching && (
-        // Failed is not loading (code review 2026-10-09: the spinner stayed for ever).
-        <p role="alert" className="text-caption text-destructive">
-          Couldn&rsquo;t load the argument analysis.{' '}
-          <button type="button" className="text-info hover:underline" onClick={() => void explained.refetch()}>
-            Retry
+      {/* One history, two ways to read it. */}
+      <div
+        className="inline-flex overflow-hidden rounded-control border border-border"
+        role="group"
+        aria-label="How the import history is listed"
+      >
+        {([
+          { value: false, label: 'Grouped by upload' },
+          { value: true, label: 'All files' },
+        ] as const).map((opt) => (
+          <button
+            key={opt.label}
+            type="button"
+            aria-pressed={showBatchFiles === opt.value}
+            onClick={() => address.setShowBatchFiles(opt.value)}
+            className={cn(
+              'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              showBatchFiles === opt.value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
+            )}
+          >
+            {opt.label}
           </button>
-        </p>
-      )}
-      {!explanation && (!explained.isError || explained.isFetching) && (
-        <div className="flex items-center gap-xs text-caption text-muted-foreground">
-          <Loader2 className="size-3 animate-spin" aria-hidden />
-          Loading argument analysis…
-        </div>
-      )}
-      {explanation?.has_command && explanation.arguments && explanation.arguments.length > 0 && (
-        <div>
-          <p className="mb-xxs text-caption font-semibold text-muted-foreground">
-            Arguments ({explanation.arguments.length})
-          </p>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-1/5">Flag</TableHead>
-                <TableHead className="w-1/6">Category</TableHead>
-                <TableHead>Description</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {explanation.arguments.map((arg, idx) => (
-                <TableRow key={idx}>
-                  <TableCell className="truncate font-mono">{arg.arg}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{arg.category}</Badge>
-                  </TableCell>
-                  <TableCell className="truncate">{arg.description}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-      {explanation?.summary && (
-        <Alert variant="info">
-          <AlertDescription>{explanation.summary}</AlertDescription>
-        </Alert>
-      )}
-    </div>
+        ))}
+      </div>
+    </ListFilterBar>
   );
 };
 
 /**
- * The page's lead (v5.270.0): how much has been imported, whether anything
- * needs attention, and when the last file arrived.  "Nothing failed" is said
- * only when the queue was actually read AND no job of the project failed.
+ * The page's lead: how much has been imported, whether anything needs
+ * attention, and when the last file arrived.  "Nothing failed" is said only
+ * when the queue was actually read AND no job of the project failed.
  *
- * v5.287.0 — the failure figures come from the summary, over the whole
- * project (`imports_need_attention`: failed or partial, not dismissed — the
- * count Ingestion Results' needs-attention view lists; `imports_not_imported`:
+ * The failure figures come from the summary, over the whole project
+ * (`imports_need_attention`: failed or partial, not dismissed — the count
+ * Ingestion Results' needs-attention view lists; `imports_not_imported`:
  * failures already dismissed, discards and expiries included).  The lead used
  * to count only the 25 most recent jobs, so it said "nothing failed" beside a
  * batch whose 31 files had all expired.  `failed` (the recent queue) is the
  * fallback when the summary did not carry the figures.
  *
- * v5.288.0 — short and specific: "40 files imported · 31 never imported (31
- * expired before review) · last import 55 minutes ago".  The never-imported
- * figure names the ACTUAL reasons with their counts (`byReason`, from the
- * summary) instead of listing every possible one; the explanation moved from
- * a two-line paragraph into an info tip.
+ * Short and specific: "40 files imported · 31 never imported (31 expired
+ * before review) · last import 55 minutes ago".  The never-imported figure
+ * names the ACTUAL reasons with their counts (`byReason`, from the summary)
+ * instead of listing every possible one; the explanation is an info tip.
  */
-/** v5.289.0 — [key, singular, plural]: "(25 discarded, 1 dismissed failure)"
- *  read "(25 discarded, 1 failed, dismissed)". */
+/** [key, singular, plural]: "(25 discarded, 1 dismissed failure)" read
+ *  "(25 discarded, 1 failed, dismissed)". */
 const NOT_IMPORTED_REASON: Array<[string, string, string]> = [
   ['expired', 'expired before review', 'expired before review'],
   ['discarded', 'discarded', 'discarded'],
   ['dismissed', 'dismissed failure', 'dismissed failures'],
 ];
 
-/** Where each reason is listed on Ingestion Results (v2.408.0 split expired
- *  and discarded uploads out of its Failed view; the dismissed failures have
- *  their own view since 2.489.0 — the link used to open every failed import). */
+/** Where each reason is listed on Ingestion Results (expired and discarded
+ *  uploads are out of its Failed view; the dismissed failures have their own
+ *  view — the link used to open every failed import). */
 const NOT_IMPORTED_VIEW: Record<string, string> = { expired: 'expired', discarded: 'discarded', dismissed: 'failed_dismissed' };
 
 const notImportedReasons = (byReason?: Record<string, number>): Array<{ key: string; text: string }> =>
@@ -2431,8 +841,8 @@ const ScansLead: React.FC<{
               )}
             </>
           )}
-          {/* v5.289.0 — failures whose file a later upload imported: not
-              "need attention", but still listed until dismissed. */}
+          {/* Failures whose file a later upload imported: not "need
+              attention", but still listed until dismissed. */}
           {projectWide && superseded > 0 && (
             <>
               {sep}

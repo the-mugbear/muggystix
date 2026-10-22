@@ -566,7 +566,8 @@ frontend/src/
 │   │                        # PortDetailsCard, VulnerabilityGroup, HostConflictsPanel, NoteComposer,
 │   │                        # HostTestsSection — the host's tests — and HostEvidenceSection, …)
 │   ├── scans/               # UploadReviewDialog (staged upload), FormatRetryDialog, ImportResult,
-│   │                        # UninterpretedLines, ScanBatchList
+│   │                        # UninterpretedLines, ScanBatchList; the Scans page's parts: IngestionQueue,
+│   │                        # UploadBanner, ImportHistoryTable, DeleteScanDialog
 │   ├── charts/              # PlotFigure — the Observable Plot wrapper
 │   ├── operations/          # ChangedSinceReviewSection, UntouchedQueueSection (+ QueueParts), AgentSessionsLine;
 │   │                        # AddressTerrainSection + TerrainScene (three.js, lazy) — rendered by the
