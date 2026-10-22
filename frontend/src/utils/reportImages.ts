@@ -12,9 +12,12 @@
  * the image's stored caption prints.  A ticked image no section places prints
  * under Evidence.
  *
- * The server's twin is `backend/app/services/report_images.py` (`REFERENCE`)
- * — change both together.  The server decides what prints; this only shows
- * the author what it will decide.
+ * The server's twin is `backend/app/services/report_images.py` (`REFERENCE`).
+ * The server decides what prints; this only shows the author what it will
+ * decide, while they type — so it is a reader of its own, and both sides'
+ * tests run ONE case table (backend/tests/fixtures/twins/
+ * report_image_references.json): a change to either that the other does not
+ * share fails a test.
  */
 
 /**
@@ -47,8 +50,8 @@ const TICKS = /`+/g;
 
 /**
  * `[start, end)` of every fenced code block and inline code span in `text`,
- * sorted — the twin of the server's `_code_spans` (report_images.py), rule
- * for rule; change both together:
+ * sorted — the twin of the server's `code_spans` (report_images.py), rule
+ * for rule, on the shared case table:
  *
  *   - a fence opens on a line starting (after at most three spaces) with
  *     three or more backticks or tildes, and closes on a line that starts

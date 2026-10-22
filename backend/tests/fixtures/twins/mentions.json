@@ -1,0 +1,23 @@
+{
+  "_about": "ONE case table for the @mention rule, read by BOTH sides: backend tests/test_mentions_and_discussion.py (notification_service.scan_mentions / find_mentions) and frontend src/tests/utils/mentions.test.ts (utils/mentions.ts scanMentions / findMentionSpans / unmatchedMentionTokens). The composer highlights while the author types, so the client keeps its own matcher; this file is what keeps the two from drifting (backlog 2026-10-22, H-d). Add a case here, never to one side.",
+  "names": ["eval-ana", "eval-ben", "ana", "j.smith", "anabel", "Bob_2"],
+  "cases": [
+    {"text": "@eval-ana please look", "matched": ["eval-ana"], "unmatched": []},
+    {"text": "ping @j.smith.", "matched": ["j.smith"], "unmatched": []},
+    {"text": "@ana, and @anabel", "matched": ["ana", "anabel"], "unmatched": []},
+    {"text": "@anab is nobody", "matched": [], "unmatched": ["anab"]},
+    {"text": "@ana-maria is nobody either", "matched": [], "unmatched": ["ana-maria"]},
+    {"text": "mail ana@example.com", "matched": [], "unmatched": []},
+    {"text": "(@eval-ben) @BOB_2!", "matched": ["Bob_2", "eval-ben"], "unmatched": []},
+    {"text": "@eval-ana\n@eval-ana again", "matched": ["eval-ana"], "unmatched": []},
+    {"text": "no mention here", "matched": [], "unmatched": []},
+    {"text": "trailing @", "matched": [], "unmatched": []},
+    {"text": "@eval-cy please retest", "matched": [], "unmatched": ["eval-cy"]},
+    {"text": "@eval-ben and @eval-anna, see", "matched": ["eval-ben"], "unmatched": ["eval-anna"]},
+    {"text": "@ana and @nobody.", "matched": ["ana"], "unmatched": ["nobody"]},
+    {"text": "@anab and @ana-maria", "matched": [], "unmatched": ["anab", "ana-maria"]},
+    {"text": "@Ghost then @ghost", "matched": [], "unmatched": ["Ghost"]},
+    {"text": "trailing @ and @!", "matched": [], "unmatched": []},
+    {"text": "@j.smith.", "matched": ["j.smith"], "unmatched": []}
+  ]
+}

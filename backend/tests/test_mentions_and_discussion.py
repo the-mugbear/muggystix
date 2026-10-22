@@ -7,7 +7,9 @@ and a reply to someone's comment told them nothing unless it @mentioned them.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -23,37 +25,24 @@ from app.services.notification_service import display_name, find_mentions, scan_
 # find_mentions — the matching rule
 # ---------------------------------------------------------------------------
 
-NAMES = ["eval-ana", "eval-ben", "ana", "j.smith", "anabel", "Bob_2"]
+# ONE case table, read by both sides' tests (backlog 2026-10-22, H-d): the
+# composer's matcher (frontend utils/mentions.ts) runs the same rows.  It
+# covers a hyphenated name (the reported bug), a dot inside and a full stop
+# after, the longest match, a name followed by more name, an e-mail address,
+# brackets and case, a word reported once, and a bare `@`.
+_TWIN = json.loads(
+    (Path(__file__).parent / "fixtures" / "twins" / "mentions.json").read_text()
+)
+NAMES = _TWIN["names"]
+_CASES = [(c["text"], set(c["matched"]), c["unmatched"]) for c in _TWIN["cases"]]
 
 
-@pytest.mark.parametrize("body, expected", [
-    ("@eval-ana please look", {"eval-ana"}),              # hyphen (the reported bug)
-    ("ping @j.smith.", {"j.smith"}),                      # dot inside, full stop after
-    ("@ana, and @anabel", {"ana", "anabel"}),             # longest match, punctuation boundary
-    ("@anab is nobody", set()),                           # no prefix matches
-    ("@ana-maria is nobody either", set()),               # 'ana' followed by more name
-    ("mail ana@example.com", set()),                      # e-mail address, not a mention
-    ("(@eval-ben) @BOB_2!", {"eval-ben", "Bob_2"}),       # brackets, case-insensitive
-    ("@eval-ana\n@eval-ana again", {"eval-ana"}),
-    ("no mention here", set()),
-    ("trailing @", set()),
-])
-def test_find_mentions(body, expected):
-    assert find_mentions(body, NAMES) == expected
+@pytest.mark.parametrize("body, matched, unmatched", _CASES)
+def test_find_mentions(body, matched, unmatched):
+    assert find_mentions(body, NAMES) == matched
 
 
-@pytest.mark.parametrize("body, matched, unmatched", [
-    # The live-test case: a hyphenated name that is not a member is reported
-    # whole, not as 'eval'.
-    ("@eval-cy please retest", set(), ["eval-cy"]),
-    ("@eval-ben and @eval-anna, see", {"eval-ben"}, ["eval-anna"]),
-    ("@ana and @nobody.", {"ana"}, ["nobody"]),          # full stop is not part of the word
-    ("@anab and @ana-maria", set(), ["anab", "ana-maria"]),
-    ("mail ana@example.com", set(), []),                  # e-mail: not a mention at all
-    ("@Ghost then @ghost", set(), ["Ghost"]),             # reported once
-    ("trailing @ and @!", set(), []),                     # nothing written after the @
-    ("@j.smith.", {"j.smith"}, []),
-])
+@pytest.mark.parametrize("body, matched, unmatched", _CASES)
 def test_scan_mentions_reports_what_matched_nobody(body, matched, unmatched):
     assert scan_mentions(body, NAMES) == (matched, unmatched)
 

@@ -1,7 +1,9 @@
 /**
  * @mention matching — the frontend twin of the backend's
- * `notification_service.find_mentions`, so what the composer highlights is
- * what the server notifies.
+ * `notification_service.find_mentions` / `scan_mentions`, so what the
+ * composer highlights (and warns about) while the author types is what the
+ * server notifies.  Both sides' tests run ONE case table
+ * (backend/tests/fixtures/twins/mentions.json).
  *
  * Usernames are free text (`eval-ana`, `j.smith`), so a mention is matched
  * against the KNOWN member names, longest first and case-insensitively, never
