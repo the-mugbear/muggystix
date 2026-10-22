@@ -183,7 +183,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
       try {
         const roster = await queryClient.fetchQuery({
           queryKey: ['listProjectMembers', row.project_id],
-          queryFn: () => listProjectMembers(row.project_id),
+          queryFn: ({ signal }) => listProjectMembers(row.project_id, signal),
         });
         adminCount = countProjectAdmins(roster);
       } catch (err) {

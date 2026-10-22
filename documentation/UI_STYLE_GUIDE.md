@@ -1381,12 +1381,14 @@ const save = useMutation({
   (`getHost`, `listAgentSessions`) — and a `queryFn` hands the query's on
   (`({ signal }) => getThing(id, signal)`), so a read nobody waits for any
   longer is cancelled.  A `mutationFn` passes none: what a click started is
-  not cancelled by navigating away (the three functions that save a file or
-  generate text from a click — `downloadInventoryCsv`, `downloadReportJob`,
-  `getToolReadyOutput` — take none).  A `queryFn` whose own `catch` counts or
-  logs a failure must tell a cancellation from one before it passes the
-  signal; the notification count in `Layout` and the project list in
-  `ProjectContext` do not pass it yet for that reason.
+  not cancelled by navigating away (the functions that save a file or
+  generate text from a click — `downloadInventoryCsv`, `downloadReportJob`
+  and the `fetchReportJobBlob` it is built on, `getToolReadyOutput` — take
+  none).  The lint rule `bluestick/query-fn-signal` refuses a `queryFn` (or a
+  list hook's fetcher) that calls an API function without handing the signal
+  on; its `noSignal` list names those click-only functions.  A `queryFn`
+  whose own `catch` counts or logs a failure must tell a cancellation from
+  one.
 - **A secret** (a password or one-time code being sent, recovery codes or a
   new agent key coming back) lives in a mutation with `...SECRET_MUTATION`
   (`lib/query`: nothing kept in the mutation cache) that is `reset()` when it

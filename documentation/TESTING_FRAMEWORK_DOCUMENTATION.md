@@ -136,7 +136,8 @@ mock of the barrel), no hand-set `.download =` (use `utils/download.saveBlob`) a
 `--max-warnings 0`. The last two were tests that searched the source; they are lint rules now,
 and those tests are gone. Since 5.351.0 it also carries `bluestick/api-in-query-only`
 (`frontend/eslint-rules/`, tested by `tests/lint/apiInQueryOnly.test.ts`): an API function is
-called only inside a `queryFn` or a `mutationFn`.
+called only inside a `queryFn` or a `mutationFn`; and `bluestick/query-fn-signal`
+(`tests/lint/queryFnSignal.test.ts`): a `queryFn` that calls one hands on the query's `signal`.
 
 ### Testing server state (TanStack Query, 5.351.0)
 
