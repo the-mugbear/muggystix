@@ -304,7 +304,12 @@ test whose revision has moved on), never by what `tools/list` showed.
 These are file-shaped: they belong on disk, not materialised into a model's
 context. A 40k-host target list read through a tool call is the same data,
 minus the ability to hand the file to the next program, plus the token bill.
-The server `instructions` point at them with `curl`.
+The server `instructions` point at them with `curl -sS -K .bluestick.curl <url>`:
+a curl config file in the working directory holding the line
+`header = "X-API-Key: <key>"` (`agent_policy.render_key_file`, the same text the
+pasted prompt gives a curl agent). An MCP agent may never see its key — it is in
+the client's server entry — so it asks the operator to create the file when it
+is missing, and never to set an environment variable or restart it.
 
 | Route (under `/api/v1/agent`) | What it is | Operator needs |
 |---|---|---|

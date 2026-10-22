@@ -129,6 +129,42 @@ def test_the_scanner_rule_asks_first_and_claims_nothing_the_server_cannot_back()
         assert "out of notes, evidence, feedback and proposals" in text
 
 
+def test_both_doors_send_the_key_from_a_curl_config_file_not_a_shell_variable():
+    """Agents told to send ``X-API-Key: $KEY`` asked the operator to quit,
+    export the key and restart them: agent shells start fresh per command and
+    some sandboxes refuse a command that expands a variable.  Both doors now
+    send every curl call with ``-K .bluestick.curl``; the curl door is given the
+    file's exact line with its key."""
+    from app.api.v1.endpoints.mcp_assist import _server_instructions
+    from app.services.agent_policy import KEY_FILE, render_key_file
+
+    prompt = build_session_instructions(
+        request=None, session_id=2, project_id=1, project_name="P",
+        raw_api_key="nm_agent_abc", user_label="u", user_id=1,
+    )
+    opening = _server_instructions("https://127.0.0.1/api/v1")
+    assert render_key_file(raw_api_key="nm_agent_abc") in prompt
+    assert render_key_file(over_mcp=True) in opening
+    assert 'header = "X-API-Key: nm_agent_abc"' in prompt
+    for text in (prompt, opening):
+        assert f"curl -sS -K {KEY_FILE}" in text
+        assert "$KEY" not in text
+        assert "environment variable or to restart you" in text
+    # The key appears once in the prompt: in the file's line, not in a header
+    # example the agent would copy into a command.
+    assert prompt.count("nm_agent_abc") == 1
+
+
+def test_no_agent_facing_example_sends_the_key_from_a_shell_variable():
+    from app.services.agents_guide_service import read_agent_guide
+    text = read_agent_guide()
+    if text is None:
+        import pytest
+        pytest.skip("the agent guide is not mounted in this environment")
+    assert "$KEY" not in text
+    assert "-K .bluestick.curl" in text
+
+
 def test_both_doors_read_the_401_where_the_server_puts_it():
     """``recoverable`` is under ``detail``; a revoked key carries no such
     field; a password change is named.  The curl door gets the renewal address

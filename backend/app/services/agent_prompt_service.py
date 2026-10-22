@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.services.agent_policy import (
     render_read_back,
     render_key_expiry_guidance,
+    render_key_file,
     render_safety_rules,
     render_scanner_integrations_rule,
     render_truncated_upload_rule,
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.45.0"
+PROMPT_VERSION = "4.46.0"
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None
@@ -191,16 +192,16 @@ def build_session_instructions(
         + render_read_back() + "\n"
         + render_safety_rules() + "\n"
         f"### Connection\n"
-        f"**Base URL:** {base_url}/agent · **Auth header (every request):** "
-        f"`X-API-Key: {raw_api_key}`\n"
-        f"Certificate: issued by the operator's local root CA. Use `curl -sS` "
-        f"(with `-s` alone a failed request prints nothing), never `-k`. On a "
-        f"certificate error (curl exit 60) tell the operator: the root is not "
-        f"trusted on this machine yet (`ca/local-ca.sh trust-help`, or "
-        f"`--cacert <root file>` on each request); add `-k` only if they say "
-        f"to. In PowerShell use `curl.exe`. If your sandbox blocks curl, ask "
-        f"the operator to run it.\n\n"
-        f"### If your key expires\n"
+        f"**Base URL:** {base_url}/agent\n\n"
+        + render_key_file(raw_api_key=raw_api_key) + "\n"
+        "Certificate: issued by the operator's local root CA. Use `curl -sS` "
+        "(with `-s` alone a failed request prints nothing), never `-k`. On a "
+        "certificate error (curl exit 60) tell the operator: the root is not "
+        "trusted on this machine yet (`ca/local-ca.sh trust-help`, or "
+        "`--cacert <root file>` on each request); add `-k` only if they say "
+        "to. In PowerShell use `curl.exe`. If your sandbox blocks curl, ask "
+        "the operator to run it.\n\n"
+        "### If your key expires\n"
         + render_key_expiry_guidance(base_url=base_url) + "\n"
         f"### What this session does, in whatever order the operator asks\n"
         f"- **Reads** under `/agent/assist/*` (inventory, findings, posture, "

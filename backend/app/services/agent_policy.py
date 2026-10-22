@@ -4,8 +4,8 @@ An agent starts through one of two doors and sees only that one: the pasted
 session prompt (:func:`agent_prompt_service.build_session_instructions`, an
 agent that drives the API with curl) or the MCP opening instructions
 (``mcp_assist._server_instructions``).  Both render the same blocks from this
-module — the safety rules, the read-back, the key-expiry handling and the
-ask-first rule for configured scanners — so
+module — the safety rules, the read-back, where a curl call's key comes from,
+the key-expiry handling and the ask-first rule for configured scanners — so
 neither can drift from the other.  ``over_mcp`` changes only how a call is
 named (a tool instead of a route) and drops the Markdown.
 ``test_agent_safety_policy`` asserts both doors carry these exact rules.
@@ -139,6 +139,52 @@ OAUTH_NOT_USED = (
     "replace the key in the client's MCP configuration, then restart the client — "
     "a running client keeps the old key."
 )
+
+
+# --- Where a curl call's key comes from ----------------------------------------
+# Agent shells start fresh for each command (an `export` is gone by the next
+# call) and some client sandboxes refuse a command that expands a variable, so
+# agents told to send `X-API-Key: $KEY` asked the operator to quit, export the
+# key and restart them.  A curl config file in the working directory survives
+# every fresh shell, expands nothing, and works with any curl (`-K` with a
+# `header =` line, not the 8.3+ `variable` directive).
+
+KEY_FILE = ".bluestick.curl"
+
+
+def render_key_file(*, raw_api_key: str = "<your key>", over_mcp: bool = False) -> str:
+    """How every curl call carries the key: ``curl -sS -K .bluestick.curl``.
+
+    The curl door is handed the key and writes the file itself.  The MCP door's
+    key sits in its client's server entry, which the agent may never see, so it
+    asks the operator for the file only when it needs a file-shaped read.
+    """
+    c = lambda text: _code(text, over_mcp)  # noqa: E731 - a two-line formatter
+    line = f'header = "X-API-Key: {raw_api_key}"'
+    never = (
+        "Never ask the operator to set an environment variable or to restart you "
+        "for the key: the file is all curl needs. Never print the file, quote the "
+        "key, or put the file in evidence or an upload."
+    )
+    if over_mcp:
+        return (
+            f"Every curl call reads the key from {c(KEY_FILE)} in the working "
+            f"directory, a curl config file holding one line, {c(line)}: run "
+            f"{c(f'curl -sS -K {KEY_FILE} <url>')}. If the file is not there, ask "
+            f"the operator to create it (the key is in your client's BlueStick "
+            f"server entry). {never}\n"
+        )
+    return (
+        f"Write the key once, now, to {c(KEY_FILE)} in the working directory "
+        f"(with your file-write tool; `chmod 600` it where that exists), holding "
+        f"exactly this line:\n\n"
+        f"```\n{line}\n```\n\n"
+        f"Then run every request as {c(f'curl -sS -K {KEY_FILE} <url>')}, adding "
+        f"the method, body and {c('-o')} as needed. Do not keep the key in a shell "
+        f"variable: your shell may forget it between commands. {never} If you are "
+        f"handed a new key (a resumed session), overwrite the file; after "
+        f"{c('session/end')}, delete it.\n"
+    )
 
 
 def render_key_expiry_guidance(*, base_url: str = "<base>", over_mcp: bool = False) -> str:

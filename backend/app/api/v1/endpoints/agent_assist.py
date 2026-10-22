@@ -627,7 +627,7 @@ def download_assist_hosts_ndjson(
     of hosts: redirect it to a file and process it locally so coverage stays
     complete without the payload ever being read into the model:
 
-        curl -s -H "X-API-Key: $KEY" .../assist/hosts.ndjson -o hosts.jsonl
+        curl -sS -K .bluestick.curl .../assist/hosts.ndjson -o hosts.jsonl
         jq -c 'select(.open_port_count > 0 and .os_family == "Windows")' hosts.jsonl
 
     Same fields, same IP ordering, and same filter vocabulary as
@@ -1409,7 +1409,7 @@ def download_assist_report_context(
     Safe on a tens-of-thousands-host project: the server hydrates only one chunk
     at a time (peak memory ~one chunk), so there is no host cap. Redirect it to
     a file and populate your report template from that file — do NOT read the
-    stream whole into context: ``curl -s -H 'X-API-Key: <key>'
+    stream whole into context: ``curl -sS -K .bluestick.curl
     '<base>/agent/assist/report-context.ndjson' -o report-context.jsonl``.
     """
     from app.services.report_generator import ReportGenerator  # heavy stack — lazy

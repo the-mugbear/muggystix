@@ -80,6 +80,7 @@ from app.api.v1.endpoints.mcp_tools import (
 from app.services import mcp_telemetry_service as mcp_telemetry
 from app.services.agent_policy import (
     render_key_expiry_guidance,
+    render_key_file,
     render_read_back,
     render_safety_rules,
     render_scanner_integrations_rule,
@@ -174,8 +175,9 @@ def _server_instructions(base_url: str) -> str:
         "{items, total, limit, offset, returned, has_more}: quote `total`, never "
         "the length of a page.\n\n"
         "Bulk data is file-shaped and deliberately not a tool — fetch it with "
-        "curl -sS and your X-API-Key header (never -k), then read the file "
-        "locally:\n"
+        "curl (never -k), then read the file locally. "
+        + render_key_file(over_mcp=True)
+        + "\n"
         f"  report over many hosts:  GET {base_url}/agent/assist/report-context.ndjson\n"
         f"  every host:              GET {base_url}/agent/assist/hosts.ndjson\n"
         f"  the scope's live hosts:    GET {base_url}/agent/scope/live-hosts.txt\n"
