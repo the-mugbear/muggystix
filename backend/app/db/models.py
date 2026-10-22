@@ -882,16 +882,29 @@ class DNSRecord(Base):
     name = relationship("DNSName", back_populates="observations")
 
     __table_args__ = (
-        # Observation identity is enforced by TWO partial unique indexes that
-        # live in the migrations only (alembic/env.py _UNMODELABLE_INDEXES —
-        # partial + expression indexes have no portable model form):
-        #   uq_dns_record_scan_observation
-        #       (name_id, record_type, value, COALESCE(resolver_name,''), scan_id)
-        #       WHERE scan_id IS NOT NULL
-        #   uq_dns_record_import_observation
-        #       (name_id, record_type, value) WHERE scan_id IS NULL AND record_type='IMPORT'
-        #   uq_dns_record_evidence_observation
-        #       (name_id, record_type, value, evidence_record_id) WHERE evidence_record_id IS NOT NULL
+        # Observation identity is enforced by THREE partial unique indexes
+        # (built by revisions b2e6f8a1c3d7 and d7e1a9c4b602). Postgres-only
+        # DDL (`ddl_if`): the SQLite fallback of the test suite has no
+        # partial-index form of the COALESCE expression.
+        Index(
+            "uq_dns_record_scan_observation",
+            "name_id", "record_type", "value",
+            func.coalesce(resolver_name, text("''")), "scan_id",
+            unique=True,
+            postgresql_where=text("scan_id IS NOT NULL"),
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "uq_dns_record_import_observation",
+            "name_id", "record_type", "value",
+            unique=True,
+            postgresql_where=text("scan_id IS NULL AND record_type = 'IMPORT'"),
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "uq_dns_record_evidence_observation",
+            "name_id", "record_type", "value", "evidence_record_id",
+            unique=True,
+            postgresql_where=text("evidence_record_id IS NOT NULL"),
+        ).ddl_if(dialect="postgresql"),
         # Split on purpose (v2.323.0 review): scan_id is SET NULL when a scan
         # is deleted, so a single NULLS-NOT-DISTINCT index made deleting the
         # second of two scans that held the same answer fail on the orphaned
@@ -1427,10 +1440,15 @@ class Annotation(Base):
     # was a target until v2.442.0; migration f4b8d2a6c917 moved those notes
     # to their project.)  host_id is now
     # nullable (was NOT NULL) so non-host annotations are possible.
-    # "Exactly one target" is enforced by a DB CHECK (num_nonnulls = 1)
-    # added in the migration — kept OUT of __table_args__ so the SQLite
-    # test create_all stays portable (num_nonnulls is Postgres-only); the
-    # write paths also validate it in code.
+    # "Exactly one target" is enforced by a DB CHECK (num_nonnulls = 1),
+    # declared in __table_args__ below (Postgres-only DDL: num_nonnulls does
+    # not exist in SQLite); the write paths also validate it in code.
+    __table_args__ = (
+        CheckConstraint(
+            "num_nonnulls(host_id, port_id, scan_id, scope_id, project_id, finding_id) = 1",
+            name="ck_annotations_exactly_one_target",
+        ).ddl_if(dialect="postgresql"),
+    )
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True, index=True)
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)

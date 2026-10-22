@@ -40,7 +40,7 @@ def _seed(db, project, author, count, ip="10.77.0.1"):
         db.add(assignee)
         db.flush()
         note = models.Annotation(
-            host_id=host.id, project_id=project.id, user_id=author.id,
+            host_id=host.id, user_id=author.id,
             body=f"note {i}",
         )
         db.add(note)

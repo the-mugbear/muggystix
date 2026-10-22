@@ -280,7 +280,7 @@ def test_the_row_says_how_much_the_session_did(
     db_session.flush()
     for i in range(2):
         db_session.add(models.Annotation(
-            project_id=test_project.id, host_id=host.id, user_id=test_user.id,
+            host_id=host.id, user_id=test_user.id,
             body=f"note {i}", agent_session_id=busy,
         ))
     db_session.commit()
@@ -307,16 +307,16 @@ def test_the_sessions_notes_are_read_by_the_session_id(
     db_session.flush()
     for i in range(3):
         db_session.add(models.Annotation(
-            project_id=test_project.id, host_id=host.id, user_id=test_user.id,
+            host_id=host.id, user_id=test_user.id,
             body=f"mine {i}", agent_session_id=sid,
             created_at=datetime.now(timezone.utc) - timedelta(minutes=10 - i),
         ))
     db_session.add(models.Annotation(
-        project_id=test_project.id, host_id=host.id, user_id=test_user.id,
+        host_id=host.id, user_id=test_user.id,
         body="another session's", agent_session_id=other,
     ))
     db_session.add(models.Annotation(
-        project_id=test_project.id, host_id=host.id, user_id=test_user.id, body="a person's",
+        host_id=host.id, user_id=test_user.id, body="a person's",
     ))
     db_session.commit()
 

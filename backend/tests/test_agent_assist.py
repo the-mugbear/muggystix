@@ -755,7 +755,7 @@ def test_the_agent_can_read_notes_it_could_already_write(
     db_session.refresh(host)
     db_session.add(
         Annotation(
-            host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+            host_id=host.id, user_id=test_user.id,
             body="Confirmed false positive — the banner is a honeypot.", actor_type="user",
         )
     )
@@ -976,9 +976,9 @@ def test_recent_notes_answer_what_the_team_has_been_doing(
     db_session.commit()
     db_session.refresh(host)
     db_session.add_all([
-        Annotation(host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+        Annotation(host_id=host.id, user_id=test_user.id,
                    body="Still chasing the vendor", actor_type="user"),
-        Annotation(host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+        Annotation(host_id=host.id, user_id=test_user.id,
                    body="Closed this one out", actor_type="user"),
     ])
     db_session.commit()
@@ -1103,7 +1103,7 @@ def test_finding_detail_reaches_the_evidence_a_writeup_cites(
     db_session.refresh(host)
 
     note = Annotation(
-        host_id=host.id, project_id=test_project.id, user_id=test_user.id,
+        host_id=host.id, user_id=test_user.id,
         body="Confirmed anonymous bind on the LDAP service; screenshot attached.", note_type="observation",
     )
     db_session.add(note)

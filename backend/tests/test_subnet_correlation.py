@@ -143,7 +143,8 @@ def test_correlation_maps_all_containing_subnets(db_session, test_project):
         "192.168.1.10": _host(db_session, test_project.id, "192.168.1.10"),  # /24
         "172.16.0.1": _host(db_session, test_project.id, "172.16.0.1"),   # none (NOT ::/0)
         "2001:db8::1": _host(db_session, test_project.id, "2001:db8::1"), # v6 /32 + ::/0
-        "bad-ip": _host(db_session, test_project.id, "not-an-ip"),        # skipped
+        # No "not-an-ip" host: the schema refuses one (idx_host_ip_inet casts
+        # every address); it was here only while the suite used create_all.
     }
     db_session.commit()
 
@@ -160,10 +161,9 @@ def test_correlation_maps_all_containing_subnets(db_session, test_project):
     # The cross-family fix: an IPv4 host must NOT match the IPv6 ::/0.
     assert got[hosts["172.16.0.1"].id] == set()
     assert got[hosts["2001:db8::1"].id] == {"2001:db8::/32", "::/0"}
-    assert got[hosts["bad-ip"].id] == set()
 
     # Return value is the total mapping count.
-    assert n == 2 + 1 + 1 + 0 + 2 + 0
+    assert n == 2 + 1 + 1 + 0 + 2
 
 
 def test_correlation_is_idempotent_and_drops_stale_mappings(db_session, test_project):

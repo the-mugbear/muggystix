@@ -1,323 +1,67 @@
-"""Guard against model/DB foreign-key ON DELETE drift.
+"""A model's foreign keys say what the database enforces (ON DELETE included).
 
-Two migrations set the authoritative delete behaviour at the database level:
-``b7c2a09f1d44`` (every ``projects.id`` child → CASCADE) and
-``f1a9c7e3b528`` (host/port/scan child rows → CASCADE for owned rows, SET NULL
-for nullable audit pointers).  But the test schema is built from the MODELS via
-``Base.metadata.create_all()`` (see conftest), while production is built by
-Alembic.  So when a model ``ForeignKey`` omits ``ondelete=``, the model-built
-schema gets ``NO ACTION`` while Alembic-built prod has ``CASCADE``/``SET NULL`` —
-the two diverge on delete semantics, and a project/scan delete that cascades in
-prod can raise IntegrityError under a model-built schema (or vice-versa).
+The test database is built by the migration chain (``tests/conftest.py``,
+2026-10-22), so its catalog IS what production enforces; this compares every
+model ``ForeignKey`` with it, both ways. Until then the test schema was
+``create_all()`` from the models, and this file carried a hand-kept map of
+every FK's rule "captured from the live database" that had to be updated with
+each new FK; the catalog replaced the map.
 
-``EXPECTED_ONDELETE`` below is ground truth captured from the live Alembic-built
-Postgres database.  This test asserts every model FK declares the matching
-``ondelete`` so the drift can never silently reopen.  When you add or change an
-FK, update this map in the same commit — that is the point of the contract.
+Why the model must still match: ``alembic check`` compares models with a
+chain-built database, and code that reads ``fk.ondelete`` (or a SQLite
+fallback built from the models) would otherwise believe something the
+database does not do.
 """
-from app.db import models  # noqa: F401 — registers the core tables on Base
-# Side-effect imports so every model module's tables land on Base.metadata
-# before we walk it (mirrors conftest's registration list, plus confidence).
-from app.db import (  # noqa: F401
-    models_agent,
-    models_attribution,
-    models_auth,
-    models_confidence,
-    models_findings,
-    models_integrations,
-    models_llm,
-    models_project,
-    models_reports,
-    models_vulnerability,
-)
+import pytest
+from sqlalchemy import text
 
-# (child_table, child_column) -> ON DELETE rule, captured from the live
-# Alembic-built Postgres schema (pg_constraint.confdeltype).
-EXPECTED_ONDELETE = {
-    ('activity_cursors', 'project_id'): 'CASCADE',
-    ('activity_cursors', 'user_id'): 'CASCADE',
-    # a4f8c2e6b0d1 — the call log outlives its agent (and so a deleted account).
-    ('agent_api_calls', 'agent_id'): 'SET NULL',
-    ('agent_api_calls', 'agent_session_id'): 'SET NULL',
-    # v2.300.0 — rate-limit buckets die with their agent; a counter for a
-    # deleted agent can never be consulted again.
-    ('agent_rate_buckets', 'agent_id'): 'CASCADE',
-    ('agent_api_calls', 'api_key_id'): 'SET NULL',
-    ('agent_api_calls', 'project_id'): 'CASCADE',
-    ('agent_feedback', 'agent_id'): 'SET NULL',
-    ('agent_feedback', 'agent_session_id'): 'SET NULL',
-    ('agent_feedback', 'project_id'): 'SET NULL',
-    ('agent_feedback', 'reviewed_by_id'): 'SET NULL',
-    ('agents', 'owner_id'): 'CASCADE',
-    ('agents', 'project_id'): 'CASCADE',
-    ('agent_sessions', 'agent_id'): 'SET NULL',
-    ('agent_sessions', 'project_id'): 'CASCADE',
-    ('agent_sessions', 'started_by_id'): 'SET NULL',
-    ('annotations', 'agent_session_id'): 'SET NULL',
-    ('annotations', 'finding_id'): 'CASCADE',
-    ('annotations', 'host_id'): 'CASCADE',
-    ('annotations', 'parent_id'): 'SET NULL',
-    ('annotations', 'port_id'): 'CASCADE',
-    ('annotations', 'project_id'): 'CASCADE',
-    ('annotations', 'scan_id'): 'CASCADE',
-    ('annotations', 'scope_id'): 'CASCADE',
-    ('annotations', 'thread_root_id'): 'SET NULL',
-    ('annotations', 'user_id'): 'SET NULL',
-    ('api_keys', 'agent_id'): 'CASCADE',
-    ('api_keys', 'agent_session_id'): 'CASCADE',
-    ('api_keys', 'user_id'): 'CASCADE',
-    ('audit_logs', 'user_id'): 'SET NULL',
-    ('conflict_history', 'host_id'): 'CASCADE',
-    ('conflict_history', 'new_scan_id'): 'SET NULL',
-    ('conflict_history', 'port_id'): 'CASCADE',
-    ('conflict_history', 'previous_scan_id'): 'SET NULL',
-    ('dns_records', 'project_id'): 'CASCADE',
-    ('dns_records', 'scan_id'): 'SET NULL',
-    # v2.322.0 — named assets.  An observation dies with its name; a name
-    # dies with its project; the importing user is an audit pointer.
-    ('dns_records', 'name_id'): 'CASCADE',
-    # v2.324.0 — a TESTED observation is evidence of one execution result.
-    # v2.323.0 — named-endpoint references are evidence pointers: the row
-    # (interface / scanner finding / finding-host / plan entry) outlives the
-    # name, so SET NULL, never CASCADE.
-    ('web_interfaces', 'name_id'): 'SET NULL',
-    ('vulnerabilities', 'name_id'): 'SET NULL',
-    ('finding_hosts', 'name_id'): 'SET NULL',
-    ('dns_names', 'project_id'): 'CASCADE',
-    ('dns_names', 'created_by_id'): 'SET NULL',
-    ('scope_domains', 'scope_id'): 'CASCADE',
-    ('scope_domains', 'created_by_id'): 'SET NULL',
-    ('finding_hosts', 'finding_id'): 'CASCADE',
-    ('finding_hosts', 'host_id'): 'CASCADE',
-    ('finding_hosts', 'port_id'): 'SET NULL',
-    # v2.457.0 — remediation tracking.  The tracked fields go with the finding
-    # on the host; the timeline is the HOST's and outlives the finding (its
-    # title is kept on the entry).
-    ('finding_host_remediation', 'finding_host_id'): 'CASCADE',
-    ('finding_host_remediation', 'project_id'): 'CASCADE',
-    ('finding_host_remediation', 'updated_by_id'): 'SET NULL',
-    # v2.461.0 — the installation's remediation settings outlive whoever set them.
-    ('remediation_policy', 'updated_by_id'): 'SET NULL',
-    ('report_writing_guidance', 'updated_by_id'): 'SET NULL',
-    ('report_defaults', 'updated_by_id'): 'SET NULL',
-    # v2.462.0 — a project's daily deadline counts go with the project.
-    ('remediation_daily', 'project_id'): 'CASCADE',
-    ('remediation_events', 'agent_session_id'): 'SET NULL',
-    ('remediation_events', 'author_id'): 'SET NULL',
-    ('remediation_events', 'finding_host_id'): 'SET NULL',
-    ('remediation_events', 'finding_id'): 'SET NULL',
-    ('remediation_events', 'host_id'): 'CASCADE',
-    ('remediation_events', 'project_id'): 'CASCADE',
-    ('finding_vulnerabilities', 'finding_id'): 'CASCADE',
-    ('finding_vulnerabilities', 'vuln_id'): 'CASCADE',
-    # v2.436.0 — agent evidence records and proposals.
-    ('agent_proposals', 'agent_session_id'): 'SET NULL',
-    ('agent_proposals', 'decided_by_user_id'): 'SET NULL',
-    ('agent_proposals', 'finding_host_id'): 'CASCADE',
-    ('agent_proposals', 'finding_id'): 'CASCADE',
-    ('agent_proposals', 'project_id'): 'CASCADE',
-    ('agent_proposals', 'proposed_by_user_id'): 'SET NULL',
-    ('agent_proposals', 'replaced_by_id'): 'SET NULL',
-    ('agent_proposals', 'result_finding_id'): 'SET NULL',
-    ('agent_proposals', 'subnet_id'): 'CASCADE',
-    ('agent_proposals', 'vulnerability_id'): 'CASCADE',
-    ('evidence_records', 'agent_session_id'): 'SET NULL',
-    ('evidence_records', 'host_test_id'): 'SET NULL',
-    ('evidence_records', 'finding_host_id'): 'SET NULL',
-    ('evidence_records', 'finding_id'): 'SET NULL',
-    ('evidence_records', 'host_id'): 'CASCADE',
-    ('evidence_records', 'project_id'): 'CASCADE',
-    ('evidence_records', 'recorded_by_user_id'): 'SET NULL',
-    # v2.442.0 — host tests (they replace test plans).  A test goes with its
-    # host; the name is a navigation link (target_fqdn keeps the intent);
-    # people and sessions leave their work behind.
-    ('host_tests', 'agent_session_id'): 'SET NULL',
-    ('host_tests', 'assigned_to_id'): 'SET NULL',
-    ('host_tests', 'created_by_user_id'): 'SET NULL',
-    ('host_tests', 'dismissed_by_id'): 'SET NULL',
-    ('host_tests', 'host_id'): 'CASCADE',
-    ('host_tests', 'name_id'): 'SET NULL',
-    ('host_tests', 'project_id'): 'CASCADE',
-    ('dns_records', 'evidence_record_id'): 'CASCADE',
-    ('findings', 'created_by_id'): 'SET NULL',
-    ('findings', 'evidence_annotation_id'): 'SET NULL',
-    ('findings', 'owner_id'): 'SET NULL',
-    ('findings', 'project_id'): 'CASCADE',
-    ('findings', 'vuln_id'): 'CASCADE',
-    ('finding_status_history', 'changed_by_id'): 'SET NULL',
-    ('finding_status_history', 'finding_id'): 'CASCADE',
-    ('host_attributes', 'host_id'): 'CASCADE',
-    # "First recorded by": the sighting tables below decide whether a row
-    # outlives a scan, so the pointer is cleared, never cascaded
-    # (revision c2f9d7a4e1b3).
-    ('host_attributes', 'scan_id'): 'SET NULL',
-    ('host_attribute_sightings', 'host_attribute_id'): 'CASCADE',
-    ('host_attribute_sightings', 'scan_id'): 'CASCADE',
-    ('host_script_sightings', 'host_script_id'): 'CASCADE',
-    ('host_script_sightings', 'scan_id'): 'CASCADE',
-    ('script_sightings', 'script_id'): 'CASCADE',
-    ('script_sightings', 'scan_id'): 'CASCADE',
-    ('vulnerability_sightings', 'vulnerability_id'): 'CASCADE',
-    ('vulnerability_sightings', 'scan_id'): 'CASCADE',
-    ('host_confidence', 'host_id'): 'CASCADE',
-    ('host_confidence', 'scan_id'): 'CASCADE',
-    ('host_filter_views', 'project_id'): 'CASCADE',
-    ('host_filter_views', 'user_id'): 'CASCADE',
-    # v2.509.0 — a shared query outlives its creator's account.
-    ('saved_queries', 'project_id'): 'CASCADE',
-    ('saved_queries', 'created_by_id'): 'SET NULL',
-    ('host_follows', 'assigned_by_id'): 'SET NULL',
-    ('host_follows', 'host_id'): 'CASCADE',
-    ('host_follows', 'user_id'): 'CASCADE',
-    ('host_network_attributions', 'attribution_id'): 'CASCADE',
-    ('host_network_attributions', 'host_id'): 'CASCADE',
-    ('query_history', 'project_id'): 'CASCADE',
-    ('query_history', 'user_id'): 'CASCADE',
-    ('host_scan_history', 'host_id'): 'CASCADE',
-    ('host_scan_history', 'scan_id'): 'CASCADE',
-    ('host_scripts_v2', 'host_id'): 'CASCADE',
-    ('host_scripts_v2', 'scan_id'): 'SET NULL',
-    ('host_subnet_mappings', 'host_id'): 'CASCADE',
-    ('host_subnet_mappings', 'subnet_id'): 'CASCADE',
-    ('hosts_v2', 'last_updated_scan_id'): 'SET NULL',
-    ('hosts_v2', 'project_id'): 'CASCADE',
-    ('host_tag_assignments', 'created_by_id'): 'SET NULL',
-    ('host_tag_assignments', 'host_id'): 'CASCADE',
-    ('host_tag_assignments', 'tag_id'): 'CASCADE',
-    ('host_tags', 'created_by_id'): 'SET NULL',
-    ('host_tags', 'project_id'): 'CASCADE',
-    ('ingestion_jobs', 'agent_session_id'): 'SET NULL',
-    ('ingestion_jobs', 'batch_id'): 'SET NULL',
-    ('ingestion_jobs', 'in_progress_scan_id'): 'SET NULL',
-    ('ingestion_jobs', 'parse_error_id'): 'SET NULL',
-    ('ingestion_jobs', 'project_id'): 'CASCADE',
-    ('ingestion_jobs', 'scan_id'): 'SET NULL',
-    ('ingestion_jobs', 'submitted_by_id'): 'SET NULL',
-    # c8f2d5a9e3b1 — integrations are the installation's: who configured one is
-    # provenance, and deleting that account keeps the integration.
-    ('integration_credentials', 'created_by_id'): 'SET NULL',
-    ('llm_providers', 'user_id'): 'CASCADE',
-    ('netexec_results', 'host_id'): 'CASCADE',
-    ('netexec_results', 'scan_id'): 'CASCADE',
-    ('network_attributions', 'project_id'): 'CASCADE',
-    ('note_attachments', 'annotation_id'): 'CASCADE',
-    ('note_attachments', 'project_id'): 'CASCADE',
-    ('note_attachments', 'uploaded_by_id'): 'SET NULL',
-    ('note_mentions', 'note_id'): 'CASCADE',
-    ('note_mentions', 'user_id'): 'CASCADE',
-    ('notifications', 'actor_id'): 'SET NULL',
-    ('notifications', 'project_id'): 'CASCADE',
-    ('notifications', 'user_id'): 'CASCADE',
-    ('operations_cursors', 'project_id'): 'CASCADE',
-    ('operations_cursors', 'user_id'): 'CASCADE',
-    ('parse_errors', 'project_id'): 'CASCADE',
-    ('port_confidence', 'port_id'): 'CASCADE',
-    ('port_confidence', 'scan_id'): 'CASCADE',
-    ('port_scan_history', 'port_id'): 'CASCADE',
-    ('port_scan_history', 'scan_id'): 'CASCADE',
-    ('ports_v2', 'created_scan_id'): 'SET NULL',
-    ('ports_v2', 'host_id'): 'CASCADE',
-    ('ports_v2', 'last_updated_scan_id'): 'SET NULL',
-    ('project_memberships', 'project_id'): 'CASCADE',
-    ('project_memberships', 'user_id'): 'CASCADE',
-    ('projects', 'created_by_id'): 'SET NULL',
-    ('report_jobs', 'project_id'): 'CASCADE',
-    ('report_jobs', 'requested_by_id'): 'SET NULL',
-    # v2.380.0 — client reports die with their project; an issued report's
-    # files die with it; the people and the reports it points at may go
-    # without taking the report with them.
-    ('report_files', 'report_id'): 'CASCADE',
-    ('report_images', 'report_id'): 'CASCADE',
-    ('report_profiles', 'project_id'): 'CASCADE',
-    ('report_profiles', 'updated_by_id'): 'SET NULL',
-    ('reports', 'baseline_report_id'): 'SET NULL',
-    ('reports', 'created_by_id'): 'SET NULL',
-    ('reports', 'issued_by_id'): 'SET NULL',
-    ('reports', 'project_id'): 'CASCADE',
-    ('reports', 'revision_of_id'): 'SET NULL',
-    # v2.335.0 — an upload batch dies with its project; its scans outlive
-    # it (their pointer goes NULL) and so does it outlive its creator/session.
-    ('scan_batches', 'agent_session_id'): 'SET NULL',
-    ('scan_batches', 'created_by_id'): 'SET NULL',
-    ('scan_batches', 'project_id'): 'CASCADE',
-    ('scan_info', 'scan_id'): 'CASCADE',
-    ('scans', 'batch_id'): 'SET NULL',
-    ('scans', 'project_id'): 'CASCADE',
-    ('scans', 'uploaded_by_id'): 'SET NULL',
-    ('scopes', 'project_id'): 'CASCADE',
-    ('scopes', 'uploaded_by_id'): 'SET NULL',
-    ('scripts_v2', 'port_id'): 'CASCADE',
-    ('scripts_v2', 'scan_id'): 'SET NULL',
-    ('sites', 'created_by_id'): 'SET NULL',
-    ('sites', 'owner_id'): 'SET NULL',
-    ('sites', 'project_id'): 'CASCADE',
-    ('subnet_label_assignments', 'created_by_id'): 'SET NULL',
-    ('subnet_label_assignments', 'label_id'): 'CASCADE',
-    ('subnet_label_assignments', 'subnet_id'): 'CASCADE',
-    ('subnet_labels', 'created_by_id'): 'SET NULL',
-    ('subnet_labels', 'project_id'): 'CASCADE',
-    ('subnets', 'scope_id'): 'CASCADE',
-    ('subnets', 'site_id'): 'SET NULL',
-    ('users', 'created_by_id'): 'SET NULL',
-    ('user_recovery_codes', 'user_id'): 'CASCADE',
-    ('user_sessions', 'user_id'): 'CASCADE',
-    ('vulnerabilities', 'host_id'): 'CASCADE',
-    ('vulnerabilities', 'port_id'): 'SET NULL',
-    # v2.332.0 — first-seen scan; a finding outlives the scan that introduced it.
-    ('vulnerabilities', 'scan_id'): 'SET NULL',
-    ('vulnerabilities', 'last_seen_scan_id'): 'SET NULL',
-    ('webhook_configs', 'created_by_id'): 'SET NULL',
-    ('webhook_configs', 'project_id'): 'CASCADE',
-    ('webhook_deliveries', 'project_id'): 'CASCADE',
-    ('webhook_deliveries', 'webhook_config_id'): 'CASCADE',
-    ('web_interfaces', 'host_id'): 'CASCADE',
-    ('web_interfaces', 'port_id'): 'SET NULL',
-    ('web_interfaces', 'project_id'): 'CASCADE',
-    ('web_interfaces', 'scan_id'): 'CASCADE',
-    # v2.390.0 — content-discovery paths (migration b5d7f9a1c3e4).
-    ('web_paths', 'host_id'): 'CASCADE',
-    ('web_paths', 'port_id'): 'SET NULL',
-    ('web_paths', 'project_id'): 'CASCADE',
-    ('web_paths', 'scan_id'): 'CASCADE',
-}
+from app.db import model_registry  # noqa: F401 — every model module on Base
+from app.db import models
+from tests.conftest import USING_POSTGRES
+
+pytestmark = pytest.mark.skipif(not USING_POSTGRES, reason="reads the chain-built Postgres catalog")
+
+_RULES = {"a": "NO ACTION", "r": "RESTRICT", "c": "CASCADE", "n": "SET NULL", "d": "SET DEFAULT"}
 
 
 def _normalize(ondelete):
-    """SQLAlchemy stores a missing ondelete as None, which DDL-emits as the
-    SQL default 'NO ACTION'.  Normalize for comparison against pg_constraint."""
+    """A missing ``ondelete`` is emitted as the SQL default, NO ACTION."""
     return (ondelete or "NO ACTION").upper()
 
 
-def _model_ondelete_map():
-    actual = {}
+def _model_fks():
+    out = {}
     for table in models.Base.metadata.tables.values():
         for col in table.columns:
             for fk in col.foreign_keys:
-                actual[(table.name, col.name)] = _normalize(fk.ondelete)
-    return actual
+                out[(table.name, col.name)] = (fk.column.table.name, _normalize(fk.ondelete))
+    return out
 
 
-def test_model_fk_ondelete_matches_database():
-    """Every model FK must declare the ondelete the live DB enforces."""
-    actual = _model_ondelete_map()
-    drift = []
-    for key, expected in EXPECTED_ONDELETE.items():
-        if key not in actual:
-            # Table not declared by the models (e.g. intentionally dropped).
-            continue
-        if actual[key] != expected:
-            drift.append(f"{key[0]}.{key[1]}: model={actual[key]} expected={expected}")
-    assert not drift, (
-        "Model FK ondelete drifted from the DB contract:\n  " + "\n  ".join(sorted(drift))
+def _database_fks(db):
+    rows = db.execute(text("""
+        SELECT c.conrelid::regclass::text, a.attname, c.confrelid::regclass::text, c.confdeltype
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+         WHERE c.contype = 'f' AND c.connamespace = 'public'::regnamespace
+           AND array_length(c.conkey, 1) = 1
+    """)).all()
+    return {(t, col): (ref, _RULES[rule]) for t, col, ref, rule in rows}
+
+
+def test_model_fk_ondelete_matches_database(db_session):
+    """Every model FK exists in the database, to the same table, with the same rule."""
+    model, database = _model_fks(), _database_fks(db_session)
+    drift = sorted(
+        f"{t}.{c}: model={model[(t, c)]} database={database.get((t, c))}"
+        for (t, c) in model
+        if model[(t, c)] != database.get((t, c))
     )
+    assert not drift, "Model FKs differ from the chain-built database:\n  " + "\n  ".join(drift)
 
 
-def test_no_unmapped_model_fks():
-    """A model FK absent from EXPECTED_ONDELETE means a new/renamed FK that was
-    never reconciled with the DB contract — add it to the map in this commit."""
-    actual = _model_ondelete_map()
-    unmapped = sorted(f"{t}.{c}" for (t, c) in actual if (t, c) not in EXPECTED_ONDELETE)
-    assert not unmapped, (
-        "Model FKs not in the ondelete contract (add them to EXPECTED_ONDELETE):\n  "
-        + "\n  ".join(unmapped)
-    )
+def test_no_database_fk_is_missing_from_the_models(db_session):
+    """A foreign key a revision made that no model declares."""
+    model, database = _model_fks(), _database_fks(db_session)
+    missing = sorted(f"{t}.{c}" for (t, c) in database if (t, c) not in model)
+    assert not missing, "Database FKs no model declares:\n  " + "\n  ".join(missing)

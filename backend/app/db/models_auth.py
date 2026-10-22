@@ -4,7 +4,7 @@ Authentication and User Management Models
 Models for user accounts, roles, and session management for security intelligence platform.
 """
 
-from sqlalchemy import BigInteger, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON
+from sqlalchemy import BigInteger, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, Index, JSON, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -235,6 +235,18 @@ class APIKey(Base):
     user = relationship("User")
     agent = relationship("Agent", foreign_keys=[agent_id])
     agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
+
+    __table_args__ = (
+        # At most one ACTIVE key per agent session (revision d4e9f1c72a6b): the
+        # DB backstop behind revoke-then-mint.
+        Index(
+            "uq_api_key_agent_session_active",
+            "agent_session_id",
+            unique=True,
+            postgresql_where=text("is_active AND agent_session_id IS NOT NULL"),
+            sqlite_where=text("is_active AND agent_session_id IS NOT NULL"),
+        ),
+    )
 
 
 class SystemIdentity(Base):

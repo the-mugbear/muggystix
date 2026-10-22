@@ -76,7 +76,7 @@ def test_untouched_hosts_with_reasons_ordered_by_stated_tier(db_session, test_pr
     db_session.add(HostFollow(host_id=tf.id, user_id=test_user.id, status=FollowStatus.IN_REVIEW))
     tn, sn = _host(db_session, pid, "10.5.0.8")
     _vuln(db_session, tn, sn, VulnerabilitySeverity.CRITICAL, exploitable=True)
-    db_session.add(Annotation(host_id=tn.id, project_id=pid, body="looked", user_id=test_user.id))
+    db_session.add(Annotation(host_id=tn.id, body="looked", user_id=test_user.id))
     db_session.commit()
 
     q = compute_investigation_queue(db_session, test_project, limit=25)

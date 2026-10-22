@@ -87,6 +87,13 @@ and `tests/conftest.py` sets `BLUESTICK_SKIP_DB_INIT=1` before that import (v2.3
 then, a run with an unmerged migration in the tree applied it to the real dev database. Any
 OTHER command that imports `app.main` with the tree mounted still migrates.
 
+**The test database's schema is built by the migration chain** (`alembic upgrade head` in a
+subprocess, `conftest.build_schema_from_chain`; 2026-10-22), not by `create_all()` from the models:
+every partial unique index, CHECK constraint, server default, extension index and enum value a
+revision creates is in the tests as it is in production. It costs about two seconds per pytest
+process. The SQLite fallback keeps `create_all()`. `test_test_schema_is_the_chain.py` pins the head
+and the constraints that used to exist in the migrations only.
+
 Mounting the agent guide keeps the docs-contract tests from skipping (they read it from disk).
 
 Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) and emits terminal + HTML reports. Coverage was last measured at **70%** at v2.232.0 (not re-measured since); the floor sits just under so ordinary diffs don't trip it on rounding. Raise the floor as coverage climbs — never lower it to turn a red build green. (Before v2.232.0 the gate was configured but CI ran `--no-cov`, so it enforced nothing.)
@@ -204,7 +211,8 @@ Update these WITH the change, never around it:
 
 | Test | What it pins |
 |---|---|
-| `test_schema_fk_ondelete_contract.py` | every `ForeignKey(ondelete=…)` against the ground-truth map (tests build the schema from the models, so a missing `ondelete` makes tests and prod diverge) |
+| `test_schema_fk_ondelete_contract.py` | every model `ForeignKey` (its table and `ondelete=…`) against the chain-built test database's catalog, both ways — no hand-kept map |
+| `test_test_schema_is_the_chain.py` | the test database is at the chain's head; the active-key, one-target and DNS-observation constraints exist there, refuse what they exist to refuse, and are declared on their models |
 | `test_parser_dispatch_contract.py`, `test_ingestion_format_chain.py`, `test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface` | the three-place parser registration: detection → dispatch → `format_registry.FORMATS` |
 | `test_parser_coverage.py` | every format has an entry in `app/data/parser_coverage.json` (the "What BlueStick reads" page), and what it claims matches what the parsers write |
 | `test_host_list_query_budget.py`, `test_ingestion_query_budget.py`, `test_host_loading.py` | the /hosts list does not issue a query per host; ingestion dedup stays linear in host count; querying hosts is one statement |

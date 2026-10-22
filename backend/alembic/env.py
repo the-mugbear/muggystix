@@ -32,12 +32,14 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-# Indexes that exist only in the database, created by hand-written migrations
-# because they cannot be expressed in portable model metadata: partial (WHERE)
-# indexes, and expression / GIN / GiST indexes. Adding them to __table_args__
-# would break the metadata create_all() the SQLite/PG test backends use (no
-# pg_trgm, no inet_ops, etc.), so they live in migrations alone — and are
-# excluded here so a future --autogenerate never proposes to drop them.
+# Indexes that exist only in the database, created by hand-written migrations:
+# expression / GIN / GiST indexes over extension operator classes (pg_trgm,
+# inet_ops) and a few partial job-queue indexes. They are excluded here so a
+# future --autogenerate never proposes to drop them. The test suite builds its
+# schema from the migration chain (tests/conftest.py), so it has them too. A
+# partial UNIQUE index that the application relies on belongs in the model
+# (`postgresql_where`, `.ddl_if(dialect="postgresql")`), where `alembic check`
+# compares it — as the api-key and DNS-observation ones are.
 # (The pg_trgm evidence indexes are handled by the ix_trgm_ prefix rule below.)
 _UNMODELABLE_INDEXES = frozenset({
     "idx_host_ip_inet",                              # ((ip_address)::inet) expression
@@ -48,10 +50,6 @@ _UNMODELABLE_INDEXES = frozenset({
     "ix_ingestion_jobs_queued_created",              # partial WHERE status='queued'
     "ix_report_jobs_processing_heartbeat",           # partial WHERE status='processing'
     "ix_report_jobs_queued_created",                 # partial WHERE status='queued'
-    "uq_api_key_agent_session_active",               # partial UNIQUE WHERE is_active (rebased off test_plan_id in the contract phase)
-    "uq_dns_record_scan_observation",                # partial UNIQUE + COALESCE(resolver_name,'') WHERE scan_id IS NOT NULL
-    "uq_dns_record_import_observation",              # partial UNIQUE WHERE scan_id IS NULL AND record_type='IMPORT'
-    "uq_dns_record_evidence_observation",            # partial UNIQUE WHERE evidence_record_id IS NOT NULL
 })
 
 
