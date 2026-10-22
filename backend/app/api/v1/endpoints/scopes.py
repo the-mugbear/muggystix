@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel
 from app.db import models
 from app.db.session import disable_statement_timeout, get_db
-from app.db.models import Scope, ScopeDomain, Subnet, HostSubnetMapping, SubnetLabel, SubnetLabelAssignment, Site
+from app.db.models import Scope, ScopeDomain, Subnet, HostSubnetMapping, SubnetLabel, SubnetLabelAssignment
 from app.schemas.dns_names import (
     ScopeDomainBatchCreate,
     ScopeDomainBatchResponse,
@@ -35,6 +35,7 @@ from app.schemas.schemas import (
 )
 from app.parsers.subnet_parser import SubnetParser
 from app.services.subnet_correlation import SubnetCorrelationService
+from app.services.subnet_details import get_or_create_site, set_subnet_details
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -63,28 +64,6 @@ logger = logging.getLogger(__name__)
 # `/{scope_id}/…` spelling of every route below.  Earlier: `GET /scopes/`,
 # `DELETE /scopes/{scope_id}` (2.488.0), `POST /` and `PATCH /{scope_id}`
 # (v2.244.0).
-
-
-def _get_or_create_site(db: Session, project_id: int, name: Optional[str], user_id: Optional[int], cache: Optional[dict] = None) -> Optional[Site]:
-    """Get-or-create the project's Site for ``name`` (blank → None).
-
-    Keyed by (project_id, name) so the Site metadata (criticality tier / owner
-    / expected host count) attaches to the human-entered site name set from
-    CSV col 4 or inline edit — keeping subnet.site_id in sync with the string.
-    """
-    name = (name or "").strip()
-    if not name:
-        return None
-    if cache is not None and name in cache:
-        return cache[name]
-    site = db.query(Site).filter(Site.project_id == project_id, Site.name == name).first()
-    if site is None:
-        site = Site(project_id=project_id, name=name, created_by_id=user_id)
-        db.add(site)
-        db.flush()
-    if cache is not None:
-        cache[name] = site
-    return site
 
 
 def _is_duplicate_cidr(exc: IntegrityError) -> bool:
@@ -212,7 +191,7 @@ async def upload_subnet_file(
         scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
         site_cache: dict = {}  # name -> Site, get-or-created once per upload
         site_of = {
-            site: _get_or_create_site(db, project.id, site, current_user.id, site_cache)
+            site: get_or_create_site(db, project.id, site, current_user.id, site_cache)
             for _cidr, _labels, _description, site in entries if site
         }
         # What the file says about each CIDR the FIRST time it names it — the
@@ -762,7 +741,7 @@ def add_subnets(
     created: List[Subnet] = []
     site_cache: dict = {}
     for cidr, description, site in normalized:
-        site_obj = _get_or_create_site(db, project.id, site, None, site_cache) if site else None
+        site_obj = get_or_create_site(db, project.id, site, None, site_cache) if site else None
         created.append(Subnet(
             cidr=cidr, description=description, site=(site or None),
             site_id=(site_obj.id if site_obj else None), scope_id=scope_id,
@@ -834,13 +813,9 @@ def update_subnet(
             )
         subnet.cidr = new_cidr
         cidr_changed = True
-    if body.description is not None:
-        subnet.description = body.description
-    if body.site is not None:
-        # Empty string clears the site; a value sets it (keeping site_id synced).
-        subnet.site = body.site or None
-        site_obj = _get_or_create_site(db, project.id, body.site, None) if body.site else None
-        subnet.site_id = site_obj.id if site_obj else None
+    # The one write of a subnet's description and site; an accepted agent
+    # proposal (`subnet_details`) calls it too.
+    set_subnet_details(db, project.id, subnet, description=body.description, site=body.site)
 
     try:
         db.commit()

@@ -163,7 +163,7 @@ const sections: GuideSection[] = [
         <Subhead>How it works</Subhead>
         <OrderedList>
           <li>Go to <strong>Inventory → Scope</strong>.</li>
-          <li>Add entries one at a time (<Mono>10.0.0.0/24</Mono>, a single address, a domain, or <Mono>*.example.com</Mono> for a domain with its subdomains) or with <em>Upload scope file</em>. <em>Export</em> writes the scope back out the same way (networks, domains, or a CSV with labels, descriptions and sites), so a scope moves from one project to another as a file.</li>
+          <li>Add entries one at a time (<Mono>10.0.0.0/24</Mono>, a single address, a domain, or <Mono>*.example.com</Mono> for a domain with its subdomains) or with <em>Upload scope file</em>. <em>Export</em> writes the scope back out the same way (networks, domains, or a CSV with labels, descriptions and sites), so a scope moves from one project to another as a file. An agent may propose a subnet&rsquo;s site or description; it changes nothing until someone accepts it under <em>Scope details</em> on Proposals.</li>
           <li>BlueStick maps each host to matching subnets automatically.</li>
           <li>A host is then in one of three states: in a scope subnet, reached only through an in-scope name, or outside scope. A name in scope does not put the address it resolves to in subnet scope. Filter with <Mono>scope:subnet</Mono>, <Mono>scope:name</Mono>, <Mono>scope:none</Mono>, or the <em>Out of scope</em> filter on the Hosts page.</li>
         </OrderedList>

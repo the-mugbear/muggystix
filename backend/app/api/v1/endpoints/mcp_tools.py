@@ -1088,6 +1088,21 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "idempotent": False,
         "params": {"agent_model": AGENT_MODEL},
     },
+    # 2.522.0 — prod feedback #76: an operator asked an agent to set subnets'
+    # sites and descriptions, and there was no way to.
+    "propose_subnet_details": {
+        "description": (
+            "Propose a description and / or site for scope subnets — one entry per subnet, "
+            "named by its CIDR as scope_list_subnets lists it — for a person to decide (they "
+            "may accept them all at once). Only sets text: clearing a field is the operator's "
+            "own edit. A CIDR the scope does not declare is refused."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/proposals/subnet-details",
+        "additive": True,
+        "idempotent": False,
+        "params": {"agent_model": AGENT_MODEL},
+    },
     "list_proposals": {
         "description": (
             "Proposals in this project and what happened to them (pending / accepted / rejected / "

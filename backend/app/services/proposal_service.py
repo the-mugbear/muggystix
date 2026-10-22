@@ -11,10 +11,12 @@ it does directly.  Four kinds:
 * ``observation_promote`` / ``observation_dismiss`` — a scanner observation
   to a finding, or a false positive (on this host, or the whole issue);
 * ``endpoint_status`` — one finding endpoint's open / remediated / retest /
-  false_positive.
+  false_positive;
+* ``subnet_details`` — a scope subnet's description and / or site (2.522.0;
+  prod agent feedback #76, owner 2026-10-22).
 
 Accepting runs the SAME service call a person's click makes
-(``finding_actions``, ``FindingService``), as the person who accepts it — their
+(``finding_actions``, ``FindingService``, ``subnet_details``), as the person who accepts it — their
 permissions, their name on the change.  If the target changed underneath and
 that call refuses, the proposal stays pending with ``error`` set.
 """
@@ -43,7 +45,9 @@ from app.services.finding_actions import (
     apply_report_text, finding_actor, promote_or_dismiss_vulnerability,
 )
 from app.services import report_images
+from app.services.default_scope import project_scope
 from app.services.finding_service import FindingService, validate_severity
+from app.services.subnet_details import set_subnet_details
 from app.services.report_text import (
     REPORT_TEXT_FIELDS, REPORT_TEXT_MAX, internal_reference_message, internal_references,
 )
@@ -56,6 +60,11 @@ EVIDENCE_IDS_MAX = 100
 TEXT_FIELDS = (*REPORT_TEXT_FIELDS, "cvss_vector")
 ENDPOINT_STATUSES = [s.value for s in FindingHostStatus]
 NEW_FINDING_STATUSES = (FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value)
+#: What a ``subnet_details`` proposal may set, with the Scope page's own
+#: limits (``SubnetUpdate``).
+SUBNET_DETAIL_LIMITS = {"description": 1024, "site": 255}
+#: Subnets one ``propose_subnet_details`` request may name (the page's bulk cap).
+SUBNET_DETAILS_MAX = 200
 
 
 class Attribution:
@@ -266,6 +275,8 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
         AgentProposal.status == ProposalStatus.PENDING.value,
         AgentProposal.finding_id.is_(None),
         ~on_a_finding_by_observation,
+        # A scope proposal is told about on its own (``_notify_scope_admins``).
+        AgentProposal.kind != ProposalKind.SUBNET_DETAILS.value,
     ).scalar() or 0
     proposer = db.get(User, who.user_id) if who.user_id else None
     name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
@@ -292,6 +303,67 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
             existing = Notification(
                 user_id=uid, project_id=project_id, type="proposal",
                 source_type=source_type, source_id=source_id, actor_id=who.user_id,
+            )
+            db.add(existing)
+        existing.title = title
+        existing.body = body
+    db.flush()
+
+
+#: ``Notification.source_type`` of a scope-proposal notification; ``source_id``
+#: is the agent session.  It opens the session's scope proposals on the
+#: Proposals page (``/proposals?kind=subnet_details&…``), where "Accept all
+#: shown" decides them together.
+SCOPE_PROPOSAL_SOURCE = "agent_session_scope"
+
+
+def _notify_scope_admins(db: Session, project_id: int, who: Attribution) -> None:
+    """Tell the project's admins that an agent proposed subnet details — the
+    scope is the project's, so no finding's author or owner is the reviewer.
+    ONE unread notification per admin per agent session, kept current as the
+    run proposes more (``_notify_project_admins``' shape); the operator is not
+    told about their own run.  An analyst may decide them too."""
+    if who.session is None:
+        return
+    recipients = {
+        uid for (uid,) in db.query(ProjectMembership.user_id)
+        .join(User, User.id == ProjectMembership.user_id)
+        .filter(
+            ProjectMembership.project_id == project_id,
+            ProjectMembership.role == ProjectRole.ADMIN.value,
+            User.is_active.is_(True),
+        )
+    } - {who.user_id}
+    if not recipients:
+        return
+    count = db.query(func.count(AgentProposal.id)).filter(
+        AgentProposal.project_id == project_id,
+        AgentProposal.agent_session_id == who.session.id,
+        AgentProposal.status == ProposalStatus.PENDING.value,
+        AgentProposal.kind == ProposalKind.SUBNET_DETAILS.value,
+    ).scalar() or 0
+    proposer = db.get(User, who.user_id) if who.user_id else None
+    name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
+    model = f" ({who.model})" if who.model else ""
+    title = (
+        "AI proposed a subnet's description or site" if count <= 1
+        else f"AI proposed descriptions or sites for {count} subnets"
+    )
+    body = f"{name}'s agent{model} proposed scope details for review — accept or reject them, together if you wish."
+    for uid in recipients:
+        existing = (
+            db.query(Notification)
+            .filter(
+                Notification.user_id == uid, Notification.type == "proposal",
+                Notification.source_type == SCOPE_PROPOSAL_SOURCE, Notification.source_id == who.session.id,
+                Notification.is_read.is_(False),
+            )
+            .first()
+        )
+        if existing is None:
+            existing = Notification(
+                user_id=uid, project_id=project_id, type="proposal",
+                source_type=SCOPE_PROPOSAL_SOURCE, source_id=who.session.id, actor_id=who.user_id,
             )
             db.add(existing)
         existing.title = title
@@ -490,6 +562,89 @@ def propose_endpoint_status(
     return proposal
 
 
+def _scope_subnet(db: Session, project_id: int, cidr: str) -> models.Subnet:
+    """The project's subnet declared as ``cidr`` — normalised as every writer
+    stores it (``ip_network(strict=False)``: ``10.0.0.5`` is ``10.0.0.5/32``)."""
+    import ipaddress
+
+    try:
+        normal = str(ipaddress.ip_network((cidr or "").strip(), strict=False))
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{cidr!r} is not a network or an address.")
+    scope = project_scope(db, project_id)
+    subnet = (
+        db.query(models.Subnet)
+        .filter(models.Subnet.scope_id == scope.id, models.Subnet.cidr == normal)
+        .first()
+    ) if scope is not None else None
+    if subnet is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{normal} is not declared in this project's scope (scope_list_subnets lists what is).",
+        )
+    return subnet
+
+
+def propose_subnet_details(
+    db: Session, project_id: int, who: Attribution, *, items: List[Dict[str, Optional[str]]],
+    rationale: Optional[str] = None, evidence_ids: Optional[Iterable[int]] = None,
+    replaces: Optional[Iterable[int]] = None,
+) -> List[AgentProposal]:
+    """One proposal per subnet: ``items`` are ``{cidr, description?, site?}``.
+
+    Each sets at least one of the two, with text — clearing one is a
+    person's edit, as with report text.  The subnet's values when proposed
+    are kept (``base_description`` / ``base_site``): the reviewer sees what
+    changes, and a bulk accept leaves a proposal whose subnet was edited since
+    for a person to decide on its own.  All or nothing: one bad item refuses
+    the request."""
+    if not items:
+        raise HTTPException(status_code=422, detail="Propose details for at least one subnet.")
+    if len(items) > SUBNET_DETAILS_MAX:
+        raise HTTPException(
+            status_code=422, detail=f"At most {SUBNET_DETAILS_MAX} subnets per request ({len(items)} sent).",
+        )
+    planned = []
+    seen = set()
+    for item in items:
+        subnet = _scope_subnet(db, project_id, item.get("cidr") or "")
+        if subnet.id in seen:
+            raise HTTPException(status_code=422, detail=f"{subnet.cidr} is named twice in one request.")
+        seen.add(subnet.id)
+        values = {}
+        for field, limit in SUBNET_DETAIL_LIMITS.items():
+            raw = item.get(field)
+            if raw is None:
+                continue
+            value = raw.strip()
+            if not value:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{subnet.cidr} {field}: a proposal needs text (to clear it, a person edits the subnet).",
+                )
+            if len(value) > limit:
+                raise HTTPException(status_code=422, detail=f"{subnet.cidr} {field}: longer than {limit} characters.")
+            values[field] = value
+        if not values:
+            raise HTTPException(status_code=422, detail=f"{subnet.cidr}: propose a description, a site, or both.")
+        planned.append((subnet, values))
+    ev = _check_evidence(db, project_id, evidence_ids)
+    claimed = claim_replaced(db, project_id, who, replaces, [
+        AgentProposal(kind=ProposalKind.SUBNET_DETAILS.value, subnet_id=subnet.id) for subnet, _ in planned
+    ])
+    out = [
+        _add(
+            db, project_id, ProposalKind.SUBNET_DETAILS.value, who, subnet_id=subnet.id,
+            payload={**values, "base_description": subnet.description, "base_site": subnet.site},
+            rationale=rationale, evidence_ids=ev,
+        )
+        for subnet, values in planned
+    ]
+    mark_replaced(db, claimed, out)
+    _notify_scope_admins(db, project_id, who)
+    return out
+
+
 #: How many proposals one request may replace (a finding's six sections, with room).
 REPLACES_MAX = 20
 
@@ -501,6 +656,8 @@ def _same_target(old: AgentProposal, new: AgentProposal) -> bool:
         return new.kind == old.kind
     if old.kind in _OBSERVATION_KINDS:
         return new.kind in _OBSERVATION_KINDS and new.vulnerability_id == old.vulnerability_id
+    if old.kind == ProposalKind.SUBNET_DETAILS.value:
+        return new.kind == old.kind and new.subnet_id == old.subnet_id
     return new.kind == old.kind and new.finding_host_id == old.finding_host_id
 
 
@@ -538,7 +695,7 @@ def claim_replaced(
             raise HTTPException(
                 status_code=422,
                 detail=f"Proposal #{pid} is about something this request proposes nothing for "
-                       "(a replacement is about the same finding and section, observation or endpoint).",
+                       "(a replacement is about the same finding and section, observation, endpoint or subnet).",
             )
         claimed.append((old, index))
     return claimed
@@ -601,14 +758,23 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
     Endpoint first on both sides: the second waits, then finds the endpoint
     gone (a 404 for the proposal, deleted with it) or the decision made.
 
+    A subnet-details proposal locks its SUBNET first, then itself — the same
+    shape: deleting the subnet cascades into the proposal, and accepting one
+    supersedes the subnet's other pending proposals, so two reviewers deciding
+    two proposals for one subnet wait on the subnet, not on each other.
+
     Other kinds lock only the proposal, as before — a promote / dismiss takes
     its own locks in its own order (evidence first, then the finding), and
     nothing they write is superseded by another proposal's accept."""
     head = (
-        db.query(AgentProposal.kind, AgentProposal.finding_id, AgentProposal.finding_host_id)
+        db.query(
+            AgentProposal.kind, AgentProposal.finding_id, AgentProposal.finding_host_id, AgentProposal.subnet_id,
+        )
         .filter(AgentProposal.id == proposal_id, AgentProposal.project_id == project_id)
         .first()
     )
+    if head is not None and head.kind == ProposalKind.SUBNET_DETAILS.value and head.subnet_id:
+        db.query(models.Subnet.id).filter(models.Subnet.id == head.subnet_id).with_for_update().first()
     if head is not None and head.kind == ProposalKind.FINDING_TEXT.value and head.finding_id:
         db.query(Finding.id).filter(
             Finding.id == head.finding_id, Finding.project_id == project_id,
@@ -710,6 +876,17 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
             host_status=payload["host_status"], actor_id=user.id, note=_provenance(proposal),
         )
         return finding.id
+    if kind == ProposalKind.SUBNET_DETAILS.value:
+        subnet = db.get(models.Subnet, proposal.subnet_id) if proposal.subnet_id else None
+        if subnet is None:
+            raise HTTPException(status_code=404, detail="That subnet is no longer in the scope.")
+        # The Scope page's own edit, as the accepter (a new site is theirs).
+        set_subnet_details(
+            db, project_id, subnet,
+            description=payload.get("description"), site=payload.get("site"), user_id=user.id,
+        )
+        db.flush()
+        return None
     raise HTTPException(status_code=422, detail=f"Unknown proposal kind {kind!r}")
 
 
@@ -755,33 +932,52 @@ def accept_proposal(
             {"status": ProposalStatus.SUPERSEDED.value, "decided_at": now},
             synchronize_session=False,
         )
+    if proposal.kind == ProposalKind.SUBNET_DETAILS.value:
+        # The same for a subnet: the others were proposed against what it held.
+        db.query(AgentProposal).filter(
+            AgentProposal.subnet_id == proposal.subnet_id,
+            AgentProposal.kind == ProposalKind.SUBNET_DETAILS.value,
+            AgentProposal.status == ProposalStatus.PENDING.value,
+            AgentProposal.id != proposal.id,
+        ).update(
+            {"status": ProposalStatus.SUPERSEDED.value, "decided_at": now},
+            synchronize_session=False,
+        )
     return proposal
 
 
 COMPETING_DRAFTS_DETAIL = (
     "Several drafts of this field were selected — choose one on the finding."
 )
+COMPETING_SUBNET_DETAIL = (
+    "Several proposals for this subnet were selected — accept one of them on its own."
+)
 
 
-def competing_drafts(db: Session, project_id: int, ids: Iterable[int]) -> set:
-    """The pending report-text proposals among ``ids`` that share a finding
-    and field with another one among ``ids``.  A bulk accept must not choose
-    between compared drafts (decision 7): whichever came first would win and
-    supersede the others."""
+def competing_drafts(db: Session, project_id: int, ids: Iterable[int]) -> Dict[int, str]:
+    """The pending proposals among ``ids`` that compete with another one among
+    ``ids`` — report text for the same finding and field, or details for the
+    same subnet — each with why.  A bulk accept must not choose between them
+    (decision 7): whichever came first would win and supersede the others."""
     rows = (
-        db.query(AgentProposal.id, AgentProposal.finding_id, AgentProposal.field)
+        db.query(AgentProposal.id, AgentProposal.kind, AgentProposal.finding_id,
+                 AgentProposal.field, AgentProposal.subnet_id)
         .filter(
             AgentProposal.project_id == project_id,
             AgentProposal.id.in_(set(ids)),
-            AgentProposal.kind == ProposalKind.FINDING_TEXT.value,
+            AgentProposal.kind.in_((ProposalKind.FINDING_TEXT.value, ProposalKind.SUBNET_DETAILS.value)),
             AgentProposal.status == ProposalStatus.PENDING.value,
         )
         .all()
     )
-    by_field: Dict[Tuple[int, str], List[int]] = {}
-    for pid, fid, field in rows:
-        by_field.setdefault((fid, field), []).append(pid)
-    return {pid for group in by_field.values() if len(group) > 1 for pid in group}
+    groups: Dict[tuple, List[int]] = {}
+    for pid, kind, fid, field, subnet_id in rows:
+        key = (kind, subnet_id) if kind == ProposalKind.SUBNET_DETAILS.value else (kind, fid, field)
+        groups.setdefault(key, []).append(pid)
+    return {
+        pid: COMPETING_SUBNET_DETAIL if key[0] == ProposalKind.SUBNET_DETAILS.value else COMPETING_DRAFTS_DETAIL
+        for key, group in groups.items() if len(group) > 1 for pid in group
+    }
 
 
 REWRITTEN_SINCE_PROPOSED = "text_changed_since_proposed"
@@ -806,13 +1002,53 @@ def text_changed_since_proposed(proposal: AgentProposal, current_value: Optional
     return (payload.get("base_value") or "").strip() != (current_value or "").strip()
 
 
+SUBNET_CHANGED_SINCE_PROPOSED_DETAIL = (
+    "This subnet's description or site was changed after the proposal was made — accepting would "
+    "replace that change. Decide it on its own, with the subnet's current values beside the proposal."
+)
+
+
+def left_pending_detail(proposal: AgentProposal) -> str:
+    """What a bulk accept says about a proposal it left pending by
+    :func:`rewritten_since_proposed`."""
+    if proposal.kind == ProposalKind.SUBNET_DETAILS.value:
+        return SUBNET_CHANGED_SINCE_PROPOSED_DETAIL
+    return REWRITTEN_SINCE_PROPOSED_DETAIL
+
+
+def subnet_changed_since_proposed(
+    proposal: AgentProposal, description: Optional[str], site: Optional[str],
+) -> Optional[bool]:
+    """Whether a subnet-details proposal's subnet no longer holds what it held
+    when proposed, for the fields the proposal sets — the report-text rule
+    (:func:`text_changed_since_proposed`) for a subnet.  ``None`` for another kind."""
+    if proposal.kind != ProposalKind.SUBNET_DETAILS.value:
+        return None
+    payload = proposal.payload or {}
+    current = {"description": description, "site": site}
+    return any(
+        (payload.get(f"base_{field}") or "").strip() != (current[field] or "").strip()
+        for field in SUBNET_DETAIL_LIMITS if field in payload
+    )
+
+
 def rewritten_since_proposed(db: Session, proposal: AgentProposal) -> bool:
     """A PENDING report-text proposal whose section a person has rewritten
     since the draft — read now, so call it with the decision's locks held
     (``lock_for_decision``: the finding, then the proposal).  A bulk accept
     leaves such a proposal pending (owner decision 2026-10-11): one click on
     "Accept all shown" must not replace text nobody compared the draft with,
-    and report text has no history to get it back from."""
+    and report text has no history to get it back from.  A subnet-details
+    proposal whose subnet was edited since is left the same way (its subnet
+    is locked first)."""
+    if proposal.kind == ProposalKind.SUBNET_DETAILS.value:
+        if proposal.status != ProposalStatus.PENDING.value or proposal.subnet_id is None:
+            return False
+        row = (
+            db.query(models.Subnet.description, models.Subnet.site)
+            .filter(models.Subnet.id == proposal.subnet_id).first()
+        )
+        return row is not None and subnet_changed_since_proposed(proposal, row.description, row.site) is True
     if (
         proposal.kind != ProposalKind.FINDING_TEXT.value
         or proposal.status != ProposalStatus.PENDING.value
@@ -875,6 +1111,7 @@ def list_proposals(
             selectinload(AgentProposal.finding),
             selectinload(AgentProposal.vulnerability).selectinload(Vulnerability.host),
             selectinload(AgentProposal.finding_host).selectinload(FindingHost.host),
+            selectinload(AgentProposal.subnet),
         )
         .order_by(AgentProposal.created_at.desc(), AgentProposal.id.desc())
         .offset(offset).limit(limit).all()
@@ -997,6 +1234,10 @@ def serialize_proposal(
     changed_since_proposed = None
     if proposal.status == ProposalStatus.PENDING.value and current and proposal.finding_id in current:
         changed_since_proposed = text_changed_since_proposed(proposal, current_value)
+    if proposal.status == ProposalStatus.PENDING.value and proposal.subnet is not None:
+        changed_since_proposed = subnet_changed_since_proposed(
+            proposal, proposal.subnet.description, proposal.subnet.site,
+        )
     name = lambda u: (u.full_name or u.username) if u is not None else None  # noqa: E731
     return {
         "id": proposal.id,
@@ -1006,6 +1247,7 @@ def serialize_proposal(
         "finding_id": proposal.finding_id,
         "vulnerability_id": proposal.vulnerability_id,
         "finding_host_id": proposal.finding_host_id,
+        "subnet_id": proposal.subnet_id,
         "field": proposal.field,
         "payload": proposal.payload,
         "current_value": current_value,
@@ -1037,11 +1279,17 @@ def _target(proposal: AgentProposal) -> dict:
     """What a reviewer needs to recognise the target without opening it."""
     finding, vuln, fh = proposal.finding, proposal.vulnerability, proposal.finding_host
     host = (vuln.host if vuln is not None else None) or (fh.host if fh is not None else None)
+    subnet = proposal.subnet
     return {
         "finding_title": finding.title if finding is not None else None,
         "observation_title": vuln.title if vuln is not None else None,
         "host_id": host.id if host is not None else None,
         "host_ip": host.ip_address if host is not None else None,
+        # A subnet-details proposal: the subnet and what it holds NOW (the
+        # proposal's payload has what it held when proposed).
+        "subnet_cidr": subnet.cidr if subnet is not None else None,
+        "subnet_description": subnet.description if subnet is not None else None,
+        "subnet_site": subnet.site if subnet is not None else None,
     }
 
 

@@ -3,7 +3,7 @@
 * ``POST /agent/evidence`` records what the agent ran against a host and what
   came back — directly, immutably; ``GET /agent/evidence`` and
   ``…/{id}/raw`` read them back.
-* ``POST /agent/proposals/{finding-text|finding|observation|endpoint-status}``
+* ``POST /agent/proposals/{finding-text|finding|observation|endpoint-status|subnet-details}``
   propose a change to what the team concluded; a person accepts or rejects
   it.  ``GET /agent/proposals`` shows what happened to them.
 
@@ -182,7 +182,7 @@ class _ProposalBase(BaseModel):
         description=(
             "Your own PENDING proposals this one replaces (ids from list_proposals): each becomes "
             "superseded, pointing at the new one. Each must be about what this request proposes "
-            "(the same finding and section, new finding, observation or endpoint)."
+            "(the same finding and section, new finding, observation, endpoint or subnet)."
         ),
     )
 
@@ -225,6 +225,25 @@ class EndpointStatusProposal(_ProposalBase):
     finding_id: int = Field(..., gt=0)
     finding_host_id: int = Field(..., gt=0, description="The endpoint (a finding_hosts row).")
     host_status: Literal["open", "remediated", "retest", "false_positive"]
+
+
+class SubnetDetailsItem(BaseModel):
+    cidr: str = Field(..., min_length=1, max_length=64, description="A subnet as scope_list_subnets lists it (or a single address declared in scope).")
+    description: Optional[str] = Field(
+        None, max_length=proposals.SUBNET_DETAIL_LIMITS["description"],
+        description="The subnet's description, as the operator wants it to read.",
+    )
+    site: Optional[str] = Field(
+        None, max_length=proposals.SUBNET_DETAIL_LIMITS["site"],
+        description="The site it belongs to (e.g. 'London DC'); an existing site's name, or a new one.",
+    )
+
+
+class SubnetDetailsProposal(_ProposalBase):
+    subnets: List[SubnetDetailsItem] = Field(
+        ..., min_length=1, max_length=proposals.SUBNET_DETAILS_MAX,
+        description="One entry per subnet: its cidr and a description, a site, or both (never empty text).",
+    )
 
 
 @router.post("/proposals/finding-text", status_code=201, summary="Propose report text for a finding")
@@ -294,12 +313,31 @@ def propose_endpoint_status(
     return data
 
 
+@router.post("/proposals/subnet-details", status_code=201, summary="Propose a description and / or site for scope subnets")
+def propose_subnet_details(
+    body: SubnetDetailsProposal, request: Request,
+    agent: Agent = Depends(check_agent_rate_limit), db: Session = Depends(get_db),
+):
+    """One proposal per subnet (2.522.0; prod feedback #76): a person accepts
+    or rejects each, or all of them at once on the Proposals page.  All or
+    nothing — a CIDR the scope does not declare is a 404, empty text a 422."""
+    rows = proposals.propose_subnet_details(
+        db, agent.project_id, _who(db, request, body.agent_model),
+        items=[item.model_dump() for item in body.subnets], rationale=body.rationale,
+        evidence_ids=body.evidence_ids, replaces=body.replaces,
+    )
+    data = {"proposals": proposals.serialize_many(db, rows)}  # before the commit expires them (N8)
+    db.commit()
+    return data
+
+
 @router.get("/proposals", response_model=AgentRowsPage, summary="Proposals in this project and what happened to them")
 def list_proposals(
     request: Request,
     status: Optional[Literal["pending", "accepted", "rejected", "superseded"]] = Query(None),
     kind: Optional[Literal[
         "finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status",
+        "subnet_details",
     ]] = Query(None),
     finding_id: Optional[int] = Query(None, gt=0),
     mine: bool = Query(False, description="Only this session's proposals."),

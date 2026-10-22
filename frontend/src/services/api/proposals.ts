@@ -3,7 +3,8 @@
  *
  * An agent's change to what the team concluded — a finding's report text, a
  * new finding, promoting or dismissing a scanner observation, an endpoint's
- * status — is a PROPOSAL a person accepts (then may edit) or rejects.  The
+ * status, a scope subnet's description or site (5.417.0) — is a PROPOSAL a
+ * person accepts (then may edit) or rejects.  The
  * in-app "Draft empty sections" produces the same thing (`source: llm_draft`).
  * Evidence records are what an agent ran against a host and what came back.
  * Backend: app/api/v1/endpoints/proposals.py.
@@ -15,7 +16,8 @@ export type ProposalKind =
   | 'finding_create'
   | 'observation_promote'
   | 'observation_dismiss'
-  | 'endpoint_status';
+  | 'endpoint_status'
+  | 'subnet_details';
 export type ProposalStatus = 'pending' | 'accepted' | 'rejected' | 'superseded';
 
 export interface Proposal {
@@ -26,11 +28,15 @@ export interface Proposal {
   finding_id: number | null;
   vulnerability_id: number | null;
   finding_host_id: number | null;
+  /** subnet_details (backend 2.522.0): the scope subnet it is about. */
+  subnet_id?: number | null;
   /** finding_text: the report field. */
   field: string | null;
   /** finding_text: {value, accepted_value?}; finding_create: {title, severity,
    *  status, host_ids, report_text}; observation_*: {scope, severity, summary};
-   *  endpoint_status: {host_status}. */
+   *  endpoint_status: {host_status}; subnet_details: {description?, site?,
+   *  base_description, base_site} — the base_ values are what the subnet
+   *  held when proposed. */
   payload: Record<string, unknown> | null;
   /** finding_text: the finding's text in that field now. */
   current_value: string | null;
@@ -40,13 +46,18 @@ export interface Proposal {
   /** False for proposals made before the base text was kept. */
   base_recorded?: boolean;
   /** Pending finding_text: the field changed after the draft was written;
-   *  null when that cannot be known (no base recorded). */
+   *  null when that cannot be known (no base recorded).  Pending
+   *  subnet_details: a field it sets was edited since it was proposed. */
   changed_since_proposed?: boolean | null;
   target: {
     finding_title: string | null;
     observation_title: string | null;
     host_id: number | null;
     host_ip: string | null;
+    /** subnet_details: the subnet, and what it holds NOW. */
+    subnet_cidr?: string | null;
+    subnet_description?: string | null;
+    subnet_site?: string | null;
   };
   rationale: string | null;
   evidence_ids: number[];

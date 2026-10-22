@@ -90,6 +90,8 @@ class ProposalKind(str, enum.Enum):
     OBSERVATION_PROMOTE = "observation_promote"
     OBSERVATION_DISMISS = "observation_dismiss"
     ENDPOINT_STATUS = "endpoint_status"
+    # A scope subnet's description and / or site (2.522.0; owner, 2026-10-22).
+    SUBNET_DETAILS = "subnet_details"
 
 
 class ProposalStatus(str, enum.Enum):
@@ -127,6 +129,9 @@ class AgentProposal(Base):
     finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=True, index=True)
     vulnerability_id = Column(Integer, ForeignKey("vulnerabilities.id", ondelete="CASCADE"), nullable=True, index=True)
     finding_host_id = Column(Integer, ForeignKey("finding_hosts.id", ondelete="CASCADE"), nullable=True, index=True)
+    # A ``subnet_details`` proposal's subnet (2.522.0): deleting the subnet
+    # deletes the proposal, as deleting an endpoint does.
+    subnet_id = Column(Integer, ForeignKey("subnets.id", ondelete="CASCADE"), nullable=True, index=True)
     field = Column(String(40), nullable=True)
     payload = Column(JSON, nullable=False)
     rationale = Column(Text, nullable=True)
@@ -160,6 +165,7 @@ class AgentProposal(Base):
     finding = relationship("Finding", foreign_keys=[finding_id], viewonly=True)
     vulnerability = relationship("Vulnerability", viewonly=True)
     finding_host = relationship("FindingHost", viewonly=True)
+    subnet = relationship("Subnet", viewonly=True)
 
     __table_args__ = (
         Index("idx_agent_proposals_project_status", "project_id", "status"),

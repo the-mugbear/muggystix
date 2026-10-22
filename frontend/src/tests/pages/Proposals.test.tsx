@@ -222,6 +222,38 @@ describe('Proposals page — a filter value it does not know', () => {
   });
 });
 
+// Owner, 2026-10-22: "ensure proposals have a filter for scope proposals so a
+// user can bulk accept if they wish" — the Scope details chip is the filter,
+// and "Accept all shown" then sends exactly those.
+describe('Proposals page — scope details, filtered and accepted together', () => {
+  it('the chip lists only scope proposals and Accept all shown sends them', async () => {
+    getProposalSummary.mockResolvedValue({
+      pending: 5, by_kind: { endpoint_status: 2, subnet_details: 3 }, viewer_is_project_admin: true,
+    });
+    const scope = page(1, 3).map((r) => ({
+      ...r, kind: 'subnet_details' as const, finding_id: null, field: null,
+      payload: { site: 'Lab', base_description: null, base_site: null },
+      target: { ...r.target, subnet_cidr: `10.0.${r.id}.0/24`, subnet_description: null, subnet_site: null },
+    }));
+    listProposals.mockImplementation(async (_p: number, filter: { kind?: string }) => (
+      filter.kind === 'subnet_details'
+        ? { total: 3, items: scope, has_more: false }
+        : { total: 5, items: page(1, 5), has_more: false }
+    ));
+    decideProposals.mockResolvedValue({ decided: [1, 2, 3], failed: [], skipped: [] });
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: /Scope details/ }));
+    await waitFor(() => expect(listProposals).toHaveBeenLastCalledWith(
+      1, expect.objectContaining({ kind: 'subnet_details' }), expect.any(AbortSignal),
+    ));
+    expect(await screen.findByText('Set the site of 10.0.1.0/24')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept all shown' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /Accept/ }));
+    await waitFor(() => expect(decideProposals).toHaveBeenCalledWith(1, [1, 2, 3], 'accept', undefined));
+  });
+});
+
 // Browser pass 2026-10-01 — the bulk reason was a bare box in the dialog.
 describe('Proposals page — the bulk reject reason', () => {
   it('is named, says what it is for, and is sent with the decision', async () => {

@@ -27,7 +27,10 @@ from app.services.finding_actions import finding_actor
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _Status = Literal["pending", "accepted", "rejected", "superseded"]
-_Kind = Literal["finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status"]
+_Kind = Literal[
+    "finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status",
+    "subnet_details",
+]
 
 
 @router.get("/proposals", summary="Agent proposals in this project")
@@ -128,8 +131,9 @@ def _decide_locked(
     # Under those locks, so the text compared is the text an accept would
     # replace: a save of the section waits for this decision or came first.
     if skip_rewritten and action == "accept" and proposals.rewritten_since_proposed(db, proposal):
+        detail = proposals.left_pending_detail(proposal)
         db.rollback()
-        raise _LeftForOneAtATime()
+        raise _LeftForOneAtATime(detail)
     try:
         if action == "accept":
             proposals.accept_proposal(db, proposal, user, edited_value=body.edited_value, note=body.note)
@@ -187,7 +191,9 @@ def bulk_decide(
     not stop the rest; the response says which were decided and why the
     others were not.  Accepting never picks between several drafts of one
     field: accepting the first would supersede the rest by list order, so
-    those are left pending for a person to choose on the finding.
+    those are left pending for a person to choose on the finding.  The same
+    for several proposals for one subnet (``subnet_details``, 2.522.0), and a
+    subnet edited after its proposal is left pending like rewritten text.
 
     Accepting also never replaces report text a person rewrote after the
     draft was made (owner decision 2026-10-11): such a proposal is left
@@ -200,11 +206,11 @@ def bulk_decide(
     of it shows no warning either.  A reject skips nothing."""
     done, failed, skipped = [], [], []
     competing = (
-        proposals.competing_drafts(db, project.id, body.ids) if body.action == "accept" else set()
+        proposals.competing_drafts(db, project.id, body.ids) if body.action == "accept" else {}
     )
     for pid in dict.fromkeys(body.ids):
         if pid in competing:
-            failed.append({"id": pid, "status_code": 409, "detail": proposals.COMPETING_DRAFTS_DETAIL})
+            failed.append({"id": pid, "status_code": 409, "detail": competing[pid]})
             continue
         try:
             _decide(
@@ -212,10 +218,9 @@ def bulk_decide(
                 serialize=False, skip_rewritten=True,
             )
             done.append(pid)
-        except _LeftForOneAtATime:
+        except _LeftForOneAtATime as left:
             skipped.append({
-                "id": pid, "reason": proposals.REWRITTEN_SINCE_PROPOSED,
-                "detail": proposals.REWRITTEN_SINCE_PROPOSED_DETAIL,
+                "id": pid, "reason": proposals.REWRITTEN_SINCE_PROPOSED, "detail": str(left),
             })
         except HTTPException as exc:
             failed.append({"id": pid, "status_code": exc.status_code, "detail": exc.detail})

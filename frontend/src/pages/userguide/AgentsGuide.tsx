@@ -280,6 +280,7 @@ const sections: GuideSection[] = [
           <li><strong>Two people, one test</strong> — a change made on an out-of-date copy is refused, and the list is read again, rather than one overwriting the other.</li>
           <li><strong>Your queue</strong> — tests assigned to you and tests on hosts you have in review are on Operations' Tests tab; unassigned critical or high tests anyone may claim are listed in the same table as “free to claim”, shown beside the tab's count and not counted as yours.</li>
           <li><strong>A finding</strong> an agent believes its evidence shows is a <em>proposal</em> for a person to accept — see Proposals.</li>
+          <li><strong>A subnet&rsquo;s site or description</strong> an agent sets is a proposal too, one per subnet; the project&rsquo;s admins are told, and <em>Scope details</em> on Proposals lists them to accept together.</li>
           <li><strong>Report text</strong> an agent writes for a finding is a proposal too, one per section. How each section is to be written — voice, length, what Description, Impact, Recommendation, Steps to reproduce and References must each contain — is the installation&rsquo;s <strong>report writing guidance</strong>, which the agent reads with the finding before it writes. A global administrator sets it under Administration → System → Report writing (Admin guide, &ldquo;Report writing guidance&rdquo;). An agent that cannot support a section from the data proposes nothing for it and says what is missing.</li>
         </UnorderedList>
       </div>

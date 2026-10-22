@@ -56,7 +56,7 @@ read off the server's registry and is the list.
 | Scope reads and uploads | `assist_get_scope` (the project's one scope: the first 100 CIDRs and domains with their totals; no arguments), then `scope_list_subnets` / `scope_list_domains` for the whole lists when it says one is truncated — no tool takes a scope id; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload; `keep_truncated_upload` (with `operator_agreed: true`, after the agent asked the operator) imports what this session's cut-short upload holds, as a partial import — see §6 |
 | Host tests | `host_tests_list` (read first — do not duplicate), `host_tests_propose` (up to 200 individual tests, each with its own `request_key`; they appear on each host's page at once), `host_tests_get`, `host_tests_update` (409 when `expected_revision` is stale) |
 | Running a test | `host_tests_update` → `in_progress`, run it, `record_evidence` naming the `host_test_id` (with a `request_key`), then `host_tests_update` → `done`. Evidence with outcome `finding`, `no_finding` or `inconclusive` is what marks the host tested |
-| Evidence and proposals | `record_evidence`, `list_evidence`, `get_evidence`, `read_evidence_raw`; `propose_finding_text`, `propose_finding`, `propose_observation`, `propose_endpoint_status`, `list_proposals`, `get_proposal` |
+| Evidence and proposals | `record_evidence`, `list_evidence`, `get_evidence`, `read_evidence_raw`; `propose_finding_text`, `propose_finding`, `propose_observation`, `propose_endpoint_status`, `propose_subnet_details` (a scope subnet's description or site), `list_proposals`, `get_proposal` |
 | Direct writes on a host | `assist_add_note` (discussion), `assist_set_follow` (the operator's review status), `assist_patch_host` (hostname / OS corrections) |
 | Remediation tracking | `remediation_list`, `remediation_contacts`, `remediation_teams`, `remediation_trend`, `remediation_follow_up`, `remediation_timeline` (reads — the operator needs `auditor`); `remediation_apply`, `remediation_assign_from_report`, `remediation_add_note`, `remediation_record_follow_up` (writes — the operator must be a project admin) |
 
@@ -251,9 +251,10 @@ no single host (outcome `info`) may leave `host_id` out. `record_evidence` takes
 does not. It is text only: an MCP request is limited to 1 MiB, larger output (up
 to 5 MB) goes by `curl`, and an image is attached to the finding by a person.
 
-A change to what the team concluded, or to what the client report says, is a
-**proposal** a person accepts or rejects in the app: `propose_finding_text`,
-`propose_finding`, `propose_observation`, `propose_endpoint_status`;
+A change to what the team concluded, to what the client report says, or to a
+scope subnet's description or site, is a **proposal** a person accepts or
+rejects in the app: `propose_finding_text`, `propose_finding`,
+`propose_observation`, `propose_endpoint_status`, `propose_subnet_details`;
 `list_proposals` shows the decisions (texts as lengths) and `get_proposal` one
 proposal whole. Each creates a row per call, so none is
 marked idempotent.

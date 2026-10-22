@@ -278,3 +278,40 @@ describe('ProposalItem — after the decision', () => {
     expect(screen.getByRole('note')).toHaveTextContent(/changed after the draft was written/);
   });
 });
+
+// 2.522.0 / 5.417.0 — prod feedback #76: an agent proposes a subnet's
+// description and site; the reviewer sees each beside what the subnet holds.
+describe('ProposalItem — scope details', () => {
+  const subnet: Proposal = {
+    ...base, kind: 'subnet_details', finding_id: null, field: null, subnet_id: 4,
+    payload: { site: 'London DC', base_description: null, base_site: 'Old site' },
+    target: {
+      finding_title: null, observation_title: null, host_id: null, host_ip: null,
+      subnet_cidr: '10.0.0.0/24', subnet_description: 'Web tier', subnet_site: 'Old site',
+    },
+    changed_since_proposed: false,
+  };
+
+  it('names the subnet and shows what it holds now beside what is proposed', () => {
+    expect(describeProposal(subnet)).toBe('Set the site of 10.0.0.0/24');
+    renderItem(subnet);
+    const body = screen.getByTestId('subnet-details');
+    expect(body).toHaveTextContent('SiteOld site → London DC');
+    // A field it does not set is not shown.
+    expect(body).not.toHaveTextContent('Description');
+    expect(screen.getByRole('link', { name: 'Show 10.0.0.0/24 in the scope' }))
+      .toHaveAttribute('href', '/scopes?subnet_q=10.0.0.0%2F24');
+    // No "Accept and edit": it sets values, not a section of text.
+    expect(screen.queryByRole('button', { name: /Accept and edit/ })).not.toBeInTheDocument();
+  });
+
+  it('says when the subnet was edited after it was proposed, and what it held then', () => {
+    renderItem({
+      ...subnet, changed_since_proposed: true,
+      target: { ...subnet.target, subnet_site: 'Set by a person' },
+    });
+    const body = screen.getByTestId('subnet-details');
+    expect(body).toHaveTextContent(/Edited after this was proposed/);
+    expect(body).toHaveTextContent('Set by a person → London DC (was Old site when proposed)');
+  });
+});

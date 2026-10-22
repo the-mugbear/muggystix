@@ -119,6 +119,7 @@ EXPECTED_ONDELETE = {
     ('agent_proposals', 'proposed_by_user_id'): 'SET NULL',
     ('agent_proposals', 'replaced_by_id'): 'SET NULL',
     ('agent_proposals', 'result_finding_id'): 'SET NULL',
+    ('agent_proposals', 'subnet_id'): 'CASCADE',
     ('agent_proposals', 'vulnerability_id'): 'CASCADE',
     ('evidence_records', 'agent_session_id'): 'SET NULL',
     ('evidence_records', 'host_test_id'): 'SET NULL',

@@ -46,6 +46,13 @@ const ENDPOINT_LABELS: Record<string, string> = {
   false_positive: 'a false positive',
 };
 
+/** What a subnet_details proposal may set, in the Scope table's words. */
+const SUBNET_FIELDS = ['description', 'site'] as const;
+const SUBNET_FIELD_LABELS: Record<(typeof SUBNET_FIELDS)[number], string> = {
+  description: 'Description',
+  site: 'Site',
+};
+
 /** A short line naming the change — the Proposals page's row title. */
 /** What the reject reason is for, in the field itself (the wording of the
  *  endpoints' "Note for the history (optional), e.g. …").  The single reject
@@ -66,6 +73,10 @@ export const describeProposal =(pr: Proposal): string => {
       return `Dismiss “${pr.target.observation_title ?? 'observation'}” as a false positive`;
     case 'endpoint_status':
       return `Mark ${pr.target.host_ip ?? 'an endpoint'} ${ENDPOINT_LABELS[String(payload.host_status)] ?? payload.host_status} on “${pr.target.finding_title ?? `finding #${pr.finding_id}`}”`;
+    case 'subnet_details': {
+      const what = SUBNET_FIELDS.filter((f) => payload[f] != null).map((f) => SUBNET_FIELD_LABELS[f].toLowerCase());
+      return `Set the ${what.join(' and ') || 'details'} of ${pr.target.subnet_cidr ?? 'a subnet'}`;
+    }
     default:
       return pr.kind;
   }
@@ -147,6 +158,40 @@ const Body: React.FC<{ pr: Proposal }> = ({ pr }) => {
       </p>
     );
   }
+  if (pr.kind === 'subnet_details') {
+    // Each field it sets: what the subnet holds now (pending) beside what is
+    // proposed — and, when the subnet was edited since, what it held then.
+    const now: Record<string, string | null | undefined> = {
+      description: pr.target.subnet_description, site: pr.target.subnet_site,
+    };
+    return (
+      <div className="space-y-xxs text-body" data-testid="subnet-details">
+        {pr.changed_since_proposed && (
+          <p className="text-caption text-warning">
+            Edited after this was proposed — accepting replaces that edit. A bulk accept leaves it for you to decide here.
+          </p>
+        )}
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-sm gap-y-xxs">
+          {SUBNET_FIELDS.filter((f) => payload[f] != null).map((f) => (
+            <React.Fragment key={f}>
+              <dt className="text-caption font-medium text-muted-foreground">{SUBNET_FIELD_LABELS[f]}</dt>
+              <dd className="min-w-0 break-words">
+                {pr.status === 'pending' && (
+                  <span className="text-muted-foreground">{now[f] || '—'} → </span>
+                )}
+                <span className="font-medium">{String(payload[f])}</span>
+                {pr.changed_since_proposed && (
+                  <span className="text-caption text-muted-foreground">
+                    {' '}(was {String(payload[`base_${f}`] ?? '') || '—'} when proposed)
+                  </span>
+                )}
+              </dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      </div>
+    );
+  }
   return null;
 };
 
@@ -176,6 +221,12 @@ export const proposalOutcomeLink = (pr: Proposal): { to: string; label: string }
     return {
       to: `/findings/${pr.finding_id}?endpoint=${pr.finding_host_id}#endpoints`,
       label: pr.target.host_ip ? `Show ${pr.target.host_ip} on the finding` : 'Show the endpoint on the finding',
+    };
+  }
+  if (pr.kind === 'subnet_details' && pr.target.subnet_cidr) {
+    return {
+      to: `/scopes?subnet_q=${encodeURIComponent(pr.target.subnet_cidr)}`,
+      label: `Show ${pr.target.subnet_cidr} in the scope`,
     };
   }
   return null;

@@ -1,7 +1,8 @@
 /**
  * Proposals (v5.316.0) — every change an agent (or an AI draft) proposed on
  * this project, for a person to accept or reject: report text, new findings,
- * promoting or dismissing scanner observations, endpoint status.  Accepting
+ * promoting or dismissing scanner observations, endpoint status, a scope
+ * subnet's description or site (5.417.0).  Accepting
  * applies the change as you; the server decides whether you may (report text
  * needs project analyst or admin) and says so if not.
  *
@@ -49,6 +50,7 @@ const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
   { kind: 'observation_promote', label: 'Confirm observations', info: 'A scanner observation an agent judged real: promote it to a confirmed finding.' },
   { kind: 'observation_dismiss', label: 'Dismiss observations', info: 'A scanner observation an agent judged a false positive (on one host, or every host).' },
   { kind: 'endpoint_status', label: 'Endpoint status', info: 'One affected endpoint marked still present, awaiting a retest, remediated or false positive. Remediated, from a pending retest, needs the retest’s result recorded on that host.' },
+  { kind: 'subnet_details', label: 'Scope details', info: 'A scope subnet’s description or site. Pick this to see only these, then “Accept all shown” to apply them together.' },
 ];
 
 const STATUSES: ProposalStatus[] = ['pending', 'accepted', 'rejected', 'superseded'];
@@ -63,6 +65,9 @@ export const proposalDestination = (pr: Proposal): string | null => {
     return pr.kind === 'endpoint_status' && pr.finding_host_id != null
       ? `/findings/${findingId}?endpoint=${pr.finding_host_id}#endpoints`
       : `/findings/${findingId}${pr.status === 'pending' ? '#proposals' : ''}`;
+  }
+  if (pr.kind === 'subnet_details' && pr.target.subnet_cidr) {
+    return `/scopes?subnet_q=${encodeURIComponent(pr.target.subnet_cidr)}`;
   }
   return pr.target.host_id != null ? `/hosts/${pr.target.host_id}` : null;
 };
@@ -254,7 +259,7 @@ const Proposals: React.FC = () => {
       body: action === 'accept'
         ? (
           <div className="space-y-xs">
-            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown. A draft of a section that was rewritten after the draft was made is left pending too: decide those one at a time.</p>
+            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown. A draft of a section that was rewritten after the draft was made is left pending too: decide those one at a time. Scope details likewise: several for one subnet, or a subnet edited after its proposal.</p>
             {limitNote && <p>{limitNote}</p>}
           </div>
         )

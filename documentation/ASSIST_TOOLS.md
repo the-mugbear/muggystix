@@ -277,6 +277,7 @@ The template lives on the operator's machine and the agent fills it there
 | Look at one image | `assist_get_image` (inline); the bytes to save beside a report are a `download_path` (curl) |
 | How this installation wants report text written | `assist_get_writing_guidance` (also `writing_guidance` on `assist_get_finding`) |
 | Write or improve a finding's report text | `propose_finding_text` — a proposal per field, accepted or rejected by a person in the app |
+| Name the scope's subnets — their sites and descriptions, which the report's scope table and per-site summary print | `propose_subnet_details` — one proposal per subnet (by CIDR, from `scope_list_subnets`); a person accepts them one by one or all at once under "Scope details" |
 | Record what was run and what it showed | `record_evidence` / `list_evidence`; one record and its raw output in pieces: `get_evidence` / `read_evidence_raw` |
 | What we told the client | `assist_list_client_reports` → `assist_get_client_report` |
 

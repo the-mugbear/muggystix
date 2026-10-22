@@ -26,6 +26,11 @@ export const notificationHref = (n: Linkable): string | null => {
     if (n.source_type === 'agent_session_new' && n.source_id) {
       return `/proposals?agent_session_id=${n.source_id}&scope=all`;
     }
+    // 5.417.0 — a session's scope proposals (subnet descriptions and sites),
+    // told to project admins: just those, where "Accept all shown" decides them.
+    if (n.source_type === 'agent_session_scope' && n.source_id) {
+      return `/proposals?agent_session_id=${n.source_id}&kind=subnet_details&scope=all`;
+    }
     if (n.source_type === 'agent_session' && n.source_id) {
       return `/proposals?agent_session_id=${n.source_id}&scope=mine`;
     }
