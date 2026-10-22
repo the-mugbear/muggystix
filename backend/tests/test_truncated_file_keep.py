@@ -713,7 +713,7 @@ def test_an_agent_reads_the_kind_in_the_same_words(client, db_session, test_proj
 
     issues = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers)
     assert issues.status_code == 200, issues.text
-    (issue,) = [i for i in issues.json()["issues"] if i["job_id"] == job_id]
+    (issue,) = [i for i in issues.json()["items"] if i["job_id"] == job_id]
     assert (issue["kind"], issue["failure_kind"], issue["needs_attention"]) == ("failed", "truncated_file", True)
     assert issue["message"] == sentence
 

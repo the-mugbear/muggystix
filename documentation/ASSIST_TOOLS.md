@@ -368,6 +368,6 @@ agents' route: the page's route and the shared service keep their own answer
 (the two router factories two doors share, host tests and remediation, take the
 envelope as an argument on the agents' mount). Add the route to
 `tests/test_agent_list_paging.py` — as paged, or with the reason it is not
-(today: evidence gaps, ingestion issues, the terrain and the scan comparison
+(today: evidence gaps and the scan comparison
 carry a capped list with its count and no `offset`; one client report pages its
 `findings` member).

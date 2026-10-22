@@ -1299,8 +1299,8 @@ def test_ingestion_issues_separates_absent_from_never_parsed(
     assert body["failed"] == 1
     # The ParseError is claimed by the job, so it is NOT listed again.
     assert body["unresolved_parse_errors"] == 0
-    assert len(body["issues"]) == 1
-    issue = body["issues"][0]
+    assert len(body["items"]) == 1
+    issue = body["items"][0]
     assert issue["kind"] == "failed"
     # The job's own "parser raised" is useless to an operator; the parse
     # error's user-facing message is what gets folded in.
@@ -1326,7 +1326,7 @@ def test_ingestion_issues_surfaces_a_completed_but_degraded_upload(
     body = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()
     assert body["degraded"] == 1
     assert body["has_issues"] is True
-    issue = next(i for i in body["issues"] if i["kind"] == "degraded")
+    issue = next(i for i in body["items"] if i["kind"] == "degraded")
     assert issue["skipped_count"] == 30
     assert "incomplete" in issue["message"]
 
@@ -1355,7 +1355,7 @@ def test_every_import_needs_attention_counts_is_listed_and_marked(client, db_ses
     db_session.commit()
 
     body = client.get("/api/v1/agent/assist/ingestion-issues", headers=_assist(client, test_project.id)).json()
-    rows = {i["job_id"]: i for i in body["issues"]}
+    rows = {i["job_id"]: i for i in body["items"]}
     assert body["needs_attention"] == 2
     assert sorted(j for j, i in rows.items() if i["needs_attention"]) == sorted([truncated.id, waiting.id])
     assert rows[truncated.id]["kind"] == "partial"
@@ -1400,7 +1400,7 @@ def test_ingestion_issues_is_quiet_when_nothing_is_wrong(client, test_project):
     headers = _assist(client, test_project.id)
     body = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()
     assert body["has_issues"] is False
-    assert body["issues"] == []
+    assert body["items"] == []
 
 
 def test_host_detail_carries_web_interfaces_and_screenshot_references(

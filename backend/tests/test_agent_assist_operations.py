@@ -302,16 +302,22 @@ def test_agent_terrain_equals_the_page_and_sorts(client, db_session, test_projec
     agent = client.get("/api/v1/agent/assist/workbench/terrain", headers=headers)
     assert agent.status_code == 200, agent.text
     body = agent.json()
-    assert body["blocks"] == page["blocks"]
-    assert body["blocks_total"] == len(page["blocks"])
+    assert body["items"] == page["blocks"]
+    assert body["total"] == len(page["blocks"])
     assert body["total_hosts"] == page["total_hosts"]
 
     worst = client.get(
         "/api/v1/agent/assist/workbench/terrain",
         params={"sort": "untouched", "limit": 1}, headers=headers,
     ).json()
-    assert len(worst["blocks"]) == 1 and worst["limited"] is True
-    assert worst["blocks"][0]["untouched"] == max(b["untouched"] for b in page["blocks"])
+    assert len(worst["items"]) == 1 and worst["has_more"] is True
+    assert worst["items"][0]["untouched"] == max(b["untouched"] for b in page["blocks"])
+    # The next page starts where this one stopped (§6: the terrain had no offset).
+    rest = client.get(
+        "/api/v1/agent/assist/workbench/terrain",
+        params={"sort": "untouched", "limit": 1000, "offset": 1}, headers=headers,
+    ).json()
+    assert worst["items"] + rest["items"] == sorted(page["blocks"], key=lambda b: (-b["untouched"], -b["hosts"]))
 
 
 # ---------------------------------------------------------------------------
@@ -596,4 +602,4 @@ def test_the_mcp_tools_round_trip(client, db_session, test_project):
 
     terrain = call("assist_get_terrain", {"sort": "untouched", "limit": 1}, rid=6)
     assert terrain["isError"] is False, terrain
-    assert len(terrain["structuredContent"]["blocks"]) <= 1
+    assert len(terrain["structuredContent"]["items"]) <= 1

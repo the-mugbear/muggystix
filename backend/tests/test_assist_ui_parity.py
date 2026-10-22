@@ -760,7 +760,7 @@ def test_expired_staged_uploads_are_not_failed_imports(client, db_session, test_
     assert (agent["failed"], agent["expired"], agent["discarded"]) == (
         summary["total_failed"], summary["total_expired"], summary["total_discarded"])
     assert agent["needs_attention"] == summary["total_needs_attention"]
-    kinds = sorted(i["kind"] for i in agent["issues"])
+    kinds = sorted(i["kind"] for i in agent["items"])
     assert kinds == ["expired", "expired", "failed"], "a discarded upload is not an issue"
 
 

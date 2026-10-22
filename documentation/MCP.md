@@ -84,13 +84,13 @@ many"), `returned` the length of `items`, and `has_more` says rows remain — as
 again with `offset` + `returned`. A tool description that says "paged" means
 exactly this. The helper is `agent_schemas.agent_page`, and
 `tests/test_agent_list_paging.py` lists the routes: the host, finding, name,
-scan, note, segment and scanner-observation lists, the untouched queue and the
+scan, note, segment, scanner-observation and ingestion-issue lists, the address
+terrain, the untouched queue and the
 operator's findings, evidence, proposals, host tests, the remediation list and
 timeline, and the scope's subnets and domains. An argument a tool does not take
-(`skip`, say) is an unknown argument (`-32602`). Five reads are not this page
-and say so in their descriptions: `assist_list_evidence_gaps`,
-`assist_list_ingestion_issues`, `assist_get_terrain` and `assist_compare_scans`
-carry a capped list with its count beside it and no `offset`;
+(`skip`, say) is an unknown argument (`-32602`). Three reads are not this page
+and say so in their descriptions: `assist_list_evidence_gaps` and
+`assist_compare_scans` carry a capped list with its count beside it and no `offset`;
 `assist_get_client_report` pages its `findings` member (`findings_total`,
 `findings_has_more`).
 
