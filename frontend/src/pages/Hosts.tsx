@@ -73,6 +73,7 @@ import { endpointMatchCriteria } from '../utils/endpointMatch';
 import { weaknessMatchCriteria } from '../utils/weaknessMatch';
 import { useConfirm } from '../hooks/useConfirm';
 import { hostConditionChips } from '../utils/hostConditionChips';
+import { hostsInQueryPath } from '../utils/queryPath';
 import {
   hostFiltersFromUrl,
   type HostSortOption,
@@ -1565,6 +1566,7 @@ export default function Hosts() {
         valueLabels={queryValueLabels}
         otherConditions={activeFilterChips.some((c) => c.key !== 'query')}
         onApplyTemplate={handleApplyTemplate}
+        queryHref={hostsInQueryPath(filters.query ?? '')}
       />
 
       {/* One toolbar (5.249.0) — view, filters, the single result count and the

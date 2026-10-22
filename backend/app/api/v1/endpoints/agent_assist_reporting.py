@@ -22,7 +22,7 @@ floor, AUDITOR (declared on each route with ``deps.agent_read_floor``).
 """
 from __future__ import annotations
 
-from typing import Literal, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
@@ -34,9 +34,12 @@ from app.api.v1.endpoints.agent_schemas import AgentPage, agent_page
 from app.api.v1.endpoints.client_reports import report_file_response, report_scope_response
 from app.api.v1.endpoints.agent_common import load_operator
 from app.api.v1.endpoints.queries import (
-    HISTORY_CONTAINS, HISTORY_LIMIT, QueryAnswer, QueryHistoryEntryOut, SavedQueryOut, history_page,
+    HISTORY_CONTAINS, HISTORY_LIMIT, QUERY_AFTER, QueryAnswer, QueryHistoryEntryOut, SavedQueryOut, history_page,
 )
-from app.api.v1.endpoints.scanner_observations import IssueDetailOut, IssueHostOut, IssuePageOut, IssueRowOut
+from app.api.v1.endpoints.scanner_observations import (
+    DETAIL_SOURCE, INCLUDE_JUDGED, ISSUE_JUDGED, ISSUE_SORT, IssueDetailOut, IssueHostOut, IssueJudged,
+    IssuePageOut, IssueRowOut, IssueSort,
+)
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
@@ -84,23 +87,25 @@ class AssistIssuePage(IssuePageOut, AgentPage):
 )
 def list_assist_scanner_observations(
     request: Request,
-    search: Optional[str] = Query(None, max_length=200, description="Only issues whose title or CVE id contains this text"),
+    search: Optional[str] = Query(
+        None, max_length=200, description="Only issues whose title, CVE id or a scanner's check id contains this text"),
     severity: Optional[str] = Query(None, max_length=20),
-    include_judged: bool = Query(False, description="Also list issues a finding already covers on every host"),
+    judged: Optional[IssueJudged] = ISSUE_JUDGED,
+    include_judged: bool = INCLUDE_JUDGED,
     min_hosts: int = Query(1, ge=1, le=100000, description="Only issues on at least this many hosts"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     kind: Optional[str] = Query(None, max_length=20,
                                 description="misconfiguration | vulnerability | informational"),
-    sort: Literal["severity", "hosts"] = Query(
-        "severity", description="severity: most severe first (default); hosts: most widespread first"),
+    sort: IssueSort = ISSUE_SORT,
     exploitable: bool = Query(False, description="Only issues a scanner reports an exploit for"),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     try:
         page = observations.list_issues(
-            db, request.state.agent_project_id, search=search, severity=severity, include_judged=include_judged,
+            db, request.state.agent_project_id, search=search, severity=severity,
+            judged=observations.resolve_judged(judged, include_judged),
             min_hosts=min_hosts, skip=offset, limit=limit, kind=kind, sort=sort, exploitable=exploitable,
         )
     except observations.ObservationError as exc:
@@ -151,13 +156,17 @@ def get_assist_scanner_observation_detail(
         ..., min_length=1, max_length=600,
         description="The issue's `issue_key`, as a row of /assist/scanner-observations gives it.",
     ),
+    source: Optional[str] = DETAIL_SOURCE,
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The Scanner observations inspector's details (v2.508.0), from the page's
     own ``issue_detail``. What a scanner printed for ONE host is that host's
     (``/assist/hosts/{id}/vulnerabilities``)."""
-    detail = observations.issue_detail(db, request.state.agent_project_id, issue_key)
+    try:
+        detail = observations.issue_detail(db, request.state.agent_project_id, issue_key, source=source)
+    except observations.ObservationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if detail is None:
         raise HTTPException(status_code=404, detail="No scanner observation in this project is that issue")
     return IssueDetailOut(**vars(detail))
@@ -175,15 +184,17 @@ def get_assist_scanner_observation_detail(
 def run_assist_query(
     request: Request,
     q: str = Query(..., min_length=1, max_length=4000, description="The query: a dataset, then | commands."),
+    after: Optional[str] = QUERY_AFTER,
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """The page's own ``query_service.run``, as the session's operator (the
     Hosts language's ``follow:mine`` / ``assigned:me`` are theirs).  A query
     that cannot be read is a 400 with its ``position``, as on the page.  The
-    run goes into the operator's Query history, labelled an agent's."""
+    run goes into the operator's Query history, labelled an agent's; a later
+    page (``after``) is not recorded again."""
     return query_history_service.run_and_record(
-        db, request.state.agent_project_id, load_operator(db, request), q, by_agent=True,
+        db, request.state.agent_project_id, load_operator(db, request), q, by_agent=True, after=after,
     )
 
 

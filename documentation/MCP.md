@@ -166,10 +166,11 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "Which hosts did this scan see, and did it log in to them?" | `assist_list_scan_hosts` (`credentialed`: true / false / null = the scan did not say) |
 | "Which ports did this scan find open, and what did it say ran on them?" | `assist_list_scan_ports` (every port as the scan recorded it, paged) |
 | "Which ports did that nmap scan actually probe?" | `assist_list_scans` (`scan_info`) |
-| "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
+| "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` (`sort=hosts`; `judged=none` for the untouched ones, `sort=cvss` for the highest CVSS) → `assist_list_observation_hosts` |
+| "Unjudged criticals by host" / "hosts by site" | `assist_query` — `observations \| where judged=false AND severity="critical" \| stats count by ip`, `hosts \| stats count by site`; a listing past 500 rows carries `next_after` (pass it as `after`) |
 | "How many hosts run each service?" / anything grouped | `assist_query` — the Query page's pipe query language (`ports \| where state="open" \| stats dc(host) as hosts by service`); `assist_query_schema` lists the columns, `assist_list_saved_queries` the team's saved queries |
 | "Run the query I ran earlier" | `assist_query_history` — the operator's Query history (theirs and their agents', `by_agent`), refused ones with `error`; every `assist_query` run is recorded there |
-| "What does the scanner say about this issue?" | `assist_get_scanner_observation` — description, remediation, CVSS, CVE, plugin, references (the Scanner observations inspector); per host, `assist_get_host_vulnerabilities` |
+| "What does the scanner say about this issue?" | `assist_get_scanner_observation` — description, remediation, CVSS, CVE, plugin, references (the Scanner observations inspector; `source=` for another scanner's words); per host, `assist_get_host_vulnerabilities` |
 | "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (the operator needs `auditor`) — an issued report is its frozen text, a draft what it would say now |
 
 **The workbench.** `assist_get_workbench` is the operator's own Operations page:

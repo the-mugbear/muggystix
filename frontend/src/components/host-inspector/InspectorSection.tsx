@@ -68,13 +68,19 @@ export interface InspectorSectionProps {
   titleHint?: string;
   titleClassName?: string;
   className?: string;
+  /** Open it whatever was remembered — the address names something inside
+   *  (a `#weakness-…` link from the Scanner observations inspector). */
+  forceOpen?: boolean;
   children: React.ReactNode;
 }
 
 export const InspectorSection: React.FC<InspectorSectionProps> = ({
-  id, title, icon, count, actions, titleHint, titleClassName, className, children,
+  id, title, icon, count, actions, titleHint, titleClassName, className, forceOpen = false, children,
 }) => {
-  const [open, setOpen] = useState(() => !readCollapsed().includes(id));
+  const [open, setOpen] = useState(() => forceOpen || !readCollapsed().includes(id));
+  useEffect(() => {
+    if (forceOpen) setOpen(true);
+  }, [forceOpen]);
 
   useEffect(() => {
     const onOpen = (event: Event) => {

@@ -61,11 +61,13 @@ import { applyCompletion, completeQuery, completionNeed } from '../utils/queryCo
 import { useQueryValueSuggest } from '../components/hosts/useQueryValueSuggest';
 import { useQueryColumnValues } from '../components/query/useQueryColumnValues';
 import { formatTimestamp } from '../utils/relativeTime';
-
-export const QUERY_PATH = '/query';
-export const queryPath = (q: string) => `${QUERY_PATH}?q=${encodeURIComponent(q)}`;
+import { hostsPageFor, queryPath } from '../utils/queryPath';
 
 const EXAMPLE = 'observations | where severity IN ("critical", "high") | stats dc(host) as hosts by title | sort -hosts | head 20';
+
+/** A values() cell shows this many values; the rest are "+N more", which
+ *  opens the group's rows (review Q13: twenty addresses cut to one line). */
+export const VALUES_SHOWN = 8;
 
 /** Where the server says the query went wrong (`position`), if it said. */
 const errorPosition = (error: unknown): number | null => {
@@ -94,9 +96,17 @@ const Editor: React.FC<{
   onBuild: () => void;
   /** The server's schema — completion's source (the page's one read). */
   schema: QuerySchema | null;
-}> = ({ initial, running, onRun, onSave, building, onBuild, schema }) => {
+  /** Why the schema is missing, for the builder. */
+  schemaError: unknown;
+}> = ({ initial, running, onRun, onSave, building, onBuild, schema, schemaError }) => {
   const projectId = useProjectId();
   const [draft, setDraft] = useState(initial);
+  // The builder (review Q9) starts from the text the editor held when it
+  // opened, and writes every change back here; when the reader types over
+  // what it wrote, it offers to read the text again.
+  const [builderSeed, setBuilderSeed] = useState(() => (building ? initial : ''));
+  const [builderWrote, setBuilderWrote] = useState(() => (building ? initial : ''));
+  const reseedBuilder = () => { setBuilderSeed(draft); setBuilderWrote(draft); };
   const text = draft.trim();
   const box = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState<number | null>(null);
@@ -214,11 +224,33 @@ const Editor: React.FC<{
         <Button size="sm" variant="outline" onClick={() => onSave(text)} disabled={!text}>
           <Save className="size-4" aria-hidden /> Save…
         </Button>
-        <Button size="sm" variant="ghost" aria-expanded={building} onClick={onBuild}>
+        <Button size="sm" variant="ghost" aria-expanded={building} onClick={() => { if (!building) reseedBuilder(); onBuild(); }}>
           <Wrench className="size-4" aria-hidden /> {building ? 'Hide the builder' : 'Builder'}
         </Button>
         <span className="text-caption text-muted-foreground">Ctrl + Enter runs it; Tab takes a suggestion.</span>
       </div>
+      {building && (schema ? (
+        <>
+          {draft.trim() !== builderWrote.trim() && (
+            <p className="text-caption text-muted-foreground">
+              The query changed since the builder read it.{' '}
+              <Button variant="ghost" size="sm" className="h-auto p-0 text-caption text-primary" onClick={reseedBuilder}>
+                Read it again
+              </Button>
+            </p>
+          )}
+          <QueryBuilder
+            key={builderSeed}
+            schema={schema}
+            seed={builderSeed}
+            onChange={(next) => { setDraft(next); setBuilderWrote(next); }}
+          />
+        </>
+      ) : schemaError ? (
+        <p role="alert" className="text-caption text-destructive">{queryErrorText(schemaError, 'Could not load the columns for the builder.')}</p>
+      ) : (
+        <p role="status" className="text-caption text-muted-foreground">Loading the columns…</p>
+      ))}
     </div>
   );
 };
@@ -249,12 +281,67 @@ const QueryError: React.FC<{ q: string; error: unknown }> = ({ q, error }) => {
 const ANSWER_VIEWS = [['table', 'Table'], ['chart', 'Chart']] as const;
 type AnswerView = 'table' | 'chart';
 
-const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: AnswerView) => void }> = ({ answer, view, onView }) => {
+/** The first query of each of the first three datasets (review Q14: an empty
+ *  page taught nothing but one link; the Reference starts closed). */
+const Examples: React.FC<{ schema: QuerySchema | null; onRun: (q: string) => void }> = ({ schema, onRun }) => {
+  const examples = schema
+    ? schema.datasets.map((d) => d.examples[0]).filter((e): e is string => !!e).slice(0, 3)
+    : [EXAMPLE];
+  return (
+    <div className="flex min-w-0 flex-col gap-xxs" data-testid="query-examples">
+      <p className="text-metadata text-muted-foreground">Write a query, or run one of these:</p>
+      <ul className="flex min-w-0 flex-col gap-xxs">
+        {examples.map((ex) => (
+          <li key={ex} className="min-w-0">
+            <button type="button" title="Run this example" onClick={() => onRun(ex)}
+              className="max-w-full break-words text-left font-mono text-caption text-primary hover:underline">
+              {ex}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+/** A values() list: the first VALUES_SHOWN, wrapped to three lines at most,
+ *  then "+N more" opening the group's own rows. */
+const ValuesCell: React.FC<{ values: unknown[]; cut: boolean; drill: string | null }> = ({ values, cut, drill }) => {
+  if (values.length === 0) return <>—</>;
+  const shown = values.slice(0, VALUES_SHOWN).map(String).join(', ');
+  const hidden = values.length - Math.min(values.length, VALUES_SHOWN);
+  const more = hidden > 0 || cut
+    ? `+${hidden > 0 ? `${hidden.toLocaleString()} ` : ''}more${cut ? ` (the list stops at ${values.length})` : ''}`
+    : null;
+  return (
+    <span className="line-clamp-3 break-words" title={values.map(String).join(', ') + (cut ? ', …' : '')}>
+      {shown}
+      {more && (
+        <>
+          {' '}
+          {drill
+            ? <Link to={queryPath(drill)} className="text-primary hover:underline" data-testid="values-more">{more}</Link>
+            : <span className="text-muted-foreground">{more}</span>}
+        </>
+      )}
+    </span>
+  );
+};
+
+const Answer: React.FC<{
+  answer: QueryAnswer;
+  view: AnswerView;
+  onView: (v: AnswerView) => void;
+  /** A listing's next page (its `next_after`), or null for the first rows. */
+  onPage: (after: string | null) => void;
+}> = ({ answer, view, onView, onPage }) => {
   const projectId = useProjectId();
   const { canExport } = useProjectRole();
   // A chart only for a stats answer with ONE group column and a number.
   const measures = chartMeasures(answer);
   const shown = answer.rows.length;
+  const start = answer.start ?? 0;
+  const paged = answer.kind === 'rows' && (start > 0 || !!answer.next_after);
   const noun = answer.kind === 'stats' ? (answer.total === 1 ? 'group' : 'groups') : (answer.total === 1 ? 'row' : 'rows');
   const drill = answer.kind === 'stats' && answer.drilldowns;
   // A listing row's own page (the host, the finding, the endpoint).
@@ -282,15 +369,24 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
     <div className="flex min-w-0 flex-col gap-xs">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-sm">
         <p className="text-caption text-muted-foreground" data-testid="query-count">
-          {shown < answer.total
-            ? `The first ${shown.toLocaleString()} of ${answer.total.toLocaleString()} ${noun}`
-            : `${answer.total.toLocaleString()} ${noun}`}
+          {paged
+            ? `Rows ${(start + 1).toLocaleString()}–${(start + shown).toLocaleString()} of ${answer.total.toLocaleString()}`
+            : shown < answer.total
+              ? `The first ${shown.toLocaleString()} of ${answer.total.toLocaleString()} ${noun}`
+              : `${answer.total.toLocaleString()} ${noun}`}
           {answer.capped ? ` — a query shows at most ${answer.limit.toLocaleString()}` : ''}
           {' · '}{answer.dataset}
         </p>
         {/* Every export is an auditor's (style guide §40); the file holds
             up to 50,000 rows of a listing, past the page's 500. */}
         <div className="flex flex-wrap items-center gap-sm">
+          {/* Q7 — a `hosts` listing with no `where` IS a Hosts-page list:
+              open it there, where the bulk tools are. */}
+          {answer.hosts_q != null && (
+            <Link to={hostsPageFor(answer.hosts_q)} className="text-caption text-primary hover:underline" data-testid="query-open-on-hosts">
+              Open on Hosts
+            </Link>
+          )}
           {measures && <ViewTabs label="Answer view" value={view} options={ANSWER_VIEWS} onChange={onView} />}
           {canExport && (
             <DownloadButton
@@ -320,8 +416,15 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
               // Rows have no id; the answer is replaced whole, never edited in place.
               <TableRow key={i}>
                 {answer.columns.map((c, j) => {
-                  const text = cellText(row[j], c.type)
-                    + (cut.has(`${i}\u0000${c.name}`) ? ` … (the first ${(row[j] as unknown[]).length})` : '');
+                  if (c.type === 'list' && Array.isArray(row[j])) {
+                    return (
+                      <TableCell key={c.name} className="align-top" data-testid="query-values-cell">
+                        <ValuesCell values={row[j] as unknown[]} cut={cut.has(`${i}\u0000${c.name}`)}
+                          drill={drill ? (answer.drilldowns?.[i] ?? null) : null} />
+                      </TableCell>
+                    );
+                  }
+                  const text = cellText(row[j], c.type);
                   return (
                     <TableCell
                       key={c.name}
@@ -354,6 +457,20 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
         </Table>
       </div>
       )}
+      {/* Q5 — past the cap, the next rows (key-set: the place is the last
+          row's, so rows added meanwhile do not shift the page). */}
+      {paged && (
+        <div className="flex flex-wrap items-center gap-sm" data-testid="query-pages">
+          {start > 0 && (
+            <Button variant="outline" size="sm" onClick={() => onPage(null)}>Back to the first rows</Button>
+          )}
+          {answer.next_after && (
+            <Button variant="outline" size="sm" onClick={() => onPage(answer.next_after ?? null)}>
+              Next {Math.min(answer.limit, answer.total - start - shown).toLocaleString()} rows
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -362,7 +479,11 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
 // Saved queries
 // ---------------------------------------------------------------------------
 
-interface SaveForm { id: number | null; name: string; description: string; query: string; shared: boolean }
+interface SaveForm {
+  id: number | null; name: string; description: string; query: string; shared: boolean;
+  /** Another member's query (a project admin editing it). */
+  othersQuery?: string | null;
+}
 
 const SaveDialog: React.FC<{ form: SaveForm | null; onClose: () => void }> = ({ form, onClose }) => (
   <Dialog open={form !== null} onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -417,6 +538,13 @@ const SaveBody: React.FC<{ form: SaveForm; onClose: () => void }> = ({ form, onC
           <Checkbox id="saved-query-shared" checked={shared} onCheckedChange={(v) => setShared(v === true)} />
           <Label htmlFor="saved-query-shared">Share with the project</Label>
         </div>
+        {/* Review 2026-10-16, I8: un-sharing another member's query makes it
+            theirs alone — the admin who did it cannot see it afterwards. */}
+        {form.othersQuery && form.shared && !shared && (
+          <p className="break-words text-caption text-warning" data-testid="unshare-note">
+            Un-sharing makes it {form.othersQuery}&apos;s private query: you will no longer see it here.
+          </p>
+        )}
         {save.isError && (
           <p role="alert" className="break-words text-caption text-destructive">
             {formatApiError(save.error, 'Could not save the query')}
@@ -726,6 +854,10 @@ const Query: React.FC = () => {
   const projectId = useProjectId();
   const [params, setParams] = useSearchParams();
   const q = (params.get('q') ?? '').trim();
+  // A listing's later page (review Q5): the place it continues from, the
+  // previous page's `next_after` — in the address, so a page can be linked
+  // and Back returns to the one before.
+  const after = q ? params.get('after') : null;
   // Table or chart — list state a reader returns to, so it is in the address
   // too, and a new query keeps it.
   const view: AnswerView = params.get('view') === 'chart' ? 'chart' : 'table';
@@ -733,27 +865,33 @@ const Query: React.FC = () => {
   const run = (text: string) => {
     // Run on the query already shown asks again (second review 2026-10-16,
     // I2: the address did not change, so nothing was read — after a
-    // promotion elsewhere Run looked broken).
-    if (text && text === q) {
+    // promotion elsewhere Run looked broken).  It starts from its first rows.
+    if (text && text === q && !after) {
       void queryClient.invalidateQueries({ queryKey: ['runQuery', projectId, q] });
       return;
     }
     // The query is one value of the address: the history's search and page
-    // (and the view) stay as they were.
+    // (and the view) stay as they were; a new run starts at the first rows.
     setParams((prev) => {
       const out = new URLSearchParams(prev);
       if (text) out.set('q', text); else out.delete('q');
+      out.delete('after');
       return out;
     });
   };
+  const setAfter = (next: string | null) => setParams((prev) => {
+    const out = new URLSearchParams(prev);
+    if (next) out.set('after', next); else out.delete('after');
+    return out;
+  });
   const setView = (next: AnswerView) => setParams((prev) => {
     const out = new URLSearchParams(prev);
     if (next === 'chart') out.set('view', 'chart'); else out.delete('view');
     return out;
   }, { replace: true });
   const answer = useQuery({
-    queryKey: ['runQuery', projectId, q],
-    queryFn: ({ signal }) => runQuery(projectId, q, signal),
+    queryKey: ['runQuery', projectId, q, after],
+    queryFn: ({ signal }) => runQuery(projectId, q, after, signal),
     enabled: q !== '',
   });
   // Every run is recorded in my history on the server (refused ones too):
@@ -763,7 +901,7 @@ const Query: React.FC = () => {
     if (settledAt) void invalidateReads(queryClient, 'listQueryHistory');
   }, [settledAt, queryClient]);
   const [saving, setSaving] = useState<SaveForm | null>(null);
-  // The builder (5.406.0): a panel that writes the query text.
+  // The builder (5.406.0): a panel inside the editor that writes its text.
   const [building, setBuilding] = useState(false);
   // The schema: ONE read for the editor's completion, the builder and the
   // Reference, remembered — it changes only with a deploy (second review
@@ -812,26 +950,14 @@ const Query: React.FC = () => {
           building={building}
           onBuild={() => setBuilding((v) => !v)}
           schema={schema.data ?? null}
+          schemaError={schema.isError ? schema.error : null}
         />
-        {building && (schema.data ? (
-          <QueryBuilder schema={schema.data} onRun={run} />
-        ) : schema.isError ? (
-          <p role="alert" className="text-caption text-destructive">{queryErrorText(schema.error, 'Could not load the columns for the builder.')}</p>
-        ) : (
-          <p role="status" className="text-caption text-muted-foreground">Loading the columns…</p>
-        ))}
         {q === '' ? (
-          <p className="text-metadata text-muted-foreground">
-            Write a query, or{' '}
-            <button type="button" className="text-primary hover:underline" onClick={() => run(EXAMPLE)}>
-              run an example
-            </button>
-            .
-          </p>
+          <Examples schema={schema.data ?? null} onRun={run} />
         ) : answer.isError ? (
           <QueryError q={q} error={answer.error} />
         ) : answer.data ? (
-          <Answer answer={answer.data} view={view} onView={setView} />
+          <Answer answer={answer.data} view={view} onView={setView} onPage={setAfter} />
         ) : (
           <p role="status" className="flex items-center gap-xs text-metadata text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden /> Running…
@@ -841,7 +967,10 @@ const Query: React.FC = () => {
 
       <SavedQueries
         onRun={run}
-        onEdit={(row) => setSaving({ id: row.id, name: row.name, description: row.description ?? '', query: row.query, shared: row.shared })}
+        onEdit={(row) => setSaving({
+          id: row.id, name: row.name, description: row.description ?? '', query: row.query, shared: row.shared,
+          othersQuery: row.mine ? null : (row.created_by ?? 'its creator'),
+        })}
       />
       <History onRun={run} onSave={(text) => setSaving({ id: null, name: '', description: '', query: text, shared: false })} />
       <Reference onRun={run} schema={schema} />

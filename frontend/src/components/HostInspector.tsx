@@ -23,7 +23,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, SEVERITY_HSL, type Severity } from '../utils/severity';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { issueFromWeaknessHash } from '../utils/observationsPath';
 import {
   AlertTriangle,
   ChevronDown,
@@ -269,6 +270,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   namesThePage = false,
 }) => {
   const navigate = useNavigate();
+  const locationHash = useLocation().hash;
   const toast = useToast();
   const { user } = useAuth();
   // The PROJECT role (analyst+), not the account role every member has (R32).
@@ -1068,6 +1070,9 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const observationsSection = hasVulnerabilities ? (
     <InspectorSection
       id="host-detail-vulnerabilities"
+      // A `#weakness-<issue>` link (the Scanner observations inspector) opens
+      // the section, so its row can open itself (review 2026-10-16, O4 / O7).
+      forceOpen={issueFromWeaknessHash(locationHash) !== null}
       title="Scanner observations"
       titleHint="What the scanners reported on this host — one row per observation whichever tool reported it (nmap, NetExec, Nessus…). Not yet judged: promote one to make it a finding under investigation."
       icon={<ShieldAlert className="size-4 shrink-0 text-destructive" aria-hidden />}

@@ -201,15 +201,23 @@ const sections: GuideSection[] = [
           hand — <em>Add finding</em> in a host&rsquo;s Findings section, for an issue no scanner row
           or test result on that host stands for. The <strong>Findings</strong> page (Findings hub) lists findings.{' '}
           <strong>Inventory → Scanner observations</strong> lists every scanner observation, grouped
-          by issue across hosts, 50 to a page — <em>Only not yet judged</em> keeps those with a host
-          no finding covers yet — and promotes several at once. <em>Open</em> on a row opens its
+          by issue across hosts, 50 to a page, and promotes several at once. Each row says how far
+          it is judged (none, all, or how many of its hosts a finding covers) and, under its title,
+          the scanners&rsquo; check ids, the highest CVSS, the ports it was seen on and when it was
+          last seen; the search box finds a title, a CVE or a check id. <em>Judged</em> narrows the
+          list to issues with a host not yet judged, with no host judged, or judged on every host;
+          the order can be the most severe, the most hosts or the highest CVSS first.{' '}
+          <em>Open</em> on a row opens its
           inspector beside the list: what the scanner wrote about it (description, remediation,
-          CVSS, plugin and references, and which scanner&rsquo;s words they are), every host
-          carrying it, and on each host <em>Output</em> — what the scanner printed there. Untick
+          CVSS, plugin and references — when several scanners reported it, pick whose words), every
+          host carrying it, and on each host <em>Output</em> — what the scanner printed there
+          (<em>Show all output</em> opens every host&rsquo;s at once, up to ten hosts). A host&rsquo;s
+          address opens its page at this issue&rsquo;s row, and that row links back here;{' '}
+          <em>All N hosts on Hosts</em> and <em>Ask this in Query</em> take the issue to those pages. Untick
           the hosts you have not verified, then <em>Promote</em> records the finding on the ticked
           ones; <em>Mark false positive</em> dismisses it as the host page does — on every host
           carrying it, or only on the hosts left ticked — with an optional reason. <em>Previous</em>{' '}
-          and <em>Next</em> walk the list, and the inspector&rsquo;s address can be shared.
+          and <em>Next</em> (or <Mono>k</Mono> / <Mono>j</Mono>) walk the list, and the inspector&rsquo;s address can be shared.
         </Para>
         <UnorderedList>
           <li><strong>Status</strong> — a finding is <em>under investigation</em> (Open), <em>Confirmed</em>, or <em>closed</em> (False positive, Accepted risk, Remediated). Closing one asks for a reason — you can save without one —, kept on the finding's history and carried into the report.</li>
@@ -245,13 +253,15 @@ const sections: GuideSection[] = [
           <Mono>ports | where state=&quot;open&quot; | stats dc(host) as hosts by service, port | sort -hosts | head 20</Mono>
         </Para>
         <UnorderedList>
-          <li><strong>Datasets</strong> — <Mono>hosts</Mono>, <Mono>ports</Mono>, <Mono>observations</Mono>, <Mono>findings</Mono>, <Mono>endpoints</Mono> (a finding on one host, with that host&rsquo;s state), <Mono>web</Mono>, <Mono>names</Mono>: what one row is. The page&rsquo;s <em>Reference</em> lists each one&rsquo;s columns, with examples you can run; the editor suggests datasets, commands, columns and values as you type (Tab takes one), and <em>Builder</em> writes a query from pickers. On <Mono>findings</Mono> a search term matches a finding when one of its hosts does; <Mono>names</Mono> take none.</li>
+          <li><strong>Datasets</strong> — <Mono>hosts</Mono>, <Mono>ports</Mono>, <Mono>observations</Mono>, <Mono>findings</Mono>, <Mono>endpoints</Mono> (a finding on one host, with that host&rsquo;s state), <Mono>web</Mono>, <Mono>names</Mono>: what one row is. The page&rsquo;s <em>Reference</em> lists each one&rsquo;s columns, with examples you can run (an empty page shows three); the editor suggests datasets, commands, columns and values as you type (Tab takes one), and <em>Builder</em> opens on the query in the editor and writes every change back into it — <em>Run</em> runs it (a query it cannot show whole, an OR say, it says so and leaves alone). On <Mono>findings</Mono> a search term matches a finding when one of its hosts does; <Mono>names</Mono> take none.</li>
+          <li><strong>Columns worth knowing</strong> — on <Mono>hosts</Mono>: <Mono>site</Mono> (the site the Hosts list shows), <Mono>scope</Mono> (subnet, name or none) and <Mono>open_ports</Mono>, so <Mono>hosts | stats count by site</Mono> works. On <Mono>observations</Mono>: <Mono>judged</Mono> (a finding of the issue covers this host — the Scanner observations page&rsquo;s rule) and <Mono>finding</Mono>, so <Mono>observations | where judged=false AND severity=&quot;critical&quot; | stats count by ip</Mono> lists the unjudged criticals by host. On <Mono>findings</Mono>: <Mono>hosts</Mono>, how many systems it is on.</li>
           <li><strong>Search terms</strong> — right after the dataset (or <Mono>| search …</Mono>) are the Hosts query language, and always describe the row&rsquo;s <em>host</em>: on <Mono>ports</Mono>, <Mono>port:445</Mono> keeps every port of a host that has 445 open.</li>
           <li><strong>where</strong> — compares the dataset&rsquo;s own columns: <Mono>| where port=445 AND state=&quot;open&quot;</Mono>. <Mono>=</Mono> is exact (case too); <Mono>like(col, &quot;%ssh%&quot;)</Mono> is not. Also <Mono>!=</Mono>, <Mono>&lt;</Mono>, <Mono>&gt;</Mono>, <Mono>IN (…)</Mono>, <Mono>isnull(col)</Mono>, <Mono>NOT</Mono>.</li>
           <li><strong>stats and top</strong> — <Mono>count</Mono>, <Mono>dc(col)</Mono> (distinct), <Mono>min</Mono>, <Mono>max</Mono>, <Mono>avg</Mono>, <Mono>sum</Mono>, <Mono>values</Mono>, <Mono>by</Mono> up to five columns; <Mono>top limit=10 col</Mono> adds a percent. <em>Open rows</em> on any row lists exactly the rows that group counted.</li>
-          <li><strong>Shaping</strong> — <Mono>sort -col</Mono>, <Mono>head N</Mono>, <Mono>fields</Mono> / <Mono>table</Mono> for a listing&rsquo;s columns. At most 500 rows or 1,000 groups come back, and the page says how many there were. Each listing row has <em>Open</em> (its host, finding or affected system).</li>
+          <li><strong>Shaping</strong> — <Mono>sort -col</Mono>, <Mono>head N</Mono>, <Mono>fields</Mono> / <Mono>table</Mono> for a listing&rsquo;s columns. A listing comes 500 rows at a time — <em>Next 500 rows</em> reads on (the page is in the address), <em>Back to the first rows</em> returns — and at most 1,000 groups come back; the page says how many there were. A <Mono>values()</Mono> cell shows its first eight values, and <em>+N more</em> opens that group&rsquo;s rows. Each listing row has <em>Open</em> (its host, its observation&rsquo;s inspector, its finding or affected system).</li>
+          <li><strong>To and from Hosts</strong> — a <Mono>hosts</Mono> listing with no <Mono>where</Mono> is a Hosts-page list: <em>Open on Hosts</em> takes it there, where the bulk tools are. On Hosts, <em>Query</em> beside the query bar opens the same hosts here as <Mono>hosts &lt;your query&gt;</Mono> (while no other filter narrows the list).</li>
           <li><strong>Chart and CSV</strong> — a stats answer grouped by one column can be drawn as bars (<em>Chart</em>; one measure at a time). <em>Download CSV</em> (auditors and above) saves the answer — a listing up to 50,000 rows.</li>
-          <li><strong>Saved queries</strong> — <em>Save…</em> keeps a query under a name, for you or shared with the project. Everyone sees the shared ones; only their author or a project admin changes them. The query is in the page&rsquo;s address, so a link to it works too.</li>
+          <li><strong>Saved queries</strong> — <em>Save…</em> keeps a query under a name, for you or shared with the project. Everyone sees the shared ones; only their author or a project admin changes them — and an admin who un-shares a teammate&rsquo;s query makes it theirs alone, out of the admin&rsquo;s sight too (the dialog says so). The query is in the page&rsquo;s address, so a link to it works too.</li>
         </UnorderedList>
       </div>
     ),

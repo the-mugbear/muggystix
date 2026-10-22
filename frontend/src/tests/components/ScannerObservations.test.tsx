@@ -66,19 +66,37 @@ describe('ScannerObservations — the list', () => {
     renderIt();
     expect(await screen.findByText('SMB Signing not required')).toBeInTheDocument();
     expect(screen.getByText('3 hosts')).toBeInTheDocument();
-    expect(screen.getByText('1 covered · 1 not yet judged')).toBeInTheDocument();
+    // 5.418.0 (O3) — the judged fraction is always said, none judged too.
+    expect(screen.getByText('1 of 2 judged')).toBeInTheDocument();
+    expect(screen.getByText('none judged')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Finding #12/ })).toHaveAttribute('href', '/findings/12');
     // 5.404.0 — every observation by default, judged ones included; any
     // number of hosts (v5.288.0: a 2+ default hid single-host criticals).
-    expect(mocked.getObservationIssues).toHaveBeenCalledWith(1, expect.objectContaining({ minHosts: 1, includeJudged: true }), expect.any(AbortSignal));
-    expect(screen.getByRole('switch', { name: 'Only not yet judged' })).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByTestId('observations-count')).not.toHaveTextContent(/or more hosts|not yet judged/);
+    expect(mocked.getObservationIssues).toHaveBeenCalledWith(1, expect.objectContaining({ minHosts: 1, judged: 'any' }), expect.any(AbortSignal));
+    expect(screen.getByRole('combobox', { name: 'Judged' })).toHaveTextContent('Judged or not');
+    expect(screen.getByTestId('observations-count')).not.toHaveTextContent(/or more hosts|judged/);
   });
 
   it('says "all judged" for an issue every host of which a finding covers', async () => {
     mocked.getObservationIssues.mockResolvedValue({ items: [{ ...TLS, judged_host_count: 2 }], total: 1 });
     renderIt();
     expect(await screen.findByText('all judged')).toBeInTheDocument();
+  });
+
+  // 5.418.0 (O1 / O2 / I11) — the check id, CVSS, ports and last seen tell
+  // rows apart; the row and the inspector say them from one component.
+  it('a row names its check ids, CVSS, ports, scanners and last seen, as its inspector does', async () => {
+    mocked.getObservationIssues.mockResolvedValue({
+      items: [{ ...SMB, plugin_ids: ['57608'], cvss_score: 5.3, ports: [139, 445], port_count: 5, last_seen: '2026-10-20T10:00:00' }],
+      total: 1,
+    });
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    const line = screen.getByTestId('issue-meta');
+    expect(line).toHaveTextContent('check 57608 · CVSS 5.3 · ports 139, 445 +3 · from nessus · last seen');
+    openRow('SMB Signing not required');
+    const inspector = await screen.findByTestId('observation-inspector');
+    expect(within(inspector).getByTestId('issue-meta')).toHaveTextContent('check 57608 · CVSS 5.3 · ports 139, 445 +3 · from nessus');
   });
 
   it('draws severity with the shared badge, Info included', async () => {
@@ -98,24 +116,24 @@ describe('ScannerObservations — the list', () => {
 
   // Review 2026-09-23 B-UI-3: filters were component state, not shareable.
   it('reads its filters from the URL', async () => {
-    renderIt(true, '/observations?obs_severity=critical&obs_min=5&obs_pending=1&obs_search=ssh');
+    renderIt(true, '/observations?obs_severity=critical&obs_min=5&obs_judged=waiting&obs_search=ssh');
     await screen.findByText('SMB Signing not required');
     expect(mocked.getObservationIssues).toHaveBeenCalledWith(
       1,
-      expect.objectContaining({ severity: 'critical', minHosts: 5, includeJudged: false, search: 'ssh' }),
+      expect.objectContaining({ severity: 'critical', minHosts: 5, judged: 'waiting', search: 'ssh' }),
       expect.any(AbortSignal),
     );
-    expect(screen.getByRole('switch', { name: 'Only not yet judged' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('combobox', { name: 'Judged' })).toHaveTextContent('A host not yet judged');
   });
 
   // Plan A7 — what to test first is asked of the server, over every issue.
   it('asks the server for the exploit filter and the order, from the address and from the controls', async () => {
-    renderIt(true, '/observations?obs_exploit=1&obs_sort=hosts&obs_pending=1');
+    renderIt(true, '/observations?obs_exploit=1&obs_sort=hosts&obs_judged=waiting');
     await screen.findByText('SMB Signing not required');
     expect(mocked.getObservationIssues).toHaveBeenCalledWith(
       1, expect.objectContaining({ exploitable: true, sort: 'hosts' }), expect.any(AbortSignal),
     );
-    expect(screen.getByTestId('observations-count')).toHaveTextContent('with an exploit reported and hosts not yet judged · most hosts first');
+    expect(screen.getByTestId('observations-count')).toHaveTextContent('with an exploit reported, with hosts not yet judged · most hosts first');
 
     fireEvent.click(screen.getByRole('switch', { name: 'Exploit reported' }));
     await waitFor(() => expect(mocked.getObservationIssues).toHaveBeenLastCalledWith(
@@ -123,15 +141,30 @@ describe('ScannerObservations — the list', () => {
     ));
   });
 
-  it('"Only not yet judged" narrows the list and says so when nothing waits', async () => {
-    renderIt();
-    await screen.findByText('SMB Signing not required');
+  it('the Judged filter has four values from the address, and says so when nothing waits', async () => {
     mocked.getObservationIssues.mockResolvedValue({ items: [], total: 0 });
-    fireEvent.click(screen.getByRole('switch', { name: 'Only not yet judged' }));
-    await waitFor(() => expect(mocked.getObservationIssues).toHaveBeenLastCalledWith(
-      1, expect.objectContaining({ includeJudged: false }), expect.any(AbortSignal),
-    ));
+    renderIt(true, '/observations?obs_judged=waiting');
     expect(await screen.findByText(/Nothing waits: every matching observation is already covered/)).toBeInTheDocument();
+    for (const [value, label, phrase] of [
+      ['none', 'No host judged', 'with no host judged'], ['all', 'Judged on every host', 'judged on every host'],
+    ] as const) {
+      mocked.getObservationIssues.mockResolvedValue({ items: [SMB], total: 1 });
+      const { unmount } = renderIt(true, `/observations?obs_judged=${value}`);
+      await waitFor(() => expect(mocked.getObservationIssues).toHaveBeenLastCalledWith(
+        1, expect.objectContaining({ judged: value }), expect.any(AbortSignal),
+      ));
+      expect(await screen.findByTestId('observations-count')).toHaveTextContent(phrase);
+      const pickers = screen.getAllByRole('combobox', { name: 'Judged' });
+      expect(pickers[pickers.length - 1]).toHaveTextContent(label);
+      unmount();
+    }
+  });
+
+  it('asks for the highest CVSS first', async () => {
+    renderIt(true, '/observations?obs_sort=cvss');
+    await screen.findByText('SMB Signing not required');
+    expect(mocked.getObservationIssues).toHaveBeenCalledWith(1, expect.objectContaining({ sort: 'cvss' }), expect.any(AbortSignal));
+    expect(screen.getByTestId('observations-count')).toHaveTextContent('highest CVSS first');
   });
 
   it('marks an issue with a reported exploit', async () => {
@@ -190,7 +223,7 @@ describe('ScannerObservations — the inspector', () => {
     expect(mocked.getObservationIssueDetail).not.toHaveBeenCalled();
     openRow('SMB Signing not required');
     const detail = await screen.findByTestId('observation-detail');
-    expect(mocked.getObservationIssueDetail).toHaveBeenCalledWith(1, SMB.issue_key, expect.any(AbortSignal));
+    expect(mocked.getObservationIssueDetail).toHaveBeenCalledWith(1, SMB.issue_key, null, expect.any(AbortSignal));
     expect(detail).toHaveTextContent('Signing is not required on the remote SMB server.');
     expect(detail).toHaveTextContent('as nessus reports it');
     expect(detail).toHaveTextContent('Enforce message signing.');
@@ -200,7 +233,53 @@ describe('ScannerObservations — the inspector', () => {
     expect(detail).toHaveTextContent('MS-SMB2');
     const inspector = screen.getByTestId('observation-inspector');
     expect(within(inspector).getByTestId('observation-inspector-counts')).toHaveTextContent('3 hosts · 0 judged · 3 not yet judged');
-    expect(await within(inspector).findByRole('link', { name: '10.9.0.1' })).toHaveAttribute('href', '/hosts/1');
+    // O4 / O7 — a host opens at THIS issue's weakness row.
+    expect(await within(inspector).findByRole('link', { name: '10.9.0.1' }))
+      .toHaveAttribute('href', `/hosts/1#${encodeURIComponent('weakness-title:smb signing not required')}`);
+  });
+
+  // O4 — the pivots are always there, and a short list's output opens at once.
+  it('links its hosts on Hosts and its rows in Query, and shows every host’s output on a short list', async () => {
+    mocked.getObservationHostOutput.mockResolvedValue([
+      { id: 9, title: SMB.title, port_number: 445, protocol: 'tcp', service_name: null, source: 'nessus',
+        plugin_id: '57608', plugin_output: 'signing: false', last_seen: null, references: [] },
+    ]);
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    openRow('SMB Signing not required');
+    const pivots = await screen.findByTestId('observation-pivots');
+    expect(within(pivots).getByRole('link', { name: 'All 3 hosts on Hosts' }))
+      .toHaveAttribute('href', `/hosts?q=${encodeURIComponent('issue:"title:smb signing not required"')}`);
+    expect(within(pivots).getByRole('link', { name: 'Ask this in Query' }))
+      .toHaveAttribute('href', `/query?q=${encodeURIComponent('observations | where issue="title:smb signing not required"')}`);
+    fireEvent.click(within(pivots).getByRole('button', { name: 'Show all output' }));
+    await waitFor(() => expect(screen.getAllByTestId('observation-host-output')).toHaveLength(3));
+    expect(mocked.getObservationHostOutput).toHaveBeenCalledTimes(3);
+  });
+
+  // O5 — two scanners' words: a picker, and the server asked for that one's.
+  it('offers each scanner’s words when several reported it', async () => {
+    mocked.getObservationIssues.mockResolvedValue({ items: [{ ...SMB, sources: ['nessus', 'openvas'] }], total: 1 });
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    openRow('SMB Signing not required');
+    const picker = await screen.findByTestId('observation-source-picker');
+    expect(within(picker).getByRole('combobox')).toHaveTextContent('nessus');
+    fireEvent.click(within(picker).getByRole('combobox'));
+    fireEvent.click(await screen.findByRole('option', { name: 'openvas' }));
+    await waitFor(() => expect(mocked.getObservationIssueDetail).toHaveBeenLastCalledWith(1, SMB.issue_key, 'openvas', expect.any(AbortSignal)));
+  });
+
+  // O9 — j / k step inside the inspector.
+  it('j and k step to the next and previous observation', async () => {
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    openRow('SMB Signing not required');
+    await screen.findByTestId('observation-inspector');
+    fireEvent.keyDown(window, { key: 'j' });
+    expect(await screen.findByText('2 of 2')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'k' });
+    expect(await screen.findByText('1 of 2')).toBeInTheDocument();
   });
 
   it('is opened by the address, and closing it takes the issue out of the address', async () => {
@@ -219,7 +298,7 @@ describe('ScannerObservations — the inspector', () => {
     expect(screen.getByRole('button', { name: 'Previous observation' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Next observation' }));
     expect(await screen.findByText('2 of 2')).toBeInTheDocument();
-    await waitFor(() => expect(mocked.getObservationIssueDetail).toHaveBeenLastCalledWith(1, TLS.issue_key, expect.any(AbortSignal)));
+    await waitFor(() => expect(mocked.getObservationIssueDetail).toHaveBeenLastCalledWith(1, TLS.issue_key, null, expect.any(AbortSignal)));
     expect(screen.getByRole('button', { name: 'Next observation' })).toBeDisabled();
   });
 
@@ -303,9 +382,11 @@ describe('ScannerObservations — the inspector', () => {
     expect(note).toHaveTextContent('The first 100 of 4,000 hosts');
     expect(mocked.getObservationIssueHosts).toHaveBeenCalledWith(1, SMB.issue_key, 101, expect.any(AbortSignal));
     expect(screen.queryByRole('checkbox', { name: /^Include / })).not.toBeInTheDocument();
-    expect(within(note).getByRole('link')).toHaveAttribute(
+    expect(within(screen.getByTestId('observation-pivots')).getByRole('link', { name: 'All 4,000 hosts on Hosts' })).toHaveAttribute(
       'href', `/hosts?q=${encodeURIComponent('issue:"title:smb signing not required"')}`,
     );
+    // Past ten hosts their output stays one row at a time.
+    expect(screen.queryByRole('button', { name: 'Show all output' })).not.toBeInTheDocument();
   });
 });
 

@@ -18,6 +18,7 @@ The two rules it leans on are defined elsewhere, and used as they are:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
 from sqlalchemy import String, and_, case, cast, distinct, false, func, literal, or_
@@ -29,7 +30,7 @@ from app.db.models import Host, Port
 from app.db.models_findings import Finding, FindingHost, FindingSource, FindingStatus
 from app.db.models_host_tests import ACTIVE_TEST_STATUSES, TESTED_OUTCOMES, HostTest
 from app.db.models_proposals import EvidenceRecord
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
 from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
 from app.services.host_query_common import escape_like
@@ -177,6 +178,16 @@ class IssueRow:
     # A scanner says an exploit exists for it, on at least one host.  A lead
     # for what to test first — not a statement that it was exploited.
     exploitable: bool = False
+    # Review 2026-10-16, O1 / O2 — what tells two rows apart and what a
+    # triage needs without opening each: the scanners' own check ids, the
+    # highest CVSS any of its rows gives, the ports it was seen on (the first
+    # PORT_CAP by number; ``port_count`` is all of them) and when an import
+    # last recorded it.
+    plugin_ids: List[str] = field(default_factory=list)
+    cvss_score: Optional[float] = None
+    ports: List[int] = field(default_factory=list)
+    port_count: int = 0
+    last_seen: Optional[datetime] = None
 
 
 @dataclass
@@ -185,13 +196,40 @@ class IssuePage:
     total: int = 0
 
 
+# The ports and check ids a row names; the counts say how many there are.
+PORT_CAP = 8
+PLUGIN_ID_CAP = 5
+
+# The list's orders, one declaration for both doors.
+ISSUE_SORTS = ("severity", "hosts", "cvss")
+
+# Which issues by how far they are judged (review 2026-10-16, O3), one
+# declaration for both doors: every issue; those with a host not yet judged
+# (the agents' default and the page's old switch); those with no host judged;
+# those judged on every host.
+JUDGED_STATES = ("any", "waiting", "none", "all")
+
+
+def resolve_judged(judged: Optional[str], include_judged: bool) -> str:
+    """The ``judged`` filter a request asks for.  ``include_judged=true`` is
+    the older spelling of ``judged=any``, still read on both doors; asking
+    both for different things is refused, never one of them dropped."""
+    if judged is None:
+        return "any" if include_judged else "waiting"
+    if judged not in JUDGED_STATES:
+        raise ObservationError(f"Unknown judged '{judged}'. One of: {', '.join(JUDGED_STATES)}")
+    if include_judged and judged != "any":
+        raise ObservationError("include_judged=true is judged=any; send one of them")
+    return judged
+
+
 def list_issues(
     db: Session,
     project_id: int,
     *,
     search: Optional[str] = None,
     severity: Optional[str] = None,
-    include_judged: bool = False,
+    judged: str = "waiting",
     min_hosts: int = 1,
     skip: int = 0,
     limit: int = 50,
@@ -204,34 +242,44 @@ def list_issues(
     ``sort="hosts"`` (v2.428.5) puts the most widespread issues first — most
     hosts left to judge, then most hosts, then severity: "which issues are on
     the most hosts?" (MCP acceptance feedback #13 had to page 606 groups and
-    sort them itself).
+    sort them itself).  ``sort="cvss"`` puts the highest CVSS first (an
+    issue with none last).
 
-    By default an issue every host of which a finding already covers is left
-    out: this is the list of what still waits.  ``include_judged`` shows it.
-    ``exploitable`` keeps the issues a scanner reports an exploit for on at
-    least one host (each row says so either way).
+    ``judged`` (``JUDGED_STATES``) — by default ``waiting``: an issue every
+    host of which a finding already covers is left out, the list of what
+    still waits.  ``exploitable`` keeps the issues a scanner reports an
+    exploit for on at least one host (each row says so either way).
+    ``search`` matches the title, the CVE id or a scanner's check id.
     """
+    if sort not in ISSUE_SORTS:
+        raise ObservationError(f"Unknown sort '{sort}'")
+    if judged not in JUDGED_STATES:
+        raise ObservationError(f"Unknown judged '{judged}'")
     key = _key()
     rank = func.max(_rank())
     hosts = func.count(distinct(Vulnerability.host_id))
     # The judged rule as joins: the per-row EXISTS ran once for the SELECT,
     # the HAVING and the ORDER BY each — 4.3 s over 400k rows at 80k hosts.
     base, judged_row = join_judged(_project_rows(db, project_id), [project_id])
-    judged = func.count(distinct(case((judged_row, Vulnerability.host_id))))
+    judged_hosts = func.count(distinct(case((judged_row, Vulnerability.host_id))))
     # Title and CVE come from the row the severity comes from — one aggregate
     # query still, no second pass over the groups.
     title = _of_most_severe_row(db, Vulnerability.title)
     cve = func.coalesce(_of_most_severe_row(db, Vulnerability.cve_id), func.max(Vulnerability.cve_id))
     has_exploit = func.bool_or(func.coalesce(Vulnerability.exploitable, false()))
+    cvss = func.max(Vulnerability.cvss_score)
+    last_seen = func.max(Vulnerability.last_seen)
     query = base.with_entities(
-        key.label("issue_key"), rank.label("rank"), hosts.label("hosts"), judged.label("judged"),
+        key.label("issue_key"), rank.label("rank"), hosts.label("hosts"), judged_hosts.label("judged"),
         title.label("title"), cve.label("cve_id"), has_exploit.label("exploitable"),
+        cvss.label("cvss_score"), last_seen.label("last_seen"),
     )
     if search and search.strip():
         # Escaped like every other search: "100%" and "a_b" are text.
         like = f"%{escape_like(search.strip())}%"
         query = query.filter(or_(
             Vulnerability.title.ilike(like, escape="\\"), Vulnerability.cve_id.ilike(like, escape="\\"),
+            Vulnerability.plugin_id.ilike(like, escape="\\"),
         ))
     # v2.415.0 — kind: a catalog check's rows all carry it (its issue key is
     # the check); otherwise the issue's severity decides.
@@ -252,8 +300,12 @@ def list_issues(
         if wanted is None:
             raise ObservationError(f"Unknown severity '{severity}'")
         query = query.having(rank == wanted)
-    if not include_judged:
-        query = query.having(hosts > judged)
+    if judged == "waiting":
+        query = query.having(hosts > judged_hosts)
+    elif judged == "none":
+        query = query.having(judged_hosts == 0)
+    elif judged == "all":
+        query = query.having(hosts == judged_hosts)
     if min_hosts > 1:
         query = query.having(hosts >= min_hosts)
     if exploitable:
@@ -262,6 +314,12 @@ def list_issues(
     # The total rides on the page as a window over the groups: counting in a
     # second query ran the whole aggregation twice.  A page past the end has
     # no rows to carry it, so only then is it counted on its own.
+    if sort == "hosts":
+        order = ((hosts - judged_hosts).desc(), hosts.desc(), rank.desc(), title, key)
+    elif sort == "cvss":
+        order = (cvss.desc().nullslast(), rank.desc(), (hosts - judged_hosts).desc(), hosts.desc(), title, key)
+    else:
+        order = (rank.desc(), (hosts - judged_hosts).desc(), hosts.desc(), title, key)
     rows = (
         query.add_columns(func.count().over().label("total_groups"))
         # The issue key is the LAST sort key (v2.474.1): the other keys are
@@ -270,10 +328,7 @@ def list_issues(
         # could repeat an issue or skip one although nothing had changed.
         # (Rows still move between pages when someone judges an issue; the
         # page de-duplicates for that.)
-        .order_by(*(
-            ((hosts - judged).desc(), hosts.desc(), rank.desc(), title, key) if sort == "hosts"
-            else (rank.desc(), (hosts - judged).desc(), hosts.desc(), title, key)
-        ))
+        .order_by(*order)
         .offset(skip)
         .limit(limit)
         .all()
@@ -281,14 +336,21 @@ def list_issues(
     total = rows[0].total_groups if rows else (query.order_by(None).count() if skip else 0)
     keys = [r.issue_key for r in rows]
     sources: Dict[str, List[str]] = {}
+    plugin_ids: Dict[str, List[str]] = {}
+    ports: Dict[str, tuple] = {}
     if keys:
-        for k, src in (
-            _project_rows(db, project_id, key, Vulnerability.source)
+        for k, src, plugin_id in (
+            _project_rows(db, project_id, key, Vulnerability.source, Vulnerability.plugin_id)
             .filter(_key_in(keys))
             .distinct()
             .all()
         ):
-            sources.setdefault(k, []).append(getattr(src, "value", src))
+            value = getattr(src, "value", src)
+            if value not in sources.setdefault(k, []):
+                sources[k].append(value)
+            if plugin_id and plugin_id not in plugin_ids.setdefault(k, []):
+                plugin_ids[k].append(plugin_id)
+        ports = _issue_ports(db, project_id, keys)
     findings = _findings_by_key(db, project_id, keys)
     items = []
     for r in rows:
@@ -306,8 +368,38 @@ def list_issues(
             kind=(KIND_MISCONFIGURATION if r.issue_key.startswith("check:")
                   else KIND_INFORMATIONAL if int(r.rank or 0) <= info_rank else KIND_VULNERABILITY),
             exploitable=bool(r.exploitable),
+            plugin_ids=sorted(plugin_ids.get(r.issue_key, []))[:PLUGIN_ID_CAP],
+            cvss_score=float(r.cvss_score) if r.cvss_score is not None else None,
+            ports=list(ports.get(r.issue_key, ((), 0))[0]),
+            port_count=int(ports.get(r.issue_key, ((), 0))[1]),
+            last_seen=r.last_seen,
         ))
     return IssuePage(items=items, total=int(total))
+
+
+def _issue_ports(db: Session, project_id: int, keys: Sequence[str]) -> Dict[str, tuple]:
+    """issue key → (its first ``PORT_CAP`` port numbers, how many there are),
+    in one grouped statement for the page — an informational issue can sit
+    on every port of every host, so only the first few leave the database."""
+    key = _key()
+    number = Port.port_number
+    if db.get_bind().dialect.name == "postgresql":
+        first = pg_array_agg(aggregate_order_by(distinct(number), number.asc()))[1:PORT_CAP]
+    else:  # the SQLite test fallback: every number, cut below
+        first = func.group_concat(distinct(number))
+    rows = (
+        _project_rows(db, project_id, key, first, func.count(distinct(number)))
+        .join(Port, Port.id == Vulnerability.port_id)
+        .filter(_key_in(keys))
+        .group_by(key)
+        .all()
+    )
+    out: Dict[str, tuple] = {}
+    for k, numbers, count in rows:
+        if isinstance(numbers, str):
+            numbers = sorted(int(n) for n in numbers.split(","))
+        out[k] = (sorted(numbers or [])[:PORT_CAP], int(count))
+    return out
 
 
 @dataclass
@@ -422,20 +514,27 @@ class IssueDetail:
     references: List[str] = field(default_factory=list)
 
 
-def issue_detail(db: Session, project_id: int, issue_key: str) -> Optional[IssueDetail]:
+def issue_detail(
+    db: Session, project_id: int, issue_key: str, source: Optional[str] = None,
+) -> Optional[IssueDetail]:
     """What a scanner wrote about the issue — so the list can be judged
     without opening one of its hosts.  One row speaks for it: the most severe
     that HAS a description (the most severe row may be a bare one from another
-    tool), lowest id on a tie.  What a scanner printed for a particular host
+    tool), lowest id on a tie.  ``source`` asks for one scanner's words (review
+    2026-10-16, O5: when two tools reported it, the other's text was
+    unreachable).  What a scanner printed for a particular host
     (``plugin_output``) differs by host and stays on the host's page.
-    ``None`` when the project has no such issue."""
+    ``None`` when the project has no such issue (from that scanner)."""
     described = case((func.coalesce(func.trim(Vulnerability.description), "") != "", 1), else_=0)
-    row = (
-        _project_rows(db, project_id, Vulnerability)
-        .filter(_key_is(issue_key))
-        .order_by(described.desc(), _rank().desc(), Vulnerability.id.asc())
-        .first()
-    )
+    query = _project_rows(db, project_id, Vulnerability).filter(_key_is(issue_key))
+    if source is not None:
+        try:
+            query = query.filter(Vulnerability.source == VulnerabilitySource(source.lower()))
+        except ValueError:
+            raise ObservationError(
+                f"Unknown source '{source}'. One of: {', '.join(s.value for s in VulnerabilitySource)}"
+            )
+    row = query.order_by(described.desc(), _rank().desc(), Vulnerability.id.asc()).first()
     if row is None:
         return None
     return IssueDetail(

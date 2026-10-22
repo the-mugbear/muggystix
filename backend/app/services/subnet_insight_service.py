@@ -227,6 +227,34 @@ def resolve_host_locations(
     return locations
 
 
+def host_site_expression():
+    """``resolve_host_locations``' SITE as one SQL value per ``Host`` row: the
+    site of the most specific (longest-prefix) site-bearing scope subnet the
+    host maps to, NULL when none carries one or the host is in no subnet.
+
+    The Query page's ``hosts`` column ``site`` (review Q2: ``hosts | stats
+    count by site``) — a value a query groups needs SQL, and the Hosts row's
+    loop cannot run per group.  The same rule: a non-blank site name, nearest
+    by prefix length (a scope holds a CIDR once, so two subnets a host maps
+    to never tie).  ``tests/test_query_columns_2026_10_22.py`` pins it to
+    ``resolve_host_locations`` host by host."""
+    from sqlalchemy import cast, func, select
+    from sqlalchemy.dialects.postgresql import CIDR
+
+    sited = func.trim(func.coalesce(Subnet.site, "")) != ""
+    return (
+        select(Subnet.site)
+        .select_from(HostSubnetMapping)
+        .join(Subnet, Subnet.id == HostSubnetMapping.subnet_id)
+        .join(Scope, Scope.id == Subnet.scope_id)
+        .where(HostSubnetMapping.host_id == models.Host.id, Scope.project_id == models.Host.project_id, sited)
+        .order_by(func.masklen(cast(Subnet.cidr, CIDR)).desc(), Subnet.id)
+        .limit(1)
+        .correlate(models.Host)
+        .scalar_subquery()
+    )
+
+
 def site_nested_exclusions(subnet_meta: Dict[int, Dict[str, Any]]) -> Dict[str, List[str]]:
     """For each site (keyed like a segment: ``str(site_id)``), the CIDRs of
     subnets carrying ANOTHER site that sit strictly inside one of its subnets.

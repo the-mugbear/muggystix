@@ -56,6 +56,9 @@ def _role_headers(db_session, project, role):
     {}, {"min_hosts": 2}, {"severity": "low"}, {"search": "CVE-2023"},
     {"include_judged": True}, {"kind": "vulnerability"}, {"limit": 1, "skip": 1},
     {"sort": "hosts"},
+    # Backlog group D (review 2026-10-16, O1 / O2 / O3): the new words mean
+    # the same on both doors.
+    {"sort": "cvss"}, {"judged": "none"}, {"judged": "all"}, {"judged": "any"},
 ])
 def test_observations_are_the_pages_own_numbers(client, test_project, estate, params):
     page = client.get(f"/api/v1/projects/{test_project.id}/scanner-observations", params=params)

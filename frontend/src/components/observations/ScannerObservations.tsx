@@ -3,8 +3,8 @@
  * Inventory page `/observations` (5.404.0; until then the Findings page's
  * second view, v5.272.0).
  *
- * Every observation is listed by default, judged or not; "Only not yet
- * judged" (`obs_pending=1`) narrows it to what still waits.  Opening a row
+ * Every observation is listed by default, judged or not; the Judged filter
+ * (`obs_judged=waiting|none|all`) narrows it, `waiting` to what still waits.  Opening a row
  * opens the inspector (`ObservationInspector`, `?issue=` in the address): what
  * the scanner wrote, every host carrying it and what it printed on each.
  * Several issues are promoted at once from the bulk bar, each on every host
@@ -22,7 +22,7 @@ import {
   getObservationIssues,
   promoteObservationIssues,
 } from '../../services/api';
-import type { ObservationIssue, ObservationIssueHost, WeaknessKind } from '../../services/api';
+import type { ObservationIssue, ObservationIssueHost, ObservationJudged, WeaknessKind } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
 import { usePagedList } from '../../hooks/usePagedList';
@@ -48,6 +48,7 @@ import { Switch } from '../ui/switch';
 import { Textarea } from '../ui/textarea';
 import { PagedFooter } from '../operations/QueueParts';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
+import IssueMeta from './IssueMeta';
 import ObservationInspector from './ObservationInspector';
 
 const PAGE = 50;
@@ -55,6 +56,25 @@ const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 const NO_ISSUES: ObservationIssue[] = [];
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+/** The judged filter's choices (O3): the server's `judged` values. */
+const JUDGED_OPTIONS: [ObservationJudged, string][] = [
+  ['any', 'Judged or not'],
+  ['waiting', 'A host not yet judged'],
+  ['none', 'No host judged'],
+  ['all', 'Judged on every host'],
+];
+const JUDGED_PHRASE: Record<ObservationJudged, string> = {
+  any: '', waiting: 'with hosts not yet judged', none: 'with no host judged', all: 'judged on every host',
+};
+const SORT_PHRASE = { severity: 'most severe first', hosts: 'most hosts first', cvss: 'highest CVSS first' } as const;
+
+/** How far an issue is judged, always said — "none judged" is a statement too. */
+export const judgedFraction = (i: Pick<ObservationIssue, 'host_count' | 'judged_host_count'>): string => {
+  if (i.judged_host_count === 0) return 'none judged';
+  if (i.judged_host_count >= i.host_count) return 'all judged';
+  return `${i.judged_host_count.toLocaleString()} of ${i.host_count.toLocaleString()} judged`;
+};
 
 interface Props {
   /** Analyst or above: may select, promote and dismiss. */
@@ -77,10 +97,13 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   // Any number of hosts by default (v5.288.0): "2 or more" hid every
   // single-host issue, criticals included, with nothing saying so.
   const minHosts = Number(params.get('obs_min') ?? 1) || 1;
-  // 5.404.0 — every observation by default; `obs_pending=1` keeps those with
-  // a host not yet judged (what the Findings view used to list).
-  const pendingOnly = params.get('obs_pending') === '1';
-  const includeJudged = !pendingOnly;
+  // 5.404.0 — every observation by default.  5.418.0 (review 2026-10-16,
+  // O3) — how far each is judged, four ways (`obs_judged`): any (the
+  // default, left out of the address), `waiting` (a host not yet judged —
+  // what the Findings view used to list), `none`, `all`.
+  const judgedParam = params.get('obs_judged');
+  const judged: ObservationJudged = judgedParam === 'waiting' || judgedParam === 'none' || judgedParam === 'all'
+    ? judgedParam : 'any';
   // v5.298.0 — misconfigurations (catalog checks) / vulnerabilities.
   const kind = params.get('obs_kind') ?? 'all';
   const setParam = useCallback((key: string, value: string, fallback: string) => {
@@ -95,14 +118,15 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   }, [setParams]);
   const setSeverity = (v: string) => setParam('obs_severity', v, 'all');
   const setMinHosts = (v: number) => setParam('obs_min', String(v), '1');
-  const setPendingOnly = (v: boolean) => setParam('obs_pending', v ? '1' : '0', '0');
+  const setJudged = (v: string) => setParam('obs_judged', v, 'any');
   const setKind = (v: string) => setParam('obs_kind', v, 'all');
   // Plan A7 — what to test first: issues with a known exploit, and the most
   // widespread ones.  Both are the server's (a filter and an order over ALL
   // issues, not over the rows loaded so far).
   const exploitable = params.get('obs_exploit') === '1';
   const setExploitable = (v: boolean) => setParam('obs_exploit', v ? '1' : '0', '0');
-  const sort: 'severity' | 'hosts' = params.get('obs_sort') === 'hosts' ? 'hosts' : 'severity';
+  const sortParam = params.get('obs_sort');
+  const sort: 'severity' | 'hosts' | 'cvss' = sortParam === 'hosts' || sortParam === 'cvss' ? sortParam : 'severity';
   const setSort = (v: string) => setParam('obs_sort', v, 'severity');
 
   // The inspector's issue is the address's: a link opens it, Back closes it.
@@ -132,11 +156,11 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
 
   const filters = useMemo(
     () => ({
-      search, severity: severity === 'all' ? undefined : severity, minHosts, includeJudged,
+      search, severity: severity === 'all' ? undefined : severity, minHosts, judged,
       kind: kind === 'all' ? undefined : (kind as WeaknessKind),
       exploitable, sort,
     }),
-    [search, severity, minHosts, includeJudged, kind, exploitable, sort],
+    [search, severity, minHosts, judged, kind, exploitable, sort],
   );
 
   // One page at a time, the page in the address (`?page=`): 636 issues were
@@ -301,14 +325,12 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     });
   };
 
-  const waiting = (i: ObservationIssue) => i.host_count - i.judged_host_count;
-
   // j/k (↓/↑) move a row cursor, Enter opens the issue in the inspector.
   const { cursorRowProps } = useListCursor(
     error ? 0 : issues.length,
     (i) => openIssue(issues[i].issue_key),
     // A promotion re-reads the list (under "not yet judged" the issue may leave it).
-    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}|${exploitable}|${sort}`, getId: (i) => issues[i]?.issue_key },
+    { resetKey: `${search}|${severity}|${minHosts}|${judged}|${kind}|${exploitable}|${sort}`, getId: (i) => issues[i]?.issue_key },
   );
 
   return (
@@ -318,7 +340,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
         <ListFilterSearch
           value={searchBox.draft}
           onChange={searchBox.setDraft}
-          placeholder="Search titles or CVE…"
+          placeholder="Search titles, CVE or check id…"
           label="Search scanner observations"
         />
         <Select value={severity} onValueChange={setSeverity}>
@@ -353,15 +375,18 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
           <SelectContent>
             <SelectItem value="severity">Most severe first</SelectItem>
             <SelectItem value="hosts">Most hosts first</SelectItem>
+            <SelectItem value="cvss">Highest CVSS first</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={judged} onValueChange={setJudged}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-52')} aria-label="Judged"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {JUDGED_OPTIONS.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}
           </SelectContent>
         </Select>
         <div className="flex items-center gap-xs">
           <Switch id="observations-exploit" checked={exploitable} onCheckedChange={(v) => setExploitable(v === true)} />
           <Label htmlFor="observations-exploit" className="text-metadata">Exploit reported</Label>
-        </div>
-        <div className="flex items-center gap-xs">
-          <Switch id="observations-pending" checked={pendingOnly} onCheckedChange={(v) => setPendingOnly(v === true)} />
-          <Label htmlFor="observations-pending" className="text-metadata">Only not yet judged</Label>
         </div>
       </ListFilterBar>
 
@@ -426,7 +451,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
         </p>
       ) : issues.length === 0 ? (
         <p className="text-metadata text-muted-foreground">
-          {pendingOnly
+          {judged === 'waiting'
             ? 'Nothing waits: every matching observation is already covered by a finding on each of its hosts.'
             : 'No scanner observation matches these filters.'}
         </p>
@@ -437,8 +462,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                 Posture's and Portfolio's figures count it once per host. */}
             {plural(total, 'distinct scanner observation')}{minHosts > 1 ? ` carried by ${minHosts} or more hosts` : ''}
             {exploitable ? ' with an exploit reported' : ''}
-            {pendingOnly ? `${exploitable ? ' and' : ' with'} hosts not yet judged` : ''}
-            {' · '}{sort === 'hosts' ? 'most hosts first' : 'most severe first'}
+            {judged !== 'any' ? `${exploitable ? ',' : ''} ${JUDGED_PHRASE[judged]}` : ''}
+            {' · '}{SORT_PHRASE[sort]}
           </p>
           <div className="overflow-x-auto">
             <Table className="min-w-[48rem] table-fixed">
@@ -497,13 +522,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                         >
                           {issue.title}
                         </button>
-                        <p className="truncate text-caption text-muted-foreground">
-                          {[
-                            issue.kind === 'misconfiguration' ? 'misconfiguration' : null,
-                            issue.exploitable ? 'exploit reported' : null,
-                            issue.cve_id, issue.sources.join(', '),
-                          ].filter(Boolean).join(' · ')}
-                        </p>
+                        <IssueMeta issue={issue} variant="line" />
                         {issue.finding_id != null && (
                           <Link to={`/findings/${issue.finding_id}`} className="text-caption text-primary hover:underline">
                             Finding #{issue.finding_id}
@@ -516,14 +535,11 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                       </TableCell>
                       <TableCell className="tabular-nums">
                         <p>{plural(issue.host_count, 'host')}</p>
-                        {/* Said only when it tells rows apart. */}
-                        {issue.judged_host_count > 0 && (
-                          <p className="text-caption text-muted-foreground">
-                            {waiting(issue) > 0
-                              ? `${issue.judged_host_count} covered · ${waiting(issue)} not yet judged`
-                              : 'all judged'}
-                          </p>
-                        )}
+                        {/* Always said (O3): an untouched issue and an
+                            all-judged one both read "30 hosts" first. */}
+                        <p className="text-caption text-muted-foreground" data-testid="observation-judged">
+                          {judgedFraction(issue)}
+                        </p>
                         {narrowed && selected.has(key) && (
                           <p className="text-caption text-primary">{narrowed.size} of {issue.host_count} ticked</p>
                         )}

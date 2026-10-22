@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../services/api', () => ({
@@ -287,5 +288,24 @@ describe('HostCommandBar', () => {
     // Draft differs from the committed query and is invalid → Copy is disabled
     // so it can't copy the committed query behind a misleading success toast.
     await waitFor(() => expect(screen.getByLabelText('Copy shareable link')).toBeDisabled());
+  });
+
+  // Review 2026-10-16, Q7 — the same hosts in Query, while the query alone
+  // is the list.
+  it('offers the query in Query only while no other condition narrows the list', () => {
+    const href = '/query?q=hosts%20port%3A80';
+    const { unmount } = render(
+      <MemoryRouter>
+        <HostCommandBar value="port:80" onChange={vi.fn()} onPin={vi.fn()} onCopyLink={vi.fn()} queryHref={href} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('hosts-open-in-query')).toHaveAttribute('href', href);
+    unmount();
+    render(
+      <MemoryRouter>
+        <HostCommandBar value="port:80" onChange={vi.fn()} onPin={vi.fn()} onCopyLink={vi.fn()} queryHref={href} otherConditions />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId('hosts-open-in-query')).not.toBeInTheDocument();
   });
 });

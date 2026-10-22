@@ -12,13 +12,13 @@ const from = (search: string) => observationsPathFromFindingsView(new URLSearchP
 
 describe('observationsPathFromFindingsView', () => {
   it('the bare view is the list of what still waits', () => {
-    expect(from('view=observations')).toBe('/observations?obs_pending=1');
-    expect(OBSERVATIONS_TO_JUDGE_PATH).toBe('/observations?obs_pending=1');
+    expect(from('view=observations')).toBe('/observations?obs_judged=waiting');
+    expect(OBSERVATIONS_TO_JUDGE_PATH).toBe('/observations?obs_judged=waiting');
   });
 
   it('keeps the filters and the page', () => {
     expect(from('view=observations&obs_severity=critical&obs_search=ssh&page=3'))
-      .toBe('/observations?obs_severity=critical&obs_search=ssh&page=3&obs_pending=1');
+      .toBe('/observations?obs_severity=critical&obs_search=ssh&page=3&obs_judged=waiting');
   });
 
   it('the old "include covered" switch is the new default: no narrowing', () => {

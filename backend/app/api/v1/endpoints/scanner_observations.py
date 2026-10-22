@@ -8,6 +8,7 @@ The logic is ``scanner_observation_service``; this module is the HTTP shape.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -25,6 +26,11 @@ from app.services import scanner_observation_service as svc
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
+# The service's ISSUE_SORTS and JUDGED_STATES as types, so OpenAPI (and the
+# MCP tool derived from it) carries the enums; a test pins them equal.
+IssueSort = Literal["severity", "hosts", "cvss"]
+IssueJudged = Literal["any", "waiting", "none", "all"]
+
 
 class IssueRowOut(BaseModel):
     issue_key: str
@@ -41,6 +47,28 @@ class IssueRowOut(BaseModel):
     # A scanner reports an exploit for it on at least one host (a lead, not a
     # statement that it was exploited).
     exploitable: bool = False
+    plugin_ids: List[str] = Field(default_factory=list, description="The scanners' check ids for it (the first 5)")
+    cvss_score: Optional[float] = Field(None, description="The highest CVSS base score any of its rows gives")
+    ports: List[int] = Field(default_factory=list, description="The ports it was seen on, the first 8 by number")
+    port_count: int = Field(0, description="How many ports it was seen on (0: host-level only)")
+    last_seen: Optional[datetime] = Field(None, description="When an import last recorded it, on any host")
+
+
+# One declaration for both doors (the page's route and the agents').
+ISSUE_SORT = Query(
+    "severity",
+    description="severity: most severe first (default); hosts: most widespread first; cvss: highest CVSS first",
+)
+ISSUE_JUDGED = Query(
+    None,
+    description="any: every issue; waiting (the default): a host not yet judged; none: no host judged; "
+                "all: judged on every host",
+)
+INCLUDE_JUDGED = Query(False, description="The older spelling of judged=any")
+DETAIL_SOURCE = Query(
+    None, max_length=20,
+    description="One scanner's words (a row's `sources`); omitted: the most severe row with a description",
+)
 
 
 class IssuePageOut(BaseModel):
@@ -100,23 +128,23 @@ class PromoteResponse(BaseModel):
 
 @router.get("/scanner-observations", response_model=IssuePageOut, summary="Scanner observations, one row per issue")
 def list_scanner_observation_issues(
-    search: Optional[str] = Query(None, max_length=200),
+    search: Optional[str] = Query(None, max_length=200, description="Title, CVE id or a scanner's check id contains this"),
     severity: Optional[str] = Query(None, max_length=20),
-    include_judged: bool = Query(False, description="Also list issues a finding already covers on every host"),
+    judged: Optional[IssueJudged] = ISSUE_JUDGED,
+    include_judged: bool = INCLUDE_JUDGED,
     min_hosts: int = Query(1, ge=1, le=100000),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     kind: Optional[str] = Query(None, max_length=20,
                                 description="misconfiguration | vulnerability | informational"),
-    sort: Literal["severity", "hosts"] = Query(
-        "severity", description="severity: most severe first (default); hosts: most widespread first"),
+    sort: IssueSort = ISSUE_SORT,
     exploitable: bool = Query(False, description="Only issues a scanner reports an exploit for"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     try:
         page = svc.list_issues(
-            db, project.id, search=search, severity=severity, include_judged=include_judged,
+            db, project.id, search=search, severity=severity, judged=svc.resolve_judged(judged, include_judged),
             min_hosts=min_hosts, skip=skip, limit=limit, kind=kind, sort=sort, exploitable=exploitable,
         )
     except svc.ObservationError as exc:
@@ -142,10 +170,14 @@ def list_scanner_observation_hosts(
 )
 def get_scanner_observation_detail(
     issue_key: str = Query(..., min_length=1, max_length=600),
+    source: Optional[str] = DETAIL_SOURCE,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    detail = svc.issue_detail(db, project.id, issue_key)
+    try:
+        detail = svc.issue_detail(db, project.id, issue_key, source=source)
+    except svc.ObservationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if detail is None:
         raise HTTPException(status_code=404, detail="No scanner observation in this project is that issue")
     return IssueDetailOut(**vars(detail))

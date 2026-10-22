@@ -12,7 +12,7 @@
  * positive…" are the list's selection and the list's dialogs (props), so a
  * promotion from here is the same request as one from the bulk bar.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Ban, ChevronDown, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
@@ -27,15 +27,20 @@ import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
+import { isPageShortcutEvent } from '../../utils/keyboard';
+import { weaknessHash } from '../../utils/observationsPath';
+import { issueInQueryPath } from '../../utils/queryPath';
 import AgentTaskButton from '../agent-sessions/AgentTaskButton';
 import InspectorSection from '../host-inspector/InspectorSection';
 import ScannerReferences from '../host-inspector/ScannerReferences';
 import { TimeAgo } from '../TimeAgo';
 import { SeverityBadge } from '../ui/SeverityBadge';
-import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
+import { Label } from '../ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { SideSheet, SideSheetBody, SideSheetContent, SideSheetHeader, SideSheetTitle } from '../ui/side-sheet';
+import IssueMeta from './IssueMeta';
 
 /** Hosts listed under an issue; one more is requested to know the list is cut. */
 export const HOST_CAP = 100;
@@ -55,11 +60,12 @@ export const issueTestState = (h: Pick<ObservationIssueHost, 'tests_to_do' | 'te
 export const issueHostsPath = (issueKey: string) =>
   `/hosts?q=${encodeURIComponent(`issue:"${issueKey.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`)}`;
 
-const KIND_LABEL: Record<string, string> = {
-  misconfiguration: 'Misconfiguration',
-  vulnerability: 'Vulnerability',
-  informational: 'Informational',
-};
+/** A host's page, opened at this issue's weakness row (O4 / O7). */
+export const hostWeaknessPath = (hostId: number, issueKey: string) =>
+  `/hosts/${hostId}${weaknessHash(issueKey)}`;
+
+/** "Show all output" is offered up to this many hosts (O4). */
+export const SHOW_ALL_OUTPUT_MAX = 10;
 
 export interface ObservationInspectorProps {
   /** The issue open (`?issue=`), or null for a closed panel. */
@@ -83,6 +89,23 @@ export interface ObservationInspectorProps {
 
 const ObservationInspector: React.FC<ObservationInspectorProps> = (props) => {
   const { issueKey, position, hasPrev, hasNext, onStep, onClose } = props;
+  // O9 — j / k step to the next / previous observation while the inspector
+  // is open, as on the Hosts inspector (the list's own cursor keys stand
+  // aside while a dialog is open).  A host is ticked with Tab and Space.
+  const open = issueKey !== null;
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'j' && e.key !== 'k') return;
+      if (!isPageShortcutEvent(e, { allowDialog: true, allowRepeat: true })) return;
+      const delta = e.key === 'j' ? 1 : -1;
+      if (delta === 1 ? !hasNext : !hasPrev) return;
+      e.preventDefault();
+      onStep(delta);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, hasNext, hasPrev, onStep]);
   return (
     <SideSheet open={issueKey !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
       <SideSheetContent width="xl" aria-describedby={undefined}>
@@ -97,10 +120,10 @@ const ObservationInspector: React.FC<ObservationInspectorProps> = (props) => {
               )}
             </SideSheetTitle>
             <div className="flex items-center gap-xxs">
-              <Button variant="ghost" size="icon" aria-label="Previous observation" disabled={!hasPrev} onClick={() => onStep(-1)}>
+              <Button variant="ghost" size="icon" aria-label="Previous observation" title="Previous observation (k)" disabled={!hasPrev} onClick={() => onStep(-1)}>
                 <ChevronLeft className="size-4" aria-hidden />
               </Button>
-              <Button variant="ghost" size="icon" aria-label="Next observation" disabled={!hasNext} onClick={() => onStep(1)}>
+              <Button variant="ghost" size="icon" aria-label="Next observation" title="Next observation (j)" disabled={!hasNext} onClick={() => onStep(1)}>
                 <ChevronRight className="size-4" aria-hidden />
               </Button>
             </div>
@@ -118,9 +141,12 @@ const Body: React.FC<ObservationInspectorProps & { issueKey: string }> = ({
   issueKey, issue, canManage, narrowed, onToggleHost, onPromote, onDismiss,
 }) => {
   const projectId = useProjectId();
+  // O5 — whose words: null = the server's choice (the most severe row with a
+  // description); a scanner named = that scanner's.  Local to this issue's body.
+  const [source, setSource] = useState<string | null>(null);
   const detail = useQuery({
-    queryKey: ['getObservationIssueDetail', projectId, issueKey],
-    queryFn: ({ signal }) => getObservationIssueDetail(projectId, issueKey, signal),
+    queryKey: ['getObservationIssueDetail', projectId, issueKey, source],
+    queryFn: ({ signal }) => getObservationIssueDetail(projectId, issueKey, source, signal),
   });
   const hostsQuery = useQuery({
     queryKey: ['getObservationIssueHosts', projectId, issueKey, HOST_CAP + 1],
@@ -139,12 +165,7 @@ const Body: React.FC<ObservationInspectorProps & { issueKey: string }> = ({
           <>
             <div className="flex min-w-0 flex-wrap items-center gap-xs">
               <SeverityBadge severity={issue.severity} />
-              {issue.kind && <Badge variant="outline">{KIND_LABEL[issue.kind] ?? issue.kind}</Badge>}
-              {issue.exploitable && <Badge variant="destructive-outline">Exploit reported</Badge>}
-              {issue.cve_id && <span className="font-mono text-caption text-muted-foreground">{issue.cve_id}</span>}
-              {issue.sources.length > 0 && (
-                <span className="min-w-0 truncate text-caption text-muted-foreground">from {issue.sources.join(', ')}</span>
-              )}
+              <IssueMeta issue={issue} variant="header" />
             </div>
             <p className="text-metadata text-muted-foreground" data-testid="observation-inspector-counts">
               {plural(issue.host_count, 'host')}
@@ -180,6 +201,17 @@ const Body: React.FC<ObservationInspectorProps & { issueKey: string }> = ({
       </div>
 
       <InspectorSection id="observation-scanner" title="What the scanner wrote">
+        {issue && issue.sources.length > 1 && (
+          <div className="mb-xs flex min-w-0 flex-wrap items-center gap-xs" data-testid="observation-source-picker">
+            <Label htmlFor="observation-source" className="text-caption text-muted-foreground">As reported by</Label>
+            <Select value={source ?? detail.data?.source ?? issue.sources[0]} onValueChange={setSource}>
+              <SelectTrigger id="observation-source" className="h-8 w-40"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {issue.sources.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         {detail.isPending ? (
           <p className="flex items-center gap-xs text-caption text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" aria-hidden /> Loading what the scanner wrote…
@@ -281,6 +313,10 @@ const IssueHosts: React.FC<{
   const canTick = canManage && !cut && issue !== null;
   const picked = shown.filter((h) => (narrowed ? narrowed.has(h.host_id) : true));
   const total = issue?.host_count ?? hosts.length;
+  // O4 — every host's output at once, for a short list (one click a host
+  // was thirty clicks for thirty hosts).
+  const [allOutput, setAllOutput] = useState(false);
+  const inQuery = issueInQueryPath(issueKey);
   if (hosts.length === 0) {
     return <p className="text-caption text-muted-foreground">No host in this project carries it any more.</p>;
   }
@@ -293,13 +329,26 @@ const IssueHosts: React.FC<{
       )}
       {cut && (
         <p className="text-caption text-muted-foreground" data-testid="observation-hosts-cut">
-          The first {HOST_CAP} of {plural(total, 'host')}.{' '}
-          {canManage && 'Promoting records it on every one; to narrow, open them on Hosts. '}
-          <Link to={issueHostsPath(issueKey)} className="text-primary hover:underline">
-            All {plural(total, 'host')} on Hosts
-          </Link>
+          The first {HOST_CAP} of {plural(total, 'host')}.
+          {canManage && ' Promoting records it on every one; to narrow, open them on Hosts.'}
         </p>
       )}
+      {/* O4 — the pivots, always: the hosts where the bulk tools are, and
+          the rows in Query to group or count them another way. */}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-md gap-y-xxs text-caption" data-testid="observation-pivots">
+        <Link to={issueHostsPath(issueKey)} className="text-primary hover:underline">
+          All {plural(total, 'host')} on Hosts
+        </Link>
+        {inQuery && (
+          <Link to={inQuery} className="text-primary hover:underline">Ask this in Query</Link>
+        )}
+        {shown.length <= SHOW_ALL_OUTPUT_MAX && (
+          <Button variant="ghost" size="sm" className="h-auto p-0 text-caption" aria-expanded={allOutput}
+            onClick={() => setAllOutput((v) => !v)}>
+            {allOutput ? 'Hide all output' : 'Show all output'}
+          </Button>
+        )}
+      </div>
       <ul className="divide-y divide-border">
         {shown.map((h) => (
           <HostRow
@@ -308,6 +357,7 @@ const IssueHosts: React.FC<{
             host={h}
             ticked={narrowed ? narrowed.has(h.host_id) : true}
             onTick={canTick && issue ? (on) => onToggleHost(issue, hosts, h.host_id, on) : undefined}
+            forceOpen={allOutput}
           />
         ))}
       </ul>
@@ -331,15 +381,19 @@ const HostRow: React.FC<{
   host: ObservationIssueHost;
   ticked: boolean;
   onTick?: (on: boolean) => void;
-}> = ({ issueKey, host: h, ticked, onTick }) => {
-  const [open, setOpen] = useState(false);
+  /** "Show all output": every row open (a row's own toggle still works). */
+  forceOpen?: boolean;
+}> = ({ issueKey, host: h, ticked, onTick, forceOpen = false }) => {
+  const [toggled, setOpen] = useState(false);
+  const open = toggled || forceOpen;
   return (
     <li className="min-w-0 py-xxs">
       <div className="flex min-w-0 items-center gap-sm text-metadata">
         {onTick && (
           <Checkbox aria-label={`Include ${h.ip_address}`} checked={ticked} onCheckedChange={(v) => onTick(v === true)} />
         )}
-        <Link to={`/hosts/${h.host_id}`} className="w-32 shrink-0 truncate font-mono text-primary hover:underline">
+        {/* O4 / O7 — the host's page at THIS issue's weakness row. */}
+        <Link to={hostWeaknessPath(h.host_id, issueKey)} className="w-32 shrink-0 truncate font-mono text-primary hover:underline">
           {h.ip_address}
         </Link>
         <span className="min-w-0 flex-1 truncate text-muted-foreground" title={h.hostname ?? undefined}>

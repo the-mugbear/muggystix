@@ -578,7 +578,19 @@ export interface ObservationIssue {
   /** A scanner reports an exploit for it on at least one host — a lead for
    *  what to test first, not a statement that it was exploited. */
   exploitable?: boolean;
+  /** 5.418.0 (review 2026-10-16, O1 / O2): the scanners' check ids (the
+   *  first 5), the highest CVSS, the ports it was seen on (the first 8;
+   *  `port_count` is all of them) and when an import last recorded it. */
+  plugin_ids?: string[];
+  cvss_score?: number | null;
+  ports?: number[];
+  port_count?: number;
+  last_seen?: string | null;
 }
+
+/** Which issues by how far they are judged (O3): every one; those with a
+ *  host not yet judged; those with none judged; those judged on every host. */
+export type ObservationJudged = 'any' | 'waiting' | 'none' | 'all';
 
 export type WeaknessKind = 'misconfiguration' | 'vulnerability' | 'informational';
 
@@ -598,15 +610,16 @@ export interface ObservationIssueHost {
 export interface ObservationIssueFilters {
   search?: string;
   severity?: string;
-  includeJudged?: boolean;
+  /** Omitted = the API's default, `waiting`. */
+  judged?: ObservationJudged;
   minHosts?: number;
   skip?: number;
   limit?: number;
   kind?: WeaknessKind;
   /** Only issues a scanner reports an exploit for. */
   exploitable?: boolean;
-  /** `hosts` = most widespread first; omitted = most severe first. */
-  sort?: 'severity' | 'hosts';
+  /** `hosts` = most widespread first; `cvss` = highest CVSS first; omitted = most severe first. */
+  sort?: 'severity' | 'hosts' | 'cvss';
 }
 
 export const getObservationIssues = async (
@@ -618,11 +631,11 @@ export const getObservationIssues = async (
     params: {
       search: filters.search || undefined,
       severity: filters.severity || undefined,
-      include_judged: filters.includeJudged || undefined,
+      judged: filters.judged || undefined,
       min_hosts: filters.minHosts && filters.minHosts > 1 ? filters.minHosts : undefined,
       kind: filters.kind || undefined,
       exploitable: filters.exploitable || undefined,
-      sort: filters.sort === 'hosts' ? 'hosts' : undefined,
+      sort: filters.sort && filters.sort !== 'severity' ? filters.sort : undefined,
       skip: filters.skip || undefined,
       limit: filters.limit ?? 50,
     },
@@ -678,10 +691,13 @@ export const getObservationHostOutput = async (
   return response.data;
 };
 
+/** `source` = one scanner's words (O5); omitted = the most severe row with a description. */
 export const getObservationIssueDetail = async (
-  projectId: number, issueKey: string, signal?: AbortSignal,
+  projectId: number, issueKey: string, source: string | null, signal?: AbortSignal,
 ): Promise<ObservationIssueDetail> => {
-  const response = await api.get(`${projectPath(projectId)}/scanner-observations/detail`, { params: { issue_key: issueKey }, signal });
+  const response = await api.get(`${projectPath(projectId)}/scanner-observations/detail`, {
+    params: { issue_key: issueKey, source: source ?? undefined }, signal,
+  });
   return response.data;
 };
 
