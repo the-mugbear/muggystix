@@ -16,7 +16,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../services/api', () => ({ gridCellHostsHref: () => '/hosts' }));
 
 import FocusComparison from '../../components/posture/FocusComparison';
-import type { PostureHeatmap } from '../../services/api/posture';
+import type { PostureFocus, PostureHeatmap } from '../../services/api/posture';
+import { focusOf, focusRow } from '../helpers/postureFocus';
 
 const cell = (segment: string, site: string, affected: number, assessed: number) => ({
   segment, affected, assessed, in_scope: assessed, eligible: assessed, eligible_assessed: assessed,
@@ -32,23 +33,49 @@ const family = (key: string, label: string, east: number, west: number) => ({
   evidence_domain_label: 'OS identification', affected_total: east + west,
   cells: [cell('1', 'East', east, 100), cell('2', 'West', west, 100)],
 });
+/** One family's ranking as the server sends it: the segments in rank order. */
+const ranked = (...segments: Array<[key: string, label: string, affected: number]>) => segments.map(([segment, label, affected]) => focusRow({
+  segment, label, affected, assessed: 100, in_scope: 100, eligible: 100, eligible_assessed: 100, rate: affected / 100,
+  sentence: `${label}: ${affected} of 100 assessed hosts affected.`,
+}));
+interface Fixture { heatmap: PostureHeatmap; focus: PostureFocus }
 /** Lifecycle leads (East 60% against West 10%); identity is flatter. */
-const LIFECYCLE_LEADS = {
-  segments: SEGMENTS,
-  rows: [family('lifecycle', 'Lifecycle', 60, 10), family('identity', 'Identity', 20, 30)],
-} as unknown as PostureHeatmap;
+const LIFECYCLE_LEADS: Fixture = {
+  heatmap: {
+    segments: SEGMENTS,
+    rows: [family('lifecycle', 'Lifecycle', 60, 10), family('identity', 'Identity', 20, 30)],
+  } as unknown as PostureHeatmap,
+  focus: focusOf('lifecycle', {
+    lifecycle: ranked(['1', 'East', 60], ['2', 'West', 10]),
+    identity: ranked(['2', 'West', 30], ['1', 'East', 20]),
+  }),
+};
 /** The same shape read again: other numbers, the same leading measure. */
-const LIFECYCLE_STILL_LEADS = {
-  segments: SEGMENTS,
-  rows: [family('lifecycle', 'Lifecycle', 61, 10), family('identity', 'Identity', 20, 30)],
-} as unknown as PostureHeatmap;
+const LIFECYCLE_STILL_LEADS: Fixture = {
+  heatmap: {
+    segments: SEGMENTS,
+    rows: [family('lifecycle', 'Lifecycle', 61, 10), family('identity', 'Identity', 20, 30)],
+  } as unknown as PostureHeatmap,
+  focus: focusOf('lifecycle', {
+    lifecycle: ranked(['1', 'East', 61], ['2', 'West', 10]),
+    identity: ranked(['2', 'West', 30], ['1', 'East', 20]),
+  }),
+};
 /** Identity leads now (West 90% against East 20%). */
-const IDENTITY_LEADS = {
-  segments: SEGMENTS,
-  rows: [family('lifecycle', 'Lifecycle', 12, 10), family('identity', 'Identity', 20, 90)],
-} as unknown as PostureHeatmap;
+const IDENTITY_LEADS: Fixture = {
+  heatmap: {
+    segments: SEGMENTS,
+    rows: [family('lifecycle', 'Lifecycle', 12, 10), family('identity', 'Identity', 20, 90)],
+  } as unknown as PostureHeatmap,
+  focus: focusOf('identity', {
+    lifecycle: ranked(['1', 'East', 12], ['2', 'West', 10]),
+    identity: ranked(['2', 'West', 90], ['1', 'East', 20]),
+  }),
+};
 
-const show = (heatmap: PostureHeatmap) => <MemoryRouter><FocusComparison heatmap={heatmap} /></MemoryRouter>;
+const show = ({ heatmap, focus }: Fixture) => (
+  <MemoryRouter><FocusComparison heatmap={heatmap} focus={focus} /></MemoryRouter>
+);
 const measure = (name: string) => screen.getByRole('button', { name });
 const pressed = (name: string) => measure(name).getAttribute('aria-pressed');
 /** The sentence under "Why it matters" starts with the selected segment. */

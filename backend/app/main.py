@@ -239,7 +239,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "reports",
-        "description": "Download the filtered host inventory as CSV (streamed) or JSON (a report job), with the same filter parameters as the hosts endpoint and no host cap; the systemic executive briefing; and the report-job routes that client-report previews also use.",
+        "description": "Download the filtered host inventory as CSV (streamed) or JSON (a report job), with the same filter parameters as the hosts endpoint and no host cap; the Posture briefing; and the report-job routes that client-report previews also use.",
     },
     {
         "name": "audit",

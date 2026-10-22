@@ -38,6 +38,7 @@ from app.services.attention_service import (
     compute_project_attention, compute_site_attention,
 )
 from app.services.systemic_insight_service import compute_systemic_insights
+from app.services.posture_focus import compute_focus
 from app.services.evidence_service import has_minimum_assessment
 from app.services.engagement_metrics_service import finding_is_a_result
 
@@ -372,6 +373,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         or 0
     )
 
+    heatmap = systemic.get("family_matrix") if systemic.get("adopted") else None
     return {
         "label": label,
         # One plain-language security-condition line — the executive read.
@@ -382,7 +384,10 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         # BlueStick does not assess.  Active + unowned live in `headline`.)
         # Condition-family × site heatmap (the Overview hero). Present only when
         # systemic analysis is adopted (scoped subnets exist).
-        "heatmap": systemic.get("family_matrix") if systemic.get("adopted") else None,
+        "heatmap": heatmap,
+        # "Where to focus": each affected family's segments ranked, and the
+        # family to lead with — the page and the briefing read this one.
+        "focus": compute_focus(heatmap),
         "headline": {
             # Active CURATED findings (status in open/confirmed) — not a
             # claim that each is "confirmed" (that's one specific status).

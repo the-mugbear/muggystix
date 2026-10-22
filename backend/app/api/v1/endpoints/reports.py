@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -16,6 +16,9 @@ from app.db.models import ReportJob
 # keep working.
 from app.services.report_generator import ReportGenerator
 from app.services.report_job_service import PAGE_OWNED_REPORT_TYPES, ReportJobService
+from app.services.posture_briefing import render_posture_briefing
+from app.services.posture_service import compute_posture
+from app.core.config import settings
 from app.schemas.schemas import ReportJobSchema
 from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row  # noqa: F401
 import logging
@@ -28,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Markdown bundle were retired with "Export hosts", owner 2026-10-07):
 #   - the inventory CSV, streamed (``/hosts/csv``);
 #   - the inventory JSON, a report job (``POST /jobs?format=json``);
-#   - the systemic executive briefing (``/systemic.html``);
+#   - the Posture briefing (``/posture.html``);
 #   - the report-job routes, which client-report previews also poll and
 #     download through.
 #
@@ -75,31 +78,25 @@ def generate_hosts_csv_report(
     )
 
 
-@router.get("/systemic.html")
-def generate_systemic_executive_report(
-    site: Optional[str] = Query(
-        None, max_length=255,
-        description="Site name: scope the hotspot / outlier / profile sections to this site (estate-wide patterns stay estate-wide).",
-    ),
+@router.get("/posture.html")
+def generate_posture_briefing(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Lightweight executive systemic report (standalone HTML).
-
-    The estate-wide systemic patterns + site/subnet hotspots only — nothing
-    per host — as a self-contained HTML file for sharing at a high-level
-    meeting.  Project-wide (no host filters); the systemic payload is bounded,
-    so this renders synchronously rather than via the async report-job
-    pipeline."""
-    generator = ReportGenerator(db, current_user, project_id=project.id)
-    html_doc = generator.generate_systemic_executive_html(site=site or None)
-    slug = ""
-    if site:
-        # Letters and digits of any script (a site may be "東京"): the header
-        # helper carries them, with an ASCII stand-in beside.
-        slug = "_" + "".join(ch if ch.isalnum() else "-" for ch in site)[:40]
-    filename = f"systemic_insights{slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    """The Posture briefing (standalone HTML): the Security Posture
+    overview's argument — conclusion, measures, where to focus, decisions,
+    the family × segment grid, recurring weaknesses, findings — from the
+    page's own composition, as one file to hand out.  Bounded (nothing per
+    host), so it renders synchronously rather than as a report job."""
+    generated_at = datetime.now(timezone.utc)
+    html_doc = render_posture_briefing(
+        compute_posture(db, project.id), project_name=project.name,
+        generated_at=generated_at, version=settings.APP_VERSION,
+    )
+    # Letters and digits of any script (a project may be "東京"): the header
+    # helper carries them, with an ASCII stand-in beside.
+    slug = "".join(ch if ch.isalnum() else "-" for ch in project.name)[:40].strip("-")
+    filename = f"posture_briefing{'_' + slug if slug else ''}_{generated_at.strftime('%Y%m%d_%H%M%S')}.html"
     return Response(
         content=html_doc,
         media_type="text/html",

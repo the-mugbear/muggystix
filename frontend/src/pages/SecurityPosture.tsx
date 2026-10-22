@@ -30,7 +30,7 @@ import { buildFindingsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
 import { useProjectId } from '../hooks/useProjectId';
-import { useSystemicBriefing } from '../hooks/useSystemicBriefing';
+import { usePostureBriefing } from '../hooks/usePostureBriefing';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -103,11 +103,9 @@ const SecurityPosture: React.FC = () => {
   );
 
   const { canExport } = useProjectRole();
-  // "Create briefing" — the executive systemic report, from this page rather
-  // than via the Hosts export detour. Synchronous standalone HTML; the
-  // Overview has no site selection, so it is estate-wide here (Segments
-  // offers the per-site variant).
-  const briefing = useSystemicBriefing();
+  // "Create briefing" — this page's argument, in this page's order, as one
+  // standalone HTML file (the server renders the same composition).
+  const briefing = usePostureBriefing();
   // Refresh and Retry: the posture, and the sections further down that read
   // for themselves ("Where the team has been" — only once it has been asked
   // for — and "Scanner observations and scope").
@@ -123,7 +121,7 @@ const SecurityPosture: React.FC = () => {
         </div>
         <div className="flex flex-col items-end gap-xs">
           <div className="flex items-center gap-xs">
-            {/* The briefing is a report (`/reports/systemic.html`, AUDITOR on
+            {/* The briefing is a report (`/reports/posture.html`, AUDITOR on
                 the server): not offered to a project viewer. */}
             {canExport && (
               <Button size="sm" variant="outline" onClick={() => briefing.create()} disabled={briefing.pending}>
@@ -316,8 +314,8 @@ const WhereToFocus: React.FC<{ data: PostureResponse }> = ({ data }) => {
       title="Where to focus"
       description="One measure at a time: which segments carry it disproportionately, and how complete the evidence behind each rate is."
     >
-      {hm && hasAffected ? (
-        <FocusComparison heatmap={hm} />
+      {hm && hasAffected && data.focus ? (
+        <FocusComparison heatmap={hm} focus={data.focus} />
       ) : (
         <p className="text-metadata text-muted-foreground">
           {!hm

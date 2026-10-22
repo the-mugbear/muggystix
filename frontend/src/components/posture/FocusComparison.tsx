@@ -6,19 +6,16 @@
  * and the evidence behind each row beside it. Selecting a row writes the
  * sentence a presenter would say, with the links that back it.
  *
- * The arithmetic and its rules live in utils/postureConcentration.ts; this file
- * only draws them. Every figure is a direct label — nothing is hover-only.
+ * The ranking, its rules and the sentence are the server's (`/posture` →
+ * `focus`, app/services/posture_focus.py — the Posture briefing prints the
+ * same); this file only draws them. Every figure is a direct label — nothing is hover-only.
  */
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
 
-import type { PostureHeatmap } from '../../services/api/posture';
+import type { ConcentrationRow, PostureFocus, PostureHeatmap } from '../../services/api/posture';
 import { gridCellHostsHref } from '../../services/api';
-import {
-  rankConcentration, leadingFamily, describeConcentration,
-  LIMITED_MIN_ASSESSED, LIMITED_MIN_COVERAGE, type ConcentrationRow,
-} from '../../utils/postureConcentration';
 import { cn } from '../../utils/cn';
 
 /** Rows shown before "N more" — the overview summarises; the grid has them all. */
@@ -46,17 +43,17 @@ const RateBar: React.FC<{ r: ConcentrationRow }> = ({ r }) => {
             ? { border: '1px solid hsl(var(--destructive) / 0.55)', ...hatch }
             : { backgroundColor: 'hsl(var(--destructive) / 0.55)' }),
         }} />
-      {r.restRate != null && (
+      {r.rest_rate != null && (
         <div className="absolute inset-y-[-2px] w-0.5 bg-foreground"
-          style={{ left: `calc(${Math.min(100, r.restRate * 100)}% - 1px)` }} />
+          style={{ left: `calc(${Math.min(100, r.rest_rate * 100)}% - 1px)` }} />
       )}
     </div>
   );
 };
 
-export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap }) => {
-  const families = useMemo(() => heatmap.rows.filter((r) => r.affected_total > 0), [heatmap]);
-  const lead = useMemo(() => leadingFamily(heatmap.rows, heatmap.segments), [heatmap]);
+export const FocusComparison: React.FC<{ heatmap: PostureHeatmap; focus: PostureFocus }> = ({ heatmap, focus }) => {
+  const families = useMemo(() => heatmap.rows.filter((r) => focus.families[r.family]), [heatmap, focus]);
+  const lead = families.find((f) => f.family === focus.lead_family) ?? families[0] ?? null;
   const leadKey = lead?.family ?? null;
   // The reader's measure, until the data's leading measure is another one:
   // the page then opens on that.  Put back in the render that sees the new
@@ -69,10 +66,7 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
     setFamilyKey(leadKey);
   }
   const family = families.find((f) => f.family === familyKey) ?? lead;
-  const ranked = useMemo(
-    () => (family ? rankConcentration(family, heatmap.segments) : []),
-    [family, heatmap.segments],
-  );
+  const ranked: ConcentrationRow[] = (family && focus.families[family.family]) || [];
   // The reader's segment belongs to the measure it was chosen under: another
   // measure (chosen, or brought by new data) falls back to its own leading
   // segment, and coming back does too.
@@ -86,9 +80,10 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
 
   if (!family) return null;
   const shown = ranked.slice(0, TOP_ROWS);
-  const selected = ranked.find((r) => r.key === segmentKey) ?? ranked[0];
-  const hostsHref = selected && selected.affected > 0
-    ? gridCellHostsHref(family.conditions, selected.cell)
+  const selected = ranked.find((r) => r.segment === segmentKey) ?? ranked[0];
+  const selectedCell = selected && family.cells.find((c) => c.segment === selected.segment);
+  const hostsHref = selected && selectedCell && selected.affected > 0
+    ? gridCellHostsHref(family.conditions, selectedCell)
     : null;
   const bySubnet = heatmap.group_by === 'subnet';
   // One segment is a measurement, not a comparison — say so instead of drawing
@@ -129,12 +124,12 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
             </thead>
             <tbody>
               {shown.map((r) => {
-                const active = r.key === selected?.key;
+                const active = r.segment === selected?.segment;
                 return (
-                  <tr key={r.key} data-state={r.state}
+                  <tr key={r.segment} data-state={r.state}
                     className={cn('border-t border-border/60', active && 'bg-muted/50')}>
                     <td className="py-xs pr-sm align-middle">
-                      <button type="button" onClick={() => setSegmentKey(r.key)} aria-pressed={active}
+                      <button type="button" onClick={() => setSegmentKey(r.segment)} aria-pressed={active}
                         className="block w-full min-w-0 truncate rounded text-left font-medium text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         title={r.label}>
                         {r.label}
@@ -152,15 +147,15 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
                       {r.state === 'limited' && (
                         // Wraps, never truncates: this line is the explanation.
                         <p className="mt-xxs break-words text-caption text-warning">
-                          Limited comparison — {r.limitedBecause}
+                          Limited comparison — {r.limited_because}
                         </p>
                       )}
                     </td>
                     <td className="py-xs align-middle text-caption text-muted-foreground">
                       <span className="block truncate tabular-nums">
-                        {r.cell.eligible == null
-                          ? `${r.assessed} of ${r.inScope} in scope`
-                          : `${r.cell.eligible_assessed} of ${r.cell.eligible} eligible`}
+                        {r.eligible == null
+                          ? `${r.assessed} of ${r.in_scope} in scope`
+                          : `${r.eligible_assessed} of ${r.eligible} eligible`}
                       </span>
                       {r.unknown != null && r.unknown > 0 && (
                         <span className="block truncate tabular-nums">{r.unknown} still unknown</span>
@@ -181,7 +176,7 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
             <p className="mt-xs text-caption text-muted-foreground">
               <span className="mr-xxs inline-block h-3 w-0.5 translate-y-0.5 bg-foreground" aria-hidden />
               marks the rate across the rest of the assessed project. A comparison is limited below{' '}
-              {LIMITED_MIN_ASSESSED} assessed hosts or {Math.round(LIMITED_MIN_COVERAGE * 100)}% of eligible
+              {focus.limited_min_assessed} assessed hosts or {Math.round(focus.limited_min_coverage * 100)}% of eligible
               hosts assessed — counts stay visible, the {bySubnet ? 'subnet' : 'site'} is ranked after the comparable ones.
               {bySubnet && ' No sites are defined, so hosts are grouped by their most-specific subnet.'}
               {ranked.length > shown.length && ` ${ranked.length - shown.length} more in the grid below.`}
@@ -193,7 +188,7 @@ export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap
           <div className="min-w-0 border-l-2 border-border pl-md" aria-live="polite">
             <p className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">Why it matters</p>
             <p className="mt-xxs break-words text-metadata text-foreground">
-              {describeConcentration(selected, family.family_label)}
+              {selected.sentence}
             </p>
             <p className="mt-xs break-words text-caption text-muted-foreground">
               A rate describes what was observed. It is not a cause: a deliberate legacy enclave, different

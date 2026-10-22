@@ -77,6 +77,8 @@ class PostureResponse(_Loose):
     reasons: List[PostureReason]
     # Condition-family × site heatmap; null when systemic analysis isn't adopted.
     heatmap: Optional[Dict[str, Any]] = None
+    # "Where to focus" (posture_focus.compute_focus); null with the heatmap.
+    focus: Optional[Dict[str, Any]] = None
     headline: Dict[str, Any]
     priorities: List[PosturePriority]
     sites: Dict[str, Any]

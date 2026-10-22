@@ -439,7 +439,7 @@ A project has exactly ONE scope (the database enforces it, **v2.488.0**), it has
 
 ### 4.7 Export & reports
 
-**The name of a download** is in `Content-Disposition`, built in one place (`app/api/downloads.py`, RFC 6266): `attachment; filename=<ASCII name>`, and — when the real name is not plain ASCII (a scan file called `сканирование.xml`, a site called `東京`, a name with a comma) — `; filename*=UTF-8''<percent-encoded real name>` beside an ASCII stand-in. A client that names the file itself reads `filename*` first. This holds for the exports below, `/reports/hosts/csv`, `/reports/systemic.html`, `/names/export` and a client report's `scope.csv`.
+**The name of a download** is in `Content-Disposition`, built in one place (`app/api/downloads.py`, RFC 6266): `attachment; filename=<ASCII name>`, and — when the real name is not plain ASCII (a scan file called `сканирование.xml`, a site called `東京`, a name with a comma) — `; filename*=UTF-8''<percent-encoded real name>` beside an ASCII stand-in. A client that names the file itself reads `filename*` first. This holds for the exports below, `/reports/hosts/csv`, `/reports/posture.html` (named for the project), `/names/export` and a client report's `scope.csv`.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -447,7 +447,7 @@ A project has exactly ONE scope (the database enforces it, **v2.488.0**), it has
 | GET | `/export/scan/{scan_id}?format_type=txt\|csv\|json` | Auditor+. Scan-level export, named after the scan's file (`<file name>_hosts.txt\|csv\|json`). |
 | GET | `/export/out-of-scope?format_type=txt\|csv\|json` | Auditor+. Out-of-scope host export. |
 | GET | `/reports/hosts/csv` | Auditor+ (the whole `/reports` router). **The host inventory as CSV**: one row per host matching the Hosts list's filters (the same query parameters as `GET /hosts`), streamed, never capped. |
-| GET | `/reports/systemic.html` | The systemic-insights briefing as HTML (`?site=` narrows the per-site sections). |
+| GET | `/reports/posture.html` | The Posture briefing: the `/posture` answer as one standalone HTML file, in the Posture page's order (conclusion, measures, where to focus, decisions, family × segment grid, recurring weaknesses, findings). No script and no outbound reference. Replaced `/reports/systemic.html` (now 404) in v2.520.0. |
 
 The Hosts page's **Download inventory** gives two files: the CSV above, and a JSON that is a report job (below). The HTML host report (`GET /reports/hosts/html`), the agent package and the Markdown bundle were retired (owner, 2026-10-07): the route answers 404 and those job formats 422. `GET /reports/limits` went with them — no download is capped, so there is no cap to report.
 

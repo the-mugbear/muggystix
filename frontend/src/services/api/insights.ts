@@ -6,7 +6,6 @@
  * risky services) that surfaces "lack of IT management".  Worst-first.
  */
 import { api, projectPath } from './client';
-import { filenameFromContentDisposition, saveBlob } from '../../utils/download';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 
 export interface SeverityCounts {
@@ -262,21 +261,4 @@ export const gridCellHostsHref = (
   const any = preds.length === 1 ? preds[0] : `(${preds.join(' or ')})`;
   const nots = excluded.map((c) => ` AND NOT subnet:"${c}"`).join('');
   return buildHostsUrl(subnet ? { q: `${any}${nots}`, subnets: subnet } : { q: `${any}${nots}`, sites: site ?? undefined });
-};
-
-/**
- * Download the lightweight executive systemic report (standalone HTML) — a
- * self-contained file for sharing at a high-level meeting.  Fetched via the
- * authed client (the endpoint needs the JWT) and saved as a blob, mirroring the
- * host-report download.
- */
-/** Download the executive systemic briefing (standalone HTML, synchronous).
- *  `site` scopes the hotspot / outlier / profile sections to one site. */
-export const downloadSystemicReport = async (projectId: number, site?: string | null, signal?: AbortSignal): Promise<void> => {
-  const qs = site ? `?site=${encodeURIComponent(site)}` : '';
-  const response = await api.get(`${projectPath(projectId)}/reports/systemic.html${qs}`, { responseType: 'blob', signal });
-  saveBlob(new Blob([response.data], { type: 'text/html' }), filenameFromContentDisposition(
-    response.headers['content-disposition'] as string | undefined,
-    `systemic_insights_${new Date().toISOString().split('T')[0]}.html`,
-  ));
 };

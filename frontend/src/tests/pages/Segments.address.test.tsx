@@ -16,7 +16,6 @@ const postureMock = vi.fn();
 vi.mock('../../services/api', () => ({
   getSubnetInsights: (...a: unknown[]) => subnetsMock(...a),
   getPosture: () => postureMock(),
-  downloadSystemicReport: vi.fn(),
   conditionHostsHref: (k: string, cidr?: string) => `/hosts?condition=${k}${cidr ? `&subnet=${cidr}` : ''}`,
   subnetHostsHref: (cidr: string) => `/hosts?subnet=${cidr}`,
 }));

@@ -821,8 +821,8 @@ Portfolio members sheet and the administrators' memberships dialog.
   on the server (`/export`, `/reports`, `/client-reports`, `/hosts/tool-ready`,
   `/names/export`), so their controls follow `canExport`: the Hosts page's
   "Export targets" / "Download inventory" (and the `?reports=1` link, which
-  opens that dialog, and it reads `/reports/jobs` at once), "Create briefing" on Posture,
-  Patterns and a Segments site, the Scope and Names exports.  A copy or
+  opens that dialog, and it reads `/reports/jobs` at once), "Create briefing" on Posture
+  and Patterns (the one Posture briefing), the Scope and Names exports.  A copy or
   download of what the page already shows (Patterns' "Copy summary" / JSON)
   is not an export.
 - **A SECTION whose read the server restricts is hidden for that role**, not

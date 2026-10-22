@@ -1,6 +1,5 @@
-/** "Create briefing" on the posture overview downloads the executive systemic
- *  report from here — no detour through Hosts → Export. Estate-wide on the
- *  overview (it has no site selection); Segments offers the per-site variant. */
+/** "Create briefing" on the posture overview downloads the Posture briefing —
+ *  this page's argument as one file (`/reports/posture.html`). */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -16,7 +15,7 @@ vi.mock('../../services/api/client', () => ({
 }));
 vi.mock('../../services/api', () => ({
   getPosture: vi.fn().mockRejectedValue(new Error('offline')),
-  downloadSystemicReport: (...a: unknown[]) => downloadMock(...a),
+  downloadPostureBriefing: (...a: unknown[]) => downloadMock(...a),
   gridCellHostsHref: () => '/hosts',
 }));
 // The caller's role on the project; unset = not yet known (controls shown).
@@ -35,7 +34,7 @@ import SecurityPosture from '../../pages/SecurityPosture';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 describe('SecurityPosture — Create briefing', () => {
-  it('downloads the estate-wide briefing from the header', async () => {
+  it('downloads the project’s briefing from the header', async () => {
     render(<MemoryRouter><TooltipProvider><SecurityPosture /></TooltipProvider></MemoryRouter>);
     const btn = await screen.findByRole('button', { name: /Create briefing/ });
     await userEvent.click(btn);

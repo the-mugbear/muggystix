@@ -1,12 +1,14 @@
-"""ReportGenerator — the host inventory downloads and the systemic briefing.
+"""ReportGenerator — the host inventory downloads.
 
 What it produces:
 
 * the inventory CSV, streamed (``iter_inventory_csv``);
 * the inventory JSON, written by the report worker (``write_json_report``);
 * the per-host record both the JSON and the agents' ``report-context.ndjson``
-  carry (``iter_host_records``);
-* the systemic executive briefing (``generate_systemic_executive_html``).
+  carry (``iter_host_records``).
+
+The systemic executive briefing went with the Posture briefing
+(``posture_briefing``, 2026-10-22).
 
 The HTML host report, the agent package and the Markdown bundle were retired
 with "Export hosts" (owner, 2026-10-07).
@@ -23,7 +25,6 @@ from sqlalchemy import case, func
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.core.config import settings
-from app.services.report_templates import ReportTemplates
 from app.services.subnet_insight_service import resolve_host_locations, compute_subnet_insights
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.attention_service import compute_site_attention
@@ -41,22 +42,13 @@ import io
 import csv
 import json
 import logging
-from datetime import datetime, timezone
-import html
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 # Endpoint states that are not live work on that host — the ONE definition
 # lives beside the model (v2.365.0) so the site / subnet summaries share it.
 _INACTIVE_ENDPOINT_STATES = INACTIVE_ENDPOINT_STATES
-
-# Systemic spread classification (Phase 1) → report label. Falls back to the
-# legacy is_blind_spot boolean when an older/cached snapshot lacks the field.
-_SYSTEMIC_SPREAD_LABEL = {
-    "estate_wide": "estate-wide",
-    "recurring": "recurring",
-    "isolated": "isolated",
-}
 
 
 def _id_chunks(ids, size: int = 1000):
@@ -831,7 +823,7 @@ class ReportGenerator:
             "total_notes": len(notes),
         }
 
-    # --- Site / subnet hotspots (the JSON and the briefing) ----------------
+    # --- Site / subnet hotspots (the comprehensive JSON) -------------------
 
     def _build_hotspots(self, top_n: int = 10) -> Dict[str, Any]:
         """Worst-first site + subnet hotspots, reusing the live attention /
@@ -862,84 +854,7 @@ class ReportGenerator:
                 }
         return self._hotspots_cache
 
-    def _generate_hotspots_html(self, site: Optional[str] = None) -> str:
-        """HTML fragment: a Sites table + a Subnets table, worst-first.
-        ``site`` keeps only that site's row and its subnets — the briefing a
-        site owner takes into their own meeting."""
-        data = self._build_hotspots()
-        parts: List[str] = []
-
-        sites = data["sites"]
-        subnets_all = data["subnets"]
-        if site:
-            sites = [s for s in sites if (s.get("site") or "") == site]
-            subnets_all = [s for s in subnets_all if (s.get("site") or "") == site]
-        if data["sites_adopted"] and sites:
-            rows = []
-            for s in sites:
-                name = "Unassigned" if s.get("unassigned") else (s.get("site") or "—")
-                tier = "—" if s.get("criticality_tier") is None else f"T{s['criticality_tier']}"
-                sev = s["exposure"]["by_severity"]
-                gap = s.get("coverage_gap")
-                rows.append(
-                    "<tr>"
-                    f"<td>{html.escape(str(name))}</td>"
-                    f"<td>{tier}</td>"
-                    f"<td>{s.get('host_count', 0)}{f' (−{gap})' if gap else ''}</td>"
-                    f"<td>{s['exposure'].get('weighted_score', 0)}</td>"
-                    f"<td>{sev.get('critical', 0)}</td>"
-                    f"<td>{sev.get('high', 0)}</td>"
-                    f"<td>{s['neglect'].get('unowned_active_findings', 0)}</td>"
-                    f"<td>{html.escape(str(s['recommended_action'].get('text', '')))}</td>"
-                    "</tr>"
-                )
-            parts.append(
-                '<h4>Site hotspots</h4>'
-                '<table class="data-table"><thead><tr>'
-                '<th>Site</th><th>Tier</th><th>Hosts</th><th>Exposure</th>'
-                '<th>Crit</th><th>High</th><th>Unowned</th><th>Recommended action</th>'
-                f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
-            )
-        elif self.project_id:
-            parts.append('<p class="muted">No sites defined — assign subnets to sites to rank site hotspots.</p>')
-
-        subnets = subnets_all
-        if data["subnets_adopted"] and subnets:
-            rows = []
-            for s in subnets:
-                site_name = "—" if not s.get("site") else s["site"]
-                tier = "—" if s.get("criticality_tier") is None else f"T{s['criticality_tier']}"
-                sev = s["exposure"]["by_severity"]
-                hy = s["hygiene"]
-                rows.append(
-                    "<tr>"
-                    f"<td>{html.escape(str(s.get('cidr', '')))}</td>"
-                    f"<td>{html.escape(str(site_name))}</td>"
-                    f"<td>{tier}</td>"
-                    f"<td>{s.get('host_count', 0)}</td>"
-                    f"<td>{s['exposure'].get('weighted_score', 0)}</td>"
-                    f"<td>{sev.get('critical', 0)}</td>"
-                    f"<td>{hy.get('eol_os_hosts', 0)}</td>"
-                    f"<td>{hy.get('cert_issue_hosts', 0)}</td>"
-                    f"<td>{hy.get('weak_auth_hosts', 0)}</td>"
-                    f"<td>{hy.get('risky_service_hosts', 0)}</td>"
-                    f"<td>{html.escape(str(s['recommended_action'].get('text', '')))}</td>"
-                    "</tr>"
-                )
-            parts.append(
-                '<h4>Subnet hotspots</h4>'
-                '<table class="data-table"><thead><tr>'
-                '<th>Subnet</th><th>Site</th><th>Tier</th><th>Hosts</th><th>Exposure</th>'
-                '<th>Crit</th><th>EOL</th><th>Cert</th><th>Weak</th><th>Risky</th>'
-                '<th>Recommended action</th>'
-                f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
-            )
-        elif self.project_id:
-            parts.append('<p class="muted">No scoped subnets — define a scope to rank subnet hotspots.</p>')
-
-        return "".join(parts) if parts else '<p class="muted">No site or subnet data available.</p>'
-
-    # --- Systemic insights (the JSON and the briefing) ---------------------
+    # --- Systemic insights (the comprehensive JSON) ------------------------
 
     def _build_systemic(self) -> Dict[str, Any]:
         """Cross-sectional systemic insights (estate blind spots / conditions /
@@ -952,181 +867,6 @@ class ReportGenerator:
             else:
                 self._systemic_cache = compute_systemic_insights(self.db, self.project_id)
         return self._systemic_cache
-
-    def _generate_systemic_html(self, site: Optional[str] = None) -> str:
-        """HTML fragment: estate blind spots + systemic conditions + segment
-        outliers + diagnostic profiles, worst-first.  ``site`` narrows the
-        per-subnet sections (outliers, profiles) to that site; the estate-wide
-        blind spots and conditions are by definition not per-site and stay."""
-        data = self._build_systemic()
-        if not data.get("adopted"):
-            return '<p class="muted">No scoped subnets — define a scope to surface systemic patterns across the estate.</p>'
-        blind = data.get("blind_spots") or []
-        conditions = data.get("conditions") or []
-        outliers = data.get("segment_outliers") or []
-        profiles = data.get("diagnostic_profiles") or []
-        if site:
-            outliers = [o for o in outliers if (o.get("site") or "") == site]
-            profiles = [d for d in profiles if (d.get("site") or "") == site]
-        if not blind and not conditions:
-            return '<p class="muted">No weakness recurs widely enough across the in-scope estate to suggest a shared cause.</p>'
-
-        parts: List[str] = []
-
-        if blind:
-            items = []
-            for b in blind:
-                pct = round((b.get("host_fraction") or 0) * 100)
-                items.append(
-                    "<li>"
-                    f"<strong>{html.escape(str(b.get('label', '')))}</strong>"
-                    f" — {b.get('affected_hosts', 0)} hosts ({pct}%), "
-                    f"{b.get('subnet_spread', 0)} subnets, {b.get('site_spread', 0)} sites. "
-                    f"{html.escape(str(b.get('recommended_action', '')))}"
-                    "</li>"
-                )
-            parts.append(
-                "<h4>Estate blind spots</h4>"
-                '<p class="muted">Weaknesses spanning most of the estate — likely an organisational gap.</p>'
-                f"<ul>{''.join(items)}</ul>"
-            )
-
-        if conditions:
-            rows = []
-            for c in conditions:
-                pct = round((c.get("host_fraction") or 0) * 100)
-                scope = _SYSTEMIC_SPREAD_LABEL.get(
-                    c.get("classification"),
-                    "estate-wide" if c.get("is_blind_spot") else "localised",
-                )
-                rows.append(
-                    "<tr>"
-                    f"<td>{html.escape(str(c.get('label', '')))}</td>"
-                    f"<td>{c.get('affected_hosts', 0)} ({pct}%)</td>"
-                    f"<td>{c.get('subnet_spread', 0)}</td>"
-                    f"<td>{c.get('site_spread', 0)}</td>"
-                    f"<td>{c.get('systemic_score', 0)}</td>"
-                    f"<td>{scope}</td>"
-                    f"<td>{html.escape(str(c.get('recommended_action', '')))}</td>"
-                    "</tr>"
-                )
-            parts.append(
-                "<h4>Systemic conditions</h4>"
-                '<table class="data-table"><thead><tr>'
-                "<th>Condition</th><th>Hosts</th><th>Subnets</th><th>Sites</th>"
-                "<th>Score</th><th>Scope</th><th>Recommended action</th>"
-                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
-            )
-
-        if outliers:
-            rows = []
-            for o in outliers:
-                conds = ", ".join(o.get("conditions") or []) or "—"
-                rows.append(
-                    "<tr>"
-                    f"<td>{html.escape(str(o.get('cidr', '')))}</td>"
-                    f"<td>{html.escape(str(o.get('site') or '—'))}</td>"
-                    f"<td>{o.get('host_count', 0)}</td>"
-                    f"<td>{o.get('times_median', 0)}× median</td>"
-                    f"<td>{html.escape(conds)}</td>"
-                    "</tr>"
-                )
-            parts.append(
-                "<h4>Segment outliers</h4>"
-                '<p class="muted">Subnets whose issue density is well above the estate median.</p>'
-                '<table class="data-table"><thead><tr>'
-                "<th>Subnet</th><th>Site</th><th>Hosts</th><th>Density</th><th>Conditions</th>"
-                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
-            )
-
-        if profiles:
-            rows = []
-            for d in profiles:
-                conds = ", ".join(d.get("conditions") or []) or "—"
-                rc = d.get("root_cause") or {}
-                rows.append(
-                    "<tr>"
-                    f"<td>{html.escape(str(d.get('cidr', '')))}</td>"
-                    f"<td>{html.escape(str(d.get('site') or '—'))}</td>"
-                    f"<td>{html.escape(conds)}</td>"
-                    f"<td>{html.escape(str(rc.get('kind', '')))}: {html.escape(str(rc.get('text', '')))}</td>"
-                    "</tr>"
-                )
-            parts.append(
-                "<h4>Diagnostic profiles</h4>"
-                '<p class="muted">Per-subnet co-occurrence signature → the question it raises (a lead to check, not a conclusion).</p>'
-                '<table class="data-table"><thead><tr>'
-                "<th>Subnet</th><th>Site</th><th>Conditions</th><th>Worth checking</th>"
-                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
-            )
-
-        return "".join(parts)
-
-    def generate_systemic_executive_html(self, site: Optional[str] = None) -> str:
-        """Standalone, lightweight executive systemic report — estate summary +
-        blind spots + conditions + outliers + profiles, plus the site/subnet
-        hotspots, and nothing per host.
-
-        Purpose-built as a self-contained HTML file for sharing at a high-level
-        meeting.  Bounded systemic payload, so it renders synchronously.
-
-        ``site`` (a site name) scopes the per-site sections — hotspots, segment
-        outliers, diagnostic profiles — to that site so the briefing matches the
-        posture context it was created from.  Estate-wide patterns stay
-        estate-wide: a site briefing still says what the whole estate suffers."""
-        data = self._build_systemic()
-        site_note = (
-            f'<div class="report-subtitle">Scoped to site: {html.escape(site)}</div>' if site else ""
-        )
-        css = ReportTemplates.get_css_styles()
-        generated_at = datetime.now(timezone.utc)
-        estate = data.get("estate") or {}
-        if data.get("adopted"):
-            summary = (
-                f"<div class=\"stats-grid\">"
-                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('hosts_in_scope', 0)}</div><div class=\"stat-label\">Hosts in scope</div></div>"
-                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('subnets', 0)}</div><div class=\"stat-label\">Subnets</div></div>"
-                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('sites', 0)}</div><div class=\"stat-label\">Sites</div></div>"
-                f"<div class=\"stat-card\"><div class=\"stat-value\">{estate.get('blind_spot_count', 0)}</div><div class=\"stat-label\">Estate blind spots</div></div>"
-                f"</div>"
-            )
-        else:
-            summary = '<p class="muted">No scoped subnets yet.</p>'
-
-        return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BlueStick Systemic Insights</title>
-    {css}
-</head>
-<body>
-    <div class="report-header">
-        <div class="metadata">
-            <div>
-                <div class="report-title">Systemic Insights</div>
-                <div class="report-subtitle">Estate-wide weakness patterns — executive summary</div>
-                {site_note}
-                <div class="version-tag">Backend v{settings.APP_VERSION} | Frontend v{settings.FRONTEND_VERSION}</div>
-            </div>
-            <div><strong>Generated:</strong> {generated_at.strftime('%B %d, %Y at %I:%M %p')} UTC</div>
-        </div>
-    </div>
-    <div class="section">
-        <div class="section-header">Estate</div>
-        <div class="section-content">{summary}</div>
-    </div>
-    <div class="section">
-        <div class="section-header">Systemic patterns</div>
-        <div class="section-content">{self._generate_systemic_html(site=site)}</div>
-    </div>
-    <div class="section">
-        <div class="section-header">Site &amp; Subnet Hotspots</div>
-        <div class="section-content">{self._generate_hotspots_html(site=site)}</div>
-    </div>
-</body>
-</html>"""
 
     # --- The per-host record (the JSON's ``hosts`` and the agents'
     # ``report-context.ndjson``) ---------------------------------------------

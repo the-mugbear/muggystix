@@ -5,6 +5,7 @@
  * function's first argument.
  */
 import { api, projectPath } from './client';
+import { filenameFromContentDisposition, saveBlob } from '../../utils/download';
 import type { SystemicCondition, SeverityCounts } from './insights';
 
 export type PostureLabel =
@@ -120,6 +121,48 @@ export interface PostureHeatmap {
   rows: HeatmapRow[];
 }
 
+export type ConcentrationState = 'comparable' | 'limited' | 'unassessed';
+
+/** One segment of a family's "Where to focus" ranking — computed by the server
+ *  (`app/services/posture_focus.py`), the one ranking the page and the Posture
+ *  briefing share. */
+export interface ConcentrationRow {
+  segment: string;
+  label: string;
+  affected: number;
+  assessed: number;
+  in_scope: number;
+  eligible: number | null;
+  eligible_assessed: number | null;
+  /** affected / assessed; null when nothing was assessed. */
+  rate: number | null;
+  /** Assessed share of the hosts the domain applies to; null when unknown. */
+  coverage: number | null;
+  /** Eligible hosts with no evidence — what is still unknown here. */
+  unknown: number | null;
+  rest_affected: number;
+  rest_assessed: number;
+  /** Rest-of-assessed-project rate; null when no other segment was assessed. */
+  rest_rate: number | null;
+  /** rate − rest_rate, in percentage points. */
+  delta_points: number | null;
+  share_of_affected: number | null;
+  state: ConcentrationState;
+  /** Why the comparison is limited, in words; empty otherwise. */
+  limited_because: string;
+  /** The sentence a presenter reads out; every figure is on the row. */
+  sentence: string;
+}
+
+export interface PostureFocus {
+  /** The family to open on; null when no family affects any host. */
+  lead_family: string | null;
+  limited_min_assessed: number;
+  limited_min_coverage: number;
+  /** Every affected family's segments, ranked. */
+  families: Record<string, ConcentrationRow[]>;
+}
+
 export interface PostureConclusion {
   text: string;
   tone: 'negative' | 'caution' | 'neutral' | 'positive';
@@ -130,6 +173,8 @@ export interface PostureResponse {
   conclusion: PostureConclusion;
   reasons: PostureReason[];
   heatmap: PostureHeatmap | null;
+  /** "Where to focus"; null with the heatmap. */
+  focus: PostureFocus | null;
   headline: PostureHeadline;
   priorities: PriorityItem[];
   sites: { adopted: boolean; items: PostureSite[] };
@@ -157,6 +202,17 @@ export const getPosture = async (
     signal: options.signal,
   });
   return response.data;
+};
+
+/** Download the Posture briefing — the overview's argument as one standalone
+ *  HTML file (`/reports/posture.html`, AUDITOR; synchronous).  Fetched with the
+ *  authed client and saved as a blob. */
+export const downloadPostureBriefing = async (projectId: number, signal?: AbortSignal): Promise<void> => {
+  const response = await api.get(`${projectPath(projectId)}/reports/posture.html`, { responseType: 'blob', signal });
+  saveBlob(new Blob([response.data], { type: 'text/html' }), filenameFromContentDisposition(
+    response.headers['content-disposition'] as string | undefined,
+    `posture_briefing_${new Date().toISOString().split('T')[0]}.html`,
+  ));
 };
 
 // --- Evidence coverage (Phase 4) -------------------------------------------

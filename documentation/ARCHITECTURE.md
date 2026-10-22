@@ -248,7 +248,7 @@ backend/app/
 │   ├── host_work.py          # the one list of what counts as WORK on a host (`work_kinds`): the import
 │   │                         # cleanup keeps such hosts, the scan delete by hand warns about them
 │   ├── report_job_service.py # report_jobs queue (enqueue/claim/heartbeat/complete)
-│   ├── report_generator.py   # the host inventory downloads (CSV, JSON), the per-host record, the systemic briefing
+│   ├── report_generator.py   # the host inventory downloads (CSV, JSON), the per-host record
 │   ├── queue_metrics_service.py # operational metrics for both durable job queues
 │   ├── operational_alerts.py # disk low, import backlog, a silent worker → the global admins' bell
 │   ├── host_deduplication_service.py
@@ -256,7 +256,10 @@ backend/app/
 │   ├── ip_trie.py
 │   ├── vulnerability_service.py
 │   ├── confidence_service.py
-│   ├── posture_service.py        # /posture composition (label + conclusion + heatmap + disposition)
+│   ├── posture_service.py        # /posture composition (label + conclusion + heatmap + focus + disposition)
+│   ├── posture_focus.py          # "Where to focus": a family's segments ranked against the rest of the
+│   │                             # assessed project, and the family to lead with (the page and the briefing)
+│   ├── posture_briefing.py       # the Posture briefing: /posture as one standalone, printable HTML file
 │   ├── engagement_metrics_service.py # cross-project counts: targets, tested, findings, judged / not-yet-judged
 │   │                             # observations, defect rate, period activity, contributors, testers, growth
 │   ├── project_signals_service.py # per-project open tasks, runs, admins, last import, "quiet"
@@ -270,7 +273,6 @@ backend/app/
 │   ├── host_follow_service.py
 │   ├── notification_service.py
 │   ├── parse_error_service.py
-│   ├── report_templates.py         # the systemic briefing's stylesheet
 │   ├── subnet_calculator.py      # (the subnet CSV reader is parsers/subnet_parser.py)
 │   ├── command_explanation_service.py
 │   ├── prompt_sanitizer.py         # strips secrets before LLM calls
@@ -320,7 +322,7 @@ Routers stay thin — business logic lives in `services/`. Parsers only normaliz
 - **Finding spine** — `db/models_findings.py` (`Finding`, `FindingHost`, `FindingStatusHistory`) is the canonical correlated-finding layer that de-duplicates raw vulnerabilities into one record per finding-across-hosts. Reports, the posture dashboard, and finding-comments all read this spine rather than raw `vulnerabilities`. Schemas in `schemas/findings.py`. `Finding.hosts` and `Finding.vulnerabilities` are plain lazy (they were `selectin` until v2.448.0, so every finding query loaded every endpoint): a path that reads endpoints names the load. `GET /findings` rows carry a preview of at most 5 endpoints (`finding_service.ENDPOINT_PREVIEW`) beside `host_count`, the true total, and `endpoint_status_counts` over all of them (`FindingService.endpoint_summaries`); `GET /findings/{id}` keeps every endpoint. **A finding's history (`finding_status_history`) also records each edit** (2.519.0, revision `b8e4d2f6a0c3`): `field`, `before_value`, `after_value`, written only by `finding_actions.record_edit` — `apply_report_text` (a person's save and an accepted proposal, which puts its provenance on that row), the `PATCH`'s title and severity, and `set_owner` (the `PATCH` and the bulk assign); the page reads the values one row at a time (`GET …/history/{entry_id}`). One scanner finding per issue is enforced by the partial unique index `uq_finding_scanner_issue (project_id, dedup_key)`: a promotion inserts in a savepoint and joins the existing finding on `IntegrityError`.
 - **Sites** — `Site` (`db/models.py`) is a project-scoped grouping of subnets/hosts with tiered weighting; managed via `endpoints/sites.py` and feeds per-site attention rollups.
 - **Posture hub** — the manager-facing analytics surface, four read-only lenses over the existing host/finding data, all composing (never re-collecting):
-  - **Posture** (`endpoints/posture.py` → `posture_service`) — the executive rollup: a deterministic security-condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`, evidence-gated so an unassessed estate never reads clear), a plain-language conclusion, and the condition-family × segment heatmap. There is no remediation flow (removed in v2.374; pinned absent): a project is one assessment window ending at the report.
+  - **Posture** (`endpoints/posture.py` → `posture_service`) — the executive rollup: a deterministic security-condition label (`action_required` / `needs_assessment` / `insufficient_evidence` / `no_urgent_signals`, evidence-gated so an unassessed estate never reads clear), a plain-language conclusion, the condition-family × segment heatmap, and `focus` — each affected family's segments ranked for "Where to focus" (`posture_focus`; the page draws it, it computes nothing). "Create briefing" (Posture and Patterns) downloads `GET /reports/posture.html`, `posture_briefing` rendering the same `compute_posture` answer in the page's order as one self-contained file; it replaced the systemic briefing (`/reports/systemic.html`) in v2.520.0. There is no remediation flow (removed in v2.374; pinned absent): a project is one assessment window ending at the report.
   - **Patterns** (frontend `/posture/patterns` → `endpoints/insights.py` `/insights/systemic` → `systemic_insight_service`) — cross-sectional analysis: recurring weaknesses grouped into program-level **pattern families** (`pattern_families.py`: identity & auth, encryption & trust, lifecycle & patching, legacy & cleartext, lateral-movement, vulnerability & technology monocultures), classified `isolated` / `recurring` / `estate_wide`.
   - **Segments** (frontend `/posture/segments` → `endpoints/insights.py` `/insights/subnets` → `subnet_insight_service`) — the per-subnet exposure/neglect/hygiene lens plus a server-authoritative per-site rollup, behind a Site | Subnet toggle.
   - **Evidence** (`endpoints/posture.py` `/posture/evidence` → `evidence_service`) — per-assessment-domain coverage (eligible vs assessed hosts: discovery, service/version, vulnerability, web/TLS, auth/SMB/AD, validation) answering whether the conclusions are trustworthy. Beside the vulnerability domain's "assessed" (never part of it — any scanner run counts) it says whether the scan authenticated: `domains[vuln_assessment].credentialed` = `{credentialed, not_credentialed, credentials_not_stated}` over the assessed hosts, and the host detail's `assessment.vuln_scan_credentialed` (`yes` / `no` / `not_stated` / null). One definition, `evidence_service.vuln_scan_credentialed_condition`, also behind the Hosts query `vulnscan:`.

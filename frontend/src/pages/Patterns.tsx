@@ -33,7 +33,7 @@ import {
   type SystemicCondition,
   type SystemicFamily,
 } from '../services/api';
-import { useSystemicBriefing } from '../hooks/useSystemicBriefing';
+import { usePostureBriefing } from '../hooks/usePostureBriefing';
 import { queryErrorText } from '../lib/query';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
@@ -188,7 +188,9 @@ const Patterns: React.FC = () => {
       JSON.stringify(data, null, 2), 'application/json');
   }, [data]);
 
-  const briefing = useSystemicBriefing();
+  // The Posture briefing: patterns are one chapter of the posture story, and
+  // there is one briefing (owner, 2026-10-22).
+  const briefing = usePostureBriefing();
   const exporting = briefing.pending;
 
   const estate = data?.estate;
@@ -214,7 +216,7 @@ const Patterns: React.FC = () => {
           <h1 className="text-page-title">Patterns</h1>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
-          {/* The briefing is a report (`/reports/systemic.html`, AUDITOR on the
+          {/* The briefing is a report (`/reports/posture.html`, AUDITOR on the
               server): not offered to a project viewer.  Copy and JSON are of
               what this page already shows. */}
           {canExport && (

@@ -28,7 +28,7 @@ vi.mock('../../services/api', async () => {
     getDashboardStats: (...a: unknown[]) => getDashboardStatsMock(...a),
     getProjectCoverage: (...a: unknown[]) => getProjectCoverageMock(...a),
     gridCellHostsHref: insights.gridCellHostsHref,
-    downloadSystemicReport: vi.fn(),
+    downloadPostureBriefing: vi.fn(),
   };
 });
 // The 3D scene is three.js in its own chunk: loading it is what "Show the
@@ -47,6 +47,7 @@ vi.mock('../../contexts/ToastContext', () => ({
 
 import SecurityPosture from '../../pages/SecurityPosture';
 import { TooltipProvider } from '../../components/ui/tooltip';
+import { focusOf, focusRow } from '../helpers/postureFocus';
 
 const LONG = 'Branch-East-'.repeat(18);   // ~216 chars: must truncate, never widen the page
 
@@ -92,6 +93,26 @@ const response = {
       cells: [cell('2', 'Core', 16, 160, 170), cell('1', LONG, 18, 30, 36), cell('3', 'North', 2, 2, 25)],
     }],
   },
+  // The server's ranking of that row (backend test_posture_focus.py pins the arithmetic).
+  focus: focusOf('lifecycle_patching', {
+    lifecycle_patching: [
+      focusRow({
+        segment: '1', label: LONG, affected: 18, assessed: 30, in_scope: 36, eligible: 36, eligible_assessed: 30,
+        rate: 0.6, coverage: 30 / 36, unknown: 6, rest_affected: 18, rest_assessed: 162, rest_rate: 18 / 162, delta_points: 48.9,
+        sentence: `${LONG}: 18 of 30 assessed hosts affected (60%), against 18 of 162 (11%) across the rest of the assessed project — 49 points higher.`,
+      }),
+      focusRow({
+        segment: '2', label: 'Core', affected: 16, assessed: 160, in_scope: 170, eligible: 170, eligible_assessed: 160,
+        rate: 0.1, unknown: 10, rest_affected: 20, rest_assessed: 32, rest_rate: 0.625,
+        sentence: 'Core: 16 of 160 assessed hosts affected (10%), against 20 of 32 (63%) across the rest of the assessed project — in line with the rest.',
+      }),
+      focusRow({
+        segment: '3', label: 'North', affected: 2, assessed: 2, in_scope: 25, eligible: 25, eligible_assessed: 2,
+        rate: 1, unknown: 23, state: 'limited', limited_because: 'only 2 assessed · 8% of eligible hosts assessed',
+        sentence: 'North: 2 of 2 assessed hosts affected (100%). Limited comparison — only 2 assessed · 8% of eligible hosts assessed; collect the missing evidence before reading much into the rate.',
+      }),
+    ],
+  }),
 };
 
 const renderPage = async () => {
@@ -272,6 +293,12 @@ describe('SecurityPosture — overview', () => {
     getPostureMock.mockResolvedValue({
       ...response,
       heatmap: { group_by: 'site', segments: [{ key: 'unassigned', label: 'Unassigned', in_scope: 59, assessed: 59 }], rows: [only] },
+      focus: focusOf('lifecycle_patching', {
+        lifecycle_patching: [focusRow({
+          segment: 'unassigned', label: 'Unassigned', affected: 4, assessed: 10, in_scope: 59, eligible: 21, eligible_assessed: 10,
+          rate: 0.4, unknown: 11, state: 'limited', limited_because: '48% of eligible hosts assessed',
+        })],
+      }),
     });
     await renderPage();
     const focus = screen.getByText('Where to focus').closest('section')!;
@@ -297,6 +324,12 @@ describe('SecurityPosture — overview', () => {
         ],
         rows: [{ ...response.heatmap.rows[0], cells: [sub('subnet:1', '10.7.0.0/24', 20, 40, ['10.7.0.0/28']), sub('subnet:2', '10.8.0.0/24', 3, 30)] }],
       },
+      focus: focusOf('lifecycle_patching', {
+        lifecycle_patching: [
+          focusRow({ segment: 'subnet:1', label: '10.7.0.0/24', affected: 20, assessed: 40, in_scope: 42, rate: 0.5, rest_rate: 0.1 }),
+          focusRow({ segment: 'subnet:2', label: '10.8.0.0/24', affected: 3, assessed: 30, in_scope: 32, rate: 0.1, rest_rate: 0.5 }),
+        ],
+      }),
     });
     await renderPage();
     const focus = screen.getByText('Where to focus').closest('section')!;

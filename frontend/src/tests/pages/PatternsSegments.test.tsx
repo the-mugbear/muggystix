@@ -16,7 +16,7 @@ vi.mock('../../services/api', () => ({
   getSystemicInsights: () => systemicMock(),
   getSubnetInsights: (...a: unknown[]) => subnetsMock(...a),
   getPosture: () => postureMock(),
-  downloadSystemicReport: (...a: unknown[]) => briefingMock(...a),
+  downloadPostureBriefing: (...a: unknown[]) => briefingMock(...a),
   conditionHostsHref: (k: string, cidr?: string) => `/hosts?condition=${k}${cidr ? `&subnet=${cidr}` : ''}`,
   familyCellHostsHref: (keys: string[]) => `/hosts?conditions=${keys.join(',')}`,
   subnetHostsHref: (cidr: string) => `/hosts?subnet=${cidr}`,
@@ -81,8 +81,9 @@ describe('Patterns', () => {
     projectRole.value = undefined;
   });
 
-  // B2 (e) — the briefing is one hook for the three pages that offer it.
-  it('Create briefing asks for the estate-wide report once, and is not offered again while it is made', async () => {
+  // B2 (e) — the briefing is one hook for the pages that offer it; since
+  // 2026-10-22 it is the Posture briefing (owner: one briefing everywhere).
+  it('Create briefing asks for the project’s briefing once, and is not offered again while it is made', async () => {
     let done: () => void = () => undefined;
     briefingMock.mockReset().mockReturnValue(new Promise<void>((resolve) => { done = resolve; }));
     wrap(<Patterns />);
@@ -156,36 +157,12 @@ describe('Segments', () => {
     postureMock.mockReset().mockResolvedValue({ sites: { adopted: true, items: [site('HQ', 2), site(null, 0)] } });
   });
 
-  // Browser pass 2026-10-01 — a briefing is a report (AUDITOR on the server).
-  it('offers a site’s briefing to an auditor and not to a project viewer', async () => {
-    projectRole.value = 'viewer';
-    const first = wrap(<Segments />);
+  // 2026-10-22 — one briefing, the Posture briefing, which has no site cut
+  // (owner decision): a site's row offers none.
+  it('offers no per-site briefing', async () => {
+    wrap(<Segments />);
     await screen.findByText(/Start with/);
-    expect(screen.queryByRole('button', { name: 'Create briefing for HQ' })).toBeNull();
-    first.unmount();
-
-    projectRole.value = 'auditor';
-    wrap(<Segments />);
-    expect(await screen.findByRole('button', { name: 'Create briefing for HQ' })).toBeInTheDocument();
-    projectRole.value = undefined;
-  });
-
-  // B2 (e) — one site's briefing: asked for by name, every site's button
-  // waits while it is made, and a failure names the site.
-  it('a site’s briefing asks for that site; a failure names it', async () => {
-    toastMock.error.mockClear();
-    let fail: (e: unknown) => void = () => undefined;
-    briefingMock.mockReset().mockReturnValue(new Promise<void>((_resolve, reject) => { fail = reject; }));
-    wrap(<Segments />);
-    const button = await screen.findByRole('button', { name: 'Create briefing for HQ' });
-    fireEvent.click(button);
-    await waitFor(() => expect(briefingMock).toHaveBeenCalledTimes(1));
-    expect(briefingMock).toHaveBeenCalledWith(1, 'HQ');
-    expect(button).toBeDisabled();
-    await act(async () => { fail(new Error('boom')); });
-    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
-    expect(toastMock.error).toHaveBeenCalledWith(formatApiError(new Error('boom'), 'Could not create the briefing for HQ.'));
-    await waitFor(() => expect(button).toBeEnabled());
+    expect(screen.queryByRole('button', { name: /briefing/i })).toBeNull();
   });
 
   it('opens on the Site lens when sites exist, and names the worst one', async () => {

@@ -18,7 +18,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Copy, Download, FileText, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Download, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
 import {
   getSubnetInsights,
@@ -38,11 +38,9 @@ import { useToast } from '../contexts/ToastContext';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjectId } from '../hooks/useProjectId';
-import { useProjectRole } from '../hooks/useProjectRole';
 import { useUrlPage } from '../hooks/useUrlPage';
 import { usePagedList } from '../hooks/usePagedList';
 import type { ListPage } from '../hooks/useListQuery';
-import { useSystemicBriefing } from '../hooks/useSystemicBriefing';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
@@ -348,15 +346,6 @@ const SegmentsLead: React.FC<{
 };
 
 const SiteTable: React.FC<{ sites: PostureSite[] | null; error: string | null; onRetry: () => void }> = ({ sites, error, onRetry }) => {
-  // The briefing is a report (`/reports/systemic.html`, AUDITOR on the
-  // server): not offered to a project viewer.
-  const { canExport } = useProjectRole();
-  // Per-site briefing: the executive systemic report scoped to one site — what
-  // a site owner takes to their meeting.
-  const briefing = useSystemicBriefing();
-  const createSiteBriefing = briefing.create;
-  const briefingSite = briefing.pendingSite;
-
   if (error) {
     return (
       <div className="flex flex-wrap items-center gap-sm">
@@ -400,14 +389,6 @@ const SiteTable: React.FC<{ sites: PostureSite[] | null; error: string | null; o
                 </div>
                 <span className="block truncate text-caption text-muted-foreground" title={s.owner_name ?? undefined}>
                   {s.owner_name ? `Owner ${s.owner_name}` : ''}
-                  {canExport && s.site && !s.unassigned && (
-                    <button type="button" onClick={() => createSiteBriefing(s.site as string)}
-                      disabled={briefing.pending} aria-label={`Create briefing for ${s.site}`}
-                      className={`${s.owner_name ? 'ml-xs ' : ''}inline-flex items-center gap-xxs rounded text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60`}>
-                      {briefingSite === s.site ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <FileText className="size-3" aria-hidden />}
-                      Briefing
-                    </button>
-                  )}
                 </span>
               </td>
               <td className="py-xs pr-md text-right tabular-nums">
