@@ -128,7 +128,8 @@ def test_coverage_per_scope_counts_match_batched_path(
     assert r.status_code == 200, r.text
     body = r.json()
     (row,) = body["scopes"]
-    assert row["scope_id"] == scope.id and "scope_name" not in row
+    # No answer hands out a scope id (a project has exactly one scope).
+    assert "scope_id" not in row and "scope_name" not in row
     assert row["discovered_in_scope"] == 3
     assert row["subnet_count"] == 2
 
@@ -144,8 +145,7 @@ def test_coverage_scope_with_no_subnets_returns_zero_counts(
 
     r = client.get(f"/api/v1/projects/{test_project.id}/coverage/")
     body = r.json()
-    scopes_by_id = {s["scope_id"]: s for s in body["scopes"]}
-    assert empty.id in scopes_by_id
-    assert scopes_by_id[empty.id]["subnet_count"] == 0
-    assert scopes_by_id[empty.id]["discovered_in_scope"] == 0
-    assert scopes_by_id[empty.id]["coverage_percent"] is None
+    (row,) = body["scopes"]
+    assert row["subnet_count"] == 0
+    assert row["discovered_in_scope"] == 0
+    assert row["coverage_percent"] is None

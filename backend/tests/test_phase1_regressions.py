@@ -1389,7 +1389,7 @@ def test_coverage_summary_reports_scope_breakdown(
     body = resp.json()
     assert body["total_scopes"] == 1
     sc = body["scopes"][0]
-    assert sc["scope_id"] == scope.id
+    assert "scope_id" not in sc
     assert sc["total_scoped_ips"] == 4  # /30 → 4 addresses
     assert sc["discovered_in_scope"] == 2
     assert sc["coverage_percent"] == 50.0

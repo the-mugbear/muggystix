@@ -84,8 +84,7 @@ export interface NamesSummary {
   resolved: number;
   in_scope: number;
   wildcards: number;
-  shared_addresses: number;
-  /** v2.402.0 — names the `shared` filter lists (older servers omit it). */
+  /** Names the `shared` filter lists. */
   shared_names?: number;
 }
 

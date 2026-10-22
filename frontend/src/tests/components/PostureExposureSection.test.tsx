@@ -34,7 +34,7 @@ const stats = {
 };
 const coverage = {
   project_id: 1, total_hosts: 142, total_scopes: 1,
-  scopes: [{ scope_id: 10, subnet_count: 1, total_scoped_ips: 256, discovered_in_scope: 42, coverage_percent: 16.4 }],
+  scopes: [{ subnet_count: 1, total_scoped_ips: 256, discovered_in_scope: 42, coverage_percent: 16.4 }],
   hosts_in_subnet_scope: 128, hosts_name_scope_only: 2, hosts_outside_scope: 12,
 };
 
