@@ -138,6 +138,30 @@ def test_creating_records_who_configured_it_and_takes_no_project(client, db_sess
     assert db_session.get(IntegrationCredential, body["id"]).created_by_id == test_user.id
 
 
+def test_extra_config_takes_the_known_non_secret_keys_only(client, db_session):
+    """``extra_config`` is served to every signed-in user and every agent
+    session as not secret, so it holds the keys something reads and nothing
+    else — a token put there would be handed to everyone (plan 2026-10-10, E)."""
+    base = {"name": "N", "integration_type": "nessus", "base_url": "https://192.0.2.10:8834"}
+    refused = client.post("/api/v1/integrations/", json={**base, "extra_config": {"api_token": "s3cret"}})
+    assert refused.status_code == 422 and "api_token" in refused.text
+    assert db_session.query(IntegrationCredential).count() == 0
+
+    made = client.post("/api/v1/integrations/", json={**base, "extra_config": {"max_hosts_per_scan": 256}})
+    assert made.status_code == 201, made.text
+    assert made.json()["extra_config"] == {"max_hosts_per_scan": 256}
+    row_id = made.json()["id"]
+    assert client.patch(f"/api/v1/integrations/{row_id}",
+                        json={"extra_config": {"password": "x"}}).status_code == 422
+    assert client.patch(f"/api/v1/integrations/{row_id}",
+                        json={"extra_config": {"gmp_port": 70000}}).status_code == 422
+    assert client.post("/api/v1/integrations/test", json={
+        "integration_type": "openvas", "extra_config": {"secret_key": "x"},
+    }).status_code == 422
+    changed = client.patch(f"/api/v1/integrations/{row_id}", json={"extra_config": {"gmp_port": 9391}})
+    assert changed.status_code == 200 and changed.json()["extra_config"] == {"gmp_port": 9391}
+
+
 def test_deleting_the_account_that_configured_an_integration_keeps_it(client, db_session):
     """``created_by_id`` is provenance (SET NULL): the scanner is the
     installation's, not that person's."""

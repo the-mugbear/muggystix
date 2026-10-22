@@ -250,7 +250,7 @@ behaviours, pinned per format by the same test:
 | Model | Owner table | Written by |
 | --- | --- | --- |
 | `Scan` | `scans` | every parser (the container; carries `tool_name`, `scan_type`, `command_line`, `version`, `start_time`/`end_time`) |
-| `Host` | `hosts_v2` | every host-bearing parser (deduped: one row per `(project_id, ip_address)`) |
+| `Host` | `hosts_v2` | every host-bearing parser (deduped: one row per `(project_id, ip_address)`). `HostDeduplicationService.find_or_create_host` refuses a value that is not an IP address (`ValueError`; the record is skipped) and stores the address in one spelling (`parser_utils.normalize_ip`), still finding a row stored earlier in another spelling — an IPv6 address written two ways is one host (backlog 2026-10-22, S5) |
 | `Port` | `ports_v2` | port scanners + web/dir/vuln parsers |
 | `HostScanHistory` / `PortScanHistory` | `host_scan_history` / `port_scan_history` | per-scan observation audit trail |
 | `Vulnerability` | `vulnerabilities` | **Nessus, OpenVAS, Nikto, Nuclei, nmap** (NSE vuln scripts, vulners, catalog checks), **testssl** (rated checks), **NetExec**, **SMBMap** and **dnsx** (catalog checks) — the "scanner observations" |

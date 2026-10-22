@@ -4,7 +4,9 @@ Authentication and User Management Models
 Models for user accounts, roles, and session management for security intelligence platform.
 """
 
-from sqlalchemy import BigInteger, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON
+from typing import Optional
+
+from sqlalchemy import BigInteger, Column, Index, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, event
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -178,11 +180,42 @@ class AuditLog(Base):
 
     # Additional context
     details = Column(JSON)  # Flexible field for action-specific data
+    # The account name the event is about, as ``details["username"]`` holds
+    # it (as TYPED, for a sign-in attempt): a typed column because the
+    # sign-in limiter filters on it (column-vs-blob rule; revision
+    # e7b3d9f1a5c2).  Set by ``security.log_audit_event``, the one writer.
+    username = Column(String(255), nullable=True)
     success = Column(Boolean, default=True)
     error_message = Column(Text)
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
+
+    __table_args__ = (
+        # The sign-in limiter's reads: one username's events in a window.
+        Index("ix_audit_logs_username_timestamp", "username", "timestamp"),
+    )
+
+
+#: ``audit_logs.username``'s length; a longer name is stored cut (the sign-in
+#: form takes at most this many characters, so a typed name always fits).
+AUDIT_USERNAME_MAX = 255
+
+
+def audit_username_of(details) -> Optional[str]:
+    """The account name ``details`` holds (``details["username"]``), as the
+    column stores it — or None."""
+    value = details.get("username") if isinstance(details, dict) else None
+    return value[:AUDIT_USERNAME_MAX] if isinstance(value, str) else None
+
+
+@event.listens_for(AuditLog, "before_insert")
+def _username_from_details(mapper, connection, row: AuditLog) -> None:
+    # Every writer that names an account in ``details`` gets it in the typed
+    # column: decided at the insert, so neither ``log_audit_event`` nor a
+    # row built directly can leave it out.
+    if row.username is None:
+        row.username = audit_username_of(row.details)
 
 
 class APIKey(Base):

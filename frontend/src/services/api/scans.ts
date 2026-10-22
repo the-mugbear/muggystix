@@ -447,7 +447,8 @@ export interface ScanDiffSide {
   scan_type?: string | null;
   created_at?: string | null;
   total_hosts: number;
-  up_hosts: number;
+  /** Null when the scan recorded no host's state (a DNS import). */
+  up_hosts: number | null;
   total_ports: number;
   open_ports: number;
 }

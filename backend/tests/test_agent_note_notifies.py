@@ -136,6 +136,9 @@ def test_both_doors_tell_the_same_people_the_same_way(client, db_session, test_p
         f"/api/v1/agent/hosts/{cast['host']}/notes", headers=headers, json={"body": _body(cast)},
     )
     assert by_agent.status_code == 201, by_agent.text
+    # The agent is told which mentions reached nobody, as the page is
+    # (backlog 2026-10-22: its answer dropped them).
+    assert by_agent.json()["unmatched_mentions"] == typed.json()["unmatched_mentions"] == ["i5-outsider"]
 
     from_page = _told(db_session, typed.json()["id"])
     from_agent = _told(db_session, by_agent.json()["id"])

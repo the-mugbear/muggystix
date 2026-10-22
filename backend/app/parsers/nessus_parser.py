@@ -15,6 +15,7 @@ for integration with the risk assessment system.
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as DET
 from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
+from app.parsers.parser_utils import normalize_ip
 from app.parsers.xml_stream_helpers import strip_namespace
 import logging
 import re
@@ -323,14 +324,20 @@ class NessusParser:
                 if name and text:
                     host_properties[name] = text
 
-        # Extract key host information
-        ip_address = host_properties.get('host-ip')
-        if not ip_address:
-            # Fallback to name attribute
-            ip_address = report_host.get('name')
+        # Extract key host information.  The address is ``host-ip``, else the
+        # ReportHost's name — but only when that name IS an address: a
+        # target given by name that Nessus never resolved carries no
+        # host-ip, and its name is not an address to make a host of
+        # (review 2026-10-10, S5).  Written the one way
+        # (``normalize_ip``), so an IPv6 address is one host however
+        # Nessus spelled it.
+        ip_address = normalize_ip(host_properties.get('host-ip')) or normalize_ip(report_host.get('name'))
 
         if not ip_address:
-            logger.warning("Host without IP address found, skipping")
+            logger.warning(
+                "Host %r has no IP address (no host-ip, and its name is not an address); skipping",
+                (report_host.get('name') or '')[:200],
+            )
             return None
 
         hostname = host_properties.get('host-fqdn') or host_properties.get('netbios-name')

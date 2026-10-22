@@ -13,9 +13,17 @@ describe('workPhrase', () => {
     expect(workPhrase({ notes: 2 })).toBe('2 notes');
     expect(workPhrase({ evidence: 1 })).toBe('1 evidence record');
     expect(workPhrase({ evidence: 3 })).toBe('3 evidence records');
-    expect(workPhrase({ remediation_entries: 1 })).toBe('1 remediation entry');
-    expect(workPhrase({ remediation_entries: 4 })).toBe('4 remediation entries');
+    const tracking = { remediationTracking: true };
+    expect(workPhrase({ remediation_entries: 1 }, tracking)).toBe('1 remediation entry');
+    expect(workPhrase({ remediation_entries: 4 }, tracking)).toBe('4 remediation entries');
     expect(workPhrase({ corrections: 1, tags: 1 })).toBe('1 tag · 1 corrected name');
+  });
+
+  it('says nothing about remediation while the installation does not track it — and still counts the records', () => {
+    // Kept from when tracking was on, they go with the host: mentioned, never by that name.
+    expect(workPhrase({ remediation_entries: 1 })).toBe('1 other record');
+    expect(workPhrase({ remediation_entries: 3, notes: 1 }, { remediationTracking: false })).toBe('1 note · 3 other records');
+    expect(workPhrase({ remediation_entries: 3 })).not.toMatch(/remediation/i);
   });
 
   it('reads the kinds in one fixed order, whatever order the server sent', () => {
@@ -23,7 +31,7 @@ describe('workPhrase', () => {
       workPhrase({
         tags: 2, reviews: 1, remediation_entries: 1, proposals: 2,
         notes: 2, tests: 1, evidence: 1, findings: 3,
-      }),
+      }, { remediationTracking: true }),
     ).toBe(
       '3 findings · 1 evidence record · 1 test · 2 notes · 2 proposals · 1 remediation entry · 1 review · 2 tags',
     );

@@ -72,6 +72,84 @@ def test_only_the_two_scan_upload_routes_take_a_large_body():
         assert not allows_large_body(path), path
 
 
+# --- The two exempt uploads are refused before their body is read when they
+#     carry no credential that could pass (review 2026-10-10, S3). ---
+
+def _gated_app(refusal):
+    seen = {"read": False}
+
+    async def upload(request: Request):
+        await request.body()
+        seen["read"] = True
+        return JSONResponse({"ok": True})
+
+    paths = ["/api/v1/projects/1/upload/", "/api/v1/agent/uploads"]
+    app = Starlette(routes=[Route(p, upload, methods=["POST"]) for p in paths])
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=LIMIT, large_body_refusal=refusal)
+    return app, seen
+
+
+def test_a_refused_upload_is_a_401_and_its_body_is_never_read():
+    asked = []
+
+    def refusal(path, headers):
+        asked.append((path, headers.get("authorization")))
+        return None if headers.get("authorization") == "Bearer good" else "Not authenticated"
+
+    app, seen = _gated_app(refusal)
+
+    def body():
+        seen["streamed"] = True
+        yield b"x" * (LIMIT * 4)
+
+    r = TestClient(app).post("/api/v1/agent/uploads", content=body())
+    assert r.status_code == 401 and r.json() == {"detail": "Not authenticated"}
+    assert seen["read"] is False
+    r = TestClient(app).post("/api/v1/projects/1/upload/", content=b"x" * (LIMIT * 4),
+                             headers={"Authorization": "Bearer good"})
+    assert r.status_code == 200 and seen["read"] is True
+    assert [p for p, _ in asked] == ["/api/v1/agent/uploads", "/api/v1/projects/1/upload/"]
+
+
+def test_the_page_upload_needs_a_token_that_verifies(db_session, test_user):
+    from app.api.deps import TWO_FACTOR_CHALLENGE_PURPOSE, large_upload_refusal
+    from app.core.security import create_access_token
+
+    path = "/api/v1/projects/1/upload/"
+    good = create_access_token({"sub": str(test_user.id)})
+    challenge = create_access_token({"sub": str(test_user.id), "purpose": TWO_FACTOR_CHALLENGE_PURPOSE})
+    assert large_upload_refusal(path, {}) == "Not authenticated"
+    assert large_upload_refusal(path, {"authorization": "Basic abc"}) == "Not authenticated"
+    assert large_upload_refusal(path, {"authorization": "Bearer not-a-jwt"}) == "Invalid token"
+    assert large_upload_refusal(path, {"authorization": f"Bearer {challenge}"}) == "Invalid token payload"
+    assert large_upload_refusal(path, {"authorization": f"Bearer {good}"}) is None
+
+
+def test_the_agent_upload_needs_a_key_that_exists(client, db_session, test_project):
+    from app.api.deps import large_upload_refusal
+
+    started = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
+    assert started.status_code == 201, started.text
+    key = started.json()["api_key"]
+    path = "/api/v1/agent/uploads"
+    assert large_upload_refusal(path, {}).startswith("Missing agent API key")
+    assert large_upload_refusal(path, {"x-api-key": "nm_agent_made_up"}) == "Invalid agent API key"
+    assert large_upload_refusal(path, {"x-api-key": key}) is None
+    assert large_upload_refusal(path, {"authorization": f"Bearer {key}"}) is None
+
+
+def test_the_application_refuses_a_keyless_upload_before_reading_it(client):
+    from app.main import app
+
+    middleware = next(m for m in app.user_middleware if m.cls is RequestBodyLimitMiddleware)
+    from app.api.deps import large_upload_refusal
+
+    assert middleware.kwargs["large_body_refusal"] is large_upload_refusal
+    r = client.post("/api/v1/agent/uploads", files={"file": ("a.xml", b"<x/>" * 1000)})
+    assert r.status_code == 401
+    assert r.json()["detail"].startswith("Missing agent API key")
+
+
 def test_the_application_has_the_cap_and_refuses_before_auth(client):
     from app.core.config import settings
     from app.main import app

@@ -771,8 +771,17 @@ def delete_scan_row(db: Session, scan_id: int) -> None:
         delete(models.Scan).where(models.Scan.id == scan_id)
         .execution_options(synchronize_session=False)
     )
-    if _real_id(scan_id):
-        db.info.setdefault(_FILES_OF_DELETED_SCANS, []).append(int(scan_id))
+    remove_scan_files_on_commit(db, [scan_id])
+
+
+def remove_scan_files_on_commit(db: Session, scan_ids) -> None:
+    """Remove these scans' files once ``db``'s transaction COMMITS (never on
+    a rollback).  :func:`delete_scan_row` calls it for its one scan; a
+    project delete, whose cascade removes the scan rows without that
+    statement, names its scans here before the delete so their screenshots
+    and reports go with them (backlog 2026-10-22, R-stream)."""
+    pending = db.info.setdefault(_FILES_OF_DELETED_SCANS, [])
+    pending.extend(int(s) for s in scan_ids if _real_id(s))
 
 
 def _remove_files_of_deleted_scans(session) -> None:

@@ -668,10 +668,11 @@ def get_parse_errors(
         "error_type": models.ParseError.error_type,
     }
     sort_col = sort_col_map[sort_by]
-    if sort_order == "asc":
-        query = query.order_by(sort_col.asc())
-    else:
-        query = query.order_by(sort_col.desc())
+    # The id breaks ties, as on the results list above: sorted by a column
+    # many rows share (status, error type), an order with no tiebreaker is a
+    # different order on every page read.  Newest first within a tie.
+    order = sort_col.asc() if sort_order == "asc" else sort_col.desc()
+    query = query.order_by(order, models.ParseError.id.desc())
 
     errors = query.offset(skip).limit(limit).all()
     return errors

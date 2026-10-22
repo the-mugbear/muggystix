@@ -30,15 +30,29 @@ const WORK_KINDS: ReadonlyArray<readonly [string, string, string]> = [
 ];
 
 /**
+ * Remediation entries said without the word while the installation does not
+ * track remediation: with the switch off nothing about remediation is shown
+ * (CLAUDE.md, the two installation modes), yet a record kept from when it was
+ * on still goes with the host, so it is still counted.
+ */
+const UNTRACKED_REMEDIATION: readonly [string, string] = ['other record', 'other records'];
+
+/**
  * "2 notes · 1 test · 1 evidence record".  A kind this build does not know is
  * printed under the server's own name rather than dropped: work that is about
- * to be deleted must never go unmentioned.
+ * to be deleted must never go unmentioned.  `remediationTracking` is whether
+ * the installation tracks remediation (`useRemediationPolicy().enabled`);
+ * not known reads as off.
  */
-export function workPhrase(work: Record<string, number> | null | undefined): string {
+export function workPhrase(
+  work: Record<string, number> | null | undefined,
+  { remediationTracking = false }: { remediationTracking?: boolean } = {},
+): string {
   const counts = work ?? {};
   const present = (key: string) => Number(counts[key]) > 0;
   const parts: string[] = [];
-  for (const [key, one, many] of WORK_KINDS) {
+  for (const [key, ...words] of WORK_KINDS) {
+    const [one, many] = key === 'remediation_entries' && !remediationTracking ? UNTRACKED_REMEDIATION : words;
     if (present(key)) parts.push(`${Number(counts[key]).toLocaleString()} ${counts[key] === 1 ? one : many}`);
   }
   const known = new Set(WORK_KINDS.map(([key]) => key));

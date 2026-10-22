@@ -376,7 +376,15 @@ app.add_middleware(AgentApiCallLogger)
 # before the route (and the agent logger's tee) sees it.  Inside the request
 # context so a refusal still gets its access-log line.
 from app.core.body_limit import RequestBodyLimitMiddleware
-app.add_middleware(RequestBodyLimitMiddleware, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
+from app.api.deps import large_upload_refusal
+# The two scan uploads are exempt from the cap, so they are refused before
+# their body is read when they carry no credential that could pass
+# (review 2026-10-10, S3).
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_bytes=settings.MAX_REQUEST_BODY_BYTES,
+    large_body_refusal=large_upload_refusal,
+)
 
 # v2.177.0 (audit B5) — request-correlation id + per-request latency.  Added
 # LAST so it sits OUTERMOST: the id is set before the agent logger / exception

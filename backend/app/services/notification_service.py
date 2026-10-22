@@ -20,6 +20,10 @@ from app.schemas.schemas import MentionNotified
 
 logger = logging.getLogger(__name__)
 
+#: ``notifications.type`` of a remediation deadline alert
+#: (``remediation_alerts``) — shown only while remediation tracking is on.
+REMEDIATION_NOTIFICATION_TYPE = "remediation"
+
 
 def _continues_name(ch: str) -> bool:
     return ch.isalnum() or ch == "_"
@@ -695,6 +699,19 @@ class NotificationService:
             notifications.append(notification)
         return notifications
 
+    def _shown(self, query):
+        """``query`` narrowed to the notifications this installation shows.
+
+        With remediation tracking switched off nothing about remediation is
+        shown (the two installation modes): the deadline alerts written while
+        it was on stay stored — switching it back on brings them back — but
+        the bell, its count and "mark all read" leave them out."""
+        from app.services import remediation_policy
+
+        if remediation_policy.load(self.db).enabled:
+            return query
+        return query.filter(Notification.type != REMEDIATION_NOTIFICATION_TYPE)
+
     def get_notifications(
         self,
         user_id: int,
@@ -703,7 +720,7 @@ class NotificationService:
         offset: int = 0,
     ) -> List[Notification]:
         """Fetch notifications for a user."""
-        query = self.db.query(Notification).filter(Notification.user_id == user_id)
+        query = self._shown(self.db.query(Notification).filter(Notification.user_id == user_id))
         if unread_only:
             query = query.filter(Notification.is_read == False)
         # `id` breaks ties: rows written in one transaction share `created_at`,
@@ -713,10 +730,10 @@ class NotificationService:
 
     def get_unread_count(self, user_id: int) -> int:
         """Fast count for notification badge."""
-        return self.db.query(func.count(Notification.id)).filter(
+        return self._shown(self.db.query(func.count(Notification.id)).filter(
             Notification.user_id == user_id,
             Notification.is_read == False,
-        ).scalar() or 0
+        )).scalar() or 0
 
     def mark_read(self, notification_ids: List[int], user_id: int) -> int:
         """Mark specific notifications as read. Returns count updated."""
@@ -732,12 +749,12 @@ class NotificationService:
         return updated
 
     def mark_all_read(self, user_id: int) -> int:
-        """Mark all notifications as read for a user."""
+        """Mark all notifications as read for a user — the ones shown."""
         now = datetime.now(timezone.utc)
-        updated = self.db.query(Notification).filter(
+        updated = self._shown(self.db.query(Notification).filter(
             Notification.user_id == user_id,
             Notification.is_read == False,
-        ).update(
+        )).update(
             {"is_read": True, "read_at": now},
             synchronize_session=False,
         )

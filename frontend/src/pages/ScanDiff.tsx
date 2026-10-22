@@ -78,8 +78,11 @@ const OpenHost: React.FC<{ hostId: number }> = ({ hostId }) => (
 // ─────────────────────────────────────────────────────────────────
 // The two scans, side by side, and the difference.
 
-const Delta: React.FC<{ delta: number }> = ({ delta }) => {
-  if (delta === 0) return <span className="text-muted-foreground">—</span>;
+/** B minus A, or null when either side recorded no figure. */
+const minus = (b: number | null, a: number | null): number | null => (a == null || b == null ? null : b - a);
+
+const Delta: React.FC<{ delta: number | null }> = ({ delta }) => {
+  if (delta == null || delta === 0) return <span className="text-muted-foreground">—</span>;
   // More in B reads as a larger surface.
   return (
     <span className={`font-mono ${delta > 0 ? 'text-warning' : 'text-success'}`}>
@@ -102,7 +105,10 @@ const SideRow: React.FC<{ label: string; side: ScanDiffSide }> = ({ label, side 
       </span>
     </TableCell>
     <TableCell className="text-right">{side.total_hosts.toLocaleString()}</TableCell>
-    <TableCell className="text-right">{side.up_hosts.toLocaleString()}</TableCell>
+    {/* Null: the scan recorded no host's state (a DNS import) — not "0 up". */}
+    <TableCell className="text-right" title={side.up_hosts == null ? 'This scan did not record whether hosts were up' : undefined}>
+      {side.up_hosts == null ? '—' : side.up_hosts.toLocaleString()}
+    </TableCell>
     <TableCell className="text-right">{side.total_ports.toLocaleString()}</TableCell>
     <TableCell className="text-right">{side.open_ports.toLocaleString()}</TableCell>
   </TableRow>
@@ -129,7 +135,7 @@ const Sides: React.FC<{ diff: ScanDiffResponse }> = ({ diff }) => {
             <TableRow>
               <TableCell className="text-muted-foreground">Change</TableCell>
               <TableCell className="text-right"><Delta delta={b.total_hosts - a.total_hosts} /></TableCell>
-              <TableCell className="text-right"><Delta delta={b.up_hosts - a.up_hosts} /></TableCell>
+              <TableCell className="text-right"><Delta delta={minus(b.up_hosts, a.up_hosts)} /></TableCell>
               <TableCell className="text-right"><Delta delta={b.total_ports - a.total_ports} /></TableCell>
               <TableCell className="text-right"><Delta delta={b.open_ports - a.open_ports} /></TableCell>
             </TableRow>
