@@ -31,6 +31,7 @@ import type { EvidenceImages } from '../utils/evidenceImages';
 import {
   CellAlign, isTableRow, listingCaptionOf, splitTableRow, tableAlignments, tableCaptionOf,
 } from '../utils/markdownEditing';
+import { bracketCloser, delimiterCloser } from '../utils/markdownScan';
 import { findMentionSpans } from '../utils/mentions';
 import { EvidenceResolver, evidenceReferenceAt } from '../utils/reportImages';
 
@@ -60,18 +61,6 @@ const renderLink = (href: string | null, children: React.ReactNode, key: string)
   ) : (
     <React.Fragment key={key}>{children}</React.Fragment>
   );
-
-/** Index of the `]` closing the `[` at `open`, honouring nesting and escapes. */
-const closingBracket = (s: string, open: number): number => {
-  let depth = 0;
-  for (let i = open; i < s.length; i += 1) {
-    const c = s[i];
-    if (c === '\\') { i += 1; continue; }
-    if (c === '[') depth += 1;
-    else if (c === ']') { depth -= 1; if (depth === 0) return i; }
-  }
-  return -1;
-};
 
 /** `(url "title")` right after a `]`: the url and the index after `)`. */
 const linkDestination = (s: string, at: number): { url: string; end: number } | null => {
@@ -106,33 +95,6 @@ const EMPHASIS: Array<{ open: string; tag: 'strong' | 'em' | 'del' }> = [
 ];
 
 const isWordChar = (c: string | undefined) => !!c && /[\p{L}\p{N}]/u.test(c);
-
-/** Where an emphasis run opened at `i` closes, or -1. */
-const closingDelimiter = (s: string, i: number, delim: string): number => {
-  const start = i + delim.length;
-  if (start >= s.length || /\s/.test(s[start])) return -1;
-  // `_` inside a word (snake_case) is not emphasis.
-  if (delim[0] === '_' && isWordChar(s[i - 1])) return -1;
-  let j = start;
-  while (j < s.length) {
-    const c = s[j];
-    if (c === '\\') { j += 2; continue; }
-    if (c === '`') {
-      // Skip a code span: its content is not markup.
-      const run = /^`+/.exec(s.slice(j))![0];
-      const close = s.indexOf(run, j + run.length);
-      if (close !== -1) { j = close + run.length; continue; }
-    }
-    if (s.startsWith(delim, j) && j > start && !/\s/.test(s[j - 1])) {
-      // A single `*` must not close on half of a `**`.
-      if (delim.length === 1 && s[j + 1] === delim) { j += 2; continue; }
-      if (delim[0] === '_' && isWordChar(s[j + delim.length])) { j += 1; continue; }
-      return j;
-    }
-    j += 1;
-  }
-  return -1;
-};
 
 const BARE_URL = /^(?:https?:\/\/|mailto:)[^\s<>]+/i;
 
@@ -251,6 +213,10 @@ export const markMentions = (body: string, usernames: readonly string[], keyPref
 
 const renderInline =(s: string, keyPrefix = 'i', how: How = {}): React.ReactNode[] => {
   const { evidence } = how;
+  // Where a `[` or an emphasis run closes: linear for the whole text, not a
+  // scan per opener (R10 — 32,768 `[` took 0.7 s).
+  const closeBracket = bracketCloser(s);
+  const closeDelimiter = delimiterCloser(s);
   const out: React.ReactNode[] = [];
   let text = '';
   let k = 0;
@@ -326,7 +292,7 @@ const renderInline =(s: string, keyPrefix = 'i', how: How = {}): React.ReactNode
         i = placed.end;
         continue;
       }
-      const close = closingBracket(s, i + 1);
+      const close = closeBracket(i + 1);
       const dest = close !== -1 ? linkDestination(s, close + 1) : null;
       if (dest) {
         text += plain(s.slice(i + 2, close));
@@ -336,7 +302,7 @@ const renderInline =(s: string, keyPrefix = 'i', how: How = {}): React.ReactNode
     }
 
     if (c === '[') {
-      const close = closingBracket(s, i);
+      const close = closeBracket(i);
       const dest = close !== -1 ? linkDestination(s, close + 1) : null;
       if (dest) {
         flush();
@@ -385,7 +351,7 @@ const renderInline =(s: string, keyPrefix = 'i', how: How = {}): React.ReactNode
       let matched = false;
       for (const { open, tag } of EMPHASIS) {
         if (!s.startsWith(open, i)) continue;
-        const close = closingDelimiter(s, i, open);
+        const close = closeDelimiter(i, open);
         if (close === -1) continue;
         flush();
         const inner = renderInline(s.slice(i + open.length, close), `${keyPrefix}-${k}`, how);

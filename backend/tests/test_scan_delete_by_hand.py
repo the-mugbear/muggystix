@@ -1344,3 +1344,111 @@ def test_the_files_go_at_the_commit_and_never_before_or_without_it(db_session, t
     db_session.commit()
     assert [p for p in gone_files if p.exists()] == []
     assert all(p.exists() for p in kept_files)
+
+
+# ---------------------------------------------------------------------------
+# R6 (2026-10-22) — "last updated by" on both delete paths
+# ---------------------------------------------------------------------------
+
+def _last_updated_estate(db, pid):
+    """Hosts and ports whose "last updated by" names the scan to delete, with
+    and without history from other scans.  Returns the scans and the rows."""
+    from datetime import timedelta
+
+    older, newer, target = _scan(db, pid, "older.xml"), _scan(db, pid, "newer.xml"), _scan(db, pid, "target.xml")
+    when = {older.id: NOW - timedelta(days=2), newer.id: NOW - timedelta(days=1), target.id: NOW}
+
+    def host(ip, updated_by, *seen_by):
+        h = models.Host(project_id=updated_by.project_id, ip_address=ip, state="up",
+                        last_updated_scan_id=updated_by.id)
+        db.add(h)
+        db.flush()
+        for scan in seen_by:
+            db.add(models.HostScanHistory(host_id=h.id, scan_id=scan.id, state_at_scan="up",
+                                          discovered_at=when[scan.id], host_created=scan is seen_by[0]))
+        return h
+
+    def port(h, number, updated_by, *seen_by):
+        p = models.Port(host_id=h.id, port_number=number, protocol="tcp", state="open",
+                        last_updated_scan_id=updated_by.id)
+        db.add(p)
+        db.flush()
+        for scan in seen_by:
+            db.add(models.PortScanHistory(port_id=p.id, scan_id=scan.id, state_at_scan="open",
+                                          discovered_at=when[scan.id]))
+        return p
+
+    rows = {
+        # Seen by all three: the newest other one is `newer`, whatever order the rows went in.
+        "host_seen_by_others": host("10.66.0.1", target, older, target, newer),
+        # Last updated by another scan: left alone.
+        "host_updated_by_newer": host("10.66.0.2", newer, older, newer, target),
+    }
+    rows["port_seen_by_older"] = port(rows["host_seen_by_others"], 22, target, older, target)
+    # Only the target saw it (and did not create it): its pointer names nothing.
+    rows["port_seen_by_target_only"] = port(rows["host_seen_by_others"], 80, target, target)
+    # Another project's host, last updated by its own scan: untouched.
+    other = Project(name="r6-other", slug="r6-other")
+    db.add(other)
+    db.flush()
+    foreign_scan = _scan(db, other.id, "foreign.xml")
+    when[foreign_scan.id] = NOW
+    rows["foreign_host"] = host("10.66.0.1", foreign_scan, foreign_scan)
+    db.commit()
+    return {"older": older.id, "newer": newer.id, "target": target.id, "foreign": foreign_scan.id}, {
+        name: (type(row), row.id) for name, row in rows.items()}
+
+
+def _pointers(db, rows):
+    db.expire_all()
+    return {name: db.get(model, row_id).last_updated_scan_id for name, (model, row_id) in rows.items()}
+
+
+@pytest.mark.parametrize("path", ["by hand", "cleanup"])
+def test_both_delete_paths_hand_last_updated_to_the_newest_other_scan(client, db_session, test_project, path):
+    """The hand delete re-pointed "last updated by" with a DISTINCT ON over
+    every project's history, in the route; the cleanup of an unfinished import
+    did not re-point at all (the foreign key left NULL) — two paths, two
+    outcomes.  It is ``release_scan``'s step now, so both answer the same.
+    Fails on the old code for the cleanup."""
+    pid = test_project.id
+    scans, rows = _last_updated_estate(db_session, pid)
+    if path == "by hand":
+        response = client.delete(_url(pid, scans["target"]))
+        assert response.status_code == 200, response.text
+    else:
+        delete_partial_scan(db_session, scans["target"])
+        db_session.commit()
+    assert _pointers(db_session, rows) == {
+        "host_seen_by_others": scans["newer"],
+        "host_updated_by_newer": scans["newer"],
+        "port_seen_by_older": scans["older"],
+        "port_seen_by_target_only": None,
+        "foreign_host": scans["foreign"],
+    }
+
+
+def test_release_re_points_only_the_rows_that_name_the_scan(db_session, test_project):
+    """One correlated UPDATE per table, reached through the rows that name
+    the scan — no read of every project's history (R6)."""
+    from sqlalchemy import event
+
+    scans, _rows = _last_updated_estate(db_session, test_project.id)
+    updates = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("UPDATE") and "SET last_updated_scan_id" in statement:
+            updates.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        scan_sightings.release_scan(db_session, scans["target"])
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    db_session.rollback()
+    assert len(updates) == 2, updates
+    for statement in updates:
+        assert "DISTINCT" not in statement.upper(), statement
+        assert "WHERE hosts_v2.last_updated_scan_id = " in statement or (
+            "WHERE ports_v2.last_updated_scan_id = " in statement), statement

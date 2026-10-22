@@ -420,6 +420,8 @@ Verify behavior with:
 - partial API responses
 - multiple chips/tags
 - very large counts
+- a host that answers on every port (65,535 open): the inspector's Services table and its closed / filtered table mount `PORT_ROWS_STEP` (200) rows in port order, and 200 more per "Show N more" (`host-inspector/PortDetailsCard.tsx`; 10,000 mounted rows took 4.4 s and 65,535 ran out of memory, measured 2026-10-22)
+- written Markdown made of one character repeated (`[` × 32,768): `SafeMarkdown`'s look-aheads are linear for the whole text (`utils/markdownScan.ts`, `reportImages.evidenceReferenceAt`), never a scan from each opener
 
 ### 29. Layout Stress Tests
 Verify behavior at:

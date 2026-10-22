@@ -569,6 +569,42 @@ def issue_host_rows(db: Session, project_id: int, issue_key: str, host_id: int) 
     return [serialize_vulnerability(v) for v in rows]
 
 
+HOST_IDS_CAP = 100
+"""The most hosts a promotion or dismissal names for one issue: what the page
+can send (the inspector's ``HOST_CAP`` — a longer host list cannot be
+narrowed there; ``tests/observationHostIdsLimit.test.ts`` pins the two).
+It was 10,000, at several statements per host (R5)."""
+
+
+def _check_host_ids(host_ids: Optional[Sequence[int]]) -> None:
+    if host_ids is not None and len(host_ids) > HOST_IDS_CAP:
+        raise ObservationError(
+            f"At most {HOST_IDS_CAP} hosts per issue; leave the hosts out to act on every host carrying it."
+        )
+
+
+def _most_severe_first(row) -> tuple:
+    return (-_RANK.get(row.severity, 0), row.id)
+
+
+def _issue_rows(db: Session, project_id: int, keys: Sequence[str]) -> Dict[str, list]:
+    """Each issue's rows in the project as ``(id, host_id, severity)`` — what
+    choosing the hosts and the evidencing row needs (R5)."""
+    out: Dict[str, list] = {}
+    for row in (
+        _project_rows(db, project_id, _key().label("key"), Vulnerability.id, Vulnerability.host_id,
+                      Vulnerability.severity)
+        .filter(_key_in(keys)).all()
+    ):
+        out.setdefault(row.key, []).append(row)
+    return out
+
+
+def _title_of(db: Session, rows: list) -> str:
+    """The title a refusal names the issue by (of its first row)."""
+    return db.query(Vulnerability.title).filter(Vulnerability.id == rows[0].id).scalar() or ""
+
+
 @dataclass
 class DismissOutcome:
     issue_key: str
@@ -596,15 +632,18 @@ def dismiss_issue(
     # the finding service this module also uses.
     from app.services.finding_actions import promote_or_dismiss_vulnerability
 
-    rows = [v for _k, v in _project_rows(db, project_id, _key(), Vulnerability).filter(_key_is(issue_key)).all()]
+    _check_host_ids(host_ids)
+    # The three columns the choice needs (R5): the rows were loaded whole —
+    # description and plugin output — for every host carrying the issue.
+    rows = _issue_rows(db, project_id, [issue_key]).get(issue_key)
     if not rows:
         raise ObservationError(f"No scanner observation in this project is the issue '{issue_key}'.")
-    by_host: Dict[int, Vulnerability] = {}
-    for v in sorted(rows, key=lambda v: (-_RANK.get(v.severity, 0), v.id)):
-        by_host.setdefault(v.host_id, v)  # the most severe row on each host, oldest first
+    by_host: Dict[int, int] = {}
+    for row in sorted(rows, key=_most_severe_first):
+        by_host.setdefault(row.host_id, row.id)  # the most severe row on each host, oldest first
     fp = FindingStatus.FALSE_POSITIVE.value
     if host_ids is None:
-        rep = min(rows, key=lambda v: (-_RANK.get(v.severity, 0), v.id))
+        rep = db.get(Vulnerability, min(rows, key=_most_severe_first).id)
         # The hosts are THIS list's — every host whose row has the issue's
         # stored key — named outright, as the bulk promotion names them: the
         # service's own "every host" resolves a title-keyed row by plugin id
@@ -620,12 +659,14 @@ def dismiss_issue(
     outside = [h for h in chosen if h not in by_host]
     if outside:
         raise ObservationError(
-            f"Host(s) {', '.join(map(str, outside))} do not carry the issue '{rows[0].title}'."
+            f"Host(s) {', '.join(map(str, outside))} do not carry the issue '{_title_of(db, rows)}'."
         )
+    # Only the chosen hosts' rows are loaded whole: the click's function takes one.
+    vulns = {v.id: v for v in db.query(Vulnerability).filter(Vulnerability.id.in_([by_host[h] for h in chosen]))}
     finding = None
     for host_id in chosen:
         finding = promote_or_dismiss_vulnerability(
-            db, vuln=by_host[host_id], project_id=project_id, actor_id=actor_id,
+            db, vuln=vulns[by_host[host_id]], project_id=project_id, actor_id=actor_id,
             status=fp, summary=reason, scope="host",
         )
     return DismissOutcome(issue_key=issue_key, finding_id=finding.id, host_count=len(chosen))
@@ -665,12 +706,10 @@ def promote_issues(
     if len(keys) != len(items):
         raise ObservationError("An issue is named twice.")
 
-    key = _key()
-    rows_by_key: Dict[str, List[Vulnerability]] = {}
-    for k, vuln in (
-        _project_rows(db, project_id, key, Vulnerability).filter(_key_in(keys)).all()
-    ):
-        rows_by_key.setdefault(k, []).append(vuln)
+    for item in items:
+        _check_host_ids(item.host_ids)
+    # The columns the choice needs (R5), not every row whole.
+    rows_by_key = _issue_rows(db, project_id, keys)
 
     plan = []
     for item in items:
@@ -687,12 +726,15 @@ def promote_issues(
             outside = [h for h in chosen if h not in carrying]
             if outside:
                 raise ObservationError(
-                    f"Host(s) {', '.join(map(str, outside))} do not carry the issue '{rows[0].title}'."
+                    f"Host(s) {', '.join(map(str, outside))} do not carry the issue '{_title_of(db, rows)}'."
                 )
         wanted = set(chosen)
         # The evidencing row: the most severe on a chosen host, oldest first.
-        rep = min((v for v in rows if v.host_id in wanted), key=lambda v: (-_RANK.get(v.severity, 0), v.id))
-        plan.append((item.issue_key, rep, chosen))
+        rep = min((v for v in rows if v.host_id in wanted), key=_most_severe_first)
+        plan.append((item.issue_key, rep.id, chosen))
+    # Each issue's evidencing row whole — the one row the promotion reads.
+    reps = {v.id: v for v in db.query(Vulnerability).filter(Vulnerability.id.in_([rep for _, rep, _ in plan]))}
+    plan = [(issue_key, reps[rep], chosen) for issue_key, rep, chosen in plan]
 
     svc = FindingService(db)
     outcomes: Dict[str, PromoteOutcome] = {}

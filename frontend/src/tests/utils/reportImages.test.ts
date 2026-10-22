@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  captionAsAlt, codeSpans, evidenceIdOf, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
+  EVIDENCE_REFERENCE, captionAsAlt, codeSpans, evidenceIdOf, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
 } from '../../utils/reportImages';
 
 import { CODE_REFERENCE_CASES, REFERENCE_CASES } from './reportImageCases';
@@ -123,5 +123,40 @@ describe('placementLine — where an image prints', () => {
     expect(unticked.text).toContain('Referenced in Impact, but not ticked');
     expect(placementLine({ ...base, printable: false }).tone).toBe('warning');
     expect(placementLine({ ...base, in_report: false }).text).toBe('Not in the report');
+  });
+});
+
+describe('evidenceReferenceAt — the pattern at one position, remembered per text (R10)', () => {
+  // The sticky pattern as it was asked before 5.418.0, with the code check.
+  const sticky = new RegExp(EVIDENCE_REFERENCE.source, 'y');
+  const before = (text: string, at: number) => {
+    sticky.lastIndex = at;
+    const m = sticky.exec(text);
+    const inCode = (text.includes('`') || text.includes('~~~'))
+      && codeSpans(text).some(([a, b]) => a <= at && at < b);
+    return !m || inCode ? null : { id: Number(m[2]), alt: m[1], end: at + m[0].length };
+  };
+  const PIECES = ['![', '!', '[', ']', '(', ')', '](evidence:7)', 'evidence:12', ' "t"', '"', ' ', '\\', '\n', '\r',
+    ' ', '`', 'a'];
+
+  it('answers what the pattern answered, at every position of random texts', () => {
+    let seed = 20261022;
+    const next = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    for (let t = 0; t < 600; t += 1) {
+      let text = '';
+      const length = 1 + Math.floor(next() * 16);
+      for (let c = 0; c < length; c += 1) text += PIECES[Math.floor(next() * PIECES.length)];
+      for (let at = 0; at <= text.length; at += 1) {
+        expect([text, at, evidenceReferenceAt(text, at)]).toEqual([text, at, before(text, at)]);
+      }
+    }
+  });
+
+  it('is linear on 16,384 `![` (1.2 s per render before)', () => {
+    const text = '!['.repeat(16384) + 'x](evidence:5)';
+    const t = performance.now();
+    for (let at = 0; at < text.length; at += 2) evidenceReferenceAt(text, at);
+    expect(performance.now() - t).toBeLessThan(250);
+    expect(evidenceReferenceAt(text, 2)?.id).toBe(5);
   });
 });

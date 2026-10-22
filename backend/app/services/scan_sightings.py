@@ -305,6 +305,41 @@ def _hand_over_introductions(db: Session, scan_id: int) -> None:
         )
 
 
+def _repoint_last_updated(db: Session, scan_id: int) -> int:
+    """Hosts and ports whose "last updated by" names this scan name the newest
+    OTHER scan with history on them (``discovered_at``, then the higher scan
+    id), or nothing when none has.
+
+    One correlated UPDATE per table, over the rows that name this scan only
+    (R6, 2026-10-22): the hand delete re-pointed with a ``DISTINCT ON`` over
+    EVERY project's history, and the cleanup of an unfinished import did not
+    re-point at all (the foreign key left NULL) — two delete paths, two
+    outcomes.  A pointer moves only to a scan that has history on the row,
+    which already keeps the row in the delete guards, so moving it here,
+    before them, changes none of their answers."""
+    moved = 0
+    for model, history, parent in (
+        (models.Host, models.HostScanHistory, "host_id"),
+        (models.Port, models.PortScanHistory, "port_id"),
+    ):
+        other = aliased(history)
+        newest = (
+            select(other.scan_id)
+            .where(getattr(other, parent) == model.id, other.scan_id != scan_id)
+            .order_by(other.discovered_at.desc(), other.scan_id.desc())
+            .limit(1)
+            .correlate(model)
+            .scalar_subquery()
+        )
+        moved += db.execute(
+            update(model)
+            .where(model.last_updated_scan_id == scan_id)
+            .values(last_updated_scan_id=newest)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+    return moved
+
+
 def release_scan(db: Session, scan_id: int) -> Dict[str, int]:
     """Let go of everything ``scan_id`` reported, before its row is deleted.
 
@@ -319,6 +354,8 @@ def release_scan(db: Session, scan_id: int) -> Dict[str, int]:
     * Confidence rows go to a later scan that observed their host / port, and
       the hosts and ports this scan introduced are handed to the first other
       scan that saw them.
+    * Hosts and ports last updated by this scan name the newest other scan
+      with history on them, or nothing (``_repoint_last_updated``).
 
     The scan's own sighting rows go with the scan row (CASCADE).  Statements
     only, no rows loaded; the caller holds whatever lock it needs and commits.
@@ -334,4 +371,5 @@ def release_scan(db: Session, scan_id: int) -> Dict[str, int]:
     rehomed += moved
     rehomed += _rehome_confidence(db, scan_id)
     _hand_over_introductions(db, scan_id)
+    _repoint_last_updated(db, scan_id)
     return {"deleted": deleted, "rehomed": rehomed, "observations": observations}

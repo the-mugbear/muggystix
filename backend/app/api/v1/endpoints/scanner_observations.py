@@ -107,8 +107,8 @@ class IssueDetailOut(BaseModel):
 
 class PromoteItemIn(BaseModel):
     issue_key: str = Field(..., min_length=1, max_length=600)
-    # Omitted = every host carrying the issue.
-    host_ids: Optional[List[int]] = Field(default=None, max_length=10000)
+    # Omitted = every host carrying the issue.  At most what the page sends.
+    host_ids: Optional[List[int]] = Field(default=None, max_length=svc.HOST_IDS_CAP)
 
 
 class PromoteRequest(BaseModel):
@@ -201,8 +201,8 @@ def get_scanner_observation_host_output(
 
 class DismissIn(BaseModel):
     issue_key: str = Field(..., min_length=1, max_length=600)
-    # Omitted = every host carrying the issue.
-    host_ids: Optional[List[int]] = Field(default=None, max_length=10000)
+    # Omitted = every host carrying the issue.  At most what the page sends.
+    host_ids: Optional[List[int]] = Field(default=None, max_length=svc.HOST_IDS_CAP)
     # Asked for, never required — as on the host page.
     reason: Optional[str] = Field(default=None, max_length=2000)
 

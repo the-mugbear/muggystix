@@ -273,6 +273,25 @@ const NO_WEB: WebInterface[] = [];
 const NO_NETEXEC: NetexecResult[] = [];
 const NO_PATHS: WebPath[] = [];
 
+/** Rows of a port table mounted at first, and added by each "Show more". */
+export const PORT_ROWS_STEP = 200;
+
+/** "Showing 200 of 65,535 open ports · Show 200 more" under a cut table. */
+const MoreRows: React.FC<{ shown: number; total: number; noun: string; onMore: (next: number) => void }> = ({
+  shown, total, noun, onMore,
+}) => {
+  if (total <= shown) return null;
+  const step = Math.min(PORT_ROWS_STEP, total - shown);
+  return (
+    <p className="flex flex-wrap items-center gap-x-xs pt-xs text-caption text-muted-foreground" data-testid="port-rows-more">
+      Showing {shown.toLocaleString()} of {total.toLocaleString()} {noun}.
+      <Button variant="ghost" size="sm" className="h-6" onClick={() => onMore(shown + step)}>
+        Show {step.toLocaleString()} more
+      </Button>
+    </p>
+  );
+};
+
 /** Ports by number, then protocol (53/tcp before 53/udp); `desc` reverses both. */
 export const sortPortsBy = <T extends { port_number: number | null; protocol?: string | null }>(
   ports: T[], dir: 'asc' | 'desc',
@@ -299,6 +318,11 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   const [helperTarget, setHelperTarget] = useState<Record<number, string>>({});
   const [showNotOpen, setShowNotOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // How many rows of each table are mounted (R10): a host that answers on
+  // every port (a tarpit) has 65,535, and every row is ~15 elements — 10,000
+  // took 4.4 s to mount and 65,535 ran out of memory (measured 2026-10-22).
+  const [openShown, setOpenShown] = useState(PORT_ROWS_STEP);
+  const [notOpenShown, setNotOpenShown] = useState(PORT_ROWS_STEP);
 
   // v5.297.0 — the host's evidence, read once and split by port.
   //
@@ -424,7 +448,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortPorts(openPorts).map((port) => {
+              {sortPorts(openPorts).slice(0, openShown).map((port) => {
                 const portEndpoints = endpoints.get(port.id) ?? [];
                 // Only names that are plainly hostnames: they go into
                 // commands the operator pastes into a shell.
@@ -612,6 +636,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
               })}
             </TableBody>
           </Table>
+          <MoreRows shown={openShown} total={openPorts.length} noun="open ports" onMore={setOpenShown} />
         </div>
       )}
 
@@ -699,7 +724,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sortPorts(notOpen).map((port) => (
+                  {sortPorts(notOpen).slice(0, notOpenShown).map((port) => (
                     <TableRow key={port.id}>
                       <TableCell className="truncate font-mono text-metadata">
                         {port.port_number}
@@ -722,6 +747,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                   ))}
                 </TableBody>
               </Table>
+              <MoreRows shown={notOpenShown} total={notOpen.length} noun="ports" onMore={setNotOpenShown} />
             </div>
           )}
         </div>
