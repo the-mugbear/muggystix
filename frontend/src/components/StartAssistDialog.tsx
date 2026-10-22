@@ -83,7 +83,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   mySessions = [],
   instruction,
 }) => {
-  const liveSession = instruction ? mySessions.find((s) => hasLiveKey(s, Date.now())) : undefined;
+  const liveSession = instruction ? mySessions.find((s) => hasLiveKey(s)) : undefined;
   const queryClient = useQueryClient();
   const projectId = useProjectId();
   // The key is shown once: it is this dialog's mutation result and nothing

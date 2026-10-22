@@ -71,11 +71,11 @@ export const useMyAssistSessions = (
   // not go on showing the sessions of the last good read either.
   const failed = query.isError;
   const rows = query.data?.sessions;
-  // "Live" as of the read: a key that runs out later is found by the next one.
-  const readAt = query.dataUpdatedAt;
+  // "Live" as the server said at the read (`key_state`): a key that runs out
+  // later is found by the next one.
   const sessions = useMemo(
-    () => (rows && !failed ? rows.filter((s) => hasLiveKey(s, readAt)) : NONE),
-    [rows, failed, readAt],
+    () => (rows && !failed ? rows.filter((s) => hasLiveKey(s)) : NONE),
+    [rows, failed],
   );
 
   return { sessions, loading: query.isFetching, failed };

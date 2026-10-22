@@ -30,6 +30,11 @@ export interface AgentSessionRow {
    *  reconnect to, not a dead one (`utils/agentRuns.keyState`). */
   key_expires_at?: string | null;
   renewable_until?: string | null;
+  /** Review 2026-10-10, R1e — where the session stands, decided by the
+   *  server on its own clock (`session_key_state`): `live` (a key works now),
+   *  `resumable` (active, no working key, inside its lifetime), `ended`.
+   *  The page words it (`utils/agentRuns.keyState`) and never recomputes it. */
+  key_state: 'live' | 'resumable' | 'ended';
   /** v5.219.0 — how the session ended ('agent' is the clean exit; 'operator'
    *  and 'lapsed' mean the agent never called end) and how many feedback
    *  submissions it made. */
@@ -145,7 +150,7 @@ export interface AgentSessionFilters {
   tool?: string;
   user_id?: number;
   /** Filter by the stored status — pass 'active' for the sessions still
-   *  open (whether a key still works is `utils/agentRuns.hasLiveKey`). */
+   *  open (whether a key still works is the row's `key_state`, `utils/agentRuns.hasLiveKey`). */
   status?: string;
   limit?: number;
   offset?: number;

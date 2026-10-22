@@ -46,7 +46,7 @@ const LONG_PURPOSE = `Check ${'p'.repeat(194)}`;                // 200 character
 const row = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
   id: 7, project_id: 1, status: 'active', purpose: 'Sweep the DMZ',
   generated_by_model: 'claude-opus', user_username: 'ana', started_at: '2026-10-09T11:55:00Z',
-  key_expires_at: '2026-10-10T12:00:00Z', renewable_until: '2026-10-12T12:00:00Z', ...over,
+  key_expires_at: '2026-10-10T12:00:00Z', renewable_until: '2026-10-12T12:00:00Z', key_state: 'live', ...over,
 });
 
 /** The server, as far as the rail is concerned. */
