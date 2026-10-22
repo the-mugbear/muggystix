@@ -58,7 +58,6 @@ vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentPr
 
 import * as api from '../../services/api';
 import ReportDetail from '../../pages/ReportDetail';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -98,7 +97,6 @@ const editClient = async (value: string) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resetProjectMembersCache();
   mocked.listReportTemplates.mockResolvedValue([
     { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'] },
     { name: 'brief', title: 'Brief report', description: '', formats: ['html'] },

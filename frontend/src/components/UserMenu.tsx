@@ -208,25 +208,7 @@ const UserMenu: React.FC = () => {
             </div>
             <div>
               <dt className="text-caption text-muted-foreground">Git commit</dt>
-              <dd className="font-mono">
-                {/* Audit FRX·L3: when REACT_APP_REPO_URL is configured
-                    at build time, the commit hash deep-links to the
-                    upstream repo browser.  Falls back to plain text
-                    when unset so on-prem builds without a repo URL
-                    still render cleanly. */}
-                {process.env.REACT_APP_REPO_URL && gitCommit && gitCommit !== 'dev' ? (
-                  <a
-                    href={`${process.env.REACT_APP_REPO_URL}/commit/${gitCommit}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline-offset-4 hover:underline"
-                  >
-                    {gitCommit.substring(0, 12)}
-                  </a>
-                ) : (
-                  gitCommit.substring(0, 12)
-                )}
-              </dd>
+              <dd className="font-mono">{gitCommit.substring(0, 12)}</dd>
             </div>
             <div>
               <dt className="text-caption text-muted-foreground">Author</dt>

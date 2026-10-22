@@ -55,7 +55,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
 
 import * as api from '../../services/api';
 import FindingDetail from '../../pages/FindingDetail';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -81,7 +80,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   // jsdom makes no object URLs: an image's bytes get this one.
   URL.createObjectURL = vi.fn(() => 'blob:img');
-  resetProjectMembersCache();
   projectRole.value = 'analyst';
   mocked.getFinding.mockResolvedValue(finding());
   mocked.getFindingHistory.mockResolvedValue([]);

@@ -48,14 +48,6 @@ export const TIER_QUERY: Record<number, string> = {
   3: 'has:untouched AND has:exploit AND NOT has:critical',
 };
 
-const HOST_PATH = /^\/hosts\/(\d+)(?:[/?#]|$)/;
-
-/** The host id a link points at, or null for anything that is not a host page. */
-export const hostIdOf = (to: string): number | null => {
-  const match = HOST_PATH.exec(to);
-  return match ? Number(match[1]) : null;
-};
-
 /** De-duplicated, order-preserving (a host can appear twice in one section —
  *  two reviewers' follow-ups, a note and a plan step). */
 export const uniqueHostIds = (ids: Array<number | null | undefined>): number[] => {

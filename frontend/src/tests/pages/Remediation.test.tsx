@@ -58,7 +58,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
 import Remediation from '../../pages/Remediation';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
-import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { formatDate } from '../../utils/relativeTime';
 import type { RemediationPage, RemediationRow } from '../../services/api';
 import { asCapped, capped } from '../helpers/cappedList';
@@ -92,7 +91,6 @@ beforeEach(() => {
   [listRemediation, applyRemediation, listRemediationEvents, addRemediationNote, deleteRemediationNote,
     getRemediationPolicy, listRemediationContacts, getRemediationFollowUp, recordRemediationFollowUp]
     .forEach((m) => m.mockReset());
-  resetRemediationPolicy();
   exportRemediation.mockReset().mockResolvedValue({ items: [], total: 0, limit: 20000, as_of: '2026-11-10' });
   listRemediationTeams.mockReset().mockResolvedValue([]);
   getRemediationTrend.mockReset().mockResolvedValue({ as_of: '2026-11-10', days: 90, daily: [], closed_by_month: [] });

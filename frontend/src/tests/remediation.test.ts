@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { RemediationRow } from '../services/api';
 import {
   applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, groupTimeline, hasChanges, idParam,
-  csvCell, deadlineCell, dueDistance, previewDueOn, remediationCsv, remediationPageSize, remediationSummary,
+  csvCell, deadlineCell, previewDueOn, remediationCsv, remediationPageSize, remediationSummary,
   timelineSummary, heldRecordText, isRemediationVerification, verificationNote,
   isRemediationFlag, noteRequirement, policyDueLine, searchParam, REMEDIATION_FLAG_LABEL,
   REMEDIATION_FIELD_LABEL, REMEDIATION_STATE_HELP, REMEDIATION_STATE_LABEL, REMEDIATION_STATUS_LABEL,
@@ -153,17 +153,6 @@ describe('draftCaution', () => {
 
 describe('deadlines (5.340.0)', () => {
   const policy = { days: { critical: 30, high: 30, medium: 90, low: 120, info: null } };
-
-  it('says the distance to a deadline in words, and how a closed row ended', () => {
-    expect(dueDistance({ state: 'overdue', days_left: -1, closed_days_late: null })).toBe('1 day overdue');
-    expect(dueDistance({ state: 'due_soon', days_left: 0, closed_days_late: null })).toBe('due today');
-    expect(dueDistance({ state: 'on_track', days_left: 12, closed_days_late: null })).toBe('in 12 days');
-    expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: 0 })).toBe('reported fixed on time');
-    expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: 4 })).toBe('reported fixed 4 days late');
-    // No deadline: nothing to say, never "0 days".
-    expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: null })).toBeNull();
-    expect(dueDistance({ state: 'not_assigned', days_left: null, closed_days_late: null })).toBeNull();
-  });
 
   it('previews a deadline from the assigned date without a time zone moving the day', () => {
     expect(previewDueOn(policy, 'HIGH', '2026-10-05')).toBe('2026-11-04');

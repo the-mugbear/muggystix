@@ -48,7 +48,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import Remediation from '../../pages/Remediation';
 import { TooltipProvider } from '../../components/ui/tooltip';
-import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import type { RemediationPage, RemediationRow } from '../../services/api';
 
 const row = (id: number): RemediationRow => ({
@@ -95,7 +94,6 @@ beforeEach(() => {
   vi.useFakeTimers();
   listRemediation.mockReset().mockResolvedValue(PAGE);
   getRemediationPolicy.mockReset().mockResolvedValue(POLICY);
-  resetRemediationPolicy();
 });
 afterEach(() => { vi.useRealTimers(); });
 

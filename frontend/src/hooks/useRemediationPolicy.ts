@@ -30,12 +30,6 @@ export function setRemediationPolicy(policy: RemediationPolicy | null): void {
   queryClient.setQueryData<RemediationPolicy | null>(KEY, policy);
 }
 
-/** Forget what the app's client read.  Tests call it between cases; each of
- *  their renders has a client of its own, so there it changes nothing. */
-export function resetRemediationPolicy(): void {
-  queryClient.removeQueries({ queryKey: KEY });
-}
-
 export interface RemediationPolicyState {
   /** Null until read (or when the read failed). */
   policy: RemediationPolicy | null;

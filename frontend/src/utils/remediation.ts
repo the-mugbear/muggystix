@@ -158,17 +158,6 @@ export const isRemediationState = (v: string | null): v is RemediationState =>
 
 const days = (n: number): string => `${n.toLocaleString()} day${n === 1 ? '' : 's'}`;
 
-/** The second line of the Due cell: how far the deadline is, in words. */
-export const dueDistance = (row: Pick<RemediationRow, 'state' | 'days_left' | 'closed_days_late'>): string | null => {
-  if (row.state === 'closed') {
-    if (row.closed_days_late == null) return null;
-    return row.closed_days_late === 0 ? 'reported fixed on time' : `reported fixed ${days(row.closed_days_late)} late`;
-  }
-  if (row.days_left == null) return null;
-  if (row.days_left < 0) return `${days(-row.days_left)} overdue`;
-  return row.days_left === 0 ? 'due today' : `in ${days(row.days_left)}`;
-};
-
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info'];
 const SEVERITY_WORD: Record<string, string> = {
   critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Informational',

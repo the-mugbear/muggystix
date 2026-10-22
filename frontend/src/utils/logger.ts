@@ -22,9 +22,9 @@ export interface LogEntry {
   stackTrace?: string;
 }
 
+// Entries go to the console only: nothing keeps them in memory (a 1,000-entry
+// buffer used to, and nothing read it).
 class Logger {
-  private logs: LogEntry[] = [];
-  private maxLogs = 1000;
   private currentLogLevel = LogLevel.DEBUG;
 
   private formatTimestamp(): string {
@@ -86,14 +86,6 @@ class Logger {
   }
 
   private addLog(entry: LogEntry): void {
-    this.logs.push(entry);
-
-    // Keep only the most recent logs
-    if (this.logs.length > this.maxLogs) {
-      this.logs = this.logs.slice(-this.maxLogs);
-    }
-
-    // Console output for immediate debugging
     this.outputToConsole(entry);
   }
 
@@ -168,33 +160,6 @@ class Logger {
   setLogLevel(level: LogLevel): void {
     this.currentLogLevel = level;
     this.info('LOGGER', `Log level set to ${LogLevel[level]}`);
-  }
-
-  getLogs(category?: string, level?: LogLevel): LogEntry[] {
-    let filteredLogs = [...this.logs];
-
-    if (category) {
-      filteredLogs = filteredLogs.filter(log => log.category === category);
-    }
-
-    if (level !== undefined) {
-      filteredLogs = filteredLogs.filter(log => log.level >= level);
-    }
-
-    return filteredLogs;
-  }
-
-  getAuthLogs(): LogEntry[] {
-    return this.getLogs('AUTH');
-  }
-
-  clearLogs(): void {
-    this.logs = [];
-    this.info('LOGGER', 'Logs cleared');
-  }
-
-  exportLogs(): string {
-    return JSON.stringify(this.logs, null, 2);
   }
 
   // Performance tracking

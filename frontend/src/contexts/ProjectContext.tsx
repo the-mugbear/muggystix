@@ -16,13 +16,12 @@ import { Textarea } from '../components/ui/textarea';
 // Routes whose URL contains a per-project resource id. After a project
 // switch we redirect the operator off these to /operations because
 // the previous project's resource won't exist (or, worse, the same
-// numeric id will silently resolve to a different scope/host/finding in
-// the new project). Static, child-free paths (lists, hubs, settings)
-// are project-wide and stay put.
+// numeric id will silently resolve to a different host/finding in the
+// new project). Static, child-free paths (lists, hubs, settings) are
+// project-wide and stay put.
 const PROJECT_SCOPED_RESOURCE_ROUTES: RegExp[] = [
   /^\/scans\/[^/]+/,
   /^\/hosts\/[^/]+/,
-  /^\/scopes\/[^/]+/,
   /^\/findings\/[^/]+/,
   /^\/reports\/[^/]+/,
   /^\/agent-sessions\/[^/]+/,

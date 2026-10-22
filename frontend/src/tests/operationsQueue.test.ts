@@ -1,22 +1,10 @@
 import { describe, it, expect } from 'vitest';
 
-import { fromOperationsQueue, hostIdOf, uniqueHostIds } from '../utils/operationsQueue';
+import { fromOperationsQueue, uniqueHostIds } from '../utils/operationsQueue';
 
-// v5.243.0 — a host opened from My work offered "Back to my work" but its Next
-// went nowhere. The section's host ids now travel with the navigation.
+// A host opened from My work offered "Back to my work" but its Next went
+// nowhere. The section's host ids now travel with the navigation.
 describe('operationsQueue', () => {
-  it('reads the host id off a host link, deep-linked or not, and nothing else', () => {
-    expect(hostIdOf('/hosts/42')).toBe(42);
-    expect(hostIdOf('/hosts/42#note-17')).toBe(42);
-    expect(hostIdOf('/hosts/42?from=hosts')).toBe(42);
-    expect(hostIdOf('/findings/42')).toBeNull();
-    // A task row opens its test on the host page (5.320.0).
-    expect(hostIdOf('/hosts/42#host-test-9')).toBe(42);
-    expect(hostIdOf('/agent-sessions/3')).toBeNull();
-    expect(hostIdOf('/hosts/')).toBeNull();
-    expect(hostIdOf('/hosts/42abc')).toBeNull();
-  });
-
   it('keeps display order and drops repeats (a host can sit in one section twice)', () => {
     expect(uniqueHostIds([7, 3, 7, null, 9, 3, undefined])).toEqual([7, 3, 9]);
   });

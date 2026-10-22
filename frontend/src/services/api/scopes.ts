@@ -49,14 +49,6 @@ export interface SubnetFileUploadResponse {
   filename: string;
 }
 
-export interface HostSubnetMapping {
-  id: number;
-  host_id: number;
-  subnet_id: number;
-  created_at: string;
-  subnet: Subnet;
-}
-
 export interface ScopeCoverageHost {
   host_id: number;
   ip_address: string;
@@ -81,20 +73,6 @@ export interface ScopeCoverageSummary {
   coverage_percentage: number;
   has_scope_configuration: boolean;
   recent_out_of_scope_hosts: ScopeCoverageHost[];
-}
-
-export interface OutOfScopeHost {
-  id: number;
-  scan_id: number;
-  ip_address: string;
-  hostname: string | null;
-  // Backend stores this as a loose JSON column (out_of_scope_hosts.ports);
-  // no frontend consumer reads it, so keep it `unknown` rather than `any`
-  // — narrows must be explicit if it's ever used.
-  ports: unknown;
-  tool_source: string | null;
-  reason: string | null;
-  created_at: string;
 }
 
 // --- Subnet labels (v2.86.0) ---

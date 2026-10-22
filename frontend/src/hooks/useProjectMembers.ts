@@ -18,18 +18,12 @@ import { useQuery } from '@tanstack/react-query';
 
 import { listProjectMembers, type ProjectMember } from '../services/api';
 import { NO_PROJECT, useProjectId } from './useProjectId';
-import { queryClient, rememberFor } from '../lib/query';
+import { rememberFor } from '../lib/query';
 import type { MentionCandidate } from '../utils/mentions';
 
 const TTL_MS = 5 * 60 * 1000;
 const EMPTY: ProjectMember[] = [];
 const NO_CANDIDATES: MentionCandidate[] = [];
-
-/** Forget every roster the app's client holds.  Tests call it between cases;
- *  each of their renders has a client of its own, so there it changes nothing. */
-export function resetProjectMembersCache(): void {
-  queryClient.removeQueries({ queryKey: ['listProjectMembers'] });
-}
 
 export type ProjectMembersStatus = 'loading' | 'ready' | 'error';
 
