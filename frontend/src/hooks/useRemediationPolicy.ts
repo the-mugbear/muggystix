@@ -1,6 +1,6 @@
 /**
  * This installation's remediation settings — whether remediation tracking
- * exists here at all, and the timeline per severity (5.340.0).
+ * exists here at all, and the timeline per severity.
  *
  * One query for the session (`['getRemediationPolicy']`, lib/query),
  * shared by the navigation, the pages and the dialogs.  Until it answers — and

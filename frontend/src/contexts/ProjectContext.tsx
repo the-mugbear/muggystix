@@ -96,11 +96,11 @@ interface ProjectContextType {
   projects: Project[];
   currentProject: Project | null;
   selectProject: (project: Project) => void;
-  /** v5.290.0 — add a project the caller just created to the list and make
+  /** Add a project the caller just created to the list and make
    *  it the active one, at once.  (Any other change to the list: the writer
    *  invalidates `getProjects`, which re-reads it behind the page.) */
   adoptProject: (project: Project) => void;
-  // No `isLoading` / `loadError` (5.361.0): the provider shows its own
+  // No `isLoading` / `loadError`: the provider shows its own
   // loading and error screens INSTEAD of the app, so nothing under it could
   // ever read either as anything but false / null.
 }
@@ -282,7 +282,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   }
 
   // Confirmed empty — only rendered after a successful fetch that
-  // returned an empty project list.  v2.44.2 (regression bug): pre-fix
+  // returned an empty project list.  Once (a regression)
   // this state advertised "create one if you have the required
   // permissions" but the only button was Sign Out — fresh-install
   // admins were locked out of the app on first login.  Now the
@@ -309,7 +309,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
 // ---------------------------------------------------------------------------
 // EmptyProjectStartScreen
 // ---------------------------------------------------------------------------
-// v2.44.2: standalone empty-state component rendered when a user lands
+// The standalone empty-state component rendered when a user lands
 // on the app and has zero projects.  Admins + analysts get an inline
 // "Create your first project" form (the form-based flow is the same
 // one ProjectSettings uses); other roles see the original
@@ -318,7 +318,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
 // Pre-fix the empty-state was a flat "you have no projects, contact an
 // admin or create one if you have permission" panel with NO create
 // affordance, even for admins.  Fresh installs (with no auto-seed
-// project, post v2.40.1) trapped the first admin in a dead-end and the
+// project) trapped the first admin in a dead-end and the
 // only escape was to call the API by hand.
 
 interface EmptyProjectStartScreenProps {
@@ -374,7 +374,7 @@ const EmptyProjectStartScreen: React.FC<EmptyProjectStartScreenProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Acme Q3 engagement"
-              // v5.290.0 — was 120, past the API's 100: a 101–120 character
+              // It was 120, past the API's 100: a 101–120 character
               // name was accepted here and then refused by the server.
               maxLength={100}
               aria-describedby="empty-state-project-name-count"

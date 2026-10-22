@@ -137,7 +137,7 @@ const UserMenu: React.FC = () => {
             </div>
           </DropdownMenuItem>
 
-          {/* v5.294.0 — your own AI provider keys; they were a tab among the
+          {/* Your own AI provider keys; they were a tab among the
               project's settings although every row belongs to one user. */}
           <DropdownMenuItem onSelect={() => navigate('/llm-settings')}>
             <Sparkles className="size-4" aria-hidden />

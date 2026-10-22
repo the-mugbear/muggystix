@@ -8,7 +8,7 @@
  *  - Add the user to a project they aren't already in.
  *
  * Backed by:
- *  - GET  /api/v1/users/{id}/memberships          (v2.59.0, admin-only)
+ *  - GET  /api/v1/users/{id}/memberships          (admin-only)
  *  - POST   /api/v1/projects/{id}/members
  *  - PUT    /api/v1/projects/{id}/members/{user_id}
  *  - DELETE /api/v1/projects/{id}/members/{user_id}
@@ -284,7 +284,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
           </DialogDescription>
         </DialogHeader>
 
-        {/* v4.56.0 (UX·2) — wrap the variable-length content in
+        {/* UX·2 — wrap the variable-length content in
             DialogBody so it scrolls instead of getting clipped by
             DialogContent's max-h-[85vh] + overflow-hidden.  Pre-fix
             the membership table and the add-to-project row could
