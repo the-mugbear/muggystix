@@ -209,8 +209,14 @@ class AgentActivitySummary(BaseModel):
 
 
 def _session_hygiene(db: Session, project_id: int, window_start: datetime) -> AgentSessionHygiene:
-    """Three small aggregates over ``agent_sessions`` for the window."""
-    in_window = [AgentSession.project_id == project_id, AgentSession.started_at >= window_start]
+    """Three small aggregates over ``agent_sessions`` for the window — over
+    the sessions the list has (``LISTED_WORKFLOWS``), so a figure here is a
+    count of rows the reader can open."""
+    in_window = [
+        AgentSession.project_id == project_id,
+        AgentSession.started_at >= window_start,
+        AgentSession.workflow.in_(LISTED_WORKFLOWS),
+    ]
     started = db.query(func.count(AgentSession.id)).filter(*in_window).scalar() or 0
     active = (
         db.query(func.count(AgentSession.id))

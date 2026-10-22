@@ -858,8 +858,9 @@ def list_agent_sessions(
     read (``get_agent_session_row``), so it is built by this path and cannot
     drift from the list row.
 
-    Filters are AND'd.  Ordering is started_at DESC (most recent first, nulls
-    last) with ``id`` as the deterministic tiebreaker.
+    Filters are AND'd.  Sessions whose agent has made a call come first,
+    then the ones that never connected; each part by started_at DESC (most
+    recent first, nulls last) with ``id`` as the deterministic tiebreaker.
 
     ``status`` matches the stored status column ('active' / 'ended'; a row
     from before v2.337.0 may also read 'expired').  Pass 'active' for the
@@ -875,8 +876,17 @@ def list_agent_sessions(
     )
     if session_id is not None:
         q = q.filter(AgentSession.id == session_id)
+    # Sessions whose agent never connected (no audited call — the reading
+    # behind ``connection == 'none'``, "Never connected") go after the ones
+    # that have called (plan 2026-10-10, G11).
+    connected = (
+        db.query(AgentApiCall.id)
+        .filter(AgentApiCall.agent_session_id == AgentSession.id)
+        .exists()
+    )
     sessions = (
         q.order_by(
+            case((connected, 0), else_=1),
             AgentSession.started_at.desc().nulls_last(),
             AgentSession.id,
         )

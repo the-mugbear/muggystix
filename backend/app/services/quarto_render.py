@@ -1038,12 +1038,19 @@ def render(
     strict_evidence: bool = False,
     asset_files: Optional[Dict[str, Path]] = None,
     on_progress: Optional[Callable[[], None]] = None,
+    before_quarto: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Path]:
     """Render ``dataset`` with the template into ``out_dir`` → {format: file}.
 
     ``on_progress`` is called before each format and before each
     post-processor — the points at which a worker can say it is still alive
     (one render is several Quarto runs, each with its own timeout).
+
+    ``before_quarto`` is called once, after the evidence images are in place
+    and before the first Quarto run: everything read from the database is
+    read by then, so a caller ends its transaction there rather than hold
+    it open through minutes of rendering (review 2026-10-10, R10 — a boot
+    migration queued behind it, and every request behind the migration).
 
     ``asset_files`` ({asset id: file}, v2.431.0): uploaded template images,
     used in place of (or instead of a missing) server-installed file.
@@ -1089,6 +1096,8 @@ def render(
         # What the source bundle holds — taken now, before any format adds
         # its output (report.html, report_files/, .quarto/ …) to the folder.
         source_files = _bundle_files(work)
+        if before_quarto is not None:
+            before_quarto()
 
         results: Dict[str, Path] = {}
         env = _clean_env(work)

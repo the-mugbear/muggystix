@@ -179,22 +179,60 @@ AGENT_API_CALL_PURGE_INTERVAL_SECONDS = 24 * 3600  # 1 day
 AGENT_API_CALL_FIRST_PURGE_DELAY_SECONDS = 300
 
 
-def _purge_retained(retention_days: int, audit_days: int) -> tuple:
+def _retention_days(name: str, default: int) -> int:
+    """A ``*_RETENTION_DAYS`` setting: days to keep, 0 (or less) = kept."""
+    return max(0, int(os.getenv(name, str(default))))
+
+
+def mcp_tool_call_retention_days() -> int:
+    """``MCP_TOOL_CALL_RETENTION_DAYS`` (default 90): the MCP transport's
+    telemetry (``mcp_tool_calls``) — written for every MCP message, with or
+    without a key, so without a purge anyone who can reach the server grows
+    it (review 2026-10-10, S4)."""
+    return _retention_days("MCP_TOOL_CALL_RETENTION_DAYS", 90)
+
+
+def user_session_retention_days() -> int:
+    """``USER_SESSION_RETENTION_DAYS`` (default 90): how long a browser
+    session that has ENDED (signed out, revoked, expired) is kept.  A live
+    session is never purged; who signed in, and from where, stays in the
+    audit log under its own setting."""
+    return _retention_days("USER_SESSION_RETENTION_DAYS", 90)
+
+
+def _purge_retained(retention_days: int, audit_days: int, mcp_days: int = 0, session_days: int = 0) -> tuple:
     """One retention pass (runs in a thread — the batched DELETEs must not
-    block the event loop): agent API calls, then — only when an operator
-    opted in with AUDIT_LOG_RETENTION_DAYS — audit log rows."""
-    from app.db.models_auth import AuditLog
+    block the event loop): agent API calls, MCP telemetry, ended browser
+    sessions, then — only when an operator opted in with
+    AUDIT_LOG_RETENTION_DAYS — audit log rows."""
+    from sqlalchemy import func
+
+    from app.db.models_agent import McpToolCall
+    from app.db.models_auth import AuditLog, UserSession
     from app.services.agent_api_log_service import purge_older_than, purge_rows_older_than
 
     with _housekeeping_leader(_LEADER_LOCK_AGENT_API_RETENTION) as db:
         if db is None:
             return None  # another worker is the leader this pass
         calls = purge_older_than(db, days=retention_days) if retention_days > 0 else 0
+        mcp = (
+            purge_rows_older_than(db, McpToolCall, McpToolCall.created_at, mcp_days)
+            if mcp_days > 0 else 0
+        )
+        # When a session ENDED: its revocation, else (never revoked) its
+        # expiry.  A live session's expiry is in the future, so it never
+        # matches.
+        sessions = (
+            purge_rows_older_than(
+                db, UserSession, func.coalesce(UserSession.revoked_at, UserSession.expires_at), session_days,
+            )
+            if session_days > 0 else 0
+        )
         audits = (
             purge_rows_older_than(db, AuditLog, AuditLog.timestamp, audit_days)
             if audit_days > 0 else 0
         )
-        return calls, audits
+        return calls, mcp, sessions, audits
 
 
 async def agent_api_call_retention_loop() -> None:
@@ -215,20 +253,26 @@ async def agent_api_call_retention_loop() -> None:
     from app.services.agent_api_log_service import retention_days as _agent_api_call_retention_days
 
     retention_days = _agent_api_call_retention_days()
+    mcp_days = mcp_tool_call_retention_days()
+    session_days = user_session_retention_days()
     # Audit rows are kept forever unless an operator sets a window: deleting
     # security audit data is a policy decision, not a default.
     audit_days = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "0"))
-    if retention_days <= 0 and audit_days <= 0:
+    if retention_days <= 0 and audit_days <= 0 and mcp_days <= 0 and session_days <= 0:
         logger.info(
-            "Retention loop disabled (AGENT_API_CALL_RETENTION_DAYS=%s, AUDIT_LOG_RETENTION_DAYS=%s)",
-            retention_days, audit_days,
+            "Retention loop disabled (AGENT_API_CALL_RETENTION_DAYS=%s, MCP_TOOL_CALL_RETENTION_DAYS=%s, "
+            "USER_SESSION_RETENTION_DAYS=%s, AUDIT_LOG_RETENTION_DAYS=%s)",
+            retention_days, mcp_days, session_days, audit_days,
         )
         return
 
+    def _kept_for(days: int) -> str:
+        return f"{days} days" if days > 0 else "kept"
+
     logger.info(
-        "Retention loop active (agent API calls: %s, audit log: %s; first pass in %ds, then every %ds)",
-        f"{retention_days} days" if retention_days > 0 else "kept",
-        f"{audit_days} days" if audit_days > 0 else "kept",
+        "Retention loop active (agent API calls: %s, MCP telemetry: %s, ended sessions: %s, audit log: %s; "
+        "first pass in %ds, then every %ds)",
+        _kept_for(retention_days), _kept_for(mcp_days), _kept_for(session_days), _kept_for(audit_days),
         AGENT_API_CALL_FIRST_PURGE_DELAY_SECONDS,
         AGENT_API_CALL_PURGE_INTERVAL_SECONDS,
     )
@@ -238,13 +282,14 @@ async def agent_api_call_retention_loop() -> None:
         try:
             await asyncio.sleep(delay)
             delay = AGENT_API_CALL_PURGE_INTERVAL_SECONDS
-            result = await asyncio.to_thread(_purge_retained, retention_days, audit_days)
+            result = await asyncio.to_thread(_purge_retained, retention_days, audit_days, mcp_days, session_days)
             if result:
-                calls, audits = result
-                if calls or audits:
+                calls, mcp, sessions, audits = result
+                if calls or mcp or sessions or audits:
                     logger.info(
-                        "Retention: purged %d agent API call row(s) and %d audit log row(s)",
-                        calls, audits,
+                        "Retention: purged %d agent API call row(s), %d MCP telemetry row(s), "
+                        "%d ended session(s) and %d audit log row(s)",
+                        calls, mcp, sessions, audits,
                     )
         except asyncio.CancelledError:
             raise

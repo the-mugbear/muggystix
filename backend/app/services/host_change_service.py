@@ -53,7 +53,11 @@ def changed_since_prior_scan_query(db: Session, host_ids: Union[Iterable[int], Q
             history.discovered_at.label("disc"),
             history.state_at_scan.label("state"),
             func.row_number().over(
-                partition_by=history.host_id, order_by=history.discovered_at.desc(),
+                # The id breaks a tie: two history rows of one host written in
+                # the same instant otherwise ranked in no fixed order, and
+                # "latest" vs "prior" could swap between two reads.
+                partition_by=history.host_id,
+                order_by=(history.discovered_at.desc(), history.id.desc()),
             ).label("rn"),
         )
         # A history row that states no liveness is not one of the two scans

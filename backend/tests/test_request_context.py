@@ -241,7 +241,9 @@ def test_the_limit_never_reaches_a_session_that_is_not_a_request(db_session, mon
     from app.db import session as session_module
 
     monkeypatch.setattr(session_module.settings, "API_STATEMENT_TIMEOUT_MS", 100, raising=False)
-    assert "options" not in Settings().SQLALCHEMY_CONNECT_ARGS
+    # The connection options pin only the session time zone (backlog
+    # 2026-10-22), never a statement timeout.
+    assert "statement_timeout" not in Settings().SQLALCHEMY_CONNECT_ARGS.get("options", "")
     if db_session.get_bind().dialect.name != "postgresql":
         return
     plain = session_module.SessionLocal()   # what a worker does

@@ -82,6 +82,19 @@ describe('Compare scans', () => {
     expect(sides).toHaveTextContent('+3');   // hosts, B minus A
   });
 
+  it('a scan that recorded no host state shows a dash for Up, never 0, and no change (D5)', async () => {
+    // A: 0 up out of 10 is a figure; B (a DNS import) recorded no state.
+    api.compareScans.mockResolvedValue({ ...DIFF, scan_a: side(1, { up_hosts: 0 }), scan_b: side(2, { up_hosts: null }) });
+    renderAt('/scans/compare?a=1&b=2');
+
+    const sides = await screen.findByTestId('compare-sides');
+    const rows = within(sides).getAllByRole('row');
+    const upOf = (row: HTMLElement) => within(row).getAllByRole('cell')[2].textContent;
+    expect(upOf(rows[1])).toBe('0');
+    expect(upOf(rows[2])).toBe('—');
+    expect(upOf(rows[3])).toBe('—');       // the change: unknown, not -0 or a number
+  });
+
   it('an empty list says so and offers no link to an empty Hosts list', async () => {
     api.compareScans.mockResolvedValue({ ...DIFF, counts: { ...DIFF.counts, dropped_hosts: 0 }, dropped_hosts: [] });
     renderAt('/scans/compare?a=1&b=2');

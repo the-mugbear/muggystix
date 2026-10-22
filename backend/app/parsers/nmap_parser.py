@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from lxml import etree
 from sqlalchemy.orm import Session
 from app.db import models
+from app.db.session import is_deadlock
 from app.parsers import nse_vulns
 from sqlalchemy.exc import IntegrityError
 from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
@@ -124,7 +125,15 @@ class NmapXMLParser:
                                             # Inner frame already rolled the savepoint back;
                                             # the parent transaction stays committable.
                                             pass
-                                        if attempt == 1 and isinstance(e, IntegrityError):
+                                        # A lost race is processed once
+                                        # more: a concurrent insert, or a
+                                        # deadlock Postgres broke between two
+                                        # imports of one project locking
+                                        # host rows in different orders
+                                        # (review 2026-10-10, S6) — the other
+                                        # import holds the rows now, and
+                                        # this attempt waits for it.
+                                        if attempt == 1 and (isinstance(e, IntegrityError) or is_deadlock(e)):
                                             continue
                                         logger.warning(f"Skipping malformed host element: {e}")
                                         hosts_skipped += 1

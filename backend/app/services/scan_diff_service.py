@@ -40,7 +40,10 @@ class ScanDiffSide(BaseModel):
     scan_type: Optional[str] = None
     created_at: Optional[datetime] = None
     total_hosts: int = 0
-    up_hosts: int = 0
+    # Null when the scan recorded no host's state (a DNS import notes the
+    # hosts its answers address with no state, or 'unknown'): "not recorded"
+    # is not "0 up" (review 2026-10-10, stream D5).
+    up_hosts: Optional[int] = None
     total_ports: int = 0
     open_ports: int = 0
 
@@ -103,10 +106,15 @@ _SCAN_DIFF_ROW_CAP = 500
 
 def _scan_side_stats(db: Session, scan: models.Scan) -> ScanDiffSide:
     """Per-scan observed host/port totals from the history tables."""
+    state = models.HostScanHistory.state_at_scan
     host_row = (
         db.query(
             func.count(models.HostScanHistory.host_id),
-            func.sum(case((models.HostScanHistory.state_at_scan == "up", 1), else_=0)),
+            func.sum(case((state == "up", 1), else_=0)),
+            # Rows that said something about the host's state — the change
+            # detector's reading (``host_change_service``): NULL and
+            # 'unknown' say nothing.
+            func.count(case((and_(state.isnot(None), state != "unknown"), 1))),
         )
         .filter(models.HostScanHistory.scan_id == scan.id)
         .one()
@@ -126,7 +134,7 @@ def _scan_side_stats(db: Session, scan: models.Scan) -> ScanDiffSide:
         scan_type=scan.scan_type,
         created_at=scan.created_at,
         total_hosts=int(host_row[0] or 0),
-        up_hosts=int(host_row[1] or 0),
+        up_hosts=int(host_row[1] or 0) if host_row[2] else None,
         total_ports=int(port_row[0] or 0),
         open_ports=int(port_row[1] or 0),
     )

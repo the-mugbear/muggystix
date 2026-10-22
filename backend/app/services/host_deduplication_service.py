@@ -208,9 +208,41 @@ class HostDeduplicationService:
         load balancer's forty vhosts all survive as relationships instead of
         one display name plus thirty-nine "conflicts".
         """
-        host = self._find_or_create_host_inner(ip_address, scan_id, host_data, project_id)
-        self._record_name_observations(host, ip_address, scan_id, host_data)
+        address, written = self.host_address(ip_address)
+        host = self._find_or_create_host_inner(address, scan_id, host_data, project_id, written=written)
+        self._record_name_observations(host, address, scan_id, host_data)
         return host
+
+    @staticmethod
+    def host_address(value) -> Tuple[str, Optional[str]]:
+        """``(canonical address, the spelling as written when it differs)``
+        for a host's address, or ValueError for anything that is not one
+        (review 2026-10-10, S5).
+
+        A host is one row per address, so the address is stored the one way
+        ``parser_utils.normalize_ip`` writes it — an IPv6 address written two
+        ways was two hosts — and a value that is no address at all (a
+        ``.nessus`` ReportHost named by a hostname) never becomes a host.  A
+        row stored before this in another spelling is still found by it
+        (the second value), so nothing already imported is split."""
+        from app.parsers.parser_utils import normalize_ip
+
+        address = normalize_ip(str(value) if value is not None else None)
+        if address is None:
+            raise ValueError(f"Not an IP address: {value!r}")
+        written = str(value).strip()
+        return address, (written if written != address else None)
+
+    @staticmethod
+    def _address_is(address: str, written: Optional[str]):
+        """The lookup of a host by address: the canonical spelling, and the
+        one it was written in when that differs (a row stored that way
+        before addresses were normalised) — the canonical row first."""
+        if not written:
+            return Host.ip_address == address, Host.id
+        from sqlalchemy import case
+
+        return Host.ip_address.in_([address, written]), case((Host.ip_address == address, 0), else_=1)
 
     def _record_name_observations(self, host: Host, ip_address: str, scan_id: int, host_data: Dict[str, Any]) -> None:
         """Persist ``host_data['hostnames']`` (a list of ``(name, kind)``) and
@@ -267,7 +299,11 @@ class HostDeduplicationService:
                 self._name_cache.forget(journal)
                 logger.warning("name observation %r for %s skipped: %s", name, ip_address, exc)
 
-    def _find_or_create_host_inner(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
+    def _find_or_create_host_inner(
+        self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None,
+        *, written: Optional[str] = None,
+    ) -> Host:
+        same_address, canonical_first = self._address_is(ip_address, written)
         # v2.90.3 (code review NEW C) — suppress the eager loads
         # inherited from Host.* lazy="selectin" relationships.  The
         # dedup lookup only needs Host.id + scalar fields to decide
@@ -286,11 +322,11 @@ class HostDeduplicationService:
                 noload(Host.notes),
                 noload(Host.tag_assignments),
             )
-            .filter(Host.ip_address == ip_address)
+            .filter(same_address)
         )
         if project_id is not None:
             host_query = host_query.filter(Host.project_id == project_id)
-        existing_host = host_query.first()
+        existing_host = host_query.order_by(canonical_first).first()
 
         if existing_host:
             return self._update_and_record_existing_host(existing_host, scan_id, host_data)
@@ -347,11 +383,11 @@ class HostDeduplicationService:
                             noload(Host.notes),
                             noload(Host.tag_assignments),
                         )
-                        .filter(Host.ip_address == ip_address)
+                        .filter(same_address)
                     )
                     if project_id is not None:
                         fallback_query = fallback_query.filter(Host.project_id == project_id)
-                    existing_host = fallback_query.first()
+                    existing_host = fallback_query.order_by(canonical_first).first()
                     if existing_host:
                         updated_host = self._update_and_record_existing_host(
                             existing_host, scan_id, host_data

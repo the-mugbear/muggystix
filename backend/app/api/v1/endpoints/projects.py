@@ -600,6 +600,13 @@ def delete_project(
         .where(FindingHost.finding_id.in_(select(Finding.id).where(Finding.project_id == _project_id)))
         .execution_options(synchronize_session=False)
     )
+    # The project's scans cascade with it, past ``delete_scan_row``: their
+    # files on disk (EyeWitness screenshots and reports) are named here and
+    # removed when this delete commits.
+    from app.services.ingestion_service import remove_scan_files_on_commit
+    remove_scan_files_on_commit(
+        db, [sid for (sid,) in db.query(_models.Scan.id).filter(_models.Scan.project_id == _project_id)],
+    )
     db.delete(project)
     db.commit()
     for _nid in _attachment_note_ids:

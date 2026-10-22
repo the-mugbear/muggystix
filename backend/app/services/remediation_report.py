@@ -418,6 +418,9 @@ def run_job(db: Session, job: ReportJob) -> Tuple[bytes, str, str]:
             postprocess=template.postprocess, timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
             asset_files=templates.asset_files(template),
             on_progress=worker_loop.touch_heartbeat,
+            # Nothing is read after the images are placed: no transaction
+            # stays open through Quarto (the job row is fenced, not locked).
+            before_quarto=db.rollback,
         )
         if fmt not in files:
             raise ValueError(f"The '{template.name}' template does not produce {fmt}.")

@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import { Checkbox } from '../ui/checkbox';
+import { useRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { workPhrase, type HostWithWork } from '../../utils/scanDeletion';
 
 interface HostsWithWorkWarningProps {
@@ -29,6 +30,7 @@ export default function HostsWithWorkWarning({
   onReviewedChange,
   disabled = false,
 }: HostsWithWorkWarningProps) {
+  const { enabled: remediationTracking } = useRemediationPolicy();
   if (count <= 0) return null;
   const more = count - sample.length;
   return (
@@ -73,7 +75,7 @@ export default function HostsWithWorkWarning({
                 )}
               </div>
               {/* What is lost is the point of the warning: it wraps, never truncates. */}
-              <div className="break-words">{workPhrase(host.work)}</div>
+              <div className="break-words">{workPhrase(host.work, { remediationTracking })}</div>
             </li>
           ))}
         </ul>

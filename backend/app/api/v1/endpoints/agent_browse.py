@@ -654,7 +654,7 @@ def create_agent_note(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    note, _told = HostFollowService(db).post_note(
+    note, told = HostFollowService(db).post_note(
         host,
         load_operator(db, request),
         db.get(Project, agent.project_id),
@@ -672,6 +672,9 @@ def create_agent_note(
         actor_type=note.actor_type,
         created_at=note.created_at,
         updated_at=note.updated_at,
+        # An @mention that matches nobody is said, not dropped: the agent
+        # tells its operator who was not reached (the page shows the same).
+        unmatched_mentions=list(told.get("unmatched_mentions") or []),
     )
 
 

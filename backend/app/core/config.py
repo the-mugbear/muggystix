@@ -300,6 +300,13 @@ class Settings:
         connect_args: Dict[str, Any] = {}
         if self.DATABASE_SSL_MODE and "sslmode=" not in self.DATABASE_URL:
             connect_args["sslmode"] = self.DATABASE_SSL_MODE
+        # Every connection's session time zone is UTC, whatever the server's
+        # or the database's default: a zone-less column compared with a
+        # ``timestamptz`` (``Vulnerability.created_at > follow.reviewed_at``)
+        # is converted in the SESSION's zone, and the zone-less columns hold
+        # UTC (review 2026-10-10, nitpick).
+        if "options=" not in self.DATABASE_URL:
+            connect_args["options"] = "-c timezone=UTC"
         return connect_args
 
 settings = Settings()

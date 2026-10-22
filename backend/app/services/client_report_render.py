@@ -248,6 +248,14 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
         strict_evidence=issued,
         asset_files=asset_files,
         on_progress=worker_loop.touch_heartbeat,
+        # Everything the render reads from the database is read once the
+        # images are placed: end the transaction before Quarto runs (up to
+        # REPORT_RENDER_TIMEOUT_SECONDS a format) instead of holding it open
+        # — a boot migration queued behind it, and every request behind the
+        # migration (review 2026-10-10, R10).  Nothing is pending here: the
+        # job row is fenced by its claim time, not locked, and a preview's
+        # fingerprint is set after the render.
+        before_quarto=lambda: db.rollback(),
     )
 
 
@@ -270,15 +278,18 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
             raise ValueError("This report has been issued; download its files instead of a preview.")
         fmt = PREVIEW_FORMATS[job.format]
         dataset, _, _ = ClientReportService(db).build(report)
-        # What this preview renders; committed with the job's completion (a
-        # lost lease rolls it back with the rest).
-        job.inputs_fingerprint = inputs_fingerprint(db, report, dataset)
+        # What this preview renders, read with the dataset; set on the job
+        # AFTER the render (which ends the read transaction before Quarto
+        # runs) and committed with the job's completion (a lost lease rolls
+        # it back with the rest).
+        fingerprint = inputs_fingerprint(db, report, dataset)
         basename = f"{file_slug(dataset['project']['name'])}-draft-{report.id}"
         with tempfile.TemporaryDirectory(prefix="bs-preview-") as tmp:
             files = _render(db, report, dataset, [fmt], Path(tmp), basename)
             if fmt not in files:
                 raise ValueError(f"The '{report.template}' template does not produce {fmt}.")
             path = files[fmt]
+            job.inputs_fingerprint = fingerprint
             return path.read_bytes(), quarto_render.FORMATS[fmt][2], path.name
 
     if job.format == ISSUE_FORMAT:

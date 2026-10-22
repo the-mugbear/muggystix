@@ -31,6 +31,7 @@ from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Notification, Project, ProjectMembership, ProjectRole
 from app.db.models_remediation import FindingHostRemediation as Remediation
 from app.services import remediation_policy as deadlines
+from app.services.notification_service import REMEDIATION_NOTIFICATION_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ def sweep(db: Session, today: Optional[date] = None) -> int:
             body = _body(kind, found[:NAMED_ROWS], len(found))
             for user_id in sorted(_recipients(db, project_id)):
                 db.add(Notification(
-                    user_id=user_id, project_id=project_id, type="remediation", title=title, body=body,
+                    user_id=user_id, project_id=project_id, type=REMEDIATION_NOTIFICATION_TYPE, title=title, body=body,
                     source_type=SOURCE_TYPES[kind], source_id=project_id, actor_id=None,
                 ))
                 written += 1

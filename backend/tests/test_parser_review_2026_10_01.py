@@ -244,6 +244,40 @@ def test_nmap_processes_a_host_again_when_a_port_insert_lost_a_race(
     assert host_ips(db_session, test_project.id) == ["10.94.0.3"]
 
 
+def test_nmap_processes_a_host_again_when_postgres_broke_a_deadlock(
+    db_session, test_project, tmp_path, monkeypatch,
+):
+    """Two imports of one project lock host rows in different orders, and
+    Postgres ends one with 40P01 (review 2026-10-10, S6).  The host is
+    processed once more, like a lost insert race — it was skipped as a
+    "malformed host element"."""
+    from sqlalchemy.exc import OperationalError
+
+    class _Deadlock(Exception):
+        pgcode = "40P01"
+
+    path = _write(tmp_path, "scan.xml", _nmap(
+        '<host><status state="up"/><address addr="10.94.0.4" addrtype="ipv4"/><ports>'
+        '<port protocol="tcp" portid="22"><state state="open"/></port></ports></host>\n'
+    ))
+    real = NmapXMLParser._process_host_with_deduplication
+    calls = {"n": 0}
+
+    def deadlock_once(self, elem, scan_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("UPDATE hosts_v2", {}, _Deadlock("deadlock detected"))
+        return real(self, elem, scan_id)
+
+    monkeypatch.setattr(NmapXMLParser, "_process_host_with_deduplication", deadlock_once)
+    parser = NmapXMLParser(db_session)
+    parser.parse_file(str(path), "scan.xml", project_id=test_project.id)
+
+    assert calls["n"] == 2
+    assert parser.last_parse_stats["skipped"] == 0
+    assert host_ips(db_session, test_project.id) == ["10.94.0.4"]
+
+
 def test_released_history_is_found_again_by_the_index(db_session, test_project):
     """``release_committed_history`` drops flushed rows from the pending
     dicts; a repeat of the host and port in the same scan must update the

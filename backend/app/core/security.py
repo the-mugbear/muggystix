@@ -226,11 +226,11 @@ LOGIN_2FA_THROTTLE_PER_USERNAME = 10
 
 
 def _audit_username():
-    # AuditLog.details is sqlalchemy.JSON, which maps to Postgres `json`
-    # (NOT `jsonb`): `.contains()` and `.astext` do not compile against it.
-    # `json_extract_path_text` does, and matches the text written by
-    # `log_audit_event(details={"username": ...})`.
-    return func.json_extract_path_text(AuditLog.details, "username")
+    # The typed column, filled from ``details={"username": ...}`` whenever a
+    # row is inserted (``models_auth``: a ``before_insert`` listener, so no
+    # writer can leave it out).  It read the JSON blob in the WHERE until
+    # review 2026-10-10, R10; revision e7b3d9f1a5c2 back-filled the column.
+    return AuditLog.username
 
 
 def login_lockout_active(

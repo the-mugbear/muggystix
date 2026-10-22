@@ -461,6 +461,11 @@ class AgentNoteResponse(BaseModel):
     actor_type: str = "agent"
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # On the answer to a create only: the ``@words`` of the note that matched
+    # no active member of the project, so nobody was told about them
+    # (``NotificationService.mention_outcome``, the page's reading).  Empty
+    # when every mention reached someone, and on a listed note.
+    unmatched_mentions: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

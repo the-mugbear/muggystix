@@ -77,13 +77,36 @@ def _to_response(row: IntegrationCredential) -> IntegrationResponse:
     )
 
 
+class IntegrationExtras(BaseModel):
+    """What may be configured beside a scanner's address — the keys a page,
+    the connection test or an agent reads, and nothing else.
+
+    ``extra_config`` is served as NOT secret: to every signed-in user on the
+    list and to every agent session (``describe_for_agent``).  It took any
+    dict, so an admin could put a token there and hand it to everyone
+    (plan 2026-10-10, E).  A secret has its own encrypted columns
+    (``secret`` / ``secret2``); any other key is a 422 naming it."""
+    model_config = ConfigDict(extra="forbid")
+
+    max_hosts_per_scan: Optional[int] = Field(
+        None, ge=1, description="Nessus: the licence's host cap per scan.",
+    )
+    gmp_port: Optional[int] = Field(
+        None, ge=1, le=65535, description="OpenVAS: the GMP port (default 9390).",
+    )
+
+
+def _extras(extras: Optional[IntegrationExtras]) -> Optional[Dict[str, Any]]:
+    return extras.model_dump(exclude_none=True) if extras is not None else None
+
+
 class IntegrationCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     integration_type: str
     base_url: Optional[str] = None
     secret: Optional[str] = None
     secret2: Optional[str] = None
-    extra_config: Optional[Dict[str, Any]] = None
+    extra_config: Optional[IntegrationExtras] = None
     is_active: bool = True
 
 
@@ -94,7 +117,7 @@ class IntegrationUpdate(BaseModel):
     clear_secret: bool = False
     secret2: Optional[str] = None
     clear_secret2: bool = False
-    extra_config: Optional[Dict[str, Any]] = None
+    extra_config: Optional[IntegrationExtras] = None
     is_active: Optional[bool] = None
 
 
@@ -138,7 +161,7 @@ class IntegrationTestRequest(BaseModel):
     base_url: Optional[str] = None
     secret: Optional[str] = None
     secret2: Optional[str] = None
-    extra_config: Optional[Dict[str, Any]] = None
+    extra_config: Optional[IntegrationExtras] = None
 
 
 class IntegrationTestResponse(BaseModel):
@@ -185,7 +208,7 @@ def test_integration(
         base_url=body.base_url,
         secret=body.secret,
         secret2=body.secret2,
-        extra_config=body.extra_config,
+        extra_config=_extras(body.extra_config),
         user_id=current_user.id,
     )
     return IntegrationTestResponse(
@@ -230,7 +253,7 @@ def create_integration(
             base_url=body.base_url,
             secret=body.secret,
             secret2=body.secret2,
-            extra_config=body.extra_config,
+            extra_config=_extras(body.extra_config),
             is_active=body.is_active,
         )
     except ValueError as exc:
@@ -274,7 +297,7 @@ def update_integration(
             clear_secret=body.clear_secret,
             secret2=body.secret2,
             clear_secret2=body.clear_secret2,
-            extra_config=body.extra_config,
+            extra_config=_extras(body.extra_config),
             is_active=body.is_active,
         )
     except ValueError as exc:

@@ -25,6 +25,7 @@ import re
 _LARGE_BODY_PATHS = re.compile(
     r"^/api/v1/(?:projects/\d+/upload|agent/uploads)/?$"
 )
+_AGENT_UPLOAD_PATH = re.compile(r"^/api/v1/agent/uploads/?$")
 _BODYLESS_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
@@ -32,18 +33,29 @@ def allows_large_body(path: str) -> bool:
     return bool(_LARGE_BODY_PATHS.match(path))
 
 
+def is_agent_upload(path: str) -> bool:
+    """The agents' scan upload (the other large-body path is the page's)."""
+    return bool(_AGENT_UPLOAD_PATH.match(path))
+
+
 class RequestBodyLimitMiddleware:
-    def __init__(self, app, max_bytes: int):
+    """``large_body_refusal(path, headers) -> reason | None`` is asked, in a
+    worker thread, before a large-body path's body is read: a reason is a
+    401 and the body is never read (review 2026-10-10, S3 — an anonymous
+    client could make the backend spool 2 GB before the route's 401).  The
+    application passes ``deps.large_upload_refusal``; without one the paths
+    are only exempt from the cap."""
+
+    def __init__(self, app, max_bytes: int, large_body_refusal=None):
         self.app = app
         self.max_bytes = max_bytes
+        self.large_body_refusal = large_body_refusal
 
-    async def _refuse(self, send) -> None:
-        body = json.dumps({
-            "detail": f"Request body is larger than the limit of {self.max_bytes} bytes."
-        }).encode()
+    async def _answer(self, send, status: int, detail: str) -> None:
+        body = json.dumps({"detail": detail}).encode()
         await send({
             "type": "http.response.start",
-            "status": 413,
+            "status": status,
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode()),
@@ -52,12 +64,28 @@ class RequestBodyLimitMiddleware:
         })
         await send({"type": "http.response.body", "body": body})
 
+    async def _refuse(self, send) -> None:
+        await self._answer(send, 413, f"Request body is larger than the limit of {self.max_bytes} bytes.")
+
     async def __call__(self, scope, receive, send):
-        if (
-            scope["type"] != "http"
-            or scope.get("method") in _BODYLESS_METHODS
-            or allows_large_body(scope.get("path") or "")
-        ):
+        if scope["type"] != "http" or scope.get("method") in _BODYLESS_METHODS:
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path") or ""
+        if allows_large_body(path):
+            if self.large_body_refusal is not None:
+                from starlette.concurrency import run_in_threadpool
+
+                headers = {
+                    k.decode("latin-1").lower(): v.decode("latin-1")
+                    for k, v in scope.get("headers") or []
+                }
+                # In a thread: the agents' check reads its key (a short
+                # session of its own, closed before anything is awaited).
+                reason = await run_in_threadpool(self.large_body_refusal, path, headers)
+                if reason is not None:
+                    await self._answer(send, 401, reason)
+                    return
             await self.app(scope, receive, send)
             return
 

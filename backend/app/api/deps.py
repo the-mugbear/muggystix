@@ -338,6 +338,56 @@ def _load_agent_key(db: Session, token: str) -> Optional[_AgentKeyContext]:
     )
 
 
+def large_upload_refusal(path: str, headers: Dict[str, str]) -> Optional[str]:
+    """Why a scan upload must be refused BEFORE its body is read, or None.
+
+    The two scan-upload routes are exempt from the body cap
+    (``core/body_limit``), and FastAPI reads a body before it resolves the
+    route's dependencies — so a caller with no credential could make the
+    backend spool up to 2 GB to disk before the 401 (review 2026-10-10, S3).
+    ``RequestBodyLimitMiddleware`` asks this first, in a worker thread:
+
+    * the page's upload needs a bearer token that :func:`verify_token`
+      accepts (signature and expiry; no database) and that is not a 2FA
+      challenge token;
+    * the agents' upload needs a key that names an ACTIVE agent key —
+      :func:`_load_agent_key`, the gate's own read, on a session of its own
+      that is closed before the body is read.
+
+    This is a door, not the authentication: the route's dependencies still
+    decide everything else (a revoked session, an expired key's structured
+    401, the project role) once the body is in.  ``headers`` has lower-case
+    names."""
+    from app.core.body_limit import is_agent_upload
+
+    if is_agent_upload(path):
+        token = headers.get("x-api-key")
+        if not token:
+            scheme, _, value = (headers.get("authorization") or "").partition(" ")
+            token = value.strip() if scheme.lower() == "bearer" else ""
+        if not token:
+            return "Missing agent API key — provide X-API-Key or Authorization: Bearer header"
+        from app.db import session as _session_module
+
+        db = _session_module.SessionLocal()
+        try:
+            known = _load_agent_key(db, token) is not None
+        finally:
+            db.close()
+        return None if known else "Invalid agent API key"
+
+    scheme, _, value = (headers.get("authorization") or "").partition(" ")
+    if scheme.lower() != "bearer" or not value.strip():
+        return "Not authenticated"
+    try:
+        payload = verify_token(value.strip())
+    except HTTPException as exc:
+        return str(exc.detail)
+    if payload.get("purpose") == TWO_FACTOR_CHALLENGE_PURPOSE or not payload.get("sub"):
+        return "Invalid token payload"
+    return None
+
+
 def _issued_before_password_change(ctx: _AgentKeyContext) -> bool:
     """True when the key was issued before its operator's password last changed.
 

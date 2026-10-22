@@ -938,7 +938,7 @@
             "HostScanHistory.scan_id"
           ],
           "shown": "Host inspector header; Hosts list › Host column; Scan page hosts tables · Filter: ip:, subnet:/cidr: · Also: subnet/scope correlation, site grouping; Host inventory CSV",
-          "note": "Host state is always set to 'up' (Nessus only reports live hosts). The ReportHost name fallback is not validated as an IP address."
+          "note": "Host state is always set to 'up' (Nessus only reports live hosts). The ReportHost name is used only when it IS an address: a host with no host-ip whose name is a hostname (a target Nessus never resolved) is skipped and logged. Stored in one spelling (an IPv6 address written two ways is one host)."
         },
         {
           "what": "Hostname (FQDN, else NetBIOS name)",
@@ -1263,8 +1263,7 @@
       ],
       "unverified": [
         "The only Nessus fixtures (artifacts/manual/nessus_sample.nessus, artifacts/test_scan*.nessus) are synthetic and minimal (host-ip, host-fqdn, netbios-name, operating-system; synopsis/description/solution/risk_factor/cvss_base_score/cve/plugin_output); tag and element names for credentialed-scan, epss/vpr, xref, HOST_START_TIMESTAMP and plugin ids are from knowledge of the Nessus format.",
-        "Real Nessus exports are not known to carry a `scannerVersion` attribute on <NessusClientData_v2>, so Scan.version is probably empty for real files.",
-        "Whether a ReportHost whose name attribute is a hostname (no host-ip tag) produces a Host row with a non-IP ip_address was not traced through find_or_create_host."
+        "Real Nessus exports are not known to carry a `scannerVersion` attribute on <NessusClientData_v2>, so Scan.version is probably empty for real files."
       ]
     },
     {
