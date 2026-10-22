@@ -6,7 +6,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, Path, Request, UploadFile, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -1242,44 +1242,9 @@ async def read_upload_capped(
 BULK_ASSIGNEE_UNKNOWN = (404, "Assignee not found")
 
 
-def load_project_assignee(
-    db: Session,
-    project_id: int,
-    assignee_user_id: int,
-    *,
-    unknown: Tuple[int, str] = (400, "Assignee is not an active user"),
-) -> User:
-    """The user ``assignee_user_id`` names, if work in this project may be
-    handed to them — the ONE rule for every route that assigns (a finding's
-    owner on create / promote / update, the findings' and the hosts' bulk
-    assign).
-
-    A valid target is an ACTIVE user who is a member of the project; a global
-    admin needs no membership (they can open every project).  A user who does
-    not exist or is inactive is refused with ``unknown`` (status, detail); one
-    who is not a member with 400.
-    """
-    assignee = (
-        db.query(User)
-        .filter(User.id == assignee_user_id, User.is_active.is_(True))
-        .first()
-    )
-    if not assignee:
-        raise HTTPException(status_code=unknown[0], detail=unknown[1])
-    if assignee.role != UserRole.ADMIN:
-        is_member = (
-            db.query(ProjectMembership)
-            .filter(
-                ProjectMembership.project_id == project_id,
-                ProjectMembership.user_id == assignee.id,
-            )
-            .first()
-        )
-        if not is_member:
-            raise HTTPException(
-                status_code=400, detail="Assignee is not a member of this project"
-            )
-    return assignee
+# The one rule, in a service so host tests can call it too (R1c); every route
+# imports it from here.
+from app.services.project_assignee import load_project_assignee  # noqa: E402
 
 
 def resolve_project_assignee(

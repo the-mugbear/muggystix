@@ -20,6 +20,19 @@ describe('scope proposals', () => {
   });
 });
 
+// Review 2026-10-10, R1c: a finding assignment opens the finding; several
+// open the reader's findings.
+describe('finding assignments', () => {
+  it('open the finding, or the findings that are yours', () => {
+    expect(notificationHref({
+      type: 'assignment', source_type: 'finding', source_id: 7, host_id: null, finding_id: 7,
+    })).toBe('/findings/7');
+    expect(notificationHref({
+      type: 'assignment', source_type: 'findings', source_id: 3, host_id: null, finding_id: null,
+    })).toBe('/findings?owner=me');
+  });
+});
+
 describe('operational alerts', () => {
   it('open System settings', () => {
     expect(system('operational:disk_low')).toBe('/system-settings');

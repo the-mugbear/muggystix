@@ -225,7 +225,7 @@ The body above shows the shape; the tool and the command are yours to choose.
 | `label` | No | Groups the tests of one request (at most 255 characters). Give every test in a batch the same label so the operator can find the batch again: `testlabel:"…"` on the Hosts page. |
 | `target_fqdn` | No | A NAME the test is aimed at (at most 253 characters). It must be a name observed at this host — one of `names` on the host's detail — or the call is a `422`. Leave it unset for a test against the bare address. |
 | `vulnerability_id` | No | The scanner observation this test would CONFIRM or rule out: an `id` from `GET /agent/assist/hosts/{host_id}/vulnerabilities` (MCP `assist_get_host_vulnerabilities`; the host detail carries only severity counts). It must be an observation on this same host (`422` otherwise). The stored test carries `issue_key` / `issue_title`. |
-| `assigned_to_id` | No | A project analyst or admin to assign it to (`422` for anyone else). Normally omit: the person is notified, so assign only when the operator asked for it. |
+| `assigned_to_id` | No | An active project analyst or admin to assign it to (`422` for anyone else). Normally omit: the person is notified, so assign only when the operator asked for it. |
 
 `description`, `rationale`, `command` and `expected_result` take at most 10,000 characters each. Unknown fields are refused (`422`), not ignored.
 

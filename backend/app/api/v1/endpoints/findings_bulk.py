@@ -27,9 +27,9 @@ from app.api.deps import (
 )
 from app.db.models_auth import User
 from app.db.models_findings import Finding
-from app.db.models_project import Notification, Project, ProjectRole
+from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
-from app.services.finding_actions import set_owner
+from app.services.finding_actions import assign_findings
 from app.services.finding_service import FindingService
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -144,27 +144,9 @@ def bulk_assign(
             db, project.id, payload.assignee_user_id, unknown=BULK_ASSIGNEE_UNKNOWN,
         )
 
-    for finding in findings:
-        set_owner(db, finding, assignee.id if assignee else None, current_user.id)
-
-    # One summary notification for the batch, not N pings.
-    if assignee is not None and assignee.id != current_user.id:
-        n = len(findings)
-        db.add(
-            Notification(
-                user_id=assignee.id,
-                project_id=project.id,
-                type="assignment",
-                title=f"{n} finding{'s' if n != 1 else ''} assigned to you",
-                body=(
-                    f"@{current_user.username} assigned {n} finding"
-                    f"{'s' if n != 1 else ''} to you in '{project.name}'"
-                ),
-                source_type="project",
-                source_id=project.id,
-                actor_id=current_user.id,
-            )
-        )
+    # The one assign: history lines and ONE notification for the findings
+    # that changed hands (`finding_actions.assign_findings`, as the PATCH).
+    assign_findings(db, project, findings, assignee.id if assignee else None, current_user.id)
 
     found = {f.id for f in findings}  # before the commit expires them
     db.commit()

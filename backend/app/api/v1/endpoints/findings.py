@@ -27,7 +27,7 @@ from app.services.finding_service import (
 )
 from app.services.finding_actions import (
     FindingActor, apply_report_text, edit_values, finding_actor, promote_or_dismiss_vulnerability, record_edit,
-    require_delete, require_modify, set_owner, severity_label,
+    assign_findings, require_delete, require_modify, severity_label,
 )
 from app.services import finding_needs, remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
@@ -373,7 +373,9 @@ def update_finding(
     # selecting Unassigned (owner_id: null) actually clears ownership instead of
     # being silently ignored. A non-null owner must be a valid project assignee.
     if "owner_id" in body.model_fields_set:
-        set_owner(db, finding, resolve_project_assignee(db, project.id, body.owner_id), viewer.user_id)
+        # The one assign (`finding_actions.assign_findings`): the history line
+        # and the new owner's notification, as the bulk assign writes them.
+        assign_findings(db, project, [finding], resolve_project_assignee(db, project.id, body.owner_id), viewer.user_id)
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 

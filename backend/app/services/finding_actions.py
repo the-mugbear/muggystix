@@ -10,7 +10,7 @@ inside the route handlers, where a service could not reach it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -160,6 +160,30 @@ def set_owner(db: Session, finding: Finding, owner_id: Optional[int], actor_id: 
         actor_id=actor_id,
     )
     finding.owner_id = owner_id
+
+
+def assign_findings(
+    db: Session, project, findings: List[Finding], owner_id: Optional[int], actor_id: Optional[int],
+) -> List[Finding]:
+    """Give ``findings`` to ``owner_id`` (already checked by the assignee
+    rule, ``deps.load_project_assignee``) and tell them — the ONE assign, for
+    the finding's ``PATCH`` and the bulk assign (review 2026-10-10 R1c: the
+    PATCH assigned silently while the bulk route notified).  Each change gets
+    its history line (``set_owner``); the new owner gets ONE notification for
+    the findings that actually changed hands, none when nothing changed or they
+    took the findings themself.  Returns the findings that changed; the caller
+    commits."""
+    from app.services.notification_service import NotificationService
+
+    changed = [f for f in findings if f.owner_id != owner_id]
+    for finding in changed:
+        set_owner(db, finding, owner_id, actor_id)
+    if owner_id is not None and changed:
+        actor = db.get(User, actor_id) if actor_id is not None else None
+        NotificationService(db).notify_findings_assigned(
+            assignee_id=owner_id, project=project, findings=changed, actor=actor,
+        )
+    return changed
 
 
 def apply_report_text(

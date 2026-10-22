@@ -9,34 +9,34 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from app.db import models
-from app.db.models_auth import User, UserRole
+from app.db.models_auth import User
 from app.db.models_host_tests import HostTest
-from app.db.models_project import ProjectMembership
 from app.db.models_proposals import EvidenceRecord
 from app.services.dns_name_service import InvalidName, normalize_fqdn
+from app.services.project_assignee import load_project_assignee
 
 
 def payload_hash(payload):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
 
 
+#: A host test's assignee refused, whoever they are: the route's documented 422.
+TEST_ASSIGNEE_REFUSED = (422, "Assignee must be a project analyst or administrator")
+
+
 def validate_assignee(db, project_id, user_id):
-    """A test is assigned to someone who can work it: a project analyst or
-    admin, or an active global admin — who writes to every project without a
-    membership row, and could otherwise neither add a test for themself nor
-    claim one (found in the browser, v2.447.0)."""
+    """A test is assigned to someone who can work it: an ACTIVE project
+    analyst or admin, or an active global admin — who writes to every project
+    without a membership row, and could otherwise neither add a test for
+    themself nor claim one (found in the browser, v2.447.0).  The project's
+    one assignee rule (``project_assignee.load_project_assignee``) with the
+    writing roles; it used to be a copy that skipped ``is_active`` (R1c)."""
     if user_id is None:
         return
-    if db.query(ProjectMembership.id).filter(
-        ProjectMembership.project_id == project_id, ProjectMembership.user_id == user_id,
-        ProjectMembership.role.in_(("admin", "analyst")),
-    ).first():
-        return
-    if db.query(User.id).filter(
-        User.id == user_id, User.is_active.is_(True), User.role == UserRole.ADMIN,
-    ).first():
-        return
-    raise HTTPException(422, "Assignee must be a project analyst or administrator")
+    load_project_assignee(
+        db, project_id, user_id,
+        unknown=TEST_ASSIGNEE_REFUSED, refused=TEST_ASSIGNEE_REFUSED, roles=("admin", "analyst"),
+    )
 
 
 def resolve_target_name(db, project_id, host, fqdn):
