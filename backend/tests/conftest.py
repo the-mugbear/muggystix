@@ -13,16 +13,6 @@ from pathlib import Path
 # `from app.main import app` below triggers any startup wiring.
 os.environ.setdefault("DEFAULT_ADMIN_PASSWORD", "test-admin-password-not-used")
 
-# `from app.main import app` runs initialize_database() at import, i.e.
-# `alembic upgrade head` against DATABASE_URL — the developer's REAL database
-# when the suite runs in the compose network with the working tree mounted.
-# The suite creates its own schema in its own database (see
-# _resolve_test_engine), so it must not migrate that one: on 2026-09-20 a test
-# run applied an unmerged data migration to a dev database. MUST be set before
-# the import below. `tests/test_db_init_migration.py` calls the sync function
-# directly and is unaffected.
-os.environ.setdefault("BLUESTICK_SKIP_DB_INIT", "1")
-
 import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import make_url
@@ -276,7 +266,6 @@ def build_schema_from_chain(url) -> None:
     env = {
         **os.environ,
         "DATABASE_URL": url.render_as_string(hide_password=False),
-        "BLUESTICK_SKIP_DB_INIT": "1",
     }
     done = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
