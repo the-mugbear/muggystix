@@ -564,8 +564,12 @@ def test_rate_limit_is_enforced_from_shared_state_not_the_audit_log(
     # Actual requests are what count. Two more reach the limit of 3...
     for _ in range(2):
         assert client.get(AGENT_READ, headers=s["headers"]).status_code == 200
-    # ...and the next is refused.
-    assert client.get(AGENT_READ, headers=s["headers"]).status_code == 429
+    # ...and the next is refused, saying when the window ends.
+    refused = client.get(AGENT_READ, headers=s["headers"])
+    assert refused.status_code == 429
+    wait = int(refused.headers["Retry-After"])
+    assert 1 <= wait <= 60
+    assert f"Retry in {wait} s" in refused.json()["detail"]
 
 
 def test_rate_limit_does_not_count_a_previous_window(

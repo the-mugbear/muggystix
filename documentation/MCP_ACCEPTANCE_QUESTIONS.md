@@ -118,6 +118,11 @@ registry), [`agent_recon.py`](../backend/app/api/v1/endpoints/agent_recon.py)
    does not replace it.
 9. Do not call `end_session` until the lifecycle steps in H10, and only after
    telling the operator.
+10. Each key has a per-minute request budget (240 by default). A scripted sweep
+    of many small pages spends it in seconds, and the 429 then refuses your
+    feedback too. Pace a sweep to a few calls a second. On a 429, wait the
+    `Retry in N s` it states and retry once. Record the 429 as rate limiting,
+    not as a paging defect.
 
 ## How to run and judge it
 
@@ -419,7 +424,7 @@ finding.
 | H2.19 | With `limit: 2`, page each of these to the end by `offset` + `returned`: `assist_list_findings`, `assist_list_scans`, `assist_list_scan_hosts`, `assist_list_segments`, `assist_list_scanner_observations`, `assist_list_observation_hosts`, `assist_list_names`, `assist_list_recent_notes`, `assist_list_worth_a_look` (with and without `tier`), `host_tests_list`, `list_evidence`, `list_proposals`, `scope_list_subnets`, `scope_list_domains`, and with tracking on `remediation_list` and `remediation_timeline`. Then call one with `skip: 2` | Every answer carries `items`, `total`, `limit`, `offset`, `returned` and `has_more`; `returned` is the length of `items`; `has_more` is true exactly while `offset + returned < total`; the pages hold `total` distinct rows between them and no row twice. No list answers under another key (`findings`, `subnets`, `domains`) or as a bare array. `skip` is refused as an unknown argument (`-32602`) |
 | H2.20 | `assist_list_scan_ports` on the scan from H4.1 (or any `assist_list_scans` row), paged to the end; compare with `assist_list_scan_hosts` | Every port the scan recorded, as it recorded it (state at scan, the service it named) — never the port's current record; ordered by address, port, protocol; `total` equals the scan's `total_ports`, past the 50 ports per host `assist_list_scan_hosts` shows |
 | H2.21 | `assist_get_scanner_observation` with an `issue_key` from `assist_list_scanner_observations`; then one that does not exist | What the scanner wrote about the issue (description, remediation, CVSS, CVE, plugin, references) — the inspector's details, one issue, not one host's output; the unknown key is a 404 |
-| H2.22 | `assist_query_schema`, then `assist_query` with `hosts port:445 \| stats count by os_family`, then one row's `drilldowns` query, then `hosts \| where os_family="Windows"` (the stored value is `windows`) and `hosts \| bogus` | The datasets, columns and caps; a grouped answer whose every row carries a `drilldowns` query that lists exactly that group (its `total` equals the row's count); the wrong-case `=` answers empty with a `hint` that the folded comparison would match — `=` itself stays exact; the unknown command is refused with its position. `total` is stated against the cap ("the first 500 of N") |
+| H2.22 | `assist_query_schema`, then `assist_query` with `hosts port:445 \| stats count by os_family`, then one row's `drilldowns` query, then `hosts \| where os_family="<a stored value from that grouped answer, its case flipped>"` (e.g. `WINDOWS` when the answer shows `Windows`; do not assume the stored case) and `hosts \| bogus` | The datasets, columns and caps; a grouped answer whose every row carries a `drilldowns` query that lists exactly that group (its `total` equals the row's count); the wrong-case `=` answers empty with a `hint` that the folded comparison would match — `=` itself stays exact; the unknown command is refused with its position. `total` is stated against the cap ("the first 500 of N") |
 | H2.23 | `assist_list_saved_queries`; run one with `assist_query`; then `assist_query_history` (`contains` one of this run's queries) | The operator's saved queries and the team's shared ones; the history holds this run's queries labelled `by_agent`, each with `result_count` — the refused one with `error` and `error_position` — newest first, paged. The agent reads only its operator's history |
 
 ### H3. Scope and target files

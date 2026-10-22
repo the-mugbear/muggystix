@@ -850,7 +850,18 @@ def check_agent_rate_limit(
         return agent
 
     if count > agent.rate_limit_rpm:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        # Say when the window ends (acceptance run 2026-10-22: a paging sweep
+        # had to guess its pacing).  In the header for HTTP clients and in the
+        # text, which is all an MCP client shows its model.
+        retry_after = max(1, epoch + window_seconds - int(now.timestamp()))
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Rate limit exceeded: {agent.rate_limit_rpm} requests a minute "
+                f"for this key. Retry in {retry_after} s."
+            ),
+            headers={"Retry-After": str(retry_after)},
+        )
 
     # Opportunistic housekeeping: drop buckets from windows nothing can be
     # counted against any more.  Sampled rather than run per request — the
