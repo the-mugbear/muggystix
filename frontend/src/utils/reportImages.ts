@@ -28,7 +28,6 @@
  */
 export const EVIDENCE_REFERENCE = /!\[((?:[^\]\\\n]|\\.)*)\]\(\s*evidence:(\d{1,12})(?:\s+"[^"\n]*")?\s*\)/g;
 
-const EVIDENCE_REFERENCE_AT = new RegExp(EVIDENCE_REFERENCE.source, 'y');
 
 // What Python's `str.splitlines` ends a line at, and what `str.strip` removes
 // — spelled out, because `_code_spans` is written with those two and JS's
@@ -133,10 +132,71 @@ const inCode = (text: string, at: number): boolean => {
 export const evidenceReferenceAt = (
   text: string, at: number,
 ): { id: number; alt: string; end: number } | null => {
-  EVIDENCE_REFERENCE_AT.lastIndex = at;
-  const m = EVIDENCE_REFERENCE_AT.exec(text);
-  if (!m || inCode(text, at)) return null;
-  return { id: Number(m[2]), alt: m[1], end: at + m[0].length };
+  if (text[at] !== '!' || text[at + 1] !== '[') return null;
+  const scan = referenceScanOf(text);
+  const close = scan.altEnd(at + 2);
+  if (text[close] !== ']') return null;
+  const tail = scan.tailAt(close);
+  if (!tail || inCode(text, at)) return null;
+  return { id: tail.id, alt: text.slice(at + 2, close), end: tail.end };
+};
+
+// `EVIDENCE_REFERENCE` asked at one position, in two parts that are each
+// remembered for the text (R10, measured 2026-10-22: the sticky pattern at
+// every `![` of 16,384 of them read to the end of the text each time — 1.2 s
+// for 32 KB).  The alt text is the pattern's `(?:[^\]\\\n]|\\.)*`: a walk
+// that stops at `]`, a newline, or a backslash with no character it may
+// escape (`.` matches no line terminator) — the same walk from wherever two
+// starts meet, so where it stops is remembered for every position on it.
+// Only a `]` can be followed by the rest of the pattern, which is matched
+// once per `]`.  `tests/utils/reportImages.test.ts` compares both with the
+// pattern at every position of random texts.
+const REFERENCE_TAIL = new RegExp(`${EVIDENCE_REFERENCE.source.slice(EVIDENCE_REFERENCE.source.indexOf('\\]\\('))}`, 'y');
+const NO_ESCAPE = new Set(['\n', '\r', ' ', ' ']);
+
+interface ReferenceScan {
+  altEnd: (from: number) => number;
+  tailAt: (close: number) => { id: number; end: number } | null;
+}
+
+let scanOf: { text: string; scan: ReferenceScan } | null = null;
+
+const referenceScanOf = (text: string): ReferenceScan => {
+  if (scanOf?.text === text) return scanOf.scan;
+  const ends = new Int32Array(text.length + 1).fill(-1);
+  const tails = new Map<number, { id: number; end: number } | null>();
+  const scan: ReferenceScan = {
+    altEnd: (from) => {
+      const path: number[] = [];
+      let j = from;
+      let stop: number;
+      for (;;) {
+        if (j >= text.length) { stop = text.length; break; }
+        if (ends[j] !== -1) { stop = ends[j]; break; }
+        const c = text[j];
+        if (c === ']' || c === '\n') { stop = j; break; }
+        path.push(j);
+        if (c === '\\') {
+          if (j + 1 >= text.length || NO_ESCAPE.has(text[j + 1])) { stop = j; break; }
+          j += 2;
+        } else {
+          j += 1;
+        }
+      }
+      for (const p of path) ends[p] = stop;
+      return stop;
+    },
+    tailAt: (close) => {
+      if (!tails.has(close)) {
+        REFERENCE_TAIL.lastIndex = close;
+        const m = REFERENCE_TAIL.exec(text);
+        tails.set(close, m ? { id: Number(m[1]), end: close + m[0].length } : null);
+      }
+      return tails.get(close)!;
+    },
+  };
+  scanOf = { text, scan };
+  return scan;
 };
 
 /** The target of an image that names one of the finding's images, else null. */
