@@ -56,7 +56,7 @@ export type HubId =
   | 'inventory'
   | 'findings'
   | 'posture'
-  | 'workflows'
+  | 'agents'
   | 'collaboration'
   | 'settings'
   | 'administration'
@@ -138,14 +138,13 @@ export const HUB_DEFS: HubDef[] = [
   // Posture is a real landing page (/posture) like Operations — its hub path
   // renders the roll-up directly, with Insights + Systemic as drill-down tabs.
   { id: 'posture', label: 'Posture', path: '/posture', requiredRole: 'viewer', Icon: Gauge },
-  // Every agent surface lives here (v5.294.0): a session's page
-  // (v5.312.0 /agent-sessions) is an owned path, so the sidebar still says
-  // where you are when you drill into one.
-  // The hub is LABELLED "Agents" (UX walkthrough U11): it holds only agent
-  // surfaces and opens a page titled "Agent Sessions". Its id and path stay
-  // `workflows` / `/workflows` so existing links keep working.
+  // Every agent surface lives here: a session's page (/agent-sessions) is an
+  // owned path, so the sidebar still says where you are when you drill into
+  // one.  The hub is "Agents" (UX walkthrough U11): it holds only agent
+  // surfaces and opens a page titled "Agent Sessions".  Its ADDRESS stays
+  // `/workflows`, the hub's former name, so bookmarked links keep working.
   {
-    id: 'workflows', label: 'Agents', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck,
+    id: 'agents', label: 'Agents', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck,
     defaultChildPath: '/agent-activity', ownedPaths: ['/agent-sessions'],
   },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
@@ -284,9 +283,9 @@ export const NAV_PAGES: NavPage[] = [
   // and shown on each host's page, so there is no Test Plans or Executions
   // page. Every agent surface is in this hub, Tool Activity included.
   {
-    // v5.312.0 — "Agent Sessions" (was Agent Runs): the session is what an
-    // operator starts and manages. One page, one entry.
-    id: 'agent-activity', path: '/agent-activity', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'workflows',
+    // "Agent Sessions" (was Agent Runs): the session is what an operator
+    // starts and manages. One page, one entry.
+    id: 'agent-activity', path: '/agent-activity', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'agents',
     palette: {
       Icon: Bot,
       // 'workflows' — the hub's former label, so the old word still finds it.
@@ -295,8 +294,8 @@ export const NAV_PAGES: NavPage[] = [
     },
   },
   {
-    // v5.316.0 — agents' proposed changes to what the team concluded.
-    id: 'proposals', path: '/proposals', label: 'Proposals', requiredRole: 'viewer', hub: 'workflows',
+    // Agents' proposed changes to what the team concluded.
+    id: 'proposals', path: '/proposals', label: 'Proposals', requiredRole: 'viewer', hub: 'agents',
     palette: {
       Icon: Bot,
       keywords: ['proposal', 'review', 'accept', 'reject', 'agent', 'draft', 'ai', 'suggestion'],
@@ -304,7 +303,7 @@ export const NAV_PAGES: NavPage[] = [
     },
   },
   {
-    id: 'tool-activity', path: '/tool-activity', label: 'Tool Activity', requiredRole: 'viewer', hub: 'workflows',
+    id: 'tool-activity', path: '/tool-activity', label: 'Tool Activity', requiredRole: 'viewer', hub: 'agents',
   },
 
   // Collaboration hub — one page (the tab strip hides for a single child).

@@ -534,7 +534,7 @@ Security work landed across v2.9.5, v2.9.7, and v2.9.8. The below is the current
 
 ## 7. Frontend architecture (React + Vite + Tailwind v4 + Radix)
 
-The frontend is a Vite-built React SPA. Material UI + Emotion were fully removed in the v4 frontend line; the substrate is now **Tailwind v4** for styling, **Radix** primitives wrapped shadcn-style under `components/ui/`, **Sonner** for toasts, and **lucide-react** for icons. Navigation is organised into NINE hubs — Operations (the landing page), Inventory, Findings, Posture, Agents (id and path still `workflows`), Collaboration, plus the utility hubs Settings, Administration (global admins) and Reference — declared as data in a single manifest (`config/navigation.tsx`, `HUB_DEFS`) and rendered by `components/Layout.tsx` + `components/HubRedirect.tsx`. There are no per-hub page components.
+The frontend is a Vite-built React SPA. Material UI + Emotion were fully removed in the v4 frontend line; the substrate is now **Tailwind v4** for styling, **Radix** primitives wrapped shadcn-style under `components/ui/`, **Sonner** for toasts, and **lucide-react** for icons. Navigation is organised into NINE hubs — Operations (the landing page), Inventory, Findings, Posture, Agents (its address is still `/workflows`, the hub's former name), Collaboration, plus the utility hubs Settings, Administration (global admins) and Reference — declared as data in a single manifest (`config/navigation.tsx`, `HUB_DEFS`) and rendered by `components/Layout.tsx` + `components/HubRedirect.tsx`. There are no per-hub page components.
 
 ```
 frontend/src/

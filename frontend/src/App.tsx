@@ -274,7 +274,7 @@ function App() {
                         path="/workflows"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <HubRedirect hubId="workflows" />
+                            <HubRedirect hubId="agents" />
                           </ProtectedRoute>
                         }
                       />
