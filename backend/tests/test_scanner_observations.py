@@ -424,3 +424,72 @@ def test_the_agents_read_the_inspectors_detail_from_the_same_service(client, db_
     missing = client.get("/api/v1/agent/assist/scanner-observations/detail", headers=key,
                          params={"issue_key": "title:no such issue"})
     assert missing.status_code == 404
+
+
+def _whole_issue_reads(db_session, run):
+    """The statements ``run`` makes that read scanner rows WHOLE (their plugin
+    output) by the issue rather than by row id."""
+    from sqlalchemy import event
+
+    seen = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if (statement.lstrip().upper().startswith("SELECT") and "vulnerabilities.plugin_output" in statement
+                and "issue_key" in statement.split("WHERE", 1)[-1]):
+            seen.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        run()
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    return seen
+
+
+def test_promote_and_dismiss_read_only_the_rows_they_act_on_whole(client, db_session, test_project, estate):
+    """R5 (2026-10-22): both loaded every row of the issue whole — description
+    and plugin output — to use three columns.  The choice is made from
+    ``(id, host_id, severity)``; only the evidencing rows are read whole, by
+    id.  Fails on the old code: its whole-row read named the issue."""
+    hosts = estate["hosts"]
+    keys = {r["title"]: r["issue_key"] for r in client.get(_url(test_project)).json()["items"]}
+
+    def promote():
+        r = client.post(_url(test_project, "/promote"), json={"items": [
+            {"issue_key": keys["SMB Signing not required"]},
+            {"issue_key": keys["TLS Version 1.0 Protocol Detection"], "host_ids": [hosts[1].id]},
+        ]})
+        assert r.status_code == 200, r.text
+
+    def dismiss():
+        r = client.post(_url(test_project, "/dismiss"), json={
+            "issue_key": keys["OpenSSH agent RCE"], "host_ids": [hosts[0].id]})
+        assert r.status_code == 200, r.text
+
+    assert _whole_issue_reads(db_session, promote) == []
+    assert _whole_issue_reads(db_session, dismiss) == []
+
+
+def test_a_host_list_longer_than_the_page_can_send_is_refused_on_both_routes(client, db_session, test_project, estate):
+    """R5: ``host_ids`` allowed 10,000 at several statements per host, while
+    the page sends at most the inspector's 100.  More is a 422 whole on the
+    promotion and the dismissal, and nothing is written."""
+    from app.services import scanner_observation_service as svc
+
+    hosts = estate["hosts"]
+    smb = "title:smb signing not required"
+    too_many = [hosts[0].id] * (svc.HOST_IDS_CAP + 1)
+    promote = client.post(_url(test_project, "/promote"), json={"items": [{"issue_key": smb, "host_ids": too_many}]})
+    dismiss = client.post(_url(test_project, "/dismiss"), json={"issue_key": smb, "host_ids": too_many})
+    assert (promote.status_code, dismiss.status_code) == (422, 422)
+    assert db_session.query(Finding).filter_by(project_id=test_project.id).count() == 0
+    # The service says so too, for a caller that skips the schema.
+    with pytest.raises(svc.ObservationError, match=f"At most {svc.HOST_IDS_CAP} hosts"):
+        svc.dismiss_issue(db_session, test_project.id, None, smb, host_ids=too_many)
+    with pytest.raises(svc.ObservationError, match=f"At most {svc.HOST_IDS_CAP} hosts"):
+        svc.promote_issues(db_session, test_project.id, None, [svc.PromoteItem(issue_key=smb, host_ids=too_many)])
+    # Exactly the cap is accepted (a repeated id counts once).
+    ok = client.post(_url(test_project, "/promote"), json={"items": [
+        {"issue_key": smb, "host_ids": [hosts[0].id] * svc.HOST_IDS_CAP}]})
+    assert ok.status_code == 200, ok.text
