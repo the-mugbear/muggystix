@@ -528,8 +528,14 @@ def test_a_finished_test_cannot_lose_its_only_explanation(client, test_project, 
     assert reopened.status_code == 200, reopened.text
 
 
+@pytest.mark.parametrize("after_commit", [False, True])
 @pytest.mark.parametrize("count", [1, 10])
-def test_serializing_tests_is_a_fixed_number_of_statements(db_session, test_project, test_user, host, count):
+def test_serializing_tests_is_a_fixed_number_of_statements(db_session, test_project, test_user, host, count,
+                                                         after_commit):
+    """Before or after the commit (H-e, backlog 2026-10-22): the commit expires
+    every row, and ``serialize_many`` used to read each one's id back — one
+    SELECT per test — so a route had to serialize BEFORE committing.  It reads
+    the ids from the identity map now, so the order no longer costs anything."""
     from sqlalchemy import event
     from app.schemas.host_test_schemas import HostTestCreate
     from app.services import host_test_service
@@ -538,6 +544,8 @@ def test_serializing_tests_is_a_fixed_number_of_statements(db_session, test_proj
     rows = host_test_service.create_tests(
         db_session, test_project.id,
         [HostTestCreate(**item(host)) for _ in range(count)], Attribution(user_id=test_user.id))
+    if after_commit:
+        db_session.commit()
     statements = []
 
     def capture(conn, cursor, statement, parameters, context, executemany):
@@ -546,7 +554,6 @@ def test_serializing_tests_is_a_fixed_number_of_statements(db_session, test_proj
 
     event.listen(db_session.bind, "before_cursor_execute", capture)
     try:
-        # As the route does it: built before the commit expires the rows.
         assert len(host_test_service.serialize_many(db_session, rows)) == count
     finally:
         event.remove(db_session.bind, "before_cursor_execute", capture)

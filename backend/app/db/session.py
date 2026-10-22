@@ -28,6 +28,34 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
+def persisted_ids(rows) -> list:
+    """The primary keys of ``rows`` without a statement per row.
+
+    A commit expires every loaded attribute (``expire_on_commit``), so
+    ``row.id`` afterwards is one SELECT per row.  The identity key survives
+    the expiry: a serializer that reads its rows' ids here, then loads them
+    again in one statement, costs the same before and after the commit
+    (H-e, backlog 2026-10-22).  A row not yet flushed has no identity and
+    falls back to ``row.id`` (which flushes nothing; it is None).
+    """
+    from sqlalchemy import inspect
+
+    out = []
+    for row in rows:
+        identity = inspect(row).identity
+        out.append(identity[0] if identity else row.id)
+    return out
+
+
+def has_expired(rows) -> bool:
+    """True when a commit (or ``expire``) has left any of ``rows`` to be read
+    again — a serializer then reloads them in one statement instead of one
+    per row."""
+    from sqlalchemy import inspect
+
+    return any(inspect(row).expired_attributes for row in rows)
+
+
 def _limit_statements(db) -> None:
     """Put the API statement timeout on ``db``, a request's session (R23).
 

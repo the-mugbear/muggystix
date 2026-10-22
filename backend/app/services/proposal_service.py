@@ -40,6 +40,7 @@ from app.db.models_proposals import (
     AgentProposal, EvidenceRecord, ProposalKind, ProposalSource, ProposalStatus,
 )
 from app.db.models_vulnerability import Vulnerability
+from app.db.session import has_expired, persisted_ids
 from app.services.cvss_service import CvssError, normalize_cvss
 from app.services.finding_actions import (
     apply_report_text, finding_actor, promote_or_dismiss_vulnerability,
@@ -1106,13 +1107,7 @@ def list_proposals(
         q = q.filter(AgentProposal.agent_session_id == agent_session_id)
     total = q.count()
     rows = (
-        q.options(
-            selectinload(AgentProposal.proposed_by), selectinload(AgentProposal.decided_by),
-            selectinload(AgentProposal.finding),
-            selectinload(AgentProposal.vulnerability).selectinload(Vulnerability.host),
-            selectinload(AgentProposal.finding_host).selectinload(FindingHost.host),
-            selectinload(AgentProposal.subnet),
-        )
+        q.options(*_serialized_loads())
         .order_by(AgentProposal.created_at.desc(), AgentProposal.id.desc())
         .offset(offset).limit(limit).all()
     )
@@ -1300,9 +1295,33 @@ def _current_findings(db: Session, proposals: Iterable[AgentProposal]) -> Dict[i
     return {f.id: f for f in db.query(Finding).filter(Finding.id.in_(ids)).all()}
 
 
+def _serialized_loads():
+    """What a serialized proposal reads beside its own columns — the ONE list,
+    for the list's query and for ``serialize_many``'s read by id."""
+    return (
+        selectinload(AgentProposal.proposed_by), selectinload(AgentProposal.decided_by),
+        selectinload(AgentProposal.finding),
+        selectinload(AgentProposal.vulnerability).selectinload(Vulnerability.host),
+        selectinload(AgentProposal.finding_host).selectinload(FindingHost.host),
+        selectinload(AgentProposal.subnet),
+    )
+
+
 def serialize_many(db: Session, proposals: List[AgentProposal]) -> List[dict]:
     """Rows as every proposal route returns them, with each report-text
-    proposal's ``current_value`` read in one query."""
+    proposal's ``current_value`` read in one query.
+
+    Before or after the caller's commit (H-e, backlog 2026-10-22): rows a
+    commit expired are read again together, by the ids the identity map
+    still holds, with what the answer reads — never one SELECT per row and
+    per relation.  Rows still loaded are serialized as they are."""
+    if has_expired(proposals):
+        ids = persisted_ids(proposals)
+        loaded = {
+            p.id: p for p in
+            db.query(AgentProposal).options(*_serialized_loads()).filter(AgentProposal.id.in_(ids))
+        }
+        proposals = [loaded[i] for i in ids]
     current = _current_findings(db, proposals)
     replaces: Dict[int, List[int]] = {}
     ids = [p.id for p in proposals]

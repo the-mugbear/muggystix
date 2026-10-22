@@ -53,8 +53,8 @@ def make_router(reader, writer, *, page=None):
             note_agent_model(actor.who.session, body.agent_model)
             actor.who.model = body.agent_model
         rows = tests.create_tests(db, actor.project_id, body.tests, actor.who)
-        # Built before the commit: it expires every row, and reading each id
-        # afterwards is one SELECT per test (202 for a full batch).
+        # The same two statements before or after the commit (serialize_many
+        # reads the ids from the identity map, never one SELECT per test).
         items = tests.serialize_many(db, rows)
         db.commit()
         return {"items": items}

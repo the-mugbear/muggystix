@@ -13,6 +13,7 @@ from app.db.models_auth import User, UserRole
 from app.db.models_host_tests import HostTest
 from app.db.models_project import ProjectMembership
 from app.db.models_proposals import EvidenceRecord
+from app.db.session import persisted_ids
 from app.services.dns_name_service import InvalidName, normalize_fqdn
 
 
@@ -283,8 +284,10 @@ def _serialized_loads():
 
 def serialize_many(db, rows):
     """Serialize tests the caller holds (just written, or read one at a time):
-    one statement brings their host and people, one their evidence."""
-    ids = [row.id for row in rows]
+    one statement brings their host and people, one their evidence — before
+    or after the caller's commit (the ids come from the identity map, so an
+    expired row costs no SELECT of its own)."""
+    ids = persisted_ids(rows)
     if not ids:
         return []
     loaded = {r.id: r for r in db.query(HostTest).options(*_serialized_loads()).filter(HostTest.id.in_(ids))}

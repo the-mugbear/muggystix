@@ -243,3 +243,43 @@ def test_the_agent_lists_its_scope_proposals_by_kind(client, db_session, test_pr
     _propose(client, key, [{"cidr": a.cidr, "description": "x"}])
     page = client.get("/api/v1/agent/proposals", headers=key, params={"kind": "subnet_details", "mine": True}).json()
     assert page["total"] == 1 and page["items"][0]["target"]["subnet_cidr"] == a.cidr
+
+
+def _selects_serializing(db, rows):
+    from sqlalchemy import event
+
+    seen = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            seen.append(statement)
+
+    event.listen(db.bind, "before_cursor_execute", capture)
+    try:
+        answer = proposal_service.serialize_many(db, rows)
+    finally:
+        event.remove(db.bind, "before_cursor_execute", capture)
+    return answer, seen
+
+
+def test_serializing_after_the_commit_costs_what_it_costs_before(client, db_session, test_project):
+    """H-e (backlog 2026-10-22): a proposal route had to serialize BEFORE its
+    commit, because the commit expires every row and serializing afterwards
+    read each proposal and each of its relations again — a SELECT per row.
+    ``serialize_many`` reloads expired rows together now, so the statement
+    count is the same for one proposal and for six, and the answer is the
+    one the rows give before the commit."""
+    counts = {}
+    key, _ = _start(client, test_project)
+    for n, base in ((1, 72), (6, 73)):
+        subnets = _subnets(db_session, test_project, *[f"10.{base}.{i}.0/24" for i in range(n)])
+        r = _propose(client, key, [{"cidr": s.cidr, "site": f"S{i}"} for i, s in enumerate(subnets)])
+        assert r.status_code == 201, r.text
+        ids = [p["id"] for p in r.json()["proposals"]]
+        rows = db_session.query(AgentProposal).filter(AgentProposal.id.in_(ids)).order_by(AgentProposal.id).all()
+        before, _ = _selects_serializing(db_session, rows)
+        db_session.commit()  # expires every row, as a route's commit does
+        after, selects = _selects_serializing(db_session, rows)
+        assert after == before
+        counts[n] = len(selects)
+    assert counts[1] == counts[6], counts
