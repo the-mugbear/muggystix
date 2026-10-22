@@ -56,7 +56,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.db import models
 from app.services import ingestion_service as ingestion_module
-from app.services.format_registry import FORMATS, resolve_parser
+from app.services.format_registry import FORMATS, detection_keys, resolve_parser
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.ingestion_service import (
     build_parser_dispatch_map,
@@ -436,10 +436,10 @@ def test_every_format_has_a_case():
     assert not sorted(covered - set(FORMATS)), "a case for a format the registry no longer has"
     assert not set(CASES) & set(FORMATS_THAT_NAME_NO_HOST_BY_SCAN)
 
-    # The dispatcher's own list: every file_type it can emit, and every parser
-    # class it can construct (the Nessus service is dispatched on its own path).
-    source = Path(ingestion_module.__file__).read_text()
-    emitted = set(re.findall(r'\(\s*"([a-z_]+)",\s*[A-Za-z]+,\s*"', source))
+    # The dispatcher's own list (the one parser registry, H-g): every file_type
+    # it can emit, and every parser class it can construct (the Nessus service
+    # is dispatched on its own path).
+    emitted = set(detection_keys())
     assert emitted and not sorted(emitted - covered), sorted(emitted - covered)
     classes_with_a_case = {resolve_parser(key)[0] for key in covered}
     without = sorted(cls.__name__ for cls in build_parser_dispatch_map() if cls not in classes_with_a_case)
