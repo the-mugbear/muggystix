@@ -10,8 +10,10 @@ edited them by hand (comprehensive review 2026-10-16, B-OPS-4):
 
   1. platform_version.json — the source of truth;
   2. frontend/package.json — "version";
-  3. docker-compose.yml — every ${APP_VERSION:-…} / ${FRONTEND_VERSION:-…}
-     fallback (the BACKEND_VERSION build arg is one of them);
+  3. docker-compose.yml — the frontend image's two build args,
+     BACKEND_VERSION: ${APP_VERSION:-…} and FRONTEND_VERSION: ${FRONTEND_VERSION:-…}
+     (the only typed versions there: the backend services read the mounted
+     platform_version.json);
   4. frontend/package-lock.json — its two root "version" fields.
 
 It refuses, changing nothing, when any place already disagrees with

@@ -149,8 +149,9 @@ After any change that ships, bump the version so a rebuilt container visibly ref
 
 1. `platform_version.json` — source of truth (`backend`, `frontend`)
 2. `frontend/package.json` — `version`
-3. `docker-compose.yml` — EVERY `APP_VERSION` / `FRONTEND_VERSION` fallback and the
-   `BACKEND_VERSION` build arg (six occurrences today)
+3. `docker-compose.yml` — the frontend image's two build args, `BACKEND_VERSION: ${APP_VERSION:-…}`
+   and `FRONTEND_VERSION: ${FRONTEND_VERSION:-…}` (the backend services read the mounted
+   `platform_version.json` and carry no version of their own)
 4. `frontend/package-lock.json` — its two `version` fields (`npm install --package-lock-only`
    after bumping; the image build's `npm ci` fails when the lock disagrees with `package.json`)
 

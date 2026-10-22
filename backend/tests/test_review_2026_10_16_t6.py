@@ -148,9 +148,9 @@ def _tree(tmp_path, backend="2.5.9", frontend="5.4.1", compose_backend=None):
                      "node_modules/same": {"version": frontend}},
     }, indent=2) + "\n")
     cb = compose_backend or backend
+    # The real file's shape since R10: the frontend image's two build args only.
     (tmp_path / "docker-compose.yml").write_text(
-        f"a: ${{APP_VERSION:-{cb}}}\nb: ${{FRONTEND_VERSION:-{frontend}}}\n"
-        f"c: ${{APP_VERSION:-{backend}}}\nd: ${{FRONTEND_VERSION:-{frontend}}}\n")
+        f"BACKEND_VERSION: ${{APP_VERSION:-{cb}}}\nFRONTEND_VERSION: ${{FRONTEND_VERSION:-{frontend}}}\n")
     return tmp_path
 
 
@@ -164,7 +164,7 @@ def test_the_bump_script_changes_every_place_and_nothing_else(tmp_path):
     assert (lock["version"], lock["packages"][""]["version"]) == ("5.4.2", "5.4.2")
     assert lock["packages"]["node_modules/same"]["version"] == "5.4.1"   # a dependency that shares the number
     compose = (root / "docker-compose.yml").read_text()
-    assert compose.count("${APP_VERSION:-2.6.0}") == 2 and compose.count("${FRONTEND_VERSION:-5.4.2}") == 2
+    assert compose.count("${APP_VERSION:-2.6.0}") == 1 and compose.count("${FRONTEND_VERSION:-5.4.2}") == 1
     assert script.bump("2.9.9", "major") == "3.0.0"
 
 
