@@ -168,14 +168,14 @@ def _proj(project):
 
 def test_viewer_cannot_export_hosts(member_client, db_session, test_project, member):
     _set_role(db_session, test_project, member, "viewer")
-    resp = member_client.get(f"{_proj(test_project)}/export/out-of-scope?format=txt")
+    resp = member_client.get(f"{_proj(test_project)}/export/scope?format_type=cidrs")
     assert resp.status_code == 403
 
 
 def test_auditor_can_export_hosts(member_client, db_session, test_project, member):
     _set_role(db_session, test_project, member, "auditor")
-    resp = member_client.get(f"{_proj(test_project)}/export/out-of-scope?format=txt")
-    assert resp.status_code != 403, resp.text
+    resp = member_client.get(f"{_proj(test_project)}/export/scope?format_type=cidrs")
+    assert resp.status_code == 200, resp.text
 
 
 def test_viewer_cannot_generate_report(member_client, db_session, test_project, member):

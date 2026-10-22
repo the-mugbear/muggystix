@@ -1,7 +1,7 @@
 /**
  * GeneratedTextDialog — the one export dialog (plan B2a): pick a format, ask
- * for the text, read it, copy it, save it.  `ScopeExport`, `OutOfScopeExport`
- * and `ToolReadyOutput` were three copies of it; each is now what differs —
+ * for the text, read it, copy it, save it.  `ScopeExport` and `ToolReadyOutput`
+ * (and `OutOfScopeExport`, removed in 5.416.0) were copies of it; each is now what differs —
  * its request (a mutation of its own, so the API call stays in a
  * `mutationFn`), its formats, its words and its file name.
  *
@@ -94,7 +94,14 @@ export interface GeneratedTextDialogProps<F extends string, R> {
   previewChars?: number;
   /** A line under the text (`cut`: the preview shows only its start). */
   footnote?: (made: GeneratedText<F, R>, cut: boolean) => React.ReactNode;
+  /** Said when the answer holds no text — why, if the caller can tell
+   *  (given the request's format and the answer).  An empty answer showed
+   *  nothing at all, which read as a failure (prod, 2026-10-22: ten tries
+   *  of a names export that matched no in-scope name). */
+  empty?: (format: F, result: R) => React.ReactNode;
 }
+
+const NOTHING_MATCHED = 'Nothing to export: the request matched no entries.';
 
 /** How many entries a host list holds, read as the format it was made in:
  *  a JSON array's length, a CSV's lines less its header, else the lines. */
@@ -112,7 +119,7 @@ export function countEntries(text: string, format: string): number {
 
 export default function GeneratedTextDialog<F extends string, R>({
   open, onClose, icon, title, children, formats, defaultFormat, formatFieldId, generate, generateLabel,
-  errorFallback, textOf, heading, filename, copyLabel, downloadLabel, options, notice, previewChars, footnote,
+  errorFallback, textOf, heading, filename, copyLabel, downloadLabel, options, notice, previewChars, footnote, empty,
 }: GeneratedTextDialogProps<F, R>) {
   // Kept between openings (see above).
   const [selectedFormat, setSelectedFormat] = useState<F>(defaultFormat);
@@ -194,6 +201,12 @@ export default function GeneratedTextDialog<F extends string, R>({
         )}
 
         {result !== undefined && notice?.(result)}
+
+        {result !== undefined && !text && (
+          <Alert>
+            <AlertDescription>{empty?.(format, result) ?? NOTHING_MATCHED}</AlertDescription>
+          </Alert>
+        )}
 
         {made && (
           <div className="space-y-xs">

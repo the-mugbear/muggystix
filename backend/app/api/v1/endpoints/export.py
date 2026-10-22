@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.db.session import get_db
 from app.services.csv_utils import safe_csv_row
-from app.services import scope_coverage
 from app.api.downloads import attachment
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
@@ -47,93 +46,112 @@ _HOST_LIST_RESPONSES = {
 
 @router.get(
     "/scope",
-    responses=_HOST_LIST_RESPONSES,
-    summary="Export scope hosts",
+    responses={
+        200: {
+            "description": "The declared scope in the requested format. "
+            "**cidrs** — one network per line (`text/plain`). "
+            "**domains** — one domain per line, `*.example.com` where subdomains are included (`text/plain`). "
+            "**csv** — `entry,labels,description,site`, networks then domains (`text/csv`). "
+            "Each is a scope file the Scope page's upload reads back as the same entries.",
+            "content": {
+                "text/plain": {"example": "10.0.0.0/24\n10.0.1.5/32\n"},
+                "text/csv": {"example": "entry,labels,description,site\r\n10.0.0.0/24,DMZ,Web tier,London DC\r\n*.example.com,,,\r\n"},
+            },
+        },
+        401: {"description": "Not authenticated"},
+    },
+    summary="Export the declared scope (networks and domains)",
 )
-def export_scope_hosts(
+def export_scope(
     format_type: str = Query(
-        default="txt",
-        pattern="^(txt|csv|json|web)$",
-        description="Output format: txt (one IP per line), csv, json, or web (one http/https URL per line)",
+        default="cidrs",
+        pattern="^(cidrs|domains|csv)$",
+        description="Output format: cidrs (one network per line), domains (one per line), or csv (every entry)",
     ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """Export the hosts in the project's scope.
+    """Export what the project's scope DECLARES — its networks and domains —
+    not the hosts discovered in it (owner, 2026-10-22: those are the Hosts
+    page's export, filtered by `scope:`; this route listed them until
+    2.521.0).
 
-    Default format is ``txt`` — one IP per line, suitable for feeding
-    into other tools.  ``web`` is the scope's web targets, one URL per line:
-    the agents' ``web-targets.txt``, from the same builder.
+    Every format is a scope file ``POST /scopes/upload-subnets`` reads back
+    as the same entries (``SubnetParser.parse_scope_list`` / ``parse_scope_csv``):
+    a domain that includes its subdomains is written ``*.example.com``, the
+    upload's spelling of it, and the CSV's columns are the upload's.  One
+    exception: labels are space-separated in that column, so a label name
+    with a space in it comes back as two labels.
 
-    A project has exactly one scope (2.488.0), so this is every host the
-    Scope page's table covers, and the path names no scope (2.489.0).  A
-    read: a project with no scope yet exports nothing, and none is created.
+    A read: a project with no scope yet exports nothing, and none is created.
     """
+    import csv, io
+    from collections import defaultdict
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import INET
     from app.db import models as m
     from app.services.default_scope import project_scope
-    from app.services.scope_targets_service import in_scope_condition, ip_order_by
 
     scope = project_scope(db, project.id)
-    # The scope has no name; the file is named for what it is.
-    safe_name = "project-scope"
+    subnets, domains = [], []
+    if scope is not None:
+        # Address order (10.0.0.2/32 before 10.0.0.10/32), as the Scope page
+        # lists them.  Every writer stores ``ip_network``'s normal form, so
+        # the cast cannot fail.
+        order = (
+            [cast(m.Subnet.cidr, INET), m.Subnet.id]
+            if db.get_bind().dialect.name == "postgresql" else [m.Subnet.cidr, m.Subnet.id]
+        )
+        if format_type != "domains":
+            subnets = (
+                db.query(m.Subnet.id, m.Subnet.cidr, m.Subnet.description, m.Subnet.site)
+                .filter(m.Subnet.scope_id == scope.id).order_by(*order).all()
+            )
+        if format_type != "cidrs":
+            domains = (
+                db.query(m.ScopeDomain.domain, m.ScopeDomain.include_subdomains, m.ScopeDomain.description)
+                .filter(m.ScopeDomain.scope_id == scope.id).order_by(m.ScopeDomain.domain).all()
+            )
 
-    if format_type == "web":
-        from app.db.session import disable_statement_timeout
-        from app.services.scope_targets_service import iter_scope_web_targets
+    def _domain(name: str, include_subdomains: bool) -> str:
+        return f"*.{name}" if include_subdomains else name
 
-        # The builder reads the scope's hosts in batches; a large scope is
-        # more than one statement's worth of the API limit.
-        disable_statement_timeout(db)
+    if format_type == "cidrs":
         return PlainTextResponse(
-            content="".join(iter_scope_web_targets(db, scope.id)) if scope else "",
-            headers=attachment(f"{safe_name}_web-targets.txt"),
+            content="".join(f"{s.cidr}\n" for s in subnets),
+            headers=attachment("project-scope_cidrs.txt"),
         )
-
-    # Address order (10.0.0.2 before 10.0.0.10), as the Scope page's own
-    # lists — it sorted the text (review 2026-10-14, R16).
-    rows = (
-        db.query(m.Host.ip_address, m.Host.hostname, m.Host.state)
-        .filter(m.Host.project_id == project.id, in_scope_condition(scope.id))
-        .order_by(*ip_order_by(db))
-        .all()
-    ) if scope else []
-
-    if format_type == "txt":
-        body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")
+    if format_type == "domains":
         return PlainTextResponse(
-            content=body,
-            headers=attachment(f"{safe_name}_hosts.txt"),
+            content="".join(f"{_domain(d.domain, d.include_subdomains)}\n" for d in domains),
+            headers=attachment("project-scope_domains.txt"),
         )
 
-    if format_type == "csv":
-        import csv, io
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        # v2.91.4 (third code review #1) — every data cell flows through
-        # safe_csv_row so a scanner-derived hostname starting with
-        # =/+/-/@/tab/CR cannot execute a formula when the file is
-        # opened in Excel or LibreOffice.  The shared ExportService
-        # path was already protected (v2.86.4); these lighter-weight
-        # routes were missed.
-        writer.writerow(["ip_address", "hostname", "state"])
-        for r in rows:
-            safe_csv_row(writer, [r.ip_address, r.hostname or "", r.state or ""])
-        return Response(
-            content=buf.getvalue(),
-            media_type="text/csv",
-            headers=attachment(f"{safe_name}_hosts.csv"),
-        )
-
-    # JSON
-    import json
-    data = [
-        {"ip_address": r.ip_address, "hostname": r.hostname, "state": r.state}
-        for r in rows
-    ]
+    labels = defaultdict(list)
+    if subnets:
+        for subnet_id, name in (
+            db.query(m.SubnetLabelAssignment.subnet_id, m.SubnetLabel.name)
+            .join(m.SubnetLabel, m.SubnetLabel.id == m.SubnetLabelAssignment.label_id)
+            .join(m.Subnet, m.Subnet.id == m.SubnetLabelAssignment.subnet_id)
+            .filter(m.Subnet.scope_id == scope.id)
+            .order_by(m.SubnetLabel.name)
+        ):
+            labels[subnet_id].append(name)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    # Every data cell flows through safe_csv_row, so a description or site
+    # starting with =/+/-/@/tab/CR cannot execute a formula when the file
+    # is opened in Excel or LibreOffice (v2.91.4, third code review #1).
+    # The upload's first-row rule skips the header: "entry" is a dotless word.
+    writer.writerow(["entry", "labels", "description", "site"])
+    for s in subnets:
+        safe_csv_row(writer, [s.cidr, " ".join(labels[s.id]), s.description or "", s.site or ""])
+    for d in domains:
+        safe_csv_row(writer, [_domain(d.domain, d.include_subdomains), "", d.description or "", ""])
     return Response(
-        content=json.dumps(data, indent=2),
-        media_type="application/json",
-        headers=attachment(f"{safe_name}_hosts.json"),
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers=attachment("project-scope.csv"),
     )
 
 
@@ -215,63 +233,4 @@ def export_scan_hosts(
         content=json.dumps(data, indent=2),
         media_type="application/json",
         headers=attachment(f"{safe_name}_hosts.json"),
-    )
-
-
-@router.get(
-    "/out-of-scope",
-    responses=_HOST_LIST_RESPONSES,
-    summary="Export out-of-scope hosts",
-)
-def export_out_of_scope_hosts(
-    format_type: str = Query(
-        default="txt",
-        pattern="^(txt|csv|json)$",
-        description="Output format: txt (one IP per line), csv, or json",
-    ),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Export hosts that have no subnet/scope mapping.
-
-    Default format is ``txt`` — one IP per line, suitable for feeding
-    into other tools.
-    """
-    # v2.239.0 — shares ``scope_coverage`` with GET /scans/out-of-scope.  That
-    # endpoint used to read the abandoned ``out_of_scope_hosts`` table while
-    # this one computed the answer correctly, so the two disagreed completely.
-    rows, _ = scope_coverage.out_of_scope_hosts(db, project.id)
-
-    if format_type == "txt":
-        body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")
-        return PlainTextResponse(
-            content=body,
-            headers=attachment("out_of_scope_hosts.txt"),
-        )
-
-    if format_type == "csv":
-        import csv, io
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        # v2.91.4 — every cell through safe_csv_row, as the scope export's
-        # CSV branch explains.
-        writer.writerow(["ip_address", "hostname", "state"])
-        for r in rows:
-            safe_csv_row(writer, [r.ip_address, r.hostname or "", r.state or ""])
-        return Response(
-            content=buf.getvalue(),
-            media_type="text/csv",
-            headers=attachment("out_of_scope_hosts.csv"),
-        )
-
-    # JSON
-    import json
-    data = [
-        {"ip_address": r.ip_address, "hostname": r.hostname, "state": r.state}
-        for r in rows
-    ]
-    return Response(
-        content=json.dumps(data, indent=2),
-        media_type="application/json",
-        headers=attachment("out_of_scope_hosts.json"),
     )

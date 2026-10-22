@@ -59,7 +59,7 @@ def test_a_name_outside_plain_ascii_travels_in_both_forms(name, plain):
     assert _real_name(header) == name
 
 
-@pytest.mark.parametrize("name", ["hosts.csv", "names.txt", "scope-acme-report-3.csv", "out_of_scope_hosts.json"])
+@pytest.mark.parametrize("name", ["hosts.csv", "names.txt", "scope-acme-report-3.csv", "project-scope_cidrs.txt"])
 def test_a_plain_name_is_sent_as_it_always_was(name):
     assert content_disposition(name) == f"attachment; filename={name}"
     assert attachment(name) == {"Content-Disposition": f"attachment; filename={name}"}

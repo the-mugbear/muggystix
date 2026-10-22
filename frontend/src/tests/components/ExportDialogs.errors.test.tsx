@@ -9,7 +9,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
-  getScopeHostList: vi.fn(), getOutOfScopeHostList: vi.fn(), getToolReadyOutput: vi.fn(), enqueueInventoryJson: vi.fn(),
+  getScopeExport: vi.fn(), getToolReadyOutput: vi.fn(), enqueueInventoryJson: vi.fn(),
 }));
 vi.mock('../../services/api', () => ({
   ...api,
@@ -20,7 +20,6 @@ vi.mock('../../services/api', () => ({
 }));
 
 import InventoryDownloadDialog from '../../components/InventoryDownloadDialog';
-import OutOfScopeExport from '../../components/OutOfScopeExport';
 import ScopeExport from '../../components/ScopeExport';
 import ToolReadyOutput from '../../components/ToolReadyOutput';
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -40,16 +39,16 @@ beforeEach(() => {
 
 describe('export dialogs — a refused request', () => {
   it('the scope export says the meaning of a 403, not the client error', async () => {
-    api.getScopeHostList.mockRejectedValue(refused(403));
+    api.getScopeExport.mockRejectedValue(refused(403));
     show(<ScopeExport open onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByText('You do not have permission to perform this action.')).toBeInTheDocument();
     expect(screen.queryByText(/Request failed with status code/)).not.toBeInTheDocument();
   });
 
-  it('the out-of-scope export says the server’s own reason when it gives one', async () => {
-    api.getOutOfScopeHostList.mockRejectedValue(refused(403, 'Exports need the auditor role on this project.'));
-    show(<OutOfScopeExport open onClose={vi.fn()} />);
+  it('the scope export says the server’s own reason when it gives one', async () => {
+    api.getScopeExport.mockRejectedValue(refused(403, 'Exports need the auditor role on this project.'));
+    show(<ScopeExport open onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByText('Exports need the auditor role on this project.')).toBeInTheDocument();
     expect(screen.queryByText(/Request failed with status code/)).not.toBeInTheDocument();

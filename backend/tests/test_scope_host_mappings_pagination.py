@@ -200,7 +200,9 @@ def test_out_of_scope_is_derived_and_agrees_with_the_export(
     consume.
 
     Asserting the two agree pins the invariant rather than the implementation:
-    whichever way the derivation moves, it moves for both.
+    whichever way the derivation moves, it moves for both.  Since 2.521.0
+    the file is the Hosts page's (`out_of_scope_only=true` + tool-ready), the
+    door the Scope page's "View all out-of-scope hosts" opens.
     """
     scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
@@ -223,8 +225,9 @@ def test_out_of_scope_is_derived_and_agrees_with_the_export(
     listed_ips = {h["ip_address"] for h in listed["items"]}
 
     exported = client.get(
-        f"/api/v1/projects/{test_project.id}/export/out-of-scope?format_type=txt"
+        f"/api/v1/projects/{test_project.id}/hosts/tool-ready/ip-list?out_of_scope_only=true"
     )
+    assert exported.status_code == 200, exported.text
     exported_ips = {ln for ln in exported.text.splitlines() if ln.strip()}
 
     assert listed_ips == {"203.0.113.9"}, listed_ips

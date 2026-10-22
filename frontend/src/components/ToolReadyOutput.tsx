@@ -34,6 +34,9 @@ const TOOL_FORMATS = [
 // the in-scope / all toggle applies.  Mirrors _NAME_AWARE_FORMATS server-side.
 const NAME_AWARE_FORMATS = new Set(['nuclei', 'json', 'names', 'web-targets']);
 
+/** The answer, and the names scope it was asked with (none for an IP format). */
+type AskedResult = ToolReadyResult & { namesScope?: 'in_scope' | 'all' };
+
 // An IP export of a large project is megabytes; rendering all of it in a
 // <pre> stalls the dialog. Copy and Download always use the full output.
 const PREVIEW_CHARS = 100_000;
@@ -50,19 +53,25 @@ export default function ToolReadyOutput({
   // Asked for by the button, so a mutation: its answer is the output shown,
   // and asking again starts from nothing.  The dialog itself — format,
   // generate, copy, download — is `GeneratedTextDialog`.
+  // The answer carries the names scope it was ASKED with, so what an empty
+  // answer says follows the request, not the switch moved since.
   const generate = useMutation({
-    mutationFn: (format: string) => getToolReadyOutput(projectId, format, {
-      ...filters,
-      includePorts,
-      ...(NAME_AWARE_FORMATS.has(format)
-        ? { namesScope: (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all' }
-        : {}),
-    }),
+    mutationFn: async (format: string): Promise<AskedResult> => {
+      const namesScope = NAME_AWARE_FORMATS.has(format)
+        ? (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all'
+        : undefined;
+      const result = await getToolReadyOutput(projectId, format, {
+        ...filters,
+        includePorts,
+        ...(namesScope ? { namesScope } : {}),
+      });
+      return { ...result, namesScope };
+    },
     onError: (err) => console.error('Error generating tool output:', err),
   });
 
   return (
-    <GeneratedTextDialog<string, ToolReadyResult>
+    <GeneratedTextDialog<string, AskedResult>
       open={open}
       onClose={onClose}
       icon={<Code className="size-5" aria-hidden />}
@@ -118,6 +127,13 @@ export default function ToolReadyOutput({
             the filter, or use IP List, Nmap, Metasploit or Masscan, which export every host.
           </AlertDescription>
         </Alert>
+      )}
+      empty={(format, result) => (
+        // Only Names empties because of the switch: Web targets and Nuclei
+        // fall back to the address when no name qualifies.
+        format === 'names' && result.namesScope === 'in_scope'
+          ? <>No name a declared domain covers is bound to these hosts — a project that declares no domain has none. Turn off <em>In-scope names only</em> to use every bound name.</>
+          : 'Nothing to export: none of the matching hosts has anything this format lists.'
       )}
       footnote={({ text, result }, cut) => (
         <>

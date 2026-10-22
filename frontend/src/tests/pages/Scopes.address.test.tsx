@@ -50,7 +50,6 @@ vi.mock('../../hooks/useMyAssistSessions', () => ({
   useMyAssistSessions: () => ({ sessions: [], loading: false, failed: false, refresh: vi.fn() }),
 }));
 vi.mock('../../components/ScopeExport', () => ({ default: () => null }));
-vi.mock('../../components/OutOfScopeExport', () => ({ default: () => null }));
 vi.mock('../../components/SiteManagerDialog', () => ({ default: () => null }));
 vi.mock('../../components/SubnetLabelManager', () => ({
   SubnetLabelManagerDialog: () => null,

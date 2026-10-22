@@ -1,5 +1,5 @@
 /**
- * The three export dialogs (scope, out-of-scope, tool-ready) are one dialog
+ * The export dialogs (scope, tool-ready; out-of-scope until 5.416.0) are one dialog
  * (`GeneratedTextDialog`, plan B2a).  What they did alike, pinned here for
  * each of them, beside `ScopeExport.format.test.tsx`,
  * `ExportDialogs.format.test.tsx` and `ExportDialogs.errors.test.tsx`:
@@ -19,7 +19,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
-  getScopeHostList: vi.fn(), getOutOfScopeHostList: vi.fn(), getToolReadyOutput: vi.fn(),
+  getScopeExport: vi.fn(), getToolReadyOutput: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 
@@ -46,7 +46,6 @@ vi.mock('../../components/ui/select', () => {
   };
 });
 
-import OutOfScopeExport from '../../components/OutOfScopeExport';
 import ScopeExport from '../../components/ScopeExport';
 import ToolReadyOutput from '../../components/ToolReadyOutput';
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -78,23 +77,15 @@ interface Case {
   file: string;
 }
 
-const csv = 'ip,hostname,state\n10.0.0.1,a,up\n10.0.0.2,b,up\n';
+const csv = 'entry,labels,description,site\n10.0.0.0/24,,,\n*.example.com,,,\n';
 const cases: Case[] = [
   {
     name: 'ScopeExport',
     dialog: (open) => <ScopeExport open={open} onClose={vi.fn()} />,
-    request: api.getScopeHostList,
+    request: api.getScopeExport,
     format: 'csv', answer: csv, text: csv,
-    generate: 'Generate list', heading: '2 hosts · CSV',
-    copy: 'Copy scope export to clipboard', download: 'Download scope export as file', file: 'project-scope_hosts.csv',
-  },
-  {
-    name: 'OutOfScopeExport',
-    dialog: (open) => <OutOfScopeExport open={open} onClose={vi.fn()} />,
-    request: api.getOutOfScopeHostList,
-    format: 'csv', answer: csv, text: csv,
-    generate: 'Generate list', heading: '2 hosts · CSV',
-    copy: 'Copy output to clipboard', download: 'Download output as file', file: 'out_of_scope_hosts.csv',
+    generate: 'Generate list', heading: '2 entries · CSV',
+    copy: 'Copy scope export to clipboard', download: 'Download scope export as file', file: 'project-scope.csv',
   },
   {
     name: 'ToolReadyOutput',

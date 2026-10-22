@@ -1,5 +1,6 @@
 /**
- * The out-of-scope export and the tool-ready export: the text on screen
+ * The tool-ready export (and the out-of-scope export, until 5.416.0 — the
+ * Hosts page's out-of-scope filter and this export replaced it): the text on screen
  * belongs to the format it was generated in (the same defect, and the same
  * fix, as ScopeExport — see ScopeExport.format.test.tsx).  Moving the picker
  * afterwards recounted the old text by the new format's rule and downloaded it
@@ -9,7 +10,7 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const api = vi.hoisted(() => ({ getOutOfScopeHostList: vi.fn(), getToolReadyOutput: vi.fn() }));
+const api = vi.hoisted(() => ({ getToolReadyOutput: vi.fn() }));
 vi.mock('../../services/api', () => api);
 
 const download = vi.hoisted(() => ({ downloadTextFile: vi.fn() }));
@@ -33,7 +34,6 @@ vi.mock('../../components/ui/select', () => {
   };
 });
 
-import OutOfScopeExport from '../../components/OutOfScopeExport';
 import ToolReadyOutput from '../../components/ToolReadyOutput';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
@@ -41,27 +41,8 @@ const pick = (format: string) =>
   fireEvent.change(screen.getByRole('combobox', { name: 'Output format' }), { target: { value: format } });
 
 beforeEach(() => {
-  api.getOutOfScopeHostList.mockReset();
   api.getToolReadyOutput.mockReset();
   download.downloadTextFile.mockReset();
-});
-
-describe('OutOfScopeExport — the output keeps the format that produced it', () => {
-  it('a CSV stays a CSV of 2 hosts after the picker moves, and downloads as .csv', async () => {
-    const csv = 'ip,hostname\n10.0.0.1,a\n10.0.0.2,b\n';
-    api.getOutOfScopeHostList.mockResolvedValue(csv);
-    render(<TooltipProvider><OutOfScopeExport open onClose={vi.fn()} /></TooltipProvider>);
-    pick('csv');
-    fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
-    expect(await screen.findByRole('heading', { name: /^2 hosts/ })).toBeInTheDocument();
-    expect(api.getOutOfScopeHostList).toHaveBeenCalledWith(1, 'csv');
-
-    pick('txt');
-    // Still the CSV: not recounted as an IP list (3 lines), not saved as .txt.
-    expect(screen.getByRole('heading', { name: /^2 hosts · CSV/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Download output as file' }));
-    expect(download.downloadTextFile).toHaveBeenCalledWith('out_of_scope_hosts.csv', csv);
-  });
 });
 
 describe('ToolReadyOutput — the output keeps the format that produced it', () => {
@@ -83,5 +64,42 @@ describe('ToolReadyOutput — the output keeps the format that produced it', () 
     expect(screen.getByRole('heading', { name: 'Generated Output (JSON)' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Download output as file' }));
     expect(download.downloadTextFile).toHaveBeenCalledWith('json-targets.json', json);
+  });
+});
+
+// Prod, 2026-10-22: a names export in a project that declares no domain
+// answered an empty 200 ten times, and the dialog showed nothing — no output,
+// no error — which read as a failure.
+describe('ToolReadyOutput — an empty answer is said, with its reason', () => {
+  const show = () => render(
+    <TooltipProvider>
+      <ToolReadyOutput open onClose={vi.fn()} filters={{}} totalHosts={3} selectedCount={0} />
+    </TooltipProvider>,
+  );
+
+  it('names in scope only: says no in-scope name is bound and which switch widens it', async () => {
+    api.getToolReadyOutput.mockResolvedValue({ output: '' });
+    show();
+    pick('names');
+    fireEvent.click(screen.getByRole('button', { name: 'Generate output' }));
+    expect(await screen.findByText(/No name a declared domain covers is bound to these hosts/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Generated Output/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download output as file' })).not.toBeInTheDocument();
+
+    // The reason follows the request: moving the switch afterwards changes nothing said.
+    fireEvent.click(screen.getByRole('switch', { name: 'In-scope names only' }));
+    expect(screen.getByText(/No name a declared domain covers/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate output' }));
+    expect(await screen.findByText('Nothing to export: none of the matching hosts has anything this format lists.'))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/No name a declared domain covers/)).not.toBeInTheDocument();
+  });
+
+  it('an empty IP list is said too', async () => {
+    api.getToolReadyOutput.mockResolvedValue({ output: '' });
+    show();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate output' }));
+    expect(await screen.findByText('Nothing to export: none of the matching hosts has anything this format lists.'))
+      .toBeInTheDocument();
   });
 });

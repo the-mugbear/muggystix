@@ -1518,9 +1518,10 @@ def get_all_out_of_scope_hosts(
 
     v2.239.0 — this used to read the ``out_of_scope_hosts`` table, which host
     deduplication stopped writing.  It therefore reported "nothing is out of
-    scope" for every project, forever.  The property is now derived the same
-    way ``GET /export/out-of-scope`` has always derived it, through the shared
-    helper, so the JSON and export views agree by construction.
+    scope" for every project, forever.  The property is now derived through
+    the shared helper, as the out-of-scope export did (removed in 2.521.0 —
+    the file is the Hosts page's `out_of_scope_only` export now, pinned to
+    agree with this list by `test_scope_host_mappings_pagination.py`).
     """
     hosts, total = scope_coverage.out_of_scope_hosts(
         db, project.id, search=search, skip=skip, limit=limit,

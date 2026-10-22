@@ -126,8 +126,9 @@ Top-level endpoints (no project scope): `/auth/`, `/users/`, `/audit/`, `/projec
    OS, vulnerability severity, follow status, tags, etc.) or the boolean query DSL.
 5. **Drill down** — `GET /projects/{id}/hosts/{host_id}` for full host detail
    including ports, scripts, notes, and vulnerabilities.
-6. **Export** — `GET /projects/{id}/export/scope?format_type=json` or
-   `GET /projects/{id}/hosts/tool-ready/{format}` for tool-compatible output.
+6. **Export** — `GET /projects/{id}/hosts/tool-ready/{format}` for tool-compatible
+   host lists (the same filters), `GET /projects/{id}/export/scope?format_type=cidrs`
+   for the declared networks.
 
 ### Personal review queue (JWT)
 
@@ -231,7 +232,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "export",
-        "description": "Download host lists from scopes or scans in txt (one-IP-per-line), CSV, or JSON. Responses include Content-Disposition headers for file downloads.",
+        "description": "Download the declared scope (networks and domains, as a scope file the upload reads back) and a scan's host list. Responses include Content-Disposition headers for file downloads.",
     },
     {
         "name": "parse-errors",

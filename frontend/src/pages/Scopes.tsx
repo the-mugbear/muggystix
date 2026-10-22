@@ -33,7 +33,6 @@ import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { queryErrorText } from '../lib/query';
 import ScopeExport from '../components/ScopeExport';
-import OutOfScopeExport from '../components/OutOfScopeExport';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import { agentInstruction } from '../utils/agentRuns';
 import { useConfirm } from '../hooks/useConfirm';
@@ -180,7 +179,6 @@ const Scopes: React.FC = () => {
   const [uploadOpen, setUploadOpen] = useState(false);
 
   const [exportOpen, setExportOpen] = useState(false);
-  const [showOutOfScopeDialog, setShowOutOfScopeDialog] = useState(false);
 
   const [newCidr, setNewCidr] = useState('');
   const [newDescription, setNewDescription] = useState('');
@@ -589,11 +587,6 @@ const Scopes: React.FC = () => {
               <Upload className="size-4" aria-hidden /> Upload scope file
             </Button>
           )}
-          {canExport && (
-            <Button variant="outline" size="sm" onClick={() => setShowOutOfScopeDialog(true)}>
-              <ArrowDownToLine className="size-4" aria-hidden /> Export out-of-scope hosts
-            </Button>
-          )}
           {subnets != null && canWrite && (
             // Scanning uploads scans: a project analyst's, as on Operations.
             // 5.313.0 — one way to start an agent: the operator's session,
@@ -713,7 +706,7 @@ const Scopes: React.FC = () => {
                   className="h-7"
                   onClick={() => setExportOpen(true)}
                   aria-label="Export scope"
-                  title="Export scope as txt / csv / json"
+                  title="Export the declared networks and domains as a scope file"
                 >
                   <ArrowDownToLine className="size-4" aria-hidden /> Export
                 </Button>
@@ -1259,11 +1252,6 @@ const Scopes: React.FC = () => {
           onClose={() => setExportOpen(false)}
         />
       )}
-
-      <OutOfScopeExport
-        open={showOutOfScopeDialog}
-        onClose={() => setShowOutOfScopeDialog(false)}
-      />
 
       <Dialog
         open={uploadOpen}

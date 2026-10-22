@@ -204,33 +204,30 @@ class TestRoleBasedAccess:
 
 class TestExportEndpoints:
 
-    def test_out_of_scope_txt_format(self, client, test_project):
+    def test_the_out_of_scope_host_export_is_gone(self, client, test_project):
+        """2.521.0 (owner, 2026-10-22): a host list is the Hosts page's export
+        (`out_of_scope_only=true` + tool-ready); no alias."""
         response = client.get(f"/api/v1/projects/{test_project.id}/export/out-of-scope?format_type=txt")
-        assert response.status_code == 200
-        assert "text/plain" in response.headers["content-type"]
-        assert "content-disposition" in response.headers
-
-    def test_out_of_scope_csv_format(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/export/out-of-scope?format_type=csv")
-        assert response.status_code == 200
-        assert "text/csv" in response.headers["content-type"]
-
-    def test_out_of_scope_json_format(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/export/out-of-scope?format_type=json")
-        assert response.status_code == 200
-        assert "application/json" in response.headers["content-type"]
+        assert response.status_code == 404
 
     def test_export_scope_of_a_project_with_no_scope_is_empty(self, client, db_session, test_project):
         """The export names no scope (2.489.0).  A project that has none yet
         exports nothing in every format — a read, so none is created — and
-        the old path with an id is gone."""
+        the old path with an id is gone.  The host formats went in 2.521.0."""
         from app.db import models
 
         url = f"/api/v1/projects/{test_project.id}/export/scope"
-        for format_type, empty in (("txt", ""), ("web", ""), ("csv", "ip_address,hostname,state\r\n"), ("json", "[]")):
+        for format_type, empty, mime in (
+            ("cidrs", "", "text/plain"), ("domains", "", "text/plain"),
+            ("csv", "entry,labels,description,site\r\n", "text/csv"),
+        ):
             response = client.get(url, params={"format_type": format_type})
             assert response.status_code == 200, (format_type, response.text)
             assert response.text == empty, format_type
+            assert mime in response.headers["content-type"]
+            assert "content-disposition" in response.headers
+        for gone in ("txt", "json", "web"):
+            assert client.get(url, params={"format_type": gone}).status_code == 422, gone
         assert db_session.query(models.Scope).filter(models.Scope.project_id == test_project.id).count() == 0
         assert client.get(f"{url}/999").status_code == 404
 

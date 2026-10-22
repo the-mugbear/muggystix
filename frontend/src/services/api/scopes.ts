@@ -1,6 +1,6 @@
 /**
  * Scopes API client — scopes, subnets, subnet labels, host-mappings,
- * coverage, and scope/out-of-scope host-list exports.
+ * coverage, and the scope export.
  *
  * Extracted from the api.ts monolith.  Consumers still import these from
  * ``../services/api`` — the barrel re-exports this module.
@@ -197,9 +197,15 @@ export const getScopeCoverage = async (projectId: number, limit: number = 25, si
   return response.data;
 };
 
-/** The hosts in the project's scope (a project has one). */
-export const getScopeHostList = async (
-  projectId: number, format: 'txt' | 'csv' | 'json' | 'web' = 'txt',
+/** `cidrs` and `domains` are one entry per line; `csv` is every entry with
+ *  its labels, description and site.  Each is a scope file the upload reads
+ *  back (backend 2.521.0). */
+export type ScopeExportFormat = 'cidrs' | 'domains' | 'csv';
+
+/** What the project's scope declares — its networks and domains, not the
+ *  hosts found inside it (those are the Hosts page's export). */
+export const getScopeExport = async (
+  projectId: number, format: ScopeExportFormat = 'cidrs',
   { signal }: { signal?: AbortSignal } = {},
 ): Promise<string> => {
   const response = await api.get(`${projectPath(projectId)}/export/scope`, {
@@ -207,13 +213,6 @@ export const getScopeHostList = async (
     responseType: 'text',
     signal,
   });
-  return response.data;
-};
-
-export const getOutOfScopeHostList = async (
-  projectId: number, format: 'txt' | 'csv' | 'json' = 'txt', signal?: AbortSignal,
-): Promise<string> => {
-  const response = await api.get(`${projectPath(projectId)}/export/out-of-scope?format_type=${format}`, { responseType: 'text', signal });
   return response.data;
 };
 

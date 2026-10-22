@@ -211,19 +211,15 @@ def test_web_targets_download_yields_urls(client, db_session, test_project, scop
     assert set(resp.text.split()) == {"http://10.99.1.4/", "https://10.99.1.4/"}
 
 
-def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_session, test_project, scope):
-    """Plan A6: the URL list existed only on the agents' door.  The people's
-    scope export has it as ``format_type=web`` — the same builder, so the two
-    files are the same bytes.  The path names no scope (2.489.0): the export
-    is the project's own, so another project's scope adds nothing to it and
-    cannot be asked for by id."""
+def test_the_agents_web_targets_are_the_projects_own(client, db_session, test_project, scope):
+    """The agents' URL list is the project's scope only: another project's
+    scope adds nothing to it.  The people's twin (``/export/scope?format_type=web``,
+    plan A6) went in 2.521.0 with the rest of the host formats — a person's
+    web URLs are the Hosts page's Web targets (owner, 2026-10-22)."""
     _seed_hosts(db_session, test_project, scope, ["10.99.1.4", "10.99.1.20"], ports=(22, 80, 443))
-    agents = _get(client, _key(client, test_project), "web-targets.txt")
-    url = f"/api/v1/projects/{test_project.id}/export/scope"
-    people = client.get(f"{url}?format_type=web")
-    assert people.status_code == 200, people.text
-    assert people.text == agents.text and people.text.count("\n") == 4
-    assert "project-scope_web-targets.txt" in people.headers["content-disposition"]
+    key = _key(client, test_project)
+    agents = _get(client, key, "web-targets.txt")
+    assert agents.text.count("\n") == 4
     assert "scope-web-targets.txt" in agents.headers["content-disposition"]
 
     from app.db.models_project import Project
@@ -232,30 +228,40 @@ def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_sessio
     db_session.commit()
     theirs = _scope(db_session, other, "10.99.2.0/24")
     _seed_hosts(db_session, other, theirs, ["10.99.2.8"], ports=(80,))
-    assert client.get(f"{url}?format_type=web").text == people.text
-    assert "10.99.2.8" not in client.get(f"{url}?format_type=txt").text
-    assert client.get(f"{url}/{theirs.id}?format_type=web").status_code == 404
+    assert _get(client, key, "web-targets.txt").text == agents.text
+    url = f"/api/v1/projects/{test_project.id}/export/scope"
+    assert client.get(f"{url}?format_type=web").status_code == 422
 
 
-def test_the_scope_export_lists_addresses_in_address_order(client, db_session, test_project, scope):
-    """Review 2026-10-14, R16: it sorted the text — 10.99.1.10 before
-    10.99.1.2."""
-    _seed_hosts(db_session, test_project, scope, ["10.99.1.10", "10.99.1.2", "10.99.1.100"], ports=(22,))
-    body = client.get(f"/api/v1/projects/{test_project.id}/export/scope?format_type=txt").text
-    assert body.split() == ["10.99.1.2", "10.99.1.10", "10.99.1.100"]
+def test_the_scope_export_is_the_declared_networks_not_the_hosts(client, db_session, test_project, scope):
+    """Owner, 2026-10-22: the export listed the hosts found inside the scope
+    — the Hosts page's export already does that.  It is the declared
+    networks, in address order (review 2026-10-14, R16: 10.0.0.10 after
+    10.0.0.2), with no discovered host in it."""
+    _seed_hosts(db_session, test_project, scope, ["10.99.1.10", "10.99.1.2"], ports=(22,))
+    for cidr in ("10.0.0.10/32", "10.0.0.2/32", "192.168.0.0/16", "10.0.0.0/8"):
+        db_session.add(Subnet(scope_id=scope.id, cidr=cidr))
+    db_session.commit()
+    body = client.get(f"/api/v1/projects/{test_project.id}/export/scope?format_type=cidrs").text
+    assert body.split() == ["10.0.0.0/8", "10.0.0.2/32", "10.0.0.10/32", "10.99.1.0/24", "192.168.0.0/16"]
 
 
-def test_the_scan_and_out_of_scope_exports_list_addresses_in_address_order(client, db_session, test_project, scope):
+def test_the_scan_and_out_of_scope_lists_are_in_address_order(client, db_session, test_project, scope):
     """Second review 2026-10-14, F2: R16 reached the scope export only; the
-    scan export and the out-of-scope list still sorted the text."""
+    scan export and the out-of-scope list still sorted the text.  The
+    out-of-scope FILE is the Hosts page's tool-ready list since 2.521.0: the
+    same addresses, in host-id order (it streams by id keyset, at any size)."""
     scan = _seed_hosts(db_session, test_project, scope, ["10.99.1.10", "10.99.1.2", "10.99.1.100"], ports=(22,))
-    base = f"/api/v1/projects/{test_project.id}/export"
-    assert client.get(f"{base}/scan/{scan.id}?format_type=txt").text.split() == [
+    base = f"/api/v1/projects/{test_project.id}"
+    assert client.get(f"{base}/export/scan/{scan.id}?format_type=txt").text.split() == [
         "10.99.1.2", "10.99.1.10", "10.99.1.100"]
     for ip in ("172.16.0.10", "172.16.0.9"):          # in no subnet of the scope
         db_session.add(models.Host(ip_address=ip, state="up", project_id=test_project.id))
     db_session.commit()
-    assert client.get(f"{base}/out-of-scope?format_type=txt").text.split() == ["172.16.0.9", "172.16.0.10"]
+    listed = client.get(f"{base}/scans/out-of-scope").json()["items"]
+    assert [h["ip_address"] for h in listed] == ["172.16.0.9", "172.16.0.10"]
+    assert sorted(client.get(f"{base}/hosts/tool-ready/ip-list?out_of_scope_only=true").text.split()) == [
+        "172.16.0.10", "172.16.0.9"]
 
 
 def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):
