@@ -1880,67 +1880,25 @@ def delete_scan(
         # 3. The step every scan delete runs: scripts, host scripts, host
         #    attributes and scanner observations only this scan reported go
         #    (never an observation a finding or a proposal refers to); the
-        #    ones another scan also reported are handed to that scan.
+        #    ones another scan also reported are handed to that scan; hosts
+        #    and ports it last updated name the newest other scan with
+        #    history on them, or nothing (R6 — the cleanup does the same).
         released = scan_sightings.release_scan(db, scan_id)
 
         # 4. The ports this scan created on the hosts that stay, that no
         #    other scan saw and nothing else refers to — the cleanup's port
         #    step.  Before the scan row goes: its delete clears the stamp
-        #    that names them, and before step 5 moves the update pointers the
-        #    guards read.
+        #    that names them.
         ports_on_kept_hosts = imports.delete_ports_scan_created(db, scan_id, before_release=True)
 
-        # 5. Bulk-update surviving hosts — set last_updated_scan_id to
-        #    the most recent remaining scan, or NULL if none remain.
-        db.execute(text("""
-            UPDATE hosts_v2 h
-            SET last_updated_scan_id = sub.new_scan_id
-            FROM (
-                SELECT DISTINCT ON (hsh.host_id)
-                    hsh.host_id,
-                    hsh.scan_id AS new_scan_id
-                FROM host_scan_history hsh
-                WHERE hsh.scan_id != :scan_id
-                ORDER BY hsh.host_id, hsh.discovered_at DESC
-            ) sub
-            WHERE h.id = sub.host_id
-              AND h.last_updated_scan_id = :scan_id
-        """), {"scan_id": scan_id})
-        db.execute(text("""
-            UPDATE hosts_v2
-            SET last_updated_scan_id = NULL
-            WHERE last_updated_scan_id = :scan_id
-        """), {"scan_id": scan_id})
-
-        # 6. Bulk-update surviving ports — same pattern.
-        db.execute(text("""
-            UPDATE ports_v2 p
-            SET last_updated_scan_id = sub.new_scan_id
-            FROM (
-                SELECT DISTINCT ON (psh.port_id)
-                    psh.port_id,
-                    psh.scan_id AS new_scan_id
-                FROM port_scan_history psh
-                WHERE psh.scan_id != :scan_id
-                ORDER BY psh.port_id, psh.discovered_at DESC
-            ) sub
-            WHERE p.id = sub.port_id
-              AND p.last_updated_scan_id = :scan_id
-        """), {"scan_id": scan_id})
-        db.execute(text("""
-            UPDATE ports_v2
-            SET last_updated_scan_id = NULL
-            WHERE last_updated_scan_id = :scan_id
-        """), {"scan_id": scan_id})
-
-        # 7. The scan's own name observations, and the names only it observed
+        # 5. The scan's own name observations, and the names only it observed
         #    that nothing else refers to — the step the import cleanup runs.
         #    Before the scan row goes: that clears `dns_records.scan_id`,
         #    after which nothing says whose the observations were.  The same
         #    answer seen by another scan is that scan's own row and stays.
         names = dns_name_service.delete_scan_observations(db, scan_id)
 
-        # 8. Delete the scan — its owned children cascade and the nullable
+        # 6. Delete the scan — its owned children cascade and the nullable
         #    provenance pointers (last_updated_scan_id, conflict_history.*) are
         #    SET NULL by the FK actions.  The cleanup's own statement (rather
         #    than db.delete(scan)), so the database does the cascade in one

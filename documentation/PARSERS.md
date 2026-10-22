@@ -788,8 +788,12 @@ class MyToolParser:
   vulnerability no other scan reported is deleted — by both paths — unless a
   finding or a proposal refers to it, in which case it is kept without a
   scan; a confidence row (the current winner, not an observation) goes to
-  a later scan that observed its host or port; and the host or port is then
-  "introduced" by the first scan left that saw it. A port or host a later
+  a later scan that observed its host or port; the host or port is then
+  "introduced" by the first scan left that saw it; and a host or port whose
+  "last updated by" names the scan names the newest other scan with history
+  on it, or nothing (one correlated UPDATE per table, over the rows naming
+  the scan, the same on both paths; the hand delete used to do it alone, over
+  every project's history). A port or host a later
   scan updated (`last_updated_scan_id`) or re-observed a vulnerability on is
   not the attempt's alone either. A new table that merges a thing with the
   scan that saw it gets a sighting table and a line in `release_scan`, never
