@@ -14,9 +14,9 @@ This script merges each such group into ONE finding.  Dry run unless --apply.
 It works on the schema the refused upgrade leaves in place (the upgrade rolled
 back, so the database is at the revision it started from) and on any later
 one: it uses plain SQL and reads the foreign keys from the database's own
-catalog, never the application's models.  It does not import ``app.main``, so
-it starts no migration.  The backend may be retrying the upgrade in a loop
-while it runs: the script holds the migration lock for its whole run, so
+catalog, never the application's models.  Nothing it imports migrates (only
+the containers' ``python -m app.db.migrate`` step does).  The backend may be
+retrying that step in a loop (its restart policy) while this runs: the script holds the migration lock for its whole run, so
 those retries wait for it instead of taking schema locks under it.
 
 What a merge does, per group, in one transaction for the whole run:
@@ -292,8 +292,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     args = parser.parse_args()
 
-    from app.db.init import _migration_lock  # the lock every booting process takes before it migrates
-    from app.db.session import engine  # the database only — never app.main (no migration starts)
+    from app.db.init import _migration_lock  # the lock the migration step takes before it migrates
+    from app.db.session import engine  # the database only, no models
 
     # Hold the MIGRATION lock for the whole run.  A backend that is failing to
     # start retries the upgrade about once a second, and each attempt takes

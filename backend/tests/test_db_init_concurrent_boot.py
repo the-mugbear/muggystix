@@ -1,7 +1,9 @@
 """Boot migrations with several processes starting at once (review 2026-10-01 B1).
 
-Production starts four uvicorn workers, the ingestion worker and the report
-worker together, and each calls ``initialize_database()``.  One takes the
+Production used to start four uvicorn workers and the ingestion worker
+together, each calling ``initialize_database()`` at import; today the backend
+and the worker each run the migration step (``python -m app.db.migrate``)
+before they start, and the two can still overlap.  One takes the
 migration lock and migrates; the others wait.  Two things went wrong:
 
 * A waiter sat inside ``SELECT pg_advisory_lock(...)`` — an ACTIVE statement,
@@ -52,7 +54,8 @@ pytestmark = pytest.mark.skipif(
     not USING_POSTGRES, reason="starts real processes against real migrations; needs Postgres",
 )
 
-_BOOT = "from app.db.init import initialize_database; initialize_database()"
+#: The migration step exactly as the containers run it.
+_BOOT = ("-m", "app.db.migrate")
 
 
 def _env(url, **extra: str) -> dict:
@@ -63,17 +66,16 @@ def _env(url, **extra: str) -> dict:
 def _alembic(url, *args: str) -> None:
     done = subprocess.run(
         [sys.executable, "-m", "alembic", *args],
-        cwd=BACKEND_ROOT, env=_env(url, BLUESTICK_SKIP_DB_INIT="1"), capture_output=True, text=True,
+        cwd=BACKEND_ROOT, env=_env(url), capture_output=True, text=True,
     )
     assert done.returncode == 0, f"alembic {' '.join(args)} failed:\n{done.stdout}\n{done.stderr}"
 
 
 def _start_boot(url) -> subprocess.Popen:
-    """One process doing what ``app.main`` / ``app.worker`` do at import."""
+    """One process running the migration step the backend and worker run first."""
     env = _env(url, DB_INIT_MAX_RETRIES="2", DB_INIT_RETRY_DELAY="0.2")
-    env.pop("BLUESTICK_SKIP_DB_INIT", None)  # the suite sets it; a deployment never does
     return subprocess.Popen(
-        [sys.executable, "-c", _BOOT], cwd=BACKEND_ROOT, env=env,
+        [sys.executable, *_BOOT], cwd=BACKEND_ROOT, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
 
@@ -125,7 +127,7 @@ def _revision(eng) -> str:
 def _head(url) -> str:
     done = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],
-        cwd=BACKEND_ROOT, env=_env(url, BLUESTICK_SKIP_DB_INIT="1"), capture_output=True, text=True,
+        cwd=BACKEND_ROOT, env=_env(url), capture_output=True, text=True,
     )
     assert done.returncode == 0, done.stderr
     heads = [line.split()[0] for line in done.stdout.splitlines() if line.strip()]

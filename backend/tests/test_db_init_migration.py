@@ -35,9 +35,9 @@ def caprecords(monkeypatch):
     handlers / propagation, so a handler attached here is the reliable hook."""
     monkeypatch.setattr(dbinit, "inspect", lambda engine: _FakeInspector())
     monkeypatch.setattr(dbinit, "_current_db_revision", lambda: "abc123")
-    # Alembic's fileConfig(disable_existing_loggers=True) — run earlier in the
-    # session by initialize_database() — leaves this logger .disabled; re-enable
-    # it (the same fix _restore_app_logging applies in the worker).
+    # Alembic's fileConfig(disable_existing_loggers=True) — run in-process by
+    # any earlier test that calls alembic's command API — leaves this logger
+    # .disabled; re-enable it.
     monkeypatch.setattr(dbinit.logger, "disabled", False)
     monkeypatch.setattr(dbinit.logger, "level", logging.DEBUG)
     handler = _Capture()
@@ -116,35 +116,146 @@ def test_a_failure_on_an_empty_database_is_described_without_a_revision():
     assert "NOTHING WAS CHANGED" in msg and "no schema version" in msg
 
 
-# --- v2.370.1 — the test harness must not migrate the developer's database ----
-# ``app.main`` runs initialize_database() at import. The suite mounts the
-# working tree, so an unmerged revision was applied to a real dev database.
+# --- Importing the application migrates nothing (backlog H-c) ----------------
+# ``app.main`` used to run initialize_database() at import, so a script, a
+# ``python -c`` probe or a test run with the working tree mounted applied every
+# unmerged revision to whatever DATABASE_URL named (2026-09-20: a data
+# migration deleted rows on a dev database before they had been exported).
+# The migration is now its own step, ``python -m app.db.migrate``, which the
+# backend's CMD and the worker's command run before they start.
 
-def _count_syncs(monkeypatch):
+_IMPORT_PROBE = """
+import sys
+import app.db.init as dbinit
+
+calls = []
+dbinit.initialize_database = lambda: calls.append("initialize_database")
+dbinit._sync_schema_with_alembic = lambda: calls.append("sync")
+import alembic.command as command
+command.upgrade = lambda *a, **k: calls.append("upgrade")
+command.stamp = lambda *a, **k: calls.append("stamp")
+
+import app.main  # noqa: F401
+import app.worker  # noqa: F401
+print("CALLS=" + ",".join(calls))
+"""
+
+
+def test_importing_the_app_runs_no_migration():
+    """A fresh interpreter imports ``app.main`` and ``app.worker`` with every
+    way into Alembic replaced by a recorder: nothing may be called. No skip
+    variable is set — there is none to set."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from tests.conftest import engine as suite_engine
+
+    env = {k: v for k, v in os.environ.items() if k != "BLUESTICK_SKIP_DB_INIT"}
+    env["DATABASE_URL"] = suite_engine.url.render_as_string(hide_password=False)
+    done = subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE],
+        cwd=Path(__file__).resolve().parents[1], env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "CALLS=" in done.stdout.splitlines(), done.stdout
+
+
+_MODELS_PROBE = """
+import sys
+from pathlib import Path
+import importlib
+
+importlib.import_module(sys.argv[1])
+db_dir = Path(sys.modules["app.db"].__file__).parent
+wanted = sorted("app.db." + p.stem for p in db_dir.glob("models*.py"))
+missing = [m for m in wanted if m not in sys.modules]
+from sqlalchemy.orm import configure_mappers
+configure_mappers()
+print("MISSING=" + ",".join(missing))
+"""
+
+
+@pytest.mark.parametrize("module", ["app.main", "app.worker"])
+def test_the_app_registers_every_model_without_the_migration(module):
+    """The migration ran in these processes and, through Alembic's env.py,
+    imported every model module. Without it each entry point must register
+    them itself (the report worker's old failure: a mapper that names a model
+    nothing imported)."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from tests.conftest import engine as suite_engine
+
+    env = {**os.environ, "DATABASE_URL": suite_engine.url.render_as_string(hide_password=False)}
+    done = subprocess.run(
+        [sys.executable, "-c", _MODELS_PROBE, module],
+        cwd=Path(__file__).resolve().parents[1], env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "MISSING=" in done.stdout.splitlines(), done.stdout
+
+
+def test_the_migration_step_migrates(monkeypatch):
+    """Control: the step itself still brings the schema to head."""
+    import app.db.migrate as migrate
+
+    calls = []
+    monkeypatch.setattr(migrate, "initialize_database", lambda: calls.append(1))
+
+    assert migrate.main() == 0
+    assert calls == [1]
+
+
+def test_initialize_database_migrates_whatever_the_environment_says(monkeypatch):
+    """The old skip variable is gone: nothing in the environment turns the
+    step into a no-op that reports success."""
     calls = []
     monkeypatch.setattr(dbinit, "_sync_schema_with_alembic", lambda: calls.append(1))
+    monkeypatch.setattr(dbinit, "_migration_lock", lambda: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(dbinit, "_warn_about_invalid_indexes", lambda: None)
     monkeypatch.setattr(dbinit, "_done", False)
-    return calls
-
-
-def test_initialize_database_is_skipped_when_the_harness_says_so(monkeypatch):
-    calls = _count_syncs(monkeypatch)
     monkeypatch.setenv("BLUESTICK_SKIP_DB_INIT", "1")
 
     dbinit.initialize_database()
 
-    assert calls == []
-    # Not recorded as done: a later call without the flag must still migrate.
-    assert dbinit._done is False
-
-
-def test_initialize_database_still_migrates_by_default(monkeypatch):
-    calls = _count_syncs(monkeypatch)
-    monkeypatch.delenv("BLUESTICK_SKIP_DB_INIT", raising=False)
-
-    dbinit.initialize_database()
-
     assert calls == [1]
+    monkeypatch.setattr(dbinit, "_done", False)   # leave no "migrated" flag behind
+
+
+def _repo_file(*parts):
+    import os
+    from pathlib import Path
+    roots = [Path(p) for p in (os.getenv("BLUESTICK_REPO_ROOT"), "/repo") if p]
+    roots.append(Path(__file__).resolve().parents[2])
+    for root in roots:
+        candidate = root.joinpath(*parts)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def test_the_backend_and_the_worker_run_the_step_before_they_start():
+    """The deploy side of the same change: the backend image's CMD and the
+    worker's compose command run the step, and only then their process; the
+    report worker never migrates."""
+    import re
+
+    dockerfile = _repo_file("backend", "Dockerfile")
+    assert dockerfile is not None
+    cmd = next(line for line in dockerfile.read_text().splitlines() if line.startswith("CMD "))
+    assert re.search(r"python -m app\.db\.migrate && exec uvicorn app\.main:app", cmd), cmd
+
+    compose = _repo_file("docker-compose.yml")
+    if compose is None:
+        pytest.skip("docker-compose.yml is not mounted (scripts/check.sh mounts the repo root)")
+    text_ = compose.read_text()
+    assert "python -m app.db.migrate && exec python -m app.worker" in text_
+    report_cmd = next(line for line in text_.splitlines() if "app.report_worker" in line and "command:" in line)
+    assert "app.db.migrate" not in report_cmd
 
 
 # --- review 2026-10-10 H20 — OperationalError is not one thing ----------------
@@ -200,7 +311,6 @@ def test_a_full_disk_during_the_upgrade_is_a_migration_failure_said_once(monkeyp
     monkeypatch.setattr(dbinit, "_done", False)
     monkeypatch.setattr(dbinit, "_migration_lock", lambda: nullcontext())
     monkeypatch.setattr(dbinit, "_warn_about_invalid_indexes", lambda: None)
-    monkeypatch.delenv("BLUESTICK_SKIP_DB_INIT", raising=False)
     monkeypatch.setenv("DB_INIT_MAX_RETRIES", "10")
     slept = []
     monkeypatch.setattr(dbinit.time, "sleep", slept.append)
@@ -234,7 +344,6 @@ def test_a_refused_connection_is_still_waited_out(monkeypatch, caprecords):
     monkeypatch.setattr(dbinit, "_done", False)
     monkeypatch.setattr(dbinit, "_migration_lock", lambda: nullcontext())
     monkeypatch.setattr(dbinit, "_warn_about_invalid_indexes", lambda: None)
-    monkeypatch.delenv("BLUESTICK_SKIP_DB_INIT", raising=False)
     monkeypatch.setattr(dbinit.time, "sleep", lambda _s: None)
 
     dbinit.initialize_database()
@@ -243,10 +352,3 @@ def test_a_refused_connection_is_still_waited_out(monkeypatch, caprecords):
     assert not any(r.levelno == logging.CRITICAL for r in caprecords)
     assert sum("Database not ready" in r.getMessage() for r in caprecords) == 2
     monkeypatch.setattr(dbinit, "_done", False)   # leave no "migrated" flag behind
-
-
-def test_the_suite_itself_runs_with_the_flag_set():
-    """conftest sets it before importing the app — if that line is lost, every
-    test run migrates whatever DATABASE_URL points at again."""
-    import os
-    assert os.environ.get("BLUESTICK_SKIP_DB_INIT") == "1"

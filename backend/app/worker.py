@@ -21,6 +21,11 @@ import sys
 import time
 
 from app import worker_loop
+# Register EVERY ORM model before the first query.  The migration used to run
+# in this process (Alembic's env.py imports the registry), which hid that the
+# worker's own imports do not reach every model module; it runs in its own step
+# now, so the worker says it itself — as the report worker always has.
+from app.db import model_registry  # noqa: F401
 from app.services.ingestion_service import IngestionService
 
 logging.basicConfig(
@@ -39,73 +44,13 @@ POLL_INTERVAL = float(os.getenv("WORKER_POLL_INTERVAL", "5"))
 HEARTBEAT_PATH = os.getenv("WORKER_HEARTBEAT_PATH", "/tmp/bluestick_worker_heartbeat")
 
 
-def _restore_app_logging() -> None:
-    """Undo the logging damage done by Alembic's fileConfig().
-
-    v2.45.3 — ``initialize_database()`` runs Alembic migrations, and
-    Alembic's ``fileConfig(config_file_name)`` does TWO things that
-    silently blackhole the worker's logs (confirmed empirically — a
-    fresh worker process showed ``app.worker disabled=True`` and the
-    root logger flipped to a stderr handler at WARNING level after
-    ``initialize_database()``):
-
-      1. ``disable_existing_loggers=True`` (the fileConfig default)
-         marks every logger that already existed — ``app.worker``
-         created at this module's import, plus any ``app.services.*``
-         imported before ``main()`` ran — as ``disabled``.  Disabled
-         loggers drop records BEFORE the handler check.
-
-      2. fileConfig REPLACES the root logger's config from alembic.ini,
-         which sets root to WARNING.  Even after we clear ``disabled``,
-         ``app.worker`` is level NOTSET and inherits that WARNING
-         threshold — so every ``logger.info(...)`` in the worker loop
-         is filtered out below level.
-
-    Both together meant the worker ran for 24h emitting nothing — not
-    its "connected" line, not the traceback behind its exit-255 (the
-    incident that surfaced this bug).
-
-    Fix BOTH: clear ``disabled`` on ``app`` + every ``app.*`` logger,
-    AND pin the ``app`` logger to INFO so the whole ``app.*`` subtree
-    has an INFO effective level regardless of what alembic.ini did to
-    root.  Records still propagate to root's handler (alembic's stderr
-    StreamHandler — docker captures stderr fine), so no handler needs
-    to be re-added.  Mirrors the FastAPI-side fix in ``main.py``'s
-    startup_event; the worker never runs that path so it needs its own.
-    """
-    reenabled = 0
-    for name, lg in logging.Logger.manager.loggerDict.items():
-        if isinstance(lg, logging.Logger) and (
-            name == "app" or name.startswith("app.")
-        ):
-            if getattr(lg, "disabled", False):
-                lg.disabled = False
-                reenabled += 1
-    app_logger = logging.getLogger("app")
-    app_logger.disabled = False
-    # Pin the subtree's effective level to INFO — overrides the
-    # WARNING that fileConfig left on root.
-    app_logger.setLevel(logging.INFO)
-    logger.info(
-        "Restored app.* logging after Alembic fileConfig "
-        "(re-enabled %d logger(s), pinned app subtree to INFO) — "
-        "worker output will now reach docker logs",
-        reenabled,
-    )
-
-
 def main() -> None:
     worker_loop.install_signal_handlers(logger)
 
-    # Ensure DB schema is up-to-date (same migrations the API runs on boot).
-    from app.db.init import initialize_database
-    initialize_database()
-
-    # initialize_database() ran Alembic, which disabled our loggers
-    # AND reset the root logger to WARNING.  Restore both before the
-    # worker loop starts so its output is actually visible.  See
-    # _restore_app_logging for the full story.
-    _restore_app_logging()
+    # The schema is brought to head by the migration step the container runs
+    # first (`python -m app.db.migrate`, docker-compose.yml's worker command),
+    # in its own process. Nothing here runs Alembic, so its fileConfig no
+    # longer disables this process's loggers (the old _restore_app_logging).
 
     service = IngestionService()
     from app.core.config import settings

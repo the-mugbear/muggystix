@@ -82,10 +82,11 @@ files out of the working tree (the older `-w /app` form left them in `backend/`)
 
 **The suite does not touch your dev database's schema or data.** Data: it creates and drops its
 own `<database>_test_<host>_<pid>` database when the compose `db` is reachable, else uses in-memory
-SQLite. Schema: importing the app normally runs `alembic upgrade head` against `DATABASE_URL`,
-and `tests/conftest.py` sets `BLUESTICK_SKIP_DB_INIT=1` before that import (v2.370.1) — before
-then, a run with an unmerged migration in the tree applied it to the real dev database. Any
-OTHER command that imports `app.main` with the tree mounted still migrates.
+SQLite. Schema: importing the app runs no migration — only the step `python -m app.db.migrate`
+does, which the backend's and the worker's container commands run and a one-off
+`run … sh -c "…"` replaces (until that step existed, importing `app.main` migrated
+`DATABASE_URL`, and a run with an unmerged migration in the tree applied it to the real dev
+database). `test_db_init_migration.py::test_importing_the_app_runs_no_migration` pins it.
 
 **The test database's schema is built by the migration chain** (`alembic upgrade head` in a
 subprocess, `conftest.build_schema_from_chain`; 2026-10-22), not by `create_all()` from the models:
@@ -234,7 +235,7 @@ Update these WITH the change, never around it:
 | `test_workbench.py::test_workbench_query_count_is_bounded` | the Operations surface's statement count (add grouped queries, never per-row ones) |
 | `test_note_serialization_loads.py`, `test_host_detail_loads.py` | serialising notes / opening a host costs a fixed number of queries; `note_load_options()` loads everything `_serialize_note` reads |
 | `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | the agent guide's section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
-| `test_db_init_migration.py` | boot-migration error handling, and that the harness runs with `BLUESTICK_SKIP_DB_INIT=1` |
+| `test_db_init_migration.py` | migration-step error handling; importing `app.main` / `app.worker` runs no migration; the backend's CMD and the worker's command run `python -m app.db.migrate` first, the report worker never |
 | `uploadFormats.test.ts`, `uploadFormatContract.test.ts` | the advertised upload formats against `documentation/UPLOAD_FORMATS.md`, and the dropzone allowlist against the backend's |
 | `versionConsistency.test.ts` | every version fallback in `docker-compose.yml` against `platform_version.json` |
 | `themeAlphaTokens.test.ts` | a theme token that carries its own alpha (`--muted`, `--accent`, `--border`, `--sidebar-accent`) is not wrapped with `/ <alpha-value>` in `tailwind.config.ts` |

@@ -26,10 +26,10 @@ from app import worker_loop
 from app.services.report_job_service import ReportJobService
 
 # Register EVERY ORM model so SQLAlchemy can configure the full mapper graph
-# (e.g. Host.project -> Project) before the first query.  Unlike the ingestion
-# worker this process never runs initialize_database(), which is what loads them
-# elsewhere — without this, the first ReportJob query fails to resolve related
-# mappers.  The registry is the single list (this worker's copy was missing
+# (e.g. Host.project -> Project) before the first query.  This process runs no
+# migration (the step that does is not in its command), and its own imports do
+# not reach every model module — without this, the first ReportJob query fails
+# to resolve related mappers.  The API and the ingestion worker import it too.  The registry is the single list (this worker's copy was missing
 # models_tools before it existed).
 from app.db import model_registry  # noqa: F401,E402
 

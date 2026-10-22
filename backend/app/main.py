@@ -9,7 +9,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.v1.api import api_router
-from app.db.init import initialize_database
+# Every ORM model registered at import (the migration, which used to run here
+# and imports the registry through Alembic's env.py, no longer does).
+from app.db import model_registry  # noqa: F401
 from app.startup import (
     agent_api_call_retention_loop,
     check_credential_encryption_key,
@@ -52,7 +54,9 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-initialize_database()
+# No schema work here: the container runs `python -m app.db.migrate` before
+# uvicorn starts (backend/Dockerfile CMD), so importing this module — a script,
+# a probe, the test suite — never migrates the database DATABASE_URL names.
 
 _OPENAPI_DESCRIPTION = """\
 BlueStick aggregates output from multiple network-scanning and reconnaissance

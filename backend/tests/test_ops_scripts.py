@@ -342,10 +342,12 @@ def test_deploy_leaves_the_in_progress_marker_when_the_backend_does_not_come_up(
 
 
 def test_deploy_stops_waiting_when_the_migration_has_failed(project):
-    """A failed migration leaves the container "running" with no restarts —
-    uvicorn respawns its workers, each failing again — so the wait went on to
-    its timeout saying "backend is running" (2026-10-02).  The failure line in
-    the log ends the wait and names the report script."""
+    """The failure line in the log ends the wait and names the report script,
+    whatever the container's state says.  (A failed migration once left the
+    container "running" with no restarts — uvicorn respawned its workers, each
+    migrating at import and failing again — and the wait went on to its
+    timeout, 2026-10-02.  The migration step now ends the container, but the
+    line is still read first: it is there before the restart limit is.)"""
     project.state["healthy_images"] = []
     project.state["backend_logs"] = (
         "backend-1  | INFO  [alembic.runtime.migration] Running upgrade a -> b, one finding per issue\n"
