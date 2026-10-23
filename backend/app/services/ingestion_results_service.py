@@ -1,7 +1,7 @@
 """Uploads and how they went — the ONE implementation (review 2026-10-10, R1b).
 
 The Scans page's import history (``GET /scans/history``: its upload rows,
-status filters and their counts — 2.524.0, owner decision 2026-10-22, G15;
+status filters and their counts — 2.523.0, owner decision 2026-10-22, G15;
 until then the page's separate Ingestion results view), its rows by id
 (``GET /ingestion-results?ids=``) and the agents' read
 (``GET /agent/assist/ingestion-issues``, MCP ``assist_list_ingestion_issues``)

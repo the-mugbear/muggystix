@@ -1,5 +1,5 @@
 """One row per upload: what the Scans page's import history shows of an
-upload (2.524.0, owner decision 2026-10-22, G15 — it was the page's
+upload (2.523.0, owner decision 2026-10-22, G15 — it was the page's
 Ingestion results view).  The history decides the ORDER
 (``GET /scans/history``, with its status filters) and reads its upload rows
 here by id (``?ids=``); analysts and above only.
@@ -87,7 +87,7 @@ def get_ingestion_results(
         None,
         max_length=2000,
         description=(
-            "Comma-separated job ids — only these rows (2.524.0). The Scans "
+            "Comma-separated job ids — only these rows (2.523.0). The Scans "
             "page's import history lists its unsuccessful uploads in the "
             "order `GET /scans/history` decides and fetches each page's rows "
             "by id here, as it fetches its scans and batches."

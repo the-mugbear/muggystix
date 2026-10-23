@@ -1052,7 +1052,7 @@ class ImportHistoryPage(BaseModel):
     upload, ``GET /ingestion-results?ids=``), so the per-scan, per-batch and
     per-upload summaries have one implementation.
 
-    2.524.0 (owner decision 2026-10-22, G15: ONE import history) — the uploads
+    2.523.0 (owner decision 2026-10-22, G15: ONE import history) — the uploads
     that were not imported are rows of the same order, for analysts and above,
     and a status filter lists the uploads one of Ingestion results' views
     named, in the same order."""
@@ -1193,7 +1193,7 @@ def get_import_history(
 ):
     """Batches and individually uploaded files interleaved by upload time.
 
-    2.524.0 (owner decision 2026-10-22, G15: ONE import history) — for
+    2.523.0 (owner decision 2026-10-22, G15: ONE import history) — for
     analysts and above the uploads that were not imported are rows of the
     same order (``ingestion_results_service.unsuccessful_upload_condition``:
     failed, expired or discarded, no scan, not in a batch — a batch row lists

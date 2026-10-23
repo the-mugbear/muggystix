@@ -42,7 +42,7 @@ from app.api.v1.endpoints import (
     # Refactor P2 — batched Operations data + since-last-visit cursor.
     operations,
     # The import history's upload rows, by id (the Ingestion results view
-    # until 2.524.0; under /parse-errors until 2026-10-22).
+    # until 2.523.0; under /parse-errors until 2026-10-22).
     ingestion_results,
     # Site-metrics arc P1 — project "needs help" attention model.
     attention,
