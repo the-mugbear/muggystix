@@ -533,6 +533,24 @@ def test_asking_the_version_kills_what_the_launcher_started_too(tmp_path):
     assert quarto_render.quarto_version(str(tmp_path / "no-such-quarto")) is None
 
 
+def test_the_version_is_asked_once_per_launcher_and_a_failure_is_not_kept(tmp_path, monkeypatch):
+    """Review 2026-10-23b, REP-9: an issued render asked Quarto its version
+    twice (the source bundle, then the report row — under its row lock).  It
+    changes only with the image, so the first answer is kept; a launcher that
+    could not answer is asked again next time."""
+    monkeypatch.setattr(quarto_render, "_VERSIONS", {})
+    script = _fake_quarto(tmp_path, "echo 1.2.3\n")
+    assert quarto_render.quarto_version(str(script)) == "1.2.3"
+    script.write_text("#!/bin/sh\nexit 3\n")
+    assert quarto_render.quarto_version(str(script)) == "1.2.3"
+    other = tmp_path / "later"
+    other.mkdir()
+    late = _fake_quarto(other, "exit 3\n")
+    assert quarto_render.quarto_version(str(late)) is None
+    late.write_text("#!/bin/sh\necho 1.4.0\n")
+    assert quarto_render.quarto_version(str(late)) == "1.4.0"
+
+
 def test_a_post_processor_timeout_is_a_render_error_without_paths(tmp_path):
     """It was an uncaught TimeoutExpired: the job's error was the whole
     command line, temporary work directory included."""

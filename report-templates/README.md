@@ -121,7 +121,7 @@ A template that is another one with a few files changed does not need to be a co
   - `min_width` / `min_height`: fewest pixels accepted; set them from the printed size, about 250–300 px per inch of the box the image fills.
   - `aspect`: the shape of the place it fills, as `"W:H"`. A different shape is accepted with a warning, since it will be scaled to fit.
 
-  A Word file must be a real `.docx` (no macros, not a `.dotx`) with its styles part, and must use nothing outside itself: an attached template, a linked picture or another external part — which Word would fetch when the client opens the report — is refused (a hyperlink is fine).
+  A Word file must be a real `.docx` (no macros, not a `.dotx`) with its styles part, and must use nothing outside itself: an attached template, a linked picture or another external part — which Word would fetch when the client opens the report — is refused (a hyperlink is fine), and so is a field in a header or footer that includes a file (`INCLUDEPICTURE`, `INCLUDETEXT`, `LINK`).
 
 ## The data
 

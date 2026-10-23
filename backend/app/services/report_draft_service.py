@@ -22,7 +22,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import or_
+from sqlalchemy import inspect as sa_inspect, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -215,6 +215,7 @@ class ReportDraftService:
         safe_system = sanitize_for_llm(_SYSTEM_PROMPT)
         safe_user = sanitize_for_llm(user_message)
 
+        self._end_read(provider)
         result = chat_completion(
             provider,
             system=safe_system,
@@ -236,6 +237,21 @@ class ReportDraftService:
         }
 
     # -- one finding's report text (review 2026-09-23 B-Ops-5) ---------------
+
+    def _end_read(self, provider) -> None:
+        """End the request's read transaction before the provider is called
+        (review 2026-10-23b, REP-2) — the call can take minutes (a local
+        model: 120 s, twice), and an open transaction keeps its share locks on
+        findings, reports and hosts all that time, so a migration's ALTER
+        queues behind it and every request behind the ALTER.  The renderer
+        does the same before Quarto (``before_quarto=db.rollback``).  Nothing
+        is pending here, and what the prompt needs is plain data by now; the
+        provider row is detached first so the call reads its loaded values
+        rather than opening a new transaction to reload them."""
+        state = sa_inspect(provider, raiseerr=False)
+        if state is not None and state.session is not None:
+            self.db.expunge(provider)
+        self.db.rollback()
 
     def _provider(self, provider_id: Optional[int]):
         svc = LLMProviderService(self.db)
@@ -327,11 +343,13 @@ class ReportDraftService:
             "data below.  Keep the text already written consistent with yours.\n\n"
             f"```json\n{json.dumps(context, ensure_ascii=False, default=str)}\n```"
         )
+        system = sanitize_for_llm(
+            report_writing_guidance.drafter_system_prompt(report_writing_guidance.load(self.db))
+        )
+        self._end_read(provider)
         result = chat_completion(
             provider,
-            system=sanitize_for_llm(
-                report_writing_guidance.drafter_system_prompt(report_writing_guidance.load(self.db))
-            ),
+            system=system,
             messages=[{"role": "user", "content": sanitize_for_llm(user_message)}],
             max_tokens=max_tokens,
             temperature=0.3,

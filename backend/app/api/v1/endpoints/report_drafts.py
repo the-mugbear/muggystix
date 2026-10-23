@@ -172,7 +172,7 @@ def draft_finding_text(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError:
-        logger.exception("Finding text draft failed", extra={"project_id": project.id, "finding_id": finding.id})
+        logger.exception("Finding text draft failed", extra={"project_id": project.id, "finding_id": body.finding_id})
         raise HTTPException(
             status_code=502,
             detail=(
@@ -190,9 +190,12 @@ def draft_finding_text(
         # The reviewer reads this beside the drafts: what was left out, and why.
         rationale += " Not drafted — " + "; ".join(f"{k}: {v}" for k, v in declined.items())
     rows = []
+    # The service ended the read transaction before the provider call
+    # (REP-2): the finding is read again by id, and one deleted meanwhile is
+    # propose_finding_text's 404.
     if result["suggestions"]:
         rows = proposals.propose_finding_text(
-            db, project.id, who, finding_id=finding.id, fields=result["suggestions"], rationale=rationale,
+            db, project.id, who, finding_id=body.finding_id, fields=result["suggestions"], rationale=rationale,
         )
         db.commit()
     return FindingTextDraftResponse(

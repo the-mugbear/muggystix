@@ -292,7 +292,8 @@ class ReportCreate(BaseModel):
 class ReportUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     template: Optional[str] = Field(None, max_length=100)
-    baseline_report_id: Optional[int] = None
+    # No baseline: an addendum's is set when it is created, with the details
+    # it carries from it (review 2026-10-23b, REP-3).
     # The details changed in this save, each with its new override (the
     # executive summary is one of its keys); see `EngagementOverrides`.  A
     # detail not sent keeps what is stored.

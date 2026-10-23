@@ -24,7 +24,7 @@ import pytest
 
 
 def test_csv_safe_prefixes_dangerous_starts():
-    from app.api.v1.endpoints.reports import _csv_safe
+    from app.services.csv_utils import csv_safe as _csv_safe
 
     # Each of the formula-injection prefixes Excel / LibreOffice treat
     # as a formula start.
@@ -39,7 +39,7 @@ def test_csv_safe_prefixes_dangerous_starts():
 
 
 def test_csv_safe_passes_safe_values_through():
-    from app.api.v1.endpoints.reports import _csv_safe
+    from app.services.csv_utils import csv_safe as _csv_safe
 
     assert _csv_safe("nginx") == "nginx"
     assert _csv_safe("10.0.0.5") == "10.0.0.5"

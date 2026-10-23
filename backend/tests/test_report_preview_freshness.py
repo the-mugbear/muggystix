@@ -45,17 +45,31 @@ def test_the_worker_records_what_the_preview_rendered_and_the_page_reads_the_sam
     _seed(db_session, test_project)
     draft = _create(client, test_project)
 
-    def fake_render(db, report, dataset, formats, out_dir, basename, *, issued=False):
+    rendered_with = []
+
+    def fake_render(db, report, dataset, formats, out_dir, basename, *, issued=False, resolve_evidence=None):
+        rendered_with.append(resolve_evidence)
         out = Path(out_dir) / f"{basename}.html"
         out.write_text("<html></html>")
         return {"html": out}
 
+    # The fingerprint and the render share one resolver (review 2026-10-23b,
+    # REP-9: each built its own, reading every image of the dataset twice).
+    real_resolver, resolvers = client_report_render.live_evidence_resolver, []
+
+    def counting_resolver(*args, **kwargs):
+        resolvers.append(real_resolver(*args, **kwargs))
+        return resolvers[-1]
+
     monkeypatch.setattr(client_report_render, "_render", fake_render)
+    monkeypatch.setattr(client_report_render, "live_evidence_resolver", counting_resolver)
     job = ReportJob(project_id=test_project.id, format="report-html", report_type="client",
                     filters={"report_id": draft["id"]}, status="processing")
     db_session.add(job)
     db_session.commit()
     client_report_render.run_client_job(db_session, job)
+    assert len(resolvers) == 1 and rendered_with == resolvers
+    monkeypatch.setattr(client_report_render, "live_evidence_resolver", real_resolver)
     assert job.inputs_fingerprint and len(job.inputs_fingerprint) == 64
     assert _now(client, test_project, draft["id"]) == job.inputs_fingerprint
     assert _now(client, test_project, draft["id"]) == job.inputs_fingerprint      # stable

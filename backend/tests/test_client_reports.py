@@ -453,17 +453,26 @@ def test_an_addendum_is_issued_only_against_the_current_issue(client, db_session
 
     # ``two`` still compares with report 1: issuing it would list Mike again.
     r = client.post(f"{_base(test_project)}/{two['id']}/issue")
-    assert r.status_code == 409 and "no longer the current issue" in r.json()["detail"]
-    # Re-pointed at the current issue, it goes out.
+    detail = r.json()["detail"]
+    assert r.status_code == 409 and "no longer the current issue" in detail
+    # The way on is a new addendum (review 2026-10-23b, REP-3): a baseline is
+    # set only when an addendum is created, which is when it carries the
+    # baseline's details.  The PATCH no longer takes one.
     latest = client.get(_base(test_project)).json()["latest_issued_id"]
+    latest_number = db_session.get(Report, latest).number
+    assert f"Start a new addendum to report {latest_number}" in detail and "discarded" in detail
     assert client.patch(f"{_base(test_project)}/{two['id']}", json={"baseline_report_id": latest}).status_code == 200
-    _issue(client, test_project, two["id"])
+    db_session.expire_all()
+    assert db_session.get(Report, two["id"]).baseline_report_id != latest
+    three = _create(client, test_project, kind="addendum")
+    assert db_session.get(Report, three["id"]).baseline_report_id == latest
+    _issue(client, test_project, three["id"])
 
     # Revising the latest addendum compares with ITS baseline — allowed.
-    rev = client.post(f"{_base(test_project)}/{two['id']}/revise").json()
+    rev = client.post(f"{_base(test_project)}/{three['id']}/revise").json()
     _issue(client, test_project, rev["id"])
     # A superseded report is not a baseline at all.
-    r = client.post(_base(test_project), json={"kind": "addendum", "baseline_report_id": two["id"]})
+    r = client.post(_base(test_project), json={"kind": "addendum", "baseline_report_id": three["id"]})
     assert r.status_code == 409
 
 

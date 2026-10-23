@@ -976,11 +976,20 @@ def _clean_env(work: Path) -> Dict[str, str]:
     }
 
 
+# Quarto's version per launcher, once it has answered: it changes only with
+# the image, i.e. with the process (review 2026-10-23b, REP-9 — every issued
+# render asked twice, once under the report's row lock).  A failure is not
+# kept, so the next render asks again.
+_VERSIONS: Dict[str, str] = {}
+
+
 def quarto_version(quarto: str = "quarto", timeout: float = 60) -> Optional[str]:
     """Quarto's version, or None when it cannot be asked.  Run like a render
     (``_run_group``, defined below): ``quarto`` is a bash launcher that starts
     deno without ``exec``, so ``subprocess.run(timeout=…)`` killed bash and
     left deno running — and then waited on the pipes deno still held."""
+    if quarto in _VERSIONS:
+        return _VERSIONS[quarto]
     with tempfile.TemporaryDirectory(prefix="bs-qv-") as tmp:
         work = Path(tmp)
         try:
@@ -989,7 +998,10 @@ def quarto_version(quarto: str = "quarto", timeout: float = 60) -> Optional[str]
             )
         except (OSError, subprocess.SubprocessError):
             return None
-    return stdout.strip()[:40] or None
+    version = stdout.strip()[:40] or None
+    if version is not None:
+        _VERSIONS[quarto] = version
+    return version
 
 
 def _tail(text: str, lines: int = 25) -> str:

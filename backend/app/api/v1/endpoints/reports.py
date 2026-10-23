@@ -21,7 +21,6 @@ from app.services.posture_briefing import render_posture_briefing
 from app.services.posture_service import compute_posture
 from app.core.config import settings
 from app.schemas.schemas import ReportJobSchema
-from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row  # noqa: F401
 import logging
 from datetime import datetime, timezone
 
