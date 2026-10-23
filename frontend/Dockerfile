@@ -2,7 +2,7 @@
 # `node:22-alpine` and `nginx:alpine` floated — nginx across MINOR releases.
 # Tags, not digests.  Override per host with NODE_IMAGE / NGINX_IMAGE in .env
 # (compose passes them through).
-ARG NODE_IMAGE=node:22.23.2-alpine
+ARG NODE_IMAGE=node:22.23.4-alpine
 ARG NGINX_IMAGE=nginx:1.31.3-alpine
 
 # Build stage

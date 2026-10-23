@@ -255,7 +255,7 @@ postgres_volume_exists() {
 # Pinned base images without a pull (review 2026-10-01 B5).
 #
 # docker-compose.yml and the Dockerfiles name exact releases
-# (postgres:16.13, python:3.11.16-slim-trixie, node:22.23.2-alpine,
+# (postgres:16.13, python:3.11.16-slim-trixie, node:22.23.4-alpine,
 # nginx:1.31.3-alpine) where they used to name floating tags.  A host that
 # pulled the floating tag earlier already HAS that release under the old
 # name, and an isolated host cannot pull the new one.  When the pinned name
