@@ -99,6 +99,11 @@ const DATE_RANGE_PRESETS: ReadonlyArray<{ label: string; days: number | null }> 
  * controls show and what the lists are asked for.  A value the address cannot
  * mean is the default.
  */
+/** What choosing a status filter changes in the address. */
+const statusChanges = (status: ImportHistoryStatus | null): Record<string, string | null> => (
+  { status, job_id: null, error_id: null, batch_files: null }
+);
+
 /** A positive whole number from the address, else null. */
 const idParam = (raw: string | null): number | null => (raw && /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null);
 
@@ -197,8 +202,18 @@ function useScansAddress() {
     uploadView: statusFilter !== null || focusJobId !== null || focusErrorId !== null,
     // One write: a status replaces a link's one upload, and the uploads are
     // listed one row each, so the all-files switch is let go too.
-    setStatusFilter: (status: ImportHistoryStatus | null) =>
-      setUrlFilters({ status, job_id: null, error_id: null, batch_files: null }),
+    setStatusFilter: (status: ImportHistoryStatus | null) => setUrlFilters(statusChanges(status)),
+    /** The address that same write makes — for a link elsewhere on the page
+     *  (the queue strip's failed line) that must open exactly the list the
+     *  chip opens. */
+    statusHref: (status: ImportHistoryStatus) => {
+      const next = new URLSearchParams(urlParams);
+      Object.entries(statusChanges(status)).forEach(([name, value]) => {
+        if (value === null) next.delete(name);
+        else next.set(name, value);
+      });
+      return `/scans?${next.toString()}`;
+    },
     showWholeHistory: () => setUrlFilters({ status: null, job_id: null, error_id: null }),
     toolFilter,
     setToolFilter: (tool: string) => setUrlFilters({ tool: tool || null }),
@@ -424,10 +439,24 @@ export default function Scans() {
     return Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   }, [inventorySummary, scans]);
 
-  // The queue box and the lead read the project-wide figure (one definition,
-  // server-side); the recent-jobs count is only the fallback when the summary
-  // did not carry it.
-  const needAttention = inventorySummary?.imports_need_attention ?? queue.queueCounts.failed;
+  // The status filter's counts.  Grouped, they ride on the history's own
+  // answer; in the all-files view (which lists files, not uploads) one more
+  // read of the history's first entry carries them, so the queue strip's
+  // failed line is there whichever way the history is listed.  Analysts only:
+  // the server sends nobody else counts.
+  const flatViewCounts = useQuery({
+    queryKey: ['getImportHistory', projectId, listFilters, { limit: 1 }],
+    queryFn: ({ signal }) => getImportHistory(projectId, { ...listFilters, limit: 1, signal }),
+    enabled: showBatchFiles && address.readsUploads,
+  });
+  const historyStatusCounts = showBatchFiles ? flatViewCounts.data?.status_counts ?? null : statusCounts;
+  // The queue strip's one line about failures (owner decision 2026-10-22: a
+  // failed upload is a row of the history, not of the queue): the history's
+  // own Failed count under its filters, opening that exact list — the address
+  // the Failed chip writes.
+  const queueFailed = address.readsUploads && historyStatusCounts?.failed != null
+    ? { count: historyStatusCounts.failed, href: address.statusHref('failed') }
+    : null;
 
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);
   const handleDeleteClick = (scan: Scan) => {
@@ -480,12 +509,10 @@ export default function Scans() {
         filesUnknown={summaryFailed}
         filtered={hasActiveFilters}
         readsUploads={address.readsUploads}
-        failed={queue.queueCounts.failed}
         needAttention={inventorySummary?.imports_need_attention}
         notImported={inventorySummary?.imports_not_imported}
         byReason={inventorySummary?.imports_not_imported_by_reason}
         superseded={inventorySummary?.imports_superseded}
-        queueUnknown={queue.recentJobsError && queue.recentJobs.length === 0}
         lastImportAt={lastImportAt}
       />
 
@@ -494,7 +521,7 @@ export default function Scans() {
       <IngestionQueue
         projectId={projectId}
         queue={queue}
-        needAttention={needAttention}
+        failed={queueFailed}
         canWrite={canWrite}
         onRefresh={refreshQueue}
         onReview={openReview}
@@ -869,20 +896,21 @@ const ScansLead: React.FC<{
   /** The summary could not be read: `files` is not the count. */
   filesUnknown?: boolean;
   filtered: boolean;
-  failed: number;
+  /** The project's imports needing someone (the summary's); absent when the
+   *  summary did not carry it — then the lead says nothing about failures
+   *  (5.418.0: the recent queue no longer lists failures to fall back on). */
   needAttention?: number;
   notImported?: number;
   byReason?: Record<string, number>;
   superseded?: number;
-  queueUnknown: boolean;
   lastImportAt: string | null;
   /** Analysts and above read the uploads that were not imported; for anyone
    *  else the lead says nothing about them — every figure here opens a list
    *  of uploads they cannot open (5.418.0). */
   readsUploads?: boolean;
 }> = ({
-  files, filesUnknown = false, filtered, failed, needAttention, notImported = 0, byReason, superseded = 0,
-  queueUnknown, lastImportAt, readsUploads = true,
+  files, filesUnknown = false, filtered, needAttention, notImported = 0, byReason, superseded = 0,
+  lastImportAt, readsUploads = true,
 }) => {
   if (files === 0 && !filtered && !filesUnknown) return null;
   const last = lastImportAt ? formatRelativeTime(lastImportAt, { style: 'long' }) : null;
@@ -899,7 +927,7 @@ const ScansLead: React.FC<{
     );
   }
   const projectWide = needAttention != null;
-  const attention = projectWide ? needAttention : failed;
+  const attention = needAttention ?? 0;
   const reasons = notImportedReasons(byReason);
   const sep = <span className="text-muted-foreground"> · </span>;
   return (
@@ -909,15 +937,13 @@ const ScansLead: React.FC<{
           ? `The imported files${filtered ? ' matching these filters' : ''} could not be counted`
           : `${files.toLocaleString()} file${files === 1 ? '' : 's'} imported${filtered ? ' (matching these filters)' : ''}`}
       </span>
-      {!projectWide && queueUnknown ? (
-        <>{sep}the ingestion queue could not be checked</>
-      ) : (
+      {projectWide && (
         <>
           {attention > 0 && (
             <>
               {sep}
               <Link to={importResultsPath({ status: 'needs_attention' })} className="text-warning underline-offset-2 hover:underline">
-                {attention.toLocaleString()} {projectWide ? 'failed or partial' : 'failed'} import{attention === 1 ? '' : 's'}{' '}
+                {attention.toLocaleString()} failed or partial import{attention === 1 ? '' : 's'}{' '}
                 need{attention === 1 ? 's' : ''} attention
               </Link>
             </>

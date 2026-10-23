@@ -192,7 +192,9 @@ describe('Scans — "Load more" of all files (no total)', () => {
     renderPage('/scans?batch_files=show');
     expect(await screen.findByText('file-1.xml', undefined, { timeout: 15_000 })).toBeInTheDocument();
     expect(api.getScans.mock.calls[0].slice(0, 3)).toEqual([1, 0, 250]);
-    expect(api.getImportHistory).not.toHaveBeenCalled();
+    // Not the history's order — only its status counts (one entry), for the
+    // queue strip's failed line.
+    for (const call of api.getImportHistory.mock.calls) expect(call[1]).toMatchObject({ limit: 1 });
 
     fireEvent.click(screen.getByRole('button', { name: 'Load 250 more' }));
     expect(await screen.findByText('file-1002.xml', undefined, { timeout: 15_000 })).toBeInTheDocument();

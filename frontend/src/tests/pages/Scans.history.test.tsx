@@ -304,6 +304,10 @@ describe('Scans — import history', () => {
 // boxes; the table's actions are quiet.
 describe('Scans — layout', () => {
   it('opens with one sentence and no stat cards or card-wrapped table', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 0, imports_not_imported: 0,
+    });
     renderPage();
     await screen.findByText('newest.xml');
     expect(screen.queryByText('Hosts up')).not.toBeInTheDocument();
@@ -314,32 +318,69 @@ describe('Scans — layout', () => {
   });
 
   it('points at failed imports from the lead, and shows the queue only while it holds something', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 1, imports_not_imported: 0,
+    });
     api.getRecentIngestionJobs.mockResolvedValue([
       { id: 71, status: 'failed', original_filename: 'broken.xml', created_at: '2026-09-19T10:00:00Z', message: 'not XML' },
     ]);
     renderPage();
-    const link = await screen.findByRole('link', { name: /1 failed import needs attention/ });
+    const link = await screen.findByRole('link', { name: /1 failed or partial import needs attention/ });
     expect(link).toHaveAttribute('href', '/scans?status=needs_attention');
-    // Said once, in the lead: the queue strip does not repeat the figure.
-    expect(screen.getByTestId('ingestion-queue')).not.toHaveTextContent(/needs? attention/);
+    // A failed upload is no queue row, and nothing else is moving: no strip.
+    expect(screen.queryByTestId('ingestion-queue')).not.toBeInTheDocument();
   });
 
-  // Local Network, 2026-09-24: the queue box said "1 failed" (its 25 most
-  // recent jobs) while the lead and Ingestion Results said 4 need attention.
-  it('the queue box never gives a needs-attention figure of its own', async () => {
+  // Owner decision 2026-10-22: a failed upload is a row of the import history
+  // (with its Retry, Dismiss, "Import what the file holds"); the queue strip
+  // lists only what is still moving and says how many failed in ONE line —
+  // the history's own Failed count under its filters, opening that list.
+  // (Local Network, 2026-09-24: the strip once said "1 failed" from its 25
+  // most recent jobs beside a lead saying 4 needed attention.)
+  it('lists no failed upload; one line gives the history\'s Failed count and opens that list', async () => {
     api.getScansSummary.mockResolvedValue({
       total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
       imports_need_attention: 4, imports_not_imported: 0,
     });
     api.getRecentIngestionJobs.mockResolvedValue([
       { id: 71, status: 'failed', original_filename: 'broken.xml', created_at: '2026-09-19T10:00:00Z', message: 'not XML' },
+      { id: 72, status: 'queued', original_filename: 'waiting.xml', created_at: '2026-09-19T10:01:00Z' },
+    ]);
+    api.getImportHistory.mockResolvedValue({
+      items: [{ kind: 'scan', id: 9, at: '2026-09-19T11:00:00Z' }],
+      total: 1, batch_total: 0, scan_total: 1, has_more: false,
+      status_counts: { needs_attention: 4, failed: 3, failed_dismissed: 1 },
+    });
+    renderPage('/scans?search=dmz');
+    const queue = await screen.findByTestId('ingestion-queue');
+    const line = await within(queue).findByTestId('queue-failed-line');
+    expect(line).toHaveTextContent('3 uploads failed — review them below');
+    // The address the history's own Failed chip writes: the other filters kept.
+    expect(within(line).getByRole('link')).toHaveAttribute('href', '/scans?search=dmz&status=failed');
+    // The strip's header gives no failure figure of its own.
+    expect(queue).not.toHaveTextContent(/needs? attention/);
+    // Only what is moving is a row; the failed upload is not.
+    fireEvent.click(within(queue).getByRole('button', { name: /show 1 recent job/i }));
+    expect(within(queue).getByText('waiting.xml')).toBeInTheDocument();
+    expect(within(queue).queryByText('broken.xml')).toBeNull();
+    expect(within(queue).queryByRole('button', { name: /Retry/ })).toBeNull();
+    expect(within(queue).queryByRole('button', { name: /Dismiss/ })).toBeNull();
+  });
+
+  it('says nothing about failures when the history counts none', async () => {
+    api.getImportHistory.mockResolvedValue({
+      items: [{ kind: 'scan', id: 9, at: '2026-09-19T11:00:00Z' }],
+      total: 1, batch_total: 0, scan_total: 1, has_more: false,
+      status_counts: { needs_attention: 0, failed: 0 },
+    });
+    api.getRecentIngestionJobs.mockResolvedValue([
+      { id: 72, status: 'queued', original_filename: 'waiting.xml', created_at: '2026-09-19T10:01:00Z' },
     ]);
     renderPage();
-    await screen.findByRole('link', { name: /4 failed or partial imports need attention/ });
-    const queue = screen.getByTestId('ingestion-queue');
-    expect(queue).not.toHaveTextContent(/needs? attention/);
-    expect(queue).not.toHaveTextContent('1 failed');
-    expect(queue).toHaveTextContent('Show 1 recent job');
+    const queue = await screen.findByTestId('ingestion-queue');
+    expect(within(queue).queryByTestId('queue-failed-line')).toBeNull();
+    expect(queue).not.toHaveTextContent(/failed/);
   });
 
   it('keeps a failure a later upload imported out of the queue, and says so in the lead', async () => {
@@ -358,37 +399,6 @@ describe('Scans — layout', () => {
     expect(link).toHaveAttribute('href', '/scans?status=superseded');
     expect(screen.queryByTestId('ingestion-queue')).not.toBeInTheDocument();
     expect(leadText()).not.toMatch(/nothing failed|need attention/);
-  });
-
-  it('shows the specific cause of a failure in the queue, not the generic sentence', async () => {
-    api.getRecentIngestionJobs.mockResolvedValue([
-      {
-        id: 478, status: 'failed', original_filename: 'smbmap-samba.txt', created_at: '2026-09-19T10:00:00Z',
-        error_message: "Failed to parse the file 'smbmap-samba.txt'. The file format may not be supported or the file may be corrupted.",
-        failure_reason: 'SMBMap parser found 0 hosts in smbmap-samba.txt; file is empty or not smbmap output.',
-      },
-    ]);
-    renderPage();
-    const queue = await screen.findByTestId('ingestion-queue');
-    fireEvent.click(within(queue).getByRole('button', { name: /show 1 recent job/i }));
-    expect(queue).toHaveTextContent('SMBMap parser found 0 hosts');
-    expect(queue).not.toHaveTextContent(/format may not be supported/);
-  });
-
-  // Third review 2026-10-15, N6: "Import what the file holds" was offered on
-  // the queue row whatever the job said — past the retention sweep it was a
-  // 409.  Only while the row says the file is kept.
-  it.each([[true, 1], [false, 0]])('a cut-short row with the file kept=%s offers the import %i time(s)', async (kept, n) => {
-    api.getRecentIngestionJobs.mockResolvedValue([{
-      id: 90, status: 'failed', original_filename: 'cut.json', created_at: '2026-09-19T10:00:00Z',
-      failure_kind: 'truncated_file', error_message: 'The file ends early: 49 complete records.', file_retained: kept,
-    }]);
-    renderPage();
-    const queue = await screen.findByTestId('ingestion-queue');
-    const show = within(queue).queryByRole('button', { name: /show 1 recent job/i });
-    if (show) fireEvent.click(show);
-    fireEvent.click(await within(queue).findByRole('button', { name: 'Show full error message' }));
-    expect(within(queue).queryAllByRole('button', { name: 'Import what cut.json holds' })).toHaveLength(n);
   });
 
   // v5.271.0 — a closed review of 26 files: the queue read the 25 most recent
@@ -526,7 +536,7 @@ describe('Scans — layout', () => {
   it('says so when the queue could not be read — never "nothing failed"', async () => {
     api.getRecentIngestionJobs.mockRejectedValue(new Error('503'));
     renderPage();
-    expect(await screen.findByText(/the ingestion queue could not be checked/)).toBeInTheDocument();
+    expect(await screen.findByText(/ingestion queue could not be checked/)).toBeInTheDocument();
     expect(screen.queryByText(/nothing failed/)).not.toBeInTheDocument();
   });
 

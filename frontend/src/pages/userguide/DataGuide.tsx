@@ -77,7 +77,10 @@ const sections: GuideSection[] = [
           (analysts and above; the <em>Needs attention</em> filter lists every import that still needs
           someone): open it for the error, the format chain (detected → chosen → final), the lines the
           parser did not read, <em>Dismiss</em> and, while the file is retained — 7 days by
-          default — <em>Review the format and retry</em>.
+          default — <em>Review the format and retry</em>. The <strong>ingestion queue</strong> above the
+          history lists only uploads still on their way (queued, being imported, or waiting for a format
+          review); when uploads have failed it says how many in one line that opens the history&rsquo;s
+          <em> Failed</em> filter.
         </Para>
       </div>
     ),

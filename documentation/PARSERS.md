@@ -118,8 +118,7 @@ format of the registry to it, or to a stated reason why a cut cannot be told.
    hosts, …" · for JSON lines "…, part-way through the line that follows."
    The count is also in `parse_errors.error_details.records_read`.
 2. **The row offers "Import what the file holds"** (the upload's row in the
-   Scans import history and the Scans queue row; analysts and above) beside
-   the retry. A plain retry reads
+   Scans import history; analysts and above) beside the retry. A plain retry reads
    the same bytes and fails the same way.
 3. **That action re-queues the job with one attempt's instruction**
    (`POST /upload/jobs/{id}/retry {"keep_truncated": true}` →

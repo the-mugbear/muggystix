@@ -65,7 +65,10 @@ describe('Scans — the ingestion queue re-reads itself', () => {
   afterEach(() => { vi.useRealTimers(); });
 
   it('shows when the queue was read, a refresh button and the Auto switch, off', async () => {
-    api.getRecentIngestionJobs.mockResolvedValue([job('failed')]);
+    // A staged file keeps the strip on screen and runs nothing (a failed
+    // upload is not a queue row since 5.418.0: it is a row of the history).
+    api.getRecentIngestionJobs.mockResolvedValue([]);
+    api.getStagedIngestionJobs.mockResolvedValue([job('staged')]);
     renderPage();
     const queue = await screen.findByTestId('ingestion-queue');
     expect(queue).toHaveTextContent('Updated just now');
@@ -74,7 +77,10 @@ describe('Scans — the ingestion queue re-reads itself', () => {
   });
 
   it('reads the queue every 15 s only while Auto is on; turning it off stops the re-reads', async () => {
-    api.getRecentIngestionJobs.mockResolvedValue([job('failed')]);
+    // A staged file keeps the strip on screen and runs nothing (a failed
+    // upload is not a queue row since 5.418.0: it is a row of the history).
+    api.getRecentIngestionJobs.mockResolvedValue([]);
+    api.getStagedIngestionJobs.mockResolvedValue([job('staged')]);
     renderPage();
     const queue = await screen.findByTestId('ingestion-queue');
     await waitFor(() => expect(api.getStagedIngestionJobs).toHaveBeenCalledTimes(1));
@@ -107,7 +113,10 @@ describe('Scans — the ingestion queue re-reads itself', () => {
   it('reads the queue every 5 s while a job is processing, Auto or not, and stops when it is done', async () => {
     api.getRecentIngestionJobs.mockResolvedValueOnce([job('processing')]);
     api.getRecentIngestionJobs.mockResolvedValueOnce([job('processing')]);
-    api.getRecentIngestionJobs.mockResolvedValue([job('failed')]);
+    // A staged file keeps the strip on screen and runs nothing (a failed
+    // upload is not a queue row since 5.418.0: it is a row of the history).
+    api.getRecentIngestionJobs.mockResolvedValue([]);
+    api.getStagedIngestionJobs.mockResolvedValue([job('staged')]);
     renderPage();
     await screen.findByTestId('ingestion-queue');
     expect(api.getRecentIngestionJobs).toHaveBeenCalledTimes(1);

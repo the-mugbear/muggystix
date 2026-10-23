@@ -721,7 +721,16 @@ opens exactly its list; Failed is followed by how many of it are dismissed
 (that part opens its own list).  The time column is the upload time on every
 row (the scan's own time is its labelled second line).  Upload rows and the
 status filter are an analyst's: below analyst they are not there at all, and
-the lead says nothing a reader could not open.  **A link to an import's result
+the lead says nothing a reader could not open.  **The ingestion queue strip
+above the history lists only what is still moving** — queued, processing,
+staged (awaiting a format review), with Cancel, Review and Discard.  A failed
+upload is never a queue row (owner decision 2026-10-22): its Retry, Dismiss
+and "Import what the file holds" are on its history row, and the strip says
+how many failed in ONE line, "N uploads failed — review them below", whose
+figure is the history's own Failed count under its current filters and whose
+link is the address the Failed chip writes — so it opens exactly that list.
+Analysts only, like the count; the strip's header gives no failure figure of
+its own.  **A link to an import's result
 is built by `utils/importResultsPath(params?)`** (`/scans?status=…`).
 `/parse-errors`, `/ingestion-results` and the old `/scans?view=results` are
 redirects for bookmarks and old notification links only, landing on the same

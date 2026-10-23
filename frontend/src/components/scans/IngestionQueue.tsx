@@ -1,18 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-import {
-  AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Hourglass, Loader2, PauseCircle,
-} from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ChevronDown, ChevronUp, Hourglass, Loader2, PauseCircle } from 'lucide-react';
 
 import {
   cancelIngestionJob,
   discardIngestionJob,
   discardStagedJobs,
-  dismissIngestionJob,
   getRecentIngestionJobs,
   getStagedIngestionJobs,
-  retryIngestionJob,
 } from '../../services/api';
 import type { IngestionJob } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
@@ -20,31 +16,26 @@ import { useConfirm } from '../../hooks/useConfirm';
 import { invalidateReads, pollEvery } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
-import { importResultsPath } from '../../utils/importResultsPath';
 import { INGESTION_JOB_READS } from '../../utils/ingestionReads';
 import { formatTimestamp } from '../../utils/relativeTime';
 import { formatDuration } from '../../utils/scanTime';
-import { isCutShort } from '../../utils/truncatedImport';
 import LastUpdated from '../LastUpdated';
 import { Badge } from '../ui/badge';
 import { BreakableName } from '../ui/breakable-name';
 import { Button } from '../ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
-import KeepTruncatedImport from './KeepTruncatedImport';
 
 /** A queue row's status, in words beside its icon. */
 const JOB_STATUS_LABEL: Record<string, string> = {
   staged: 'Needs review',
   queued: 'Queued',
   processing: 'Processing',
-  failed: 'Failed',
-  completed: 'Completed',
 };
 
 /** What the ingestion queue strip reads. */
 export const QUEUE_READS = ['getRecentIngestionJobs', 'getStagedIngestionJobs'] as const;
-/** The key of the four writes to ONE job of the queue (retry, cancel,
- *  dismiss, discard): what is in flight is read back per job. */
+/** The key of the writes to ONE job of the queue (cancel, discard): what is
+ *  in flight is read back per job. */
 const QUEUE_JOB_ACTION = ['scansQueueJobAction'] as const;
 
 /** How often the queue is read again while a job is queued or processing. */
@@ -59,10 +50,10 @@ const STALL_MS = 90_000;
 export interface IngestionQueueState {
   recentJobs: IngestionJob[];
   stagedJobs: IngestionJob[];
-  /** What the queue lists: in flight, failed (not superseded) and staged. */
+  /** What the queue lists: what is still moving — queued, processing, staged. */
   pendingJobs: IngestionJob[];
   stagedByBatch: Map<number, IngestionJob[]>;
-  queueCounts: { processing: number; staged: number; failed: number };
+  queueCounts: { processing: number; staged: number };
   recentJobsFetched: Date | null;
   recentJobsLoading: boolean;
   /** The queue could not be read: said, never shown as "nothing failed". */
@@ -111,15 +102,14 @@ export function useIngestionQueue(projectId: number): IngestionQueueState {
     [recentQuery.dataUpdatedAt],
   );
 
-  // Completed jobs are left out: a successful import is its Scan row in the
-  // history below, and listing it twice made the queue look perpetually busy.
-  // Every staged job is in, which the 25 recent may not reach; a superseded
-  // failure (a later job imported the same file) needs nothing and is listed
-  // in the import history (its Superseded filter).
+  // Only what is still moving: queued, processing, and every staged job
+  // (which the 25 recent may not reach).  A finished job is the import
+  // history's — a completed one is its scan row, and (owner decision
+  // 2026-10-22) a failed one is a row of the history too, with its Retry,
+  // Dismiss and "Import what the file holds"; the strip only says how many
+  // failed, with a link to them (`IngestionQueue`'s `failed` prop).
   const pendingJobs = useMemo(() => {
-    const recent = recentJobs.filter(
-      (j) => j.status !== 'completed' && j.status !== 'staged' && j.superseded_by_job_id == null,
-    );
+    const recent = recentJobs.filter((j) => j.status === 'queued' || j.status === 'processing');
     return [...recent, ...stagedJobs].sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id - a.id,
     );
@@ -135,7 +125,6 @@ export function useIngestionQueue(projectId: number): IngestionQueueState {
   const queueCounts = useMemo(() => ({
     processing: pendingJobs.filter((j) => j.status === 'queued' || j.status === 'processing').length,
     staged: pendingJobs.filter((j) => j.status === 'staged').length,
-    failed: pendingJobs.filter((j) => j.status === 'failed').length,
   }), [pendingJobs]);
 
   return {
@@ -155,8 +144,11 @@ export function useIngestionQueue(projectId: number): IngestionQueueState {
 interface IngestionQueueProps {
   projectId: number;
   queue: IngestionQueueState;
-  /** Imports needing attention, project-wide (the lead's figure). */
-  needAttention: number;
+  /** The import history's Failed count under its current filters
+   *  (`status_counts.failed`), and the address of that exact list — the one
+   *  the history's own Failed chip writes.  Null below analyst, or while not
+   *  known: then the strip says nothing about failures. */
+  failed: { count: number; href: string } | null;
   canWrite: boolean;
   onRefresh: () => void;
   /** Hands staged files back to the upload review. */
@@ -164,26 +156,21 @@ interface IngestionQueueProps {
 }
 
 /**
- * The queue strip: a left-rule callout that exists only while something is in
- * flight, waiting for review or failed — its counts always shown, the table
- * one click away — and what an operator does to one job of it.
+ * The queue strip: a left-rule callout that exists only while something is
+ * still moving (in flight, or waiting for a format review) or uploads failed —
+ * its counts always shown, the table one click away — and what an operator
+ * does to one job of it.  Failed uploads are not rows here (5.418.0, owner
+ * decision 2026-10-22): one line says how many, linking to the history's
+ * Failed filter, whose count it is.
  */
 export const IngestionQueue: React.FC<IngestionQueueProps> = ({
-  projectId, queue, needAttention, canWrite, onRefresh, onReview,
+  projectId, queue, failed, canWrite, onRefresh, onReview,
 }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
   const { pendingJobs, stagedJobs, queueCounts } = queue;
-  const [expandedJobIds, setExpandedJobIds] = useState<Set<number>>(new Set());
-  const toggleJobExpanded = (id: number) => {
-    setExpandedJobIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const failedCount = failed?.count ?? 0;
   // Whether the table is open is a per-browser convenience; the page works
   // the same if storage is unavailable.
   const [queueOpen, setQueueOpen] = useState<boolean>(() => {
@@ -241,24 +228,7 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not cancel ingestion')),
   });
-  const retryJob = useMutation({
-    mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => retryIngestionJob(projectId, job.id),
-    onSuccess: () => {
-      toast.info('Re-queued for parsing');
-      return jobsReRead();
-    },
-    // 409 when the upload was already cleaned up — the message tells the user
-    // to re-upload.
-    onError: (err) => toast.error(formatApiError(err, 'Could not retry ingestion')),
-  });
-  const dismissJob = useMutation({
-    mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => dismissIngestionJob(projectId, job.id),
-    onSuccess: () => jobsReRead(),
-    onError: (err) => toast.error(formatApiError(err, 'Could not dismiss the failed import')),
-  });
-  // The jobs with one of those four in flight — every one of them, not only
+  // The jobs with one of those writes in flight — every one of them, not only
   // the last started (a mutation's own `variables` name just that one), so a
   // second row can be acted on while the first is still being answered.  A
   // staged job is busy as well while "Discard N staged" is discarding it.
@@ -289,15 +259,15 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
       {queue.recentJobsError && pendingJobs.length === 0 && (
         <p role="status" className="mb-md text-caption text-muted-foreground">
           The ingestion queue could not be checked — this is not a confirmation that nothing is
-          queued or failed.
+          queued or waiting for review.
         </p>
       )}
-      {pendingJobs.length > 0 && (
+      {(pendingJobs.length > 0 || failedCount > 0) && (
         <div
           data-testid="ingestion-queue"
           className={cn(
             'mb-md border-l-4 py-xs pl-md',
-            needAttention > 0 ? 'border-l-destructive' : queueCounts.staged > 0 ? 'border-l-warning' : 'border-l-info',
+            failedCount > 0 ? 'border-l-destructive' : queueCounts.staged > 0 ? 'border-l-warning' : 'border-l-info',
           )}
         >
           <div>
@@ -310,9 +280,8 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
                       queueCounts.processing > 0 ? `${queueCounts.processing} processing` : null,
                       queueCounts.staged > 0 ? `${queueCounts.staged} waiting for review` : null,
                     ].filter(Boolean).join(' · ')}
-                    {/* How many imports need attention is the lead's, one line
-                        up, with its link — not said again here. */}
                   </span>
+                  {pendingJobs.length > 0 && (
                   <button
                     type="button"
                     aria-expanded={queueOpen}
@@ -323,11 +292,22 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
                     {queueOpen ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />}
                     {queueOpen ? 'Hide recent jobs' : `Show ${pendingJobs.length} recent job${pendingJobs.length === 1 ? '' : 's'}`}
                   </button>
+                  )}
                 </div>
-                {queueOpen && (
+                {/* Failed uploads are rows of the import history, with their
+                    actions; the strip says how many — the history's own
+                    Failed count under its filters — and opens that list. */}
+                {failed && failedCount > 0 && (
+                  <p className="text-metadata" data-testid="queue-failed-line">
+                    <Link to={failed.href} className="text-destructive underline-offset-2 hover:underline">
+                      {failedCount.toLocaleString()} upload{failedCount === 1 ? '' : 's'} failed — review {failedCount === 1 ? 'it' : 'them'} below
+                    </Link>
+                  </p>
+                )}
+                {queueOpen && pendingJobs.length > 0 && (
                   <p className="text-metadata text-muted-foreground">
-                    In-flight uploads, staged files waiting for a format review, and failures among
-                    the recent uploads. Every upload — imported or not — is in the import history below.
+                    In-flight uploads and staged files waiting for a format review. Every finished
+                    upload — imported or not — is in the import history below.
                   </p>
                 )}
               </div>
@@ -380,7 +360,7 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
                 />
               </div>
             </div>
-            {queueOpen && (
+            {queueOpen && pendingJobs.length > 0 && (
             <div id="ingestion-queue-table" className="overflow-x-auto">
               {/* A fixed layout with an Actions column wide enough for its
                   buttons; Message is the only column without a width, so it
@@ -389,8 +369,6 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
               <Table className="min-w-[64rem] table-fixed">
                 <TableHeader>
                   <TableRow>
-                    {/* w-12 (48px): the expand chevron is a 40px icon button. */}
-                    <TableHead className="w-12" />
                     <TableHead className="w-36">Status</TableHead>
                     <TableHead className="w-1/5">File</TableHead>
                     <TableHead className="w-20 text-right">Size</TableHead>
@@ -404,15 +382,11 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
                     <IngestionQueueRow
                       key={job.id}
                       job={job}
-                      expanded={expandedJobIds.has(job.id)}
-                      onToggle={() => toggleJobExpanded(job.id)}
                       canWrite={canWrite}
                       busy={jobBusy(job)}
                       onReview={() => onReview([job])}
                       onDiscard={() => discardJob.mutate(job)}
                       onCancel={() => onCancel(job)}
-                      onRetry={() => retryJob.mutate(job)}
-                      onDismiss={() => dismissJob.mutate(job)}
                     />
                   ))}
                 </TableBody>
@@ -428,31 +402,19 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
 
 interface IngestionQueueRowProps {
   job: IngestionJob;
-  expanded: boolean;
-  onToggle: () => void;
   canWrite: boolean;
   /** One of the job's actions is in flight. */
   busy: boolean;
   onReview: () => void;
   onDiscard: () => void;
   onCancel: () => void;
-  onRetry: () => void;
-  onDismiss: () => void;
 }
 
-/** One job of the queue, and its expanded failure detail. */
+/** One job of the queue — still moving: queued, processing, or staged. */
 const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
-  job, expanded: isExpanded, onToggle, canWrite, busy, onReview, onDiscard, onCancel, onRetry, onDismiss,
+  job, canWrite, busy, onReview, onDiscard, onCancel,
 }) => {
-  const navigate = useNavigate();
-  const isFailure = job.status === 'failed';
-
   const elapsed = (() => {
-    if (job.started_at && job.completed_at) {
-      return formatDuration(
-        new Date(job.completed_at).getTime() - new Date(job.started_at).getTime(),
-      );
-    }
     if (job.started_at && job.status === 'processing') {
       return `${formatDuration(Date.now() - new Date(job.started_at).getTime())}…`;
     }
@@ -468,15 +430,7 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
         : `${(job.file_size / 1024).toFixed(0)} KB`
     : '-';
 
-  // The parser's specific cause first; the generic "Failed to parse the file
-  // …" only when nothing better exists.
-  const displayMessage = isFailure
-    ? job.failure_reason || job.error_message || job.message || 'Unknown error'
-    : job.status === 'staged'
-      ? 'Not imported yet'
-      // Prefer the import-count summary ("6 DNS records") over the generic
-      // "<tool> processed successfully" so the row shows how much was ingested.
-      : job.progress || job.message || '-';
+  const displayMessage = job.status === 'staged' ? 'Not imported yet' : job.progress || job.message || '-';
 
   // Dead-letter / liveness signals. A job that bounced before settling
   // carries a retry_count; a 'processing' job whose worker heartbeat has gone
@@ -487,53 +441,16 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
     !!job.last_heartbeat &&
     Date.now() - new Date(job.last_heartbeat).getTime() > STALL_MS;
 
-  // A job can succeed and still have lost data: rows skipped as malformed,
-  // or a truncated file that stopped the parse early. Rendered as plain green
-  // "completed", that reads as "everything imported" — and for scan data the
-  // hosts that never parsed look exactly like hosts that were down.
-  const skipped = job.skipped_count ?? 0;
-  const isDegraded =
-    job.status === 'completed' &&
-    (skipped > 0 || !!job.parser_warnings || !!job.partial);
-  const canExpand = isFailure || isDegraded;
-
+  // (5.418.0: a finished job — completed, partial or failed — is never a
+  // queue row; the import history lists it. The expander, the "imported with
+  // warnings" marks and the failure detail went with them.)
   return (
     <>
-      <TableRow className={cn(job.status === 'completed' && 'opacity-75')}>
-        <TableCell className="p-xxs">
-          {canExpand && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onToggle}
-              aria-label={
-                isExpanded
-                  ? 'Hide import details'
-                  : isFailure
-                    ? 'Show full error message'
-                    : 'Show import warnings'
-              }
-              aria-expanded={isExpanded}
-            >
-              {isExpanded ? (
-                <ChevronUp className="size-4" aria-hidden />
-              ) : (
-                <ChevronDown className="size-4" aria-hidden />
-              )}
-            </Button>
-          )}
-        </TableCell>
+      <TableRow>
         <TableCell>
           {/* The icon plus the word: icon and colour alone left a staged row
               as a grey circle nobody could read. */}
           <span className="inline-flex min-w-0 items-center gap-xxs">
-
-            {job.status === 'completed' && (
-              <CheckCircle2 className="size-4 text-success" aria-hidden />
-            )}
-            {job.status === 'failed' && (
-              <AlertCircle className="size-4 text-destructive" aria-hidden />
-            )}
             {job.status === 'processing' && (
               <Loader2 className="size-4 animate-spin text-info" aria-hidden />
             )}
@@ -557,12 +474,6 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
               stalled?
             </Badge>
           )}
-          {isDegraded && (
-            <AlertTriangle
-              className="ml-xxs inline size-4 text-warning"
-              aria-label="Imported with warnings — some data may be missing"
-            />
-          )}
         </TableCell>
         <TableCell className="min-w-0">
           <BreakableName as="p" name={job.original_filename} title={job.original_filename} />
@@ -572,14 +483,7 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
         </TableCell>
         <TableCell className="text-right font-mono">{fileSize}</TableCell>
         <TableCell>
-          <div
-            className={cn(
-              isFailure && 'text-destructive',
-              isFailure && !isExpanded && 'truncate',
-            )}
-          >
-            {displayMessage}
-          </div>
+          <div>{displayMessage}</div>
           {retried && (
             <Badge
               variant="outline"
@@ -589,43 +493,6 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
               retried {job.retry_count}×
             </Badge>
           )}
-          {isDegraded && (
-            <div className="mt-xxs flex flex-col gap-xxs">
-              <Badge
-                variant="outline"
-                className="w-fit border-warning/40 text-warning"
-                title={job.parser_warnings || undefined}
-              >
-                {job.partial
-                  ? `partial import${skipped > 0 ? ` · ${skipped} skipped` : ''}`
-                  : skipped > 0
-                    ? `${skipped} record${skipped === 1 ? '' : 's'} skipped`
-                    : 'imported with warnings'}
-              </Badge>
-              {job.parser_warnings && (
-                <p
-                  className={cn(
-                    'text-caption text-warning',
-                    !isExpanded && 'truncate',
-                    isExpanded && 'whitespace-pre-wrap break-words',
-                  )}
-                >
-                  {job.parser_warnings}
-                </p>
-              )}
-            </div>
-          )}
-          {job.parse_error_id && (
-            <button
-              type="button"
-              onClick={() => navigate(importResultsPath({ error_id: job.parse_error_id }))}
-              className="mt-xxs rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Badge variant="outline" className="cursor-pointer border-destructive/40 text-destructive hover:bg-destructive/10">
-                Error #{job.parse_error_id}
-              </Badge>
-            </button>
-          )}
         </TableCell>
         <TableCell className="text-caption">
           <p>{formatTimestamp(job.created_at)}</p>
@@ -634,19 +501,9 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
           )}
         </TableCell>
         <TableCell className="text-right">
-          {job.scan_id && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => navigate(`/scans/${job.scan_id}`)}
-              aria-label={`Open scan for ${job.original_filename}`}
-            >
-              Open
-            </Button>
-          )}
-          {/* A failed job is dismissed (it drops out of the queue and stays
-              in the audit trail); a staged one is imported after a format
-              review, or discarded. */}
+          {/* A staged upload is imported after a format review, or
+              discarded; a queued or processing one can be cancelled.  A
+              failed one is not here: it is a row of the import history. */}
           {canWrite && job.status === 'staged' && (
             <div className="flex flex-wrap justify-end gap-xxs">
               <Button
@@ -681,64 +538,8 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
               Cancel
             </Button>
           )}
-          {canWrite && isFailure && (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={onRetry}
-              aria-label={`Retry failed ingestion for ${job.original_filename}`}
-            >
-              Retry
-            </Button>
-          )}
-          {canWrite && isFailure && (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={onDismiss}
-              aria-label={`Dismiss failed ingestion for ${job.original_filename}`}
-            >
-              Dismiss
-            </Button>
-          )}
         </TableCell>
       </TableRow>
-      {isFailure && isExpanded && (
-        <TableRow>
-          <TableCell colSpan={7} className="bg-accent p-md">
-            {/* A cut-short file fails the same way on a plain Retry: offer
-                what the upload's row in the history offers — only while the file is kept
-                (past the retention sweep the action was a 409). */}
-            {canWrite && isCutShort(job) && (
-              <div className="mb-sm">
-                <KeepTruncatedImport jobId={job.id} filename={job.original_filename}
-                  fileRetained={job.file_retained} />
-              </div>
-            )}
-            <p className="mb-xxs text-metadata font-semibold text-destructive">
-              Full error message
-            </p>
-            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-card p-sm text-caption">
-              {displayMessage}
-            </pre>
-            {job.last_error && job.last_error !== displayMessage && (
-              <>
-                <p className="mb-xxs mt-sm text-metadata font-semibold text-destructive">
-                  Most recent failure
-                  {retried
-                    ? ` (after ${job.retry_count} ${job.retry_count === 1 ? 'retry' : 'retries'})`
-                    : ''}
-                </p>
-                <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-card p-sm text-caption">
-                  {job.last_error}
-                </pre>
-              </>
-            )}
-          </TableCell>
-        </TableRow>
-      )}
     </>
   );
 };

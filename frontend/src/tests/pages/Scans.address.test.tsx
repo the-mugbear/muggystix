@@ -158,7 +158,9 @@ describe('Scans — the filters are the address (real router)', () => {
     expect(filesAsked()).toEqual([{
       search: undefined, tool: undefined, createdAfter: SINCE, uploadedBy: undefined, sortBy: 'filename', sortOrder: 'asc',
     }]);
-    expect(api.getImportHistory).not.toHaveBeenCalled();
+    // The history's ORDER is not asked for in the all-files view; only its
+    // status counts are (one entry), for the queue strip's failed line.
+    for (const call of api.getImportHistory.mock.calls) expect(call[1]).toMatchObject({ limit: 1 });
   });
 
   it('a value the address cannot mean is the default', async () => {

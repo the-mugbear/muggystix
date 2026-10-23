@@ -221,6 +221,15 @@ describe('an upload row — a partial import', () => {
     await waitFor(() => expect(api.getImportHistory.mock.calls.length).toBeGreaterThan(1));
   });
 
+  // R34 — a refused Dismiss failed silently (it was on the queue strip until 5.418.0).
+  it('a refused Dismiss says the server\'s reason', async () => {
+    api.dismissIngestionJob.mockRejectedValue({ response: { status: 403, data: { detail: 'Only the uploader may dismiss it.' } } });
+    renderRows(partial);
+    expand('23-nmap-truncated.xml');
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Only the uploader may dismiss it.'));
+  });
+
   it('a dismissed one says so and offers no second dismiss; a clean import has nothing to dismiss', async () => {
     renderRows(
       row({ ...partial, dismissed_at: '2026-09-19T12:00:00Z' }),
