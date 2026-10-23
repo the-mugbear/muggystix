@@ -56,7 +56,7 @@ from app.db.models import NoteAttachment, ReportJob
 from app.db.models_reports import RenderStatus, Report, ReportFile, ReportImage, ReportStatus
 from app.services import quarto_render
 from app.services import report_template_service as templates
-from app.services.client_report_service import ClientReportService, frozen_template_dir
+from app.services.client_report_service import ClientReportService, frozen_fields_filter, frozen_template_dir
 from app.services.note_attachment_service import attachment_file
 
 logger = logging.getLogger(__name__)
@@ -221,9 +221,14 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
     # it was issued: whatever happened to the template folder or its uploaded
     # files since can neither change the files nor block them.
     frozen = frozen_template_dir(report) if issued else None
+    fields_filter = None        # this release's (``quarto_render.FIELDS_FILTER``)
     if frozen is not None:
         template = templates.load_folder(frozen)
         asset_files = None      # already in place in the copy
+        # And the written-fields filter it was issued with, when the copy
+        # holds one (review 2026-10-23, R-RPT1: an upgrade's filter changed
+        # how an issued report's text printed on its next render).
+        fields_filter = frozen_fields_filter(report, frozen)
     else:
         template = templates.get_template(report.template)
         # A report issued before it kept a copy: the live template, and only
@@ -247,6 +252,7 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
         strict_evidence=issued,
         asset_files=asset_files,
+        fields_filter=fields_filter,
         # Liveness, and a stop between formats on SIGTERM (the job goes back
         # to the queue; review 2026-10-22, N4).
         on_progress=worker_loop.render_checkpoint,
@@ -300,12 +306,19 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
         # the issued report (remediation review 2026-09-23 finding 1).
         if report.render_status == RenderStatus.DONE:
             return None
+        # This attempt's claim token (``job_transitions``: the claim writes
+        # ``started_at``, a re-claim rewrites it).
+        job_id, claim = job.id, job.started_at
         try:
             _render_issued(db, report)
         except Exception as exc:
             db.rollback()
             report = _lock_report(db, report_id)
-            if report is not None and report.render_status != RenderStatus.DONE:
+            # Fenced like the job's own transitions (review 2026-10-23): an
+            # attempt whose job was reaped and claimed again must not mark the
+            # report FAILED while the current claim is rendering it.
+            if (report is not None and report.render_status != RenderStatus.DONE
+                    and _still_claimed(db, job_id, claim)):
                 report.render_status = RenderStatus.FAILED
                 report.render_error = str(exc)[:4000]
             db.commit()
@@ -313,6 +326,17 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
         return None
 
     raise ValueError(f"Unsupported client report job: {job.format!r}")
+
+
+def _still_claimed(db: Session, job_id: int, claim) -> bool:
+    """Whether the job is still this attempt's: processing under the claim
+    token it was run with — the condition of ``job_transitions``' fenced
+    writes.  A missing token matches nothing."""
+    if claim is None:
+        return False
+    return db.query(ReportJob.id).filter(
+        ReportJob.id == job_id, ReportJob.status == "processing", ReportJob.started_at == claim,
+    ).first() is not None
 
 
 def _render_issued(db: Session, report: Report) -> None:

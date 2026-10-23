@@ -55,14 +55,29 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from app.core.config import settings
+from app.services.quarto_render import is_asset_id, is_template_name
 
-_TEMPLATE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_ASSET_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 MAX_PIXELS = 50_000_000
 # An uncompressed DOCX larger than this is refused (a zip bomb, or not a
 # styles file).
 MAX_DOCX_UNCOMPRESSED = 100 * 1024 * 1024
 _EXT = {"png": ".png", "jpeg": ".jpg", "docx": ".docx"}
+# A relationship of a .docx part (``…/_rels/*.rels``), its target mode and
+# its type.  Only a hyperlink may point outside the file: Word follows one
+# when the reader clicks it, while every other external relationship (an
+# attached template, a linked picture, a frame, an OLE object …) is FETCHED
+# when the document is opened.  Pandoc's own reference.docx — the shipped
+# ones are copies of it — carries a sample hyperlink to example.com.
+_RELATIONSHIP = re.compile(rb"<(?:\w+:)?Relationship\b[^>]*>", re.IGNORECASE)
+_EXTERNAL_MODE = re.compile(rb"""\bTargetMode\s*=\s*["']\s*External\s*["']""", re.IGNORECASE)
+_HYPERLINK_TYPE = re.compile(rb"""\bType\s*=\s*["'][^"']*/hyperlink\s*["']""", re.IGNORECASE)
+
+
+def _fetches_from_outside(rels: bytes) -> bool:
+    return any(
+        _EXTERNAL_MODE.search(rel) and not _HYPERLINK_TYPE.search(rel)
+        for rel in _RELATIONSHIP.findall(rels)
+    )
 _KIND_LABEL = {"png": "PNG image", "jpeg": "JPEG image", "docx": "Word document (.docx)"}
 
 
@@ -75,13 +90,13 @@ def root() -> Path:
 
 
 def _folder(template_name: str) -> Path:
-    if not _TEMPLATE_NAME.match(template_name or ""):
+    if not is_template_name(template_name):
         raise AssetUploadError("Not a template name.")
     return root() / template_name
 
 
 def _paths(template_name: str, asset_id: str, kind: str) -> Tuple[Path, Path]:
-    if not _ASSET_ID.match(asset_id or ""):
+    if not is_asset_id(asset_id):
         raise AssetUploadError("Not an asset id.")
     folder = _folder(template_name)
     return folder / f"{asset_id}{_EXT[kind]}", folder / f"{asset_id}.json"
@@ -103,7 +118,7 @@ def uploads(template_name: str) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     for meta_path in sorted(folder.glob("*.json")):
         asset_id = meta_path.stem
-        if not _ASSET_ID.match(asset_id):
+        if not is_asset_id(asset_id):
             continue
         # Twice at most: a replacement swaps the metadata and then removes the
         # file the old metadata named, so a file that is gone means "read the
@@ -223,6 +238,23 @@ def _check_docx(data: bytes) -> None:
             raise AssetUploadError(
                 "This is not a Word document (.docx) — a template (.dotx) or macro-enabled file is not accepted."
             )
+        # A relationship to something outside the file (an attached template
+        # on a share, a linked picture on a server) is fetched by Word when
+        # the client opens the report — a report must make no outbound
+        # request (review 2026-10-23).  A hyperlink is not fetched.
+        for name in names:
+            if not name.lower().endswith(".rels"):
+                continue
+            try:
+                rels = archive.read(name)
+            except (KeyError, zipfile.BadZipFile, RuntimeError):
+                raise AssetUploadError("This Word document could not be read.")
+            if _fetches_from_outside(rels):
+                raise AssetUploadError(
+                    "This Word document uses a file outside itself (an attached template, a linked "
+                    "picture or object), which Word would fetch when the report is opened. Remove it, "
+                    "or start from a copy of the template's reference.docx."
+                )
 
 
 def _aspect_warning(asset: dict, width: int, height: int) -> Optional[str]:
@@ -362,7 +394,7 @@ def _publication_lock(template_name: str, asset_id: str) -> Iterator[None]:
     metadata in ``save`` and across ``remove``.  The lock file is never
     removed (unlinking a lock file another process is waiting on gives two
     holders) and is never an asset: ``uploads`` reads only ``*.json``."""
-    if not _ASSET_ID.match(asset_id or ""):
+    if not is_asset_id(asset_id):
         raise AssetUploadError("Not an asset id.")
     lock_path = _folder(template_name) / f".{asset_id}.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)

