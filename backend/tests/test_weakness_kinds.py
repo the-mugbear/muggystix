@@ -118,7 +118,7 @@ def test_nessus_plugins_take_the_catalog_check(db_session, test_project, tmp_pat
     path = tmp_path / "kinds.nessus"
     path.write_text(NESSUS_XML)
     result = NessusIntegrationService(db_session).process_nessus_file(str(path), project_id=test_project.id)
-    assert result["success"], result
+    assert result["scan_id"], result
     rows = {v.plugin_id: v for v in db_session.query(Vulnerability).filter(Vulnerability.source == VulnerabilitySource.NESSUS)}
     smb = rows["57608"]
     assert (smb.check_id, smb.title, smb.issue_key) == (

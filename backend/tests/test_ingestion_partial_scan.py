@@ -470,7 +470,7 @@ def test_a_name_seen_in_two_nessus_batches_is_recorded_for_both_addresses(
         ("10.40.1.1", "lb.example.test"), ("10.40.1.2", "lb.example.test"), ("10.40.1.3", "lb.example.test"),
     ])
     result = NessusIntegrationService(db_session).process_nessus_file(str(path), project_id=pid)
-    assert result["success"], result
+    assert result["scan_id"], result
 
     values = sorted(
         row[0] for row in db_session.query(models.DNSRecord.value)

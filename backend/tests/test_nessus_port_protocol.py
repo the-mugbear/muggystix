@@ -52,7 +52,7 @@ def _import(db, project_id, tmp_path: Path, **kw):
     path = tmp_path / "udp.nessus"
     path.write_text(NESSUS_XML)
     result = NessusIntegrationService(db).process_nessus_file(str(path), project_id=project_id, **kw)
-    assert result["success"], result
+    assert result["scan_id"], result
     host = db.query(models.Host).filter(
         models.Host.project_id == project_id, models.Host.ip_address == "10.9.8.7").one()
     return host

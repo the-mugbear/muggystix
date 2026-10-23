@@ -221,7 +221,6 @@ class NessusIntegrationService:
             )
             partial = bool(vuln_write_failures or host_processing_failures or report_items_unreadable)
             return {
-                'success': True,
                 'partial': partial,
                 'scan_id': scan_id,
                 'hosts_processed': hosts_processed,

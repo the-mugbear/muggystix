@@ -53,7 +53,7 @@ def _import(db, project_id, tmp_path, hosts, **kwargs):
         + "".join(hosts) + "</Report></NessusClientData_v2>"
     )
     result = NessusIntegrationService(db).process_nessus_file(str(path), project_id=project_id, **kwargs)
-    assert result["success"], result
+    assert result["scan_id"], result
     return result
 
 

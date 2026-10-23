@@ -2437,12 +2437,20 @@ class IngestionService:
             scan_id = result.get("scan_id")
             message = result.get("message")
             tool_name = "Nessus"
-            # v2.91.3 — surface partial-ingest warnings (per-finding
-            # write failures, per-host processing failures) into the
-            # standard parser_warnings channel so they reach
-            # IngestionJob.warnings and the upload UI's warning panel.
-            # Hard truncation lands in the if-not-success branch above;
-            # this branch handles soft warnings on a successful import.
+            # The hosts, findings and report items the service could not
+            # write are records lost: skipped AND partial, as every other
+            # parser publishes them in ``last_parse_stats`` (review
+            # 2026-10-23b, ING-2 — read only as warning text, the job looked
+            # complete and never reached Needs attention or Blocked).
+            parse_stats = {
+                "partial": bool(result.get("partial")),
+                "skipped": sum(
+                    int(result.get(key) or 0)
+                    for key in ("host_processing_failures", "vuln_write_failures", "report_items_unreadable")
+                ),
+            }
+            # v2.91.3 — the same losses, in words, reach IngestionJob.warnings
+            # and the upload UI's warning panel.
             nessus_warnings = result.get("warnings") or []
             for w in nessus_warnings:
                 if w:

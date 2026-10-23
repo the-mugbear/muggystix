@@ -329,7 +329,7 @@ def s03_nessus_udp(c: Ctx):
     result = NessusIntegrationService(c.db).process_nessus_file(path, project_id=c.pid)
     h = (c.db.query(models.Host)
          .filter(models.Host.project_id == c.pid, models.Host.ip_address == "10.77.1.13").first())
-    if not result.get("success") or h is None:
+    if h is None:
         c.note("s03", "Nessus UDP", f"IMPORT FAILED: {result}")
         return None
     c.host_count += 1

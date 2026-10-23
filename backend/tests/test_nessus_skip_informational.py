@@ -84,7 +84,7 @@ def test_skip_drops_info_rows_but_keeps_ports_and_reports_the_count(db_session, 
     result = NessusIntegrationService(db_session).process_nessus_file(
         _write(tmp_path), project_id=pid, skip_informational=True,
     )
-    assert result["success"], result
+    assert result["scan_id"], result
     assert result["vulnerabilities_found"] == 2
     assert result["informational_skipped"] == 3
     assert "3 informational skipped" in result["message"]
@@ -108,7 +108,7 @@ def test_default_keeps_info_rows(db_session, test_project, tmp_path):
     result = NessusIntegrationService(db_session).process_nessus_file(
         _write(tmp_path), project_id=pid,
     )
-    assert result["success"], result
+    assert result["scan_id"], result
     assert result["vulnerabilities_found"] == 5
     assert result["informational_skipped"] == 0
     assert "informational skipped" not in result["message"]
@@ -269,7 +269,7 @@ def test_truncated_import_still_reports_the_skipped_count(db_session, test_proje
     finally:
         report = end_read(reading)
     assert report.cut_short is not None and report.cut_short.records_read == 1
-    assert result["success"] is True, result
+    assert result["scan_id"], result
     assert result["hosts_processed"] == 1
     assert result["informational_skipped"] == 3
     assert "3 informational skipped" in result["message"]
