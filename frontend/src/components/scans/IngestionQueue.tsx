@@ -13,6 +13,7 @@ import {
 import type { IngestionJob } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useConfirm } from '../../hooks/useConfirm';
+import { useProjectRole } from '../../hooks/useProjectRole';
 import { invalidateReads, pollEvery } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
@@ -71,6 +72,11 @@ export interface IngestionQueueState {
  */
 export function useIngestionQueue(projectId: number): IngestionQueueState {
   const [autoRefresh, setAutoRefresh] = useState(false);
+  // The project's upload jobs — whoever submitted them — are an analyst's:
+  // every `/upload` route requires that project role (owner, 2026-10-23), as
+  // the import history's upload rows do.  Below it the queue is not read, and
+  // the strip shows nothing.
+  const { canWrite: readsJobs } = useProjectRole();
   const queuePollMs = (jobs: IngestionJob[] | undefined): number | null => {
     if (holdsActiveJob(jobs)) return ACTIVE_QUEUE_POLL_MS;
     return autoRefresh ? AUTO_QUEUE_POLL_MS : null;
@@ -78,11 +84,13 @@ export function useIngestionQueue(projectId: number): IngestionQueueState {
   const recentQuery = useQuery({
     queryKey: ['getRecentIngestionJobs', projectId, 25],
     queryFn: ({ signal }) => getRecentIngestionJobs(projectId, 25, signal),
+    enabled: readsJobs,
     ...pollEvery((query) => queuePollMs(query.state.data)),
   });
   const stagedQuery = useQuery({
     queryKey: ['getStagedIngestionJobs', projectId],
     queryFn: ({ signal }) => getStagedIngestionJobs(projectId, signal),
+    enabled: readsJobs,
     ...pollEvery(queuePollMs(recentQuery.data)),
   });
   // The two are shown together, so the queue never appears first without the
