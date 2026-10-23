@@ -330,7 +330,7 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
   {
     kind: 'query', id: 'note', token: 'note:', keys: [], chipKey: '',
     label: 'Note text', category: 'work', keywords: ['note', 'comment', 'text'],
-    help: 'Text in an analyst note on the host or one of its ports. Continues in the query bar.',
+    help: 'Text in a note on the host. Continues in the query bar.',
   },
 
   // ── Discovery & attribution ────────────────────────────────────────────

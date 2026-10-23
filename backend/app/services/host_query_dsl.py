@@ -369,7 +369,7 @@ _HAS_KEYWORDS = {
     "web": (lambda ctx: P.has_web_interface_predicate(ctx.db),
             "Has a web interface (httpx / eyewitness)."),
     "notes": (lambda ctx: P.has_notes_predicate(),
-              "Has an analyst note (on the host or one of its ports)."),
+              "Has a note on the host."),
     "exploit": (lambda ctx: P.has_exploit_predicate(),
                 "Has a scanner observation flagged exploitable by a vulnerability scanner "
                 "(currently Nessus)."),
