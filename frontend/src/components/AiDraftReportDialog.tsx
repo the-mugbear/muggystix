@@ -21,6 +21,7 @@ import {
   type LLMProviderEntry,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useOpeningKey } from '../hooks/useOpeningKey';
 import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
@@ -81,8 +82,38 @@ const wasCancelled = (err: unknown): boolean => {
  * summary from the findings this report lists, then hands the raw markdown to
  * the operator in an editable textarea. The AI drafts; the human owns the final
  * text (copy / download .md).
+ *
+ * An opening starts with no draft, no failure and the default provider — but
+ * with the audience and instructions written last time, kept ON PURPOSE (the
+ * same report is drafted again with the same steer).  So those two are held
+ * here and the rest is the body's, keyed by its opening (`useOpeningKey`;
+ * review 2026-10-23, R-FC2 — it was an effect on `open`).
  */
-const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ reportId, open, onClose, onUse, useLabel }) => {
+const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = (props) => {
+  const [audience, setAudience] = useState('');
+  const [instructions, setInstructions] = useState('');
+  return (
+    <AiDraftReportBody
+      key={useOpeningKey(props.open)}
+      {...props}
+      audience={audience}
+      setAudience={setAudience}
+      instructions={instructions}
+      setInstructions={setInstructions}
+    />
+  );
+};
+
+interface KeptSteer {
+  audience: string;
+  setAudience: (v: string) => void;
+  instructions: string;
+  setInstructions: (v: string) => void;
+}
+
+const AiDraftReportBody: React.FC<AiDraftReportDialogProps & KeptSteer> = ({
+  reportId, open, onClose, onUse, useLabel, audience, setAudience, instructions, setInstructions,
+}) => {
   const toast = useToast();
   const projectId = useProjectId();
 
@@ -102,9 +133,6 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ reportId, ope
     ? (providers.find((prov) => prov.is_default) ?? providers[0]).id
     : '';
   const providerId = chosenProvider !== '' ? chosenProvider : defaultProviderId;
-
-  const [audience, setAudience] = useState('');
-  const [instructions, setInstructions] = useState('');
 
   // Cancel is the operator's: the request in flight is theirs to stop.
   const abortRef = useRef<AbortController | null>(null);
@@ -136,15 +164,6 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ reportId, ope
   const [edited, setEdited] = useState<string | null>(null);
   const draft = edited ?? result?.content ?? '';
   const setDraft = setEdited;
-
-  // A reopen doesn't show a stale draft, error or choice of provider.
-  const resetGenerate = generate.reset;
-  useEffect(() => {
-    if (!open) return;
-    resetGenerate();
-    setEdited(null);
-    setChosenProvider('');
-  }, [open, resetGenerate]);
 
   const handleGenerate = () => {
     generate.mutate({

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
@@ -10,6 +10,7 @@ import {
   type FormatOption,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { useOpeningKey } from '../../hooks/useOpeningKey';
 import { useProjectId } from '../../hooks/useProjectId';
 import { BASIS_LABEL, otherFormats, suggestionOf } from '../../hooks/useUploadReview';
 import { invalidateReads, queryErrorText } from '../../lib/query';
@@ -50,7 +51,17 @@ export interface FormatRetryDialogProps {
   priorScanId?: number | null;
 }
 
-const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
+/** Each opening — for a job — starts clean (the choice, the source tool, "Show
+ *  all formats", a refused start), so the body is keyed by it
+ *  (`useOpeningKey`).  Nothing is preselected: a confident detection needs no
+ *  override ("let detection decide"); an uncertain one is a suggestion the
+ *  operator confirms or replaces — it used to be applied as if they had
+ *  chosen it. */
+const FormatRetryDialog: React.FC<FormatRetryDialogProps> = (props) => (
+  <FormatRetryDialogBody key={useOpeningKey(props.open ? props.jobId : null)} {...props} />
+);
+
+const FormatRetryDialogBody: React.FC<FormatRetryDialogProps> = ({
   open, onOpenChange, jobId, filename, mode, priorScanId,
 }) => {
   const toast = useToast();
@@ -109,18 +120,6 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
   });
   const submitting = start.isPending;
   const { reset: resetStart } = start;
-
-  // Each opening starts clean.  Nothing is preselected: a confident detection
-  // needs no override ("let detection decide"); an uncertain one is a
-  // suggestion the operator confirms or replaces — it used to be applied as if
-  // they had chosen it.
-  useEffect(() => {
-    if (!open) return;
-    setChosen('');
-    setSourceTool('');
-    setShowAllFormats(false);
-    resetStart();
-  }, [open, jobId, resetStart]);
 
   const retryInspection = () => {
     setChosen('');

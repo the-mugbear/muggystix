@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
 import { useProjectId } from '../hooks/useProjectId';
 import { Code } from 'lucide-react';
 import { getToolReadyOutput, ToolReadyResult } from '../services/api';
@@ -50,25 +49,22 @@ export default function ToolReadyOutput({
   // Default in-scope: a declared domain must cover a name before it becomes
   // a target — the same rule the agent's scope guardrail applies.
   const [inScopeNamesOnly, setInScopeNamesOnly] = useState(true);
-  // Asked for by the button, so a mutation: its answer is the output shown,
-  // and asking again starts from nothing.  The dialog itself — format,
-  // generate, copy, download — is `GeneratedTextDialog`.
+  // Asked for by the button (the dialog's mutation runs it): its answer is
+  // the output shown, and asking again starts from nothing.  The dialog
+  // itself — format, generate, copy, download — is `GeneratedTextDialog`.
   // The answer carries the names scope it was ASKED with, so what an empty
   // answer says follows the request, not the switch moved since.
-  const generate = useMutation({
-    mutationFn: async (format: string): Promise<AskedResult> => {
-      const namesScope = NAME_AWARE_FORMATS.has(format)
-        ? (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all'
-        : undefined;
-      const result = await getToolReadyOutput(projectId, format, {
-        ...filters,
-        includePorts,
-        ...(namesScope ? { namesScope } : {}),
-      });
-      return { ...result, namesScope };
-    },
-    onError: (err) => console.error('Error generating tool output:', err),
-  });
+  const generateFn = async (format: string): Promise<AskedResult> => {
+    const namesScope = NAME_AWARE_FORMATS.has(format)
+      ? (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all'
+      : undefined;
+    const result = await getToolReadyOutput(projectId, format, {
+      ...filters,
+      includePorts,
+      ...(namesScope ? { namesScope } : {}),
+    });
+    return { ...result, namesScope };
+  };
   // A query (`q`) or the search box chooses HOSTS and lists every open port
   // of them; only the Ports filter narrows ports (the server's rule, pinned
   // by test_a_query_chooses_hosts_and_narrows_no_port).  Said when it bites.
@@ -84,7 +80,8 @@ export default function ToolReadyOutput({
       formats={TOOL_FORMATS}
       defaultFormat="ip-list"
       formatFieldId="tro-format"
-      generate={generate}
+      generateFn={generateFn}
+      onGenerateError={(err) => console.error('Error generating tool output:', err)}
       generateLabel="Generate output"
       errorFallback="Failed to generate output"
       textOf={(result) => result.output ?? ''}

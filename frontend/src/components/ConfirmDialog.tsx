@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { ShieldAlert, AlertTriangle, Info, CheckCircle2, Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -12,6 +12,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Alert, AlertDescription } from './ui/alert';
 import { formatApiError } from '../utils/apiErrors';
+import { useOpeningKey } from '../hooks/useOpeningKey';
 
 /**
  * Shared confirmation dialog — replaces ad-hoc ``window.confirm``
@@ -62,7 +63,13 @@ const SEVERITY_BUTTON: Record<ConfirmSeverity, 'destructive' | 'default'> = {
   success: 'default',
 };
 
-const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
+/** Every opening starts clean — the typed name, a refusal — so the body is
+ *  keyed by its opening (`useOpeningKey`). */
+const ConfirmDialog: React.FC<ConfirmDialogProps> = (props) => (
+  <ConfirmDialogBody key={useOpeningKey(props.open)} {...props} />
+);
+
+const ConfirmDialogBody: React.FC<ConfirmDialogProps> = ({
   open,
   title,
   body,
@@ -77,14 +84,6 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [typedValue, setTypedValue] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) {
-      setTypedValue('');
-      setSubmitting(false);
-      setErrorMessage(null);
-    }
-  }, [open]);
 
   const typedMatch =
     !confirmTypedName || (!!resourceName && typedValue.trim() === resourceName.trim());
