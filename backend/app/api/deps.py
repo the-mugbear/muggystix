@@ -4,9 +4,10 @@ Shared FastAPI dependencies for project-scoped endpoints.
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import Depends, Header, HTTPException, Path, Request, UploadFile, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -92,7 +93,36 @@ def get_current_user(
     """
     Get current authenticated user from JWT token
     """
-    token = credentials.credentials
+    user, session = _user_and_session_of(db, credentials.credentials)
+
+    # v2.91.3 (code review #6) — debounce the per-request session
+    # activity write.  Pre-fix every authenticated user request issued
+    # an UPDATE + commit on user_sessions, which on a polling-heavy UI
+    # turns read traffic into write traffic with all the WAL + row-
+    # contention costs.  The agent path was debounced in v2.26.0
+    # (see _AGENT_ACTIVITY_DEBOUNCE_SECONDS below); apply the same
+    # pattern here.  ``last_activity`` is used as a "when did this
+    # user last show signs of life" coarse signal — second-level
+    # resolution isn't required (the per-request audit trail lives
+    # elsewhere).  Stateless across workers because the persisted
+    # value is itself the source of truth.
+    now = datetime.now(timezone.utc)
+    prior = session.last_activity
+    if prior is not None and prior.tzinfo is None:
+        prior = prior.replace(tzinfo=timezone.utc)
+    if prior is None or (now - prior).total_seconds() >= _USER_SESSION_ACTIVITY_DEBOUNCE_SECONDS:
+        session.last_activity = now
+        db.commit()
+
+    return user
+
+
+def _user_and_session_of(db: Session, token: str) -> "tuple[User, UserSession]":
+    """The active user a bearer token names and its live session row, or a
+    401 — the authentication behind :func:`get_current_user` and the scan
+    upload's door (:func:`large_upload_refusal`).  One read: the user with its
+    session outer-joined, so each refusal still says which of the two failed.
+    """
     payload = verify_token(token)
 
     # A 2FA-challenge token proves password-but-not-yet-TOTP; it must never
@@ -123,49 +153,34 @@ def get_current_user(
             detail="Invalid token payload"
         )
 
-    user = db.query(User).filter(User.id == user_id_int).first()
+    # The session must still be valid — and THIS user's session: a token
+    # whose ``jti`` names another account's session row is not one.
+    row = (
+        db.query(User, UserSession)
+        .outerjoin(
+            UserSession,
+            and_(
+                UserSession.token_jti == payload.get("jti"),
+                UserSession.user_id == User.id,
+                UserSession.revoked_at.is_(None),
+                UserSession.expires_at > datetime.now(timezone.utc),
+            ),
+        )
+        .filter(User.id == user_id_int)
+        .first()
+    )
+    user, session = row if row is not None else (None, None)
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive"
         )
-
-    # Check if session is still valid — and that it is THIS user's session: a
-    # token whose ``jti`` names another account's session row is not one.
-    token_jti = payload.get("jti")
-    session = db.query(UserSession).filter(
-        UserSession.token_jti == token_jti,
-        UserSession.user_id == user.id,
-        UserSession.revoked_at.is_(None),
-        UserSession.expires_at > datetime.now(timezone.utc)
-    ).first()
-
     if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired or revoked"
         )
-
-    # v2.91.3 (code review #6) — debounce the per-request session
-    # activity write.  Pre-fix every authenticated user request issued
-    # an UPDATE + commit on user_sessions, which on a polling-heavy UI
-    # turns read traffic into write traffic with all the WAL + row-
-    # contention costs.  The agent path was debounced in v2.26.0
-    # (see _AGENT_ACTIVITY_DEBOUNCE_SECONDS below); apply the same
-    # pattern here.  ``last_activity`` is used as a "when did this
-    # user last show signs of life" coarse signal — second-level
-    # resolution isn't required (the per-request audit trail lives
-    # elsewhere).  Stateless across workers because the persisted
-    # value is itself the source of truth.
-    now = datetime.now(timezone.utc)
-    prior = session.last_activity
-    if prior is not None and prior.tzinfo is None:
-        prior = prior.replace(tzinfo=timezone.utc)
-    if prior is None or (now - prior).total_seconds() >= _USER_SESSION_ACTIVITY_DEBOUNCE_SECONDS:
-        session.last_activity = now
-        db.commit()
-
-    return user
+    return user, session
 
 
 def require_role(required_role: str):
@@ -290,6 +305,14 @@ class _AgentKeyContext:
     operator_password_changed_at: Optional[datetime]
     membership_role: Optional[str]
 
+    def operator_access(self) -> tuple:
+        """What :func:`operator_access_refusal` decides from — plain values,
+        so a request holds no database rows after it has been answered."""
+        return (
+            self.project_archived, self.operator_id, self.operator_active,
+            self.operator_is_admin, self.membership_role,
+        )
+
 
 def _load_agent_key(db: Session, token: str) -> Optional[_AgentKeyContext]:
     """The active agent key for ``token`` with its session, agent, project
@@ -346,29 +369,36 @@ def _key_expired(api_key: APIKey) -> bool:
     return expires_at is None or expires_at < datetime.now(timezone.utc)
 
 
-def large_upload_refusal(path: str, headers: Dict[str, str]) -> Optional[str]:
-    """Why a scan upload must be refused BEFORE its body is read, or None.
+def large_upload_refusal(path: str, headers: Dict[str, str]) -> Optional[Tuple[int, Any]]:
+    """Why a scan upload must be refused BEFORE its body is read — ``(status,
+    detail)`` — or None.
 
     The two scan-upload routes are exempt from the body cap
     (``core/body_limit``), and FastAPI reads a body before it resolves the
-    route's dependencies — so a caller with no credential could make the
-    backend spool up to 2 GB to disk before the 401 (review 2026-10-10, S3).
-    ``RequestBodyLimitMiddleware`` asks this first, in a worker thread:
+    route's dependencies — so a caller the route would refuse could make the
+    backend spool up to 2 GB to the disk the database shares before the 401
+    or 403 (review 2026-10-10, S3; review 2026-10-23b, PLT-2: a viewer, a
+    non-member, a revoked session).  ``RequestBodyLimitMiddleware`` asks this
+    first, in a worker thread, on a database session of its own that is
+    closed before the body is read.  It asks what the route asks, through the
+    route's own functions:
 
-    * the page's upload needs a bearer token that :func:`verify_token`
-      accepts (signature and expiry; no database) and that is not a 2FA
-      challenge token;
-    * the agents' upload needs a key that names an ACTIVE, UNEXPIRED agent
-      key — :func:`_load_agent_key`, the gate's own read, on a session of its
-      own that is closed before the body is read.  An expired key is refused
-      here even while it is renewable: the route would refuse it anyway, and
-      only after the whole body had been spooled (review 2026-10-23).
+    * the page's upload: :func:`_user_and_session_of` (an active user and a
+      live session row — what :func:`get_current_user` checks; one read), the
+      account-readiness gate :func:`require_password_changed`, and
+      :func:`check_project_role` at ANALYST on the path's project — what
+      ``upload.py``'s router requires;
+    * the agents' upload: :func:`_load_agent_key` (the gate's own read): an
+      ACTIVE, UNEXPIRED key — refused here even while it is renewable, as the
+      route would refuse it (review 2026-10-23) —, not issued before its
+      operator's password changed, and :func:`operator_access_refusal` for a
+      project write, from the values that read already loaded.  A key whose
+      operator left the project has its session ended here, as the gate would.
 
-    This is a door, not the authentication: the route's dependencies still
-    decide everything else (a revoked session, an expired key's structured
-    401, the project role) once the body is in.  ``headers`` has lower-case
-    names."""
+    The route's dependencies still run once the body is in.  ``headers`` has
+    lower-case names."""
     from app.core.body_limit import is_agent_upload
+    from app.db import session as _session_module
 
     if is_agent_upload(path):
         token = headers.get("x-api-key")
@@ -376,32 +406,44 @@ def large_upload_refusal(path: str, headers: Dict[str, str]) -> Optional[str]:
             scheme, _, value = (headers.get("authorization") or "").partition(" ")
             token = value.strip() if scheme.lower() == "bearer" else ""
         if not token:
-            return "Missing agent API key — provide X-API-Key or Authorization: Bearer header"
-        from app.db import session as _session_module
-
+            return 401, "Missing agent API key — provide X-API-Key or Authorization: Bearer header"
         db = _session_module.SessionLocal()
         try:
             ctx = _load_agent_key(db, token)
+            if ctx is None:
+                return 401, "Invalid agent API key"
+            if _key_expired(ctx.api_key):
+                return 401, (
+                    "Your API key expired. Renew it (POST "
+                    f"{AGENT_SESSION_RENEW_PATH} with the same key) and send the upload again."
+                )
+            if _issued_before_password_change(ctx):
+                return 401, _CREDENTIALS_CHANGED_DETAIL
+            refusal = operator_access_refusal(
+                ctx.operator_access(), is_write=True, is_project_write=True,
+                read_floor=_DEFAULT_READ_ROLE,
+            )
+            if refusal is None:
+                return None
+            if refusal.detail == _OPERATOR_LEFT_PROJECT:
+                end_session_of_departed_operator(db, ctx.session)
+            return refusal.status_code, refusal.detail
         finally:
             db.close()
-        if ctx is None:
-            return "Invalid agent API key"
-        if _key_expired(ctx.api_key):
-            return (
-                "Your API key expired. Renew it (POST "
-                f"{AGENT_SESSION_RENEW_PATH} with the same key) and send the upload again."
-            )
-        return None
 
     scheme, _, value = (headers.get("authorization") or "").partition(" ")
     if scheme.lower() != "bearer" or not value.strip():
-        return "Not authenticated"
+        return 401, "Not authenticated"
+    project_id = int(re.search(r"/projects/(\d+)/", path).group(1))
+    db = _session_module.SessionLocal()
     try:
-        payload = verify_token(value.strip())
+        user, _session = _user_and_session_of(db, value.strip())
+        require_password_changed(user)
+        check_project_role(db, project_id, user, ProjectRole.ANALYST)
     except HTTPException as exc:
-        return str(exc.detail)
-    if payload.get("purpose") == TWO_FACTOR_CHALLENGE_PURPOSE or not payload.get("sub"):
-        return "Invalid token payload"
+        return exc.status_code, exc.detail
+    finally:
+        db.close()
     return None
 
 
@@ -743,10 +785,7 @@ def get_current_agent(
     request.state.key_operator_id = agent_session.started_by_id or agent.owner_id
     # What the operator gate decides from — plain values, so the request holds
     # no database rows after it has been answered.
-    request.state._agent_operator_access = (
-        ctx.project_archived, ctx.operator_id, ctx.operator_active,
-        ctx.operator_is_admin, ctx.membership_role,
-    )
+    request.state._agent_operator_access = ctx.operator_access()
 
     # v2.24.0 — agent_api_call middleware reads these after the response
     # is returned (when request.state survives via Starlette's request
@@ -1126,53 +1165,70 @@ def enforce_agent_operator_access(
     access = getattr(request.state, "_agent_operator_access", None)
     if access is None:
         raise HTTPException(status_code=401, detail="Invalid agent API key")
+    refusal = operator_access_refusal(
+        access, is_write=is_write, is_project_write=is_project_write, read_floor=declared.read_floor,
+    )
+    if refusal is not None:
+        if refusal.detail == _OPERATOR_LEFT_PROJECT:
+            end_session_of_departed_operator(
+                db, db.get(AgentSession, getattr(request.state, "agent_session_id", None) or 0),
+            )
+        raise refusal
+    _project_archived, _operator_id, _active, operator_is_admin, membership_role = access
+    request.state.key_operator_is_admin = operator_is_admin
+    # A global admin's authority does not come from a membership, but the
+    # membership they DO hold is still said (``agent_identity``): left unset
+    # it read ``project_role: null`` whether or not they were a member, and an
+    # agent took null for "not a member" (acceptance preflight 2026-10-10,
+    # feedback #38).  Already loaded with the key.
+    request.state.key_operator_role = membership_role
+    return agent
+
+
+_OPERATOR_LEFT_PROJECT = (
+    "This key's operator is no longer a member of the project. The key cannot "
+    "act on a project its operator has left, and its session has been ended."
+)
+
+
+def operator_access_refusal(
+    access: tuple, *, is_write: bool, is_project_write: bool, read_floor: ProjectRole,
+) -> Optional[HTTPException]:
+    """The refusal the agent gate answers for this key's operator, or None —
+    decided from the values loaded with the key (``_load_agent_key``), with no
+    statement.  The ONE statement of what an operator's key may do: the gate
+    raises it, and the scan upload's door (:func:`large_upload_refusal`) asks
+    it before the body is read.  A refusal whose detail is
+    ``_OPERATOR_LEFT_PROJECT`` obliges the caller to end the session."""
     project_archived, operator_id, operator_active, operator_is_admin, membership_role = access
 
     if (is_project_write or not is_write) and project_archived:
-        raise HTTPException(status_code=410, detail="Project is archived")
+        return HTTPException(status_code=410, detail="Project is archived")
 
     # ``operator_id`` is None only when the user row behind the key is gone,
     # which the schema does not allow for a live key; it is refused like an
     # inactive one.
     if operator_id is None or not operator_active:
-        raise HTTPException(
+        return HTTPException(
             status_code=403,
             detail=(
                 "This key's operator is no longer an active user. Ask an active "
                 "project member to start a new session."
             ),
         )
-    request.state.key_operator_is_admin = operator_is_admin
     if operator_is_admin:
-        # A global admin's authority does not come from a membership, but the
-        # membership they DO hold is still said (``agent_identity``): left
-        # unset it read ``project_role: null`` whether or not they were a
-        # member, and an agent took null for "not a member" (acceptance
-        # preflight 2026-10-10, feedback #38).  Already loaded with the key.
-        request.state.key_operator_role = membership_role
-        return agent
+        return None
 
     if membership_role is None:
         # Only reachable for an operator who was a global admin when the
         # session started and is a member no longer (removing a member ends
-        # their sessions).  The session ends here as at renewal, so that a
+        # their sessions).  The session ends then, as at renewal, so that a
         # later membership does not revive the key (review 2026-10-23, H-AG1).
-        end_session_of_departed_operator(
-            db, db.get(AgentSession, getattr(request.state, "agent_session_id", None) or 0),
-        )
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This key's operator is no longer a member of the project. The "
-                "key cannot act on a project its operator has left, and its "
-                "session has been ended."
-            ),
-        )
-    request.state.key_operator_role = membership_role
+        return HTTPException(status_code=403, detail=_OPERATOR_LEFT_PROJECT)
 
     if is_project_write:
         if not check_permissions(membership_role, ProjectRole.ANALYST.value):
-            raise HTTPException(
+            return HTTPException(
                 status_code=403,
                 detail=(
                     f"This key acts for a project {membership_role}, which is "
@@ -1180,21 +1236,20 @@ def enforce_agent_operator_access(
                     "started its session can do."
                 ),
             )
-        return agent
+        return None
 
     # Reads: most need only membership, but bulk exports match their JWT
     # equivalents' floor.
-    required_read = declared.read_floor
-    if not check_permissions(membership_role, required_read.value):
-        raise HTTPException(
+    if not check_permissions(membership_role, read_floor.value):
+        return HTTPException(
             status_code=403,
             detail=(
                 f"This key acts for a project {membership_role}. This read "
-                f"requires {required_read.value}, the same role the equivalent "
+                f"requires {read_floor.value}, the same role the equivalent "
                 "page or export requires of a person."
             ),
         )
-    return agent
+    return None
 
 
 # v2.337.0 — ``require_plan_scope``, ``require_plan_generation_scope``,
@@ -1308,22 +1363,27 @@ def require_project_role(required_role: "ProjectRole | str"):
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_user),
     ) -> User:
-        # Global admins always pass
-        if current_user.role == UserRole.ADMIN:
-            return current_user
-
-        role = membership_role(db, project_id, current_user)
-        if role is None:
-            raise HTTPException(status_code=403, detail="Not a member of this project")
-
-        if not check_permissions(role, required.value):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Insufficient project role. Required: {required.value}",
-            )
+        check_project_role(db, project_id, current_user, required)
         return current_user
 
     return checker
+
+
+def check_project_role(db: Session, project_id: int, user: User, required: ProjectRole) -> None:
+    """403 unless ``user`` reaches ``required`` on ``project_id`` — the rule of
+    :func:`require_project_role`, which the scan upload's door
+    (:func:`large_upload_refusal`) also asks before the body is read.  A
+    global admin always passes."""
+    if user.role == UserRole.ADMIN:
+        return
+    role = membership_role(db, project_id, user)
+    if role is None:
+        raise HTTPException(status_code=403, detail="Not a member of this project")
+    if not check_permissions(role, required.value):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Insufficient project role. Required: {required.value}",
+        )
 
 
 def can_write_in_some_project(db: Session, user: User) -> bool:

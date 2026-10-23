@@ -24,6 +24,7 @@ from app.core.security import (
     create_session,
     renew_session,
     revoke_session,
+    lock_account_attempts,
     login_lockout_active,
     login_throttle_exceeded,
     reauth_password,
@@ -315,12 +316,25 @@ def login_2fa(
     user = db.query(User).filter(User.id == user_id).first()
     if not user or not user.is_active or not user.totp_enabled:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA challenge")
+    # A challenge proves the password the account had when it was minted: one
+    # minted before a password change or reset does not finish signing in.
+    # (``iat`` is whole seconds, so it is compared with the change's second.)
+    changed = user.password_changed_at
+    if changed is not None and payload.get("iat") is not None:
+        if changed.tzinfo is None:
+            changed = changed.replace(tzinfo=timezone.utc)
+        if int(payload["iat"]) < int(changed.timestamp()):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired 2FA challenge")
 
     # Throttle the second factor too. The TOTP space is only 1e6 and the
     # challenge JWT is reusable for its whole TTL, so without this an attacker
     # who already holds a valid challenge could spray codes.  The address's
     # budget is shared with the password step; the account's is its wrong
     # codes only, so password guessing by a stranger cannot use it up.
+    # Attempts on one account are counted one at a time (the lock is held
+    # until this attempt's failure row, or its session, commits): checked
+    # against the same committed total, parallel codes all got a guess.
+    lock_account_attempts(db, "2fa", user.id)
     if login_throttle_exceeded(
         db, username=user.username, ip_address=client_info.get("ip_address"),
         actions=("login_failed", "login_2fa_failed"),
@@ -375,7 +389,10 @@ def _verify_second_factor(db: Session, user: User, code: str) -> bool:
             )
             .update({"used_at": datetime.now(timezone.utc)}, synchronize_session=False)
         )
-        db.commit()
+        # Committed only when a code was spent: a commit here on a wrong code
+        # would release the attempt lock before its failure row is written.
+        if consumed == 1:
+            db.commit()
         return consumed == 1
     # TOTP path — a code is spent when it is accepted, so the same six digits
     # do not sign in twice inside their window.

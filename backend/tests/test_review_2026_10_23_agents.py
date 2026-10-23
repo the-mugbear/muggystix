@@ -204,7 +204,7 @@ def test_the_upload_door_refuses_an_expired_but_renewable_key(client, db_session
     db_session.commit()
     assert deps.key_is_renewable(session)
     refusal = deps.large_upload_refusal("/api/v1/agent/uploads", {"x-api-key": raw})
-    assert refusal is not None and "expired" in refusal    # was None: the body was spooled first
+    assert refusal is not None and refusal[0] == 401 and "expired" in refusal[1]   # was None: the body was spooled first
     assert _renew(client, raw).status_code == 200
     assert deps.large_upload_refusal("/api/v1/agent/uploads", {"x-api-key": raw}) is None
 

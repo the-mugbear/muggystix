@@ -44,8 +44,8 @@ class Project(Base):
     name = Column(String(100), unique=True, nullable=False, index=True)
     slug = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(Text)
-    # active, completed, archived (``projects._VALID_STATUSES``; older rows may
-    # read in_progress).  ``archived`` is the ONE fact that a project is
+    # active, completed, archived (``projects._VALID_STATUSES``;
+    # ``ck_projects_status``).  ``archived`` is the ONE fact that a project is
     # archived — see ``is_archived`` below.
     status = Column(String(20), nullable=False, default="active")
     is_default = Column(Boolean, default=False)

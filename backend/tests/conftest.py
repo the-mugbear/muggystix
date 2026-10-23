@@ -416,24 +416,31 @@ def db_session(test_engine):
     connection.close()
 
 
-def sign_page_uploads(test_client, user) -> None:
-    """Give the page's scan upload a real token for ``user``.
+def sign_page_uploads(test_client, user, db) -> None:
+    """Give the page's scan upload a real token for ``user``, with its session.
 
-    The scan uploads are refused before their body is read unless they carry
-    a credential that could pass (``deps.large_upload_refusal``, review
-    2026-10-10 S3) — a check in the middleware, which no dependency override
-    reaches.  Only that path gets the header: on any other route the
-    overridden ``get_current_user`` decides, and an agent route must keep
-    seeing no credential where a test sends none."""
+    The scan uploads are refused before their body is read unless the caller
+    is one the route would admit (``deps.large_upload_refusal``: a live
+    session row and the project role; review 2026-10-10 S3, 2026-10-23b
+    PLT-2) — a check in the middleware, which no dependency override reaches.
+    Only that path gets the header: on any other route the overridden
+    ``get_current_user`` decides, and an agent route must keep seeing no
+    credential where a test sends none."""
     import re
 
-    from app.core.security import create_access_token
+    from app.core.security import create_access_token, create_session, verify_token
 
     page_upload = re.compile(r"^/api/v1/projects/\d+/upload/?$")
     token = create_access_token({"sub": str(user.id), "username": user.username})
+    signed_in = []
 
     def sign(request):
         if page_upload.match(request.url.path) and "authorization" not in request.headers:
+            if not signed_in:
+                # Made at the first upload, so a test that counts the user's
+                # sessions sees only its own.
+                create_session(db, user, verify_token(token)["jti"])
+                signed_in.append(True)
             request.headers["Authorization"] = f"Bearer {token}"
 
     test_client.event_hooks = {**test_client.event_hooks, "request": [*test_client.event_hooks["request"], sign]}
@@ -463,7 +470,7 @@ def client(db_session, test_user):
     app.dependency_overrides[get_current_user_if_present] = override_get_current_user
 
     with TestClient(app) as test_client:
-        sign_page_uploads(test_client, test_user)
+        sign_page_uploads(test_client, test_user, db_session)
         yield test_client
 
     app.dependency_overrides.clear()

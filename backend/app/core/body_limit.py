@@ -39,10 +39,11 @@ def is_agent_upload(path: str) -> bool:
 
 
 class RequestBodyLimitMiddleware:
-    """``large_body_refusal(path, headers) -> reason | None`` is asked, in a
-    worker thread, before a large-body path's body is read: a reason is a
-    401 and the body is never read (review 2026-10-10, S3 — an anonymous
-    client could make the backend spool 2 GB before the route's 401).  The
+    """``large_body_refusal(path, headers) -> (status, detail) | None`` is
+    asked, in a worker thread, before a large-body path's body is read: a
+    refusal is answered as it says and the body is never read (review
+    2026-10-10, S3 — an anonymous client could make the backend spool 2 GB
+    before the route's 401; review 2026-10-23b, PLT-2 — so could a viewer).  The
     application passes ``deps.large_upload_refusal``; without one the paths
     are only exempt from the cap."""
 
@@ -51,7 +52,7 @@ class RequestBodyLimitMiddleware:
         self.max_bytes = max_bytes
         self.large_body_refusal = large_body_refusal
 
-    async def _answer(self, send, status: int, detail: str) -> None:
+    async def _answer(self, send, status: int, detail) -> None:
         body = json.dumps({"detail": detail}).encode()
         await send({
             "type": "http.response.start",
@@ -80,11 +81,13 @@ class RequestBodyLimitMiddleware:
                     k.decode("latin-1").lower(): v.decode("latin-1")
                     for k, v in scope.get("headers") or []
                 }
-                # In a thread: the agents' check reads its key (a short
-                # session of its own, closed before anything is awaited).
-                reason = await run_in_threadpool(self.large_body_refusal, path, headers)
-                if reason is not None:
-                    await self._answer(send, 401, reason)
+                # In a thread: the check reads the caller's session or key and
+                # role (a short session of its own, closed before anything is
+                # awaited).
+                refusal = await run_in_threadpool(self.large_body_refusal, path, headers)
+                if refusal is not None:
+                    status, detail = refusal
+                    await self._answer(send, status, detail)
                     return
             await self.app(scope, receive, send)
             return

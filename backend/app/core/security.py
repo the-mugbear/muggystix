@@ -346,6 +346,23 @@ REAUTH_FAILED_ACTIONS = ("password_change_failed", "password_reauth_failed")
 REAUTH_THROTTLE_FAILURES = LOGIN_LOCKOUT_FAILURES
 
 
+def lock_account_attempts(db: Session, step: str, user_id: int) -> None:
+    """Count this account's attempts at ``step`` one at a time.
+
+    A transaction-scoped advisory lock on (step, account), held until the
+    caller's audit row for the attempt (or its own change) commits — so
+    parallel guesses are never all checked against the same committed total.
+    The re-authentication step (``reauth``) and sign-in's second factor
+    (``2fa``, review 2026-10-23b PLT-1: about 150 parallel codes all passed a
+    limit of 10) take it before their limit is read; the caller must not
+    commit between the limit's read and the failure's audit row.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(literal(f"{step}:{user_id}"), 0)))
+        )
+
+
 def reauth_password(
     db: Session,
     user: User,
@@ -370,12 +387,7 @@ def reauth_password(
     """
     if failed_action not in REAUTH_FAILED_ACTIONS:
         raise ValueError(f"{failed_action!r} is not counted by the re-authentication limit")
-    if db.get_bind().dialect.name == "postgresql":
-        # Parallel guesses are counted one at a time: held until this
-        # attempt's audit row (or the route's own change) commits.
-        db.execute(
-            select(func.pg_advisory_xact_lock(func.hashtextextended(literal(f"reauth:{user.id}"), 0)))
-        )
+    lock_account_attempts(db, "reauth", user.id)
     # Per ACCOUNT only: the caller is signed in, so there is no spray across
     # accounts to stop, and counting the address too let 20 failures behind
     # one NAT lock everyone there out of change-password and 2FA (review
@@ -541,13 +553,13 @@ def renew_session(db: Session, user: User, token_jti: str) -> Optional[str]:
 
 
 def revoke_session(db: Session, token_jti: str, reason: str = "logout"):
-    """Revoke user session"""
+    """Revoke user session.  Stages the change: the caller commits it with
+    its audit row, in one transaction."""
     session = db.query(UserSession).filter(UserSession.token_jti == token_jti).first()
 
     if session:
         session.revoked_at = datetime.now(timezone.utc)
         session.revoked_reason = reason
-        db.commit()
 
 
 def cleanup_expired_sessions(db: Session):

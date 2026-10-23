@@ -244,12 +244,15 @@ def my_project_memberships(
     too with ``role = "admin"`` so the Profile page reflects the user's
     actual reach. Non-admins see only their explicit memberships.
     """
-    memberships = (
-        db.query(ProjectMembership, Project)
-        .join(Project, Project.id == ProjectMembership.project_id)
-        .filter(ProjectMembership.user_id == current_user.id)
-        .all()
-    )
+    return memberships_of(db, current_user)
+
+
+def memberships_of(db: Session, user: User) -> List[MyProjectMembership]:
+    """``user``'s project memberships, with a global admin's implied ones —
+    the one answer behind the profile's list and the admin's view of an
+    account.  A global admin is also listed, as ``admin`` with no
+    ``joined_at``, on every project (archived ones included) they have no
+    membership row in, so the list shows their actual reach."""
     explicit_rows = [
         MyProjectMembership(
             project_id=p.id,
@@ -260,12 +263,15 @@ def my_project_memberships(
             role=m.role,
             joined_at=m.created_at,
         )
-        for m, p in memberships
+        for m, p in (
+            db.query(ProjectMembership, Project)
+            .join(Project, Project.id == ProjectMembership.project_id)
+            .filter(ProjectMembership.user_id == user.id)
+            .all()
+        )
     ]
 
-    # Global admins also see all projects they aren't explicitly listed
-    # on (membership row may not exist for every project they manage).
-    if current_user.role == UserRole.ADMIN:
+    if user.role == UserRole.ADMIN:
         explicit_ids = {row.project_id for row in explicit_rows}
         implicit_projects = (
             db.query(Project)
@@ -417,11 +423,9 @@ def get_user_memberships(
     settings users list.  Mirrors the self-service `/profile/projects`
     response shape so the frontend can reuse the same row component.
 
-    Global admins on the target account are surfaced consistently
-    with the self-service flow: every unarchived project they DON'T
-    have an explicit membership row in is rolled up with `role='admin'`
-    so the panel shows the user's actual reach, not just the explicit
-    rows.
+    The same list as the self-service flow (:func:`memberships_of`): a
+    global admin is also listed as ``admin`` on every project, archived
+    ones included, they have no membership row in.
     """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -429,47 +433,7 @@ def get_user_memberships(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    memberships = (
-        db.query(ProjectMembership, Project)
-        .join(Project, Project.id == ProjectMembership.project_id)
-        .filter(ProjectMembership.user_id == user_id)
-        .all()
-    )
-    explicit_rows = [
-        MyProjectMembership(
-            project_id=p.id,
-            project_name=p.name,
-            project_slug=p.slug,
-            project_status=p.status,
-            project_is_default=p.is_default,
-            role=m.role,
-            joined_at=m.created_at,
-        )
-        for m, p in memberships
-    ]
-
-    if user.role == UserRole.ADMIN:
-        explicit_ids = {row.project_id for row in explicit_rows}
-        implicit_projects = (
-            db.query(Project)
-            .filter(~Project.id.in_(explicit_ids) if explicit_ids else True)
-            .all()
-        )
-        for p in implicit_projects:
-            explicit_rows.append(
-                MyProjectMembership(
-                    project_id=p.id,
-                    project_name=p.name,
-                    project_slug=p.slug,
-                    project_status=p.status,
-                    project_is_default=p.is_default,
-                    role="admin",
-                    joined_at=None,
-                )
-            )
-
-    explicit_rows.sort(key=lambda r: r.project_name.lower())
-    return explicit_rows
+    return memberships_of(db, user)
 
 
 @router.put(
@@ -495,13 +459,8 @@ def update_user(
             detail="User not found"
         )
 
-    # A demotion or a deactivation may take an administrator away: decided
-    # under the lock on the admin rows, on the rows as they are now.
-    if (update_data.role is not None and update_data.role != UserRole.ADMIN.value) or update_data.is_active is False:
-        keep_an_active_admin(db, actor=current_user, target=user)
-        db.refresh(user)
-
-    # Prevent admin from demoting themselves
+    # Prevent admin from demoting themselves — said before the last-admin
+    # check, which would otherwise answer the only admin with its own text.
     if user_id == current_user.id and update_data.role and update_data.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -514,6 +473,12 @@ def update_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot deactivate your own account"
         )
+
+    # A demotion or a deactivation may take an administrator away: decided
+    # under the lock on the admin rows, on the rows as they are now.
+    if (update_data.role is not None and update_data.role != UserRole.ADMIN.value) or update_data.is_active is False:
+        keep_an_active_admin(db, actor=current_user, target=user)
+        db.refresh(user)
 
     changes = {}
 
