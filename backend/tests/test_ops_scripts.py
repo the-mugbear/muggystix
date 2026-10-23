@@ -593,6 +593,55 @@ def test_config_backup_does_not_claim_a_copy_that_failed(project):
     assert "NOT backed up" in out
 
 
+def test_the_config_backup_folder_is_private_from_the_moment_it_exists(project):
+    """N3 (review 2026-10-23): the folder was made under the shell's umask and
+    closed only by the chmod at the end — a copy that stopped part-way left
+    SECRET_KEY in a folder every account could read."""
+    failing_cp = project.bin / "cp"
+    failing_cp.write_text("#!/bin/sh\nexit 1\n")
+    failing_cp.chmod(0o755)
+
+    old = os.umask(0o022)                    # the usual shell umask
+    try:
+        project.run("deploy.sh", stdin="6\n")
+    finally:
+        os.umask(old)
+
+    made = list(project.root.parent.glob("proj-config-backup-*"))
+    assert len(made) == 1
+    assert stat.S_IMODE(made[0].stat().st_mode) == 0o700
+
+
+def _ca_issued_openssl(project) -> None:
+    """An openssl that calls networkmapper.crt CA-issued (issuer ≠ subject)."""
+    fake = project.bin / "openssl"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  *-issuer*) echo "issuer=CN = Local Root CA" ;;\n'
+        '  *-subject*) echo "subject=CN = bluestick.lab" ;;\n'
+        "esac\nexit 0\n"
+    )
+    fake.chmod(0o755)
+
+
+def test_a_ca_certificate_whose_key_is_missing_is_never_replaced(project):
+    """N1 (review 2026-10-23): a lone CA-issued networkmapper.crt was deleted
+    and a self-signed certificate written over it."""
+    _ca_issued_openssl(project)
+    (project.root / "ssl" / "certs" / "networkmapper.key").unlink()
+    (project.root / "ssl" / "certs" / "networkmapper.crt").write_text("the operator's CA certificate")
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode != 0
+    assert "was issued by a CA, but its key" in out and "Nothing was changed" in out
+    assert (project.root / "ssl" / "certs" / "networkmapper.crt").read_text() == "the operator's CA certificate"
+    assert not (project.root / "ssl" / "certs" / "networkmapper.key").exists()
+    assert _index(project.calls(), "compose build") == -1
+
+
 def test_nuclear_clean_asks_again_when_the_env_copy_failed(project):
     failing_cp = project.bin / "cp"
     failing_cp.write_text("#!/bin/sh\nexit 1\n")
@@ -959,15 +1008,6 @@ def test_low_disk_in_a_piped_deploy_is_a_stated_cancel(project):
     assert _index(project.calls(), "compose build") == -1
 
 
-def _template_asset_lister() -> str:
-    """The Python that upgrade-instance.sh runs to list the template files an
-    operator may have installed (the heredoc between ``<<'PY'`` and ``PY``)."""
-    text = (SCRIPTS / "upgrade-instance.sh").read_text(encoding="utf-8")
-    start = text.index("<<'PY'")
-    start = text.index("\n", start) + 1
-    return text[start:text.index("\nPY\n", start)]
-
-
 def test_upgrade_carries_the_installed_files_of_a_template_that_extends_another(tmp_path):
     """A template that extends another and declares no assets of its own
     expects its base's list — under its OWN folder (branding is never
@@ -988,7 +1028,7 @@ def test_upgrade_carries_the_installed_files_of_a_template_that_extends_another(
         (root / name / "template.json").write_text("{" if manifest is None else json.dumps(manifest), encoding="utf-8")
 
     out = subprocess.run(
-        ["python3", "-", str(tmp_path)], input=_template_asset_lister(), capture_output=True, text=True, check=True,
+        ["python3", str(SCRIPTS / "template_assets.py"), str(tmp_path)], capture_output=True, text=True, check=True,
     ).stdout.split()
 
     assert sorted(out) == [
@@ -1289,6 +1329,46 @@ def test_the_bundle_is_written_where_the_script_was_run(project, tmp_path):
     assert not list(project.root.glob("bluestick_diagnostics_*.tar.gz"))
 
 
+def _bundle_text(bundle: pathlib.Path) -> str:
+    with tarfile.open(bundle) as tar:
+        return "".join(
+            tar.extractfile(m).read().decode("utf-8", "replace")
+            for m in tar.getmembers() if m.isfile() and m.name.endswith(".txt")
+        )
+
+
+def test_a_numeric_secret_in_env_is_removed_from_the_bundle_and_a_short_number_is_not(project, tmp_path):
+    """N2 (review 2026-10-23): an all-digit .env secret was skipped as if it
+    were an address, so a numeric database password stayed in the logs."""
+    env = project.root / ".env"
+    env.write_text(env.read_text() + "POSTGRES_PASSWORD=98765432\nAPI_PIN_SECRET=4711\n")
+    project.state["backend_logs"] = "connecting with password 98765432 on attempt 4711\n"
+    here = tmp_path / "operator"
+    here.mkdir()
+
+    result = project.run("collect-logs.sh", "--no-feedback", cwd=here)
+
+    assert result.returncode == 0, _output(result)
+    text = _bundle_text(next(here.glob("bluestick_diagnostics_*.tar.gz")))
+    assert "connecting with password" in text
+    assert "98765432" not in text
+    assert "attempt 4711" in text            # under 6 digits: never harvested
+
+
+def test_the_alembic_round_trip_names_its_container_and_network_per_run():
+    """R-OPS3: two round trips at once shared one container and network, and
+    each one's cleanup removed the other's."""
+    text = (SCRIPTS / "test-alembic-roundtrip.sh").read_text(encoding="utf-8")
+    assert 'CONTAINER="${ALEMBIC_TEST_CONTAINER:-nm-alembic-roundtrip-pg-$$}"' in text
+    assert 'NETWORK="${ALEMBIC_TEST_NETWORK:-nm-alembic-roundtrip-net-$$}"' in text
+
+
+def test_the_dead_certificate_generator_is_gone():
+    """R-OPS2: deploy.sh runs only generate-ssl-cert-simple.sh."""
+    assert not (SCRIPTS / "generate-ssl-cert.sh").exists()
+    assert "generate-ssl-cert-simple.sh" in (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+
+
 def test_the_bundle_goes_to_out(project, tmp_path):
     out_dir = tmp_path / "elsewhere"
     out_dir.mkdir()
@@ -1481,6 +1561,297 @@ def test_restore_without_the_typed_confirmation_changes_nothing(project):
 
 
 # ---------------------------------------------------------------------------
+# Review 2026-10-23: H-OPS2 (a newer schema refused before the DROP), R-OPS4
+# (report-template files in the backup), R-OPS5 (the revision is the dump's),
+# R-OPS1 (one .env reader and key fingerprint, in stack-lib.sh)
+# ---------------------------------------------------------------------------
+
+def _refused_before_anything_changed(project, result) -> str:
+    out = _output(result)
+    assert result.returncode == 1, out
+    assert "Nothing was changed" in out
+    calls = project.calls()
+    assert _index(calls, "compose stop") == -1          # the app was never stopped
+    assert _index(calls, "pg_dump") == -1               # no safety backup was taken
+    assert _index(calls, "psql -U nmapuser -d postgres") == -1   # nothing dropped
+    return out
+
+
+def test_restore_refuses_a_dump_whose_schema_the_backend_image_does_not_know(project):
+    """After option 7 the previous build's image runs, and the safety dump of
+    the MIGRATED database is the newest file: restored, the old backend
+    crash-loops on a revision it does not have."""
+    dump = project.make_dump(revision=NEW_REV)
+    project.state["image_revisions"] = {"sha256:new-backend": [OLD_REV]}
+
+    result = project.run("restore-db.sh", "--yes", str(dump))
+
+    out = _refused_before_anything_changed(project, result)
+    assert f"revision {NEW_REV}" in out and "NEWER than this build" in out
+    assert "the backend image proj-backend" in out
+    assert "--allow-unknown-revision" in out
+
+
+def test_restore_reads_this_folders_migrations_when_the_image_cannot_say(project):
+    versions = project.root / "backend" / "alembic" / "versions"
+    versions.mkdir(parents=True)
+    (versions / f"{OLD_REV}_old.py").write_text("")
+    dump = project.make_dump(revision=NEW_REV)
+
+    result = project.run("restore-db.sh", "--yes", str(dump))
+
+    out = _refused_before_anything_changed(project, result)
+    assert "this folder's backend/alembic/versions does not have" in out
+
+
+def test_restore_of_a_newer_schema_goes_ahead_only_when_told_to(project):
+    dump = project.make_dump(revision=NEW_REV)
+    project.state["image_revisions"] = {"sha256:new-backend": [OLD_REV]}
+
+    result = project.run("restore-db.sh", "--yes", "--no-start", "--allow-unknown-revision", str(dump))
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "--allow-unknown-revision: restoring it anyway" in out
+    assert _index(project.calls(), "pg_restore -U nmapuser -d networkMapper") != -1
+
+
+def test_restore_of_a_known_schema_says_so_and_goes_ahead(project):
+    dump = project.make_dump(revision=OLD_REV)
+    project.state["image_revisions"] = {"sha256:new-backend": [OLD_REV, NEW_REV]}
+
+    result = project.run("restore-db.sh", "--yes", "--no-start", str(dump))
+
+    assert result.returncode == 0, _output(result)
+    assert f"This build knows the backup's schema revision ({OLD_REV})" in _output(result)
+
+
+def test_the_picker_marks_a_backup_newer_than_this_build(project):
+    project.make_dump("nm-pgdump-20260102-000000.dump", revision=NEW_REV)
+    project.state["image_revisions"] = {"sha256:new-backend": [OLD_REV]}
+
+    result = project.run("restore-db.sh", stdin="1\n")
+
+    out = _output(result)
+    assert f"[{NEW_REV}]  NEWER than this build — refused" in out
+    assert result.returncode == 1 and _index(project.calls(), "compose stop") == -1
+
+
+def test_backup_records_the_revision_the_dump_holds(project):
+    """R-OPS5: the revision was read from the live database AFTER the dump; a
+    migration in between recorded a revision the dump did not hold."""
+    project.state["revision_after_dump"] = NEW_REV
+
+    result = project.run("backup-db.sh")
+
+    assert result.returncode == 0, _output(result)
+    dump = next(project.backups.glob("nm-pgdump-*.dump"))
+    meta = (dump.parent / (dump.name + ".meta")).read_text()
+    assert f"alembic_revision={OLD_REV}\n" in meta
+
+
+def _installed_template(project) -> pathlib.Path:
+    tdir = project.root / "report-templates" / "pentest"
+    (tdir / "img").mkdir(parents=True)
+    (tdir / "template.json").write_text(json.dumps(
+        {"assets": [{"id": "logo", "path": "img/logo.png"}, {"id": "cover", "path": "img/cover.png"}]}))
+    logo = tdir / "img" / "logo.png"
+    logo.write_bytes(b"the client's logo")
+    return logo                                # cover.png is declared but not installed
+
+
+def test_backup_archives_the_report_template_files_installed_on_the_server(project):
+    """R-OPS4 (owner: include): the logo an operator installed is in no
+    version control and was in no backup."""
+    _installed_template(project)
+
+    result = project.run("backup-db.sh")
+
+    assert result.returncode == 0, _output(result)
+    dump = next(project.backups.glob("nm-pgdump-*.dump"))
+    meta = dict(line.split("=", 1) for line in (dump.parent / (dump.name + ".meta")).read_text().splitlines())
+    archive = project.backups / meta["templates_archive"]
+    assert meta["templates_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert meta["templates_bytes"] == str(archive.stat().st_size)
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o600
+    with tarfile.open(archive) as tar:
+        assert tar.getnames() == ["report-templates/pentest/img/logo.png"]
+
+
+def test_backup_with_no_installed_template_files_writes_no_archive(project):
+    result = project.run("backup-db.sh")
+
+    assert result.returncode == 0, _output(result)
+    assert not list(project.backups.glob("nm-templates-*"))
+    assert "none to archive" in _output(result)
+
+
+def _backup_with_templates(project) -> tuple[pathlib.Path, pathlib.Path]:
+    logo = _installed_template(project)
+    assert project.run("backup-db.sh").returncode == 0
+    dump = next(project.backups.glob("nm-pgdump-*.dump"))
+    return dump, logo
+
+
+def test_restore_puts_back_the_template_files_this_folder_lacks(project):
+    dump, logo = _backup_with_templates(project)
+    logo.unlink()                                 # a fresh source tree has none
+    other = project.root / "report-templates" / "pentest" / "template.json"
+
+    result = project.run("restore-db.sh", "--yes", "--no-start", str(dump))
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert logo.read_bytes() == b"the client's logo"
+    assert "1 put back" in out and other.is_file()
+
+
+def test_restore_keeps_a_template_file_this_folder_already_has(project):
+    dump, logo = _backup_with_templates(project)
+    logo.write_bytes(b"a newer logo")
+
+    result = project.run("restore-db.sh", "--yes", "--no-start", str(dump))
+
+    assert result.returncode == 0, _output(result)
+    assert logo.read_bytes() == b"a newer logo"
+    assert "differs from the backup's — kept this folder's" in _output(result)
+
+
+def test_restore_refuses_a_template_archive_that_no_longer_matches_its_checksum(project):
+    dump, _ = _backup_with_templates(project)
+    meta = (dump.parent / (dump.name + ".meta")).read_text()
+    archive = project.backups / next(ln.split("=", 1)[1] for ln in meta.splitlines()
+                                     if ln.startswith("templates_archive="))
+    archive.write_bytes(archive.read_bytes()[:-3] + b"xyz")
+    (project.fake / "calls.log").unlink()                 # the backup's own calls
+
+    result = project.run("restore-db.sh", "--yes", str(dump))
+
+    out = _refused_before_anything_changed(project, result)
+    assert "report-template files archive" in out
+
+
+def test_restore_refuses_a_template_archive_with_a_path_outside_report_templates(project):
+    dump, _ = _backup_with_templates(project)
+    meta_path = dump.parent / (dump.name + ".meta")
+    archive = project.backups / "nm-templates-evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("scripts/deploy.sh")
+        info.size = 4
+        tar.addfile(info, io.BytesIO(b"evil"))
+    meta = [ln for ln in meta_path.read_text().splitlines() if not ln.startswith("templates_")]
+    meta_path.write_text("\n".join(meta + [f"templates_archive={archive.name}"]) + "\n")
+    (project.fake / "calls.log").unlink()
+
+    result = project.run("restore-db.sh", "--yes", str(dump))
+
+    out = _refused_before_anything_changed(project, result)
+    assert "outside report-templates/" in out
+
+
+def test_upgrade_and_backup_list_template_files_through_one_implementation():
+    for name in ("upgrade-instance.sh", "backup-db.sh"):
+        text = (SCRIPTS / name).read_text(encoding="utf-8")
+        assert "template_assets.py" in text, name
+        assert "<<'PY'" not in text, name
+
+
+def _stack_lib(project, snippet: str, env_text: str) -> str:
+    (project.root / ".env").write_text(env_text)
+    result = subprocess.run(
+        ["bash", "-c", 'DC="docker compose"; print_info() { :; }; print_warning() { :; }; '
+                       'print_error() { :; }; print_success() { :; }; '
+                       f'source scripts/stack-lib.sh; {snippet}'],
+        capture_output=True, text=True, cwd=project.root,
+        env={**os.environ, "PATH": f"{project.bin}{os.pathsep}{os.environ['PATH']}",
+             "FAKE_DOCKER_DIR": str(project.fake)},
+    )
+    assert result.returncode == 0, _output(result)
+    return result.stdout
+
+
+def test_the_one_env_reader_reads_values_as_compose_does(project):
+    env = (
+        'POSTGRES_USER="quoted user"\n'
+        "  export SINGLE='single'\n"
+        "EQUALS=a=b\n"
+        'HALF="unbalanced\n'
+        "DUP=first\nDUP=last\n"
+        "CRLF=windows\r\n"
+    )
+    out = _stack_lib(project, "for n in POSTGRES_USER SINGLE EQUALS HALF DUP CRLF MISSING; do "
+                              'printf "%s=[%s]\\n" "$n" "$(stack_env_val $n)"; done', env)
+    assert out.splitlines() == [
+        "POSTGRES_USER=[quoted user]", "SINGLE=[single]", "EQUALS=[a=b]", 'HALF=["unbalanced]',
+        "DUP=[last]", "CRLF=[windows]", "MISSING=[]",
+    ]
+
+
+def _old_fingerprint(raw: str) -> str:
+    return hashlib.sha256(f"networkmapper-keyfp-v1:{raw}".encode()).hexdigest()[:16]
+
+
+def test_a_quoted_key_is_fingerprinted_as_the_application_reads_it(project):
+    out = _stack_lib(project, "key_fingerprint", 'SECRET_KEY="k3y"\n')
+    assert out.strip() == _old_fingerprint("k3y")
+
+
+@pytest.mark.parametrize("backup_raw,env_text", [
+    ('"k3y"', "SECRET_KEY=k3y\n"),           # made on a host that quoted it, restored where it is not
+    ("k3y", 'SECRET_KEY="k3y"\n'),
+    ('"k3y"', 'SECRET_KEY="k3y"\n'),         # an old backup on the same .env
+    ("'k3y'", "SECRET_KEY=k3y\n"),
+])
+def test_an_existing_backups_fingerprint_still_matches_whatever_the_quoting(project, backup_raw, env_text):
+    """R-OPS1: before, the fingerprint covered the RAW text (quotes and all),
+    so one key quoted differently on two hosts was reported as two keys."""
+    out = _stack_lib(project, f'key_fingerprint_matches {_old_fingerprint(backup_raw)} && echo match', env_text)
+    assert out.strip() == "match"
+
+
+def test_another_key_is_still_a_mismatch(project):
+    out = _stack_lib(project, f'key_fingerprint_matches {_old_fingerprint("other")} || echo differs',
+                     'SECRET_KEY="k3y"\n')
+    assert out.strip() == "differs"
+
+
+def test_restore_accepts_a_backup_whose_key_was_quoted_on_its_host(project):
+    """Non-interactive, a mismatch aborts the restore: an old backup from a
+    host whose .env quoted the same key used to be refused here."""
+    dump = project.make_dump()
+    meta = dump.parent / (dump.name + ".meta")
+    meta.write_text(meta.read_text().replace("key_fingerprint=unknown",
+                                             f'key_fingerprint={_old_fingerprint(chr(34) + "a-real-secret" + chr(34))}'))
+
+    result = project.run("restore-db.sh", "--yes", "--no-start", str(dump))
+
+    assert result.returncode == 0, _output(result)
+    assert "Credential-encryption key matches the backup." in _output(result)
+
+
+def test_backup_and_restore_pass_postgres_a_quoted_user_without_its_quotes(project):
+    env = (project.root / ".env").read_text().replace("POSTGRES_USER=nmapuser", 'POSTGRES_USER="nmapuser"')
+    (project.root / ".env").write_text(env)
+
+    result = project.run("backup-db.sh")
+
+    assert result.returncode == 0, _output(result)
+    calls = project.calls()
+    assert _index(calls, "pg_dump -U nmapuser -Fc networkMapper") != -1
+    assert _index(calls, '"nmapuser"') == -1
+
+
+def test_backup_and_restore_share_one_copy_of_the_helpers():
+    import re
+    for name in ("backup-db.sh", "restore-db.sh"):
+        text = (SCRIPTS / name).read_text(encoding="utf-8")
+        for helper in ("env_val", "_sha256_hex", "key_fingerprint", "resolve_volume", "helper_image"):
+            assert not re.search(rf"^\s*{helper}\(\)", text, re.M), f"{name} defines {helper} again — it is stack-lib.sh's"
+    lib = (SCRIPTS / "stack-lib.sh").read_text(encoding="utf-8")
+    assert all(f"{h}()" in lib for h in ("stack_env_val", "key_fingerprint", "resolve_volume", "helper_image"))
+
+
+# ---------------------------------------------------------------------------
 # The settings a deploy ends by showing (2026-10-08)
 # ---------------------------------------------------------------------------
 
@@ -1658,6 +2029,63 @@ def test_shard_tallies_are_summed_into_one(tmp_path):
     )
     assert result.returncode == 0, _output(result)
     assert result.stdout.strip() == "3 failed, 2870 passed, 6 skipped, 5 deselected, 8 warnings, 3 errors"
+
+
+def _mount_skips(text: str) -> str:
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "check.sh"), "--mount-skips"], capture_output=True, text=True, input=text,
+    )
+    assert result.returncode == 0, _output(result)
+    return result.stdout
+
+
+def test_the_gate_fails_on_a_skip_for_want_of_any_mount():
+    """H-OPS1 (review 2026-10-23): the gate failed only on skips that said
+    'quarto' or 'report-templates', so a test that skipped with "the shipped
+    templates are not mounted here" ran nowhere for months and the gate was
+    green."""
+    flagged = [
+        "SKIPPED [1] ../app/tests/test_a.py:76: the shipped templates are not mounted here",
+        "SKIPPED [7] ../app/tests/test_b.py:62: the agent guide is not mounted in this environment",
+        "SKIPPED [1] ../app/tests/test_c.py:32: scripts/seed_demo_data.py not reachable from this checkout",
+        "SKIPPED [1] ../app/tests/test_d.py:30: rdap-lookup.py not present in this checkout",
+        "SKIPPED [1] ../app/tests/test_e.py:9: the repository root is not mounted here (check.sh mounts it)",
+        "SKIPPED [4] ../app/tests/test_f.py:1: Quarto is only in the report-worker image",
+    ]
+    kept = [
+        "SKIPPED [1] ../app/tests/test_g.py:271: nothing follows it",
+        "test_h.py ....s.   [100%]",
+    ]
+    out = _mount_skips("\n".join(flagged + kept) + "\n")
+    assert out.splitlines() == flagged
+
+
+def _suite_skip_reasons() -> set[str]:
+    import re
+    found: set[str] = set()
+    for path in HERE.parent.glob("test_*.py"):
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"""(?:pytest\.skip\(\s*|reason=)f?(["'])(.+?)\1""", text):
+            found.add(m.group(2))
+    return found
+
+
+# A skip reason that names something outside backend/ — a file the gate mounts.
+_NAMES_A_MOUNT = r"scripts|\.md\b|template|agent guide|frontend|docker-compose|repository|repo root|checkout|mounted"
+
+
+def test_every_skip_for_want_of_a_mount_is_one_the_gate_fails_on():
+    """check.sh mounts everything such a test reads, so its skip there is a
+    defect; the gate sees it only when the reason matches MOUNT_SKIP_REASON.
+    A new test that skips with a reason of another wording fails HERE, not
+    silently in the gate."""
+    import re
+    reasons = sorted(r for r in _suite_skip_reasons() if re.search(_NAMES_A_MOUNT, r, re.I))
+    assert len(reasons) >= 5, reasons            # the scan found the suite's reasons
+    lines = "".join(f"SKIPPED [1] ../app/tests/test_x.py:1: {r}\n" for r in reasons)
+    flagged = {line.split(": ", 1)[1] for line in _mount_skips(lines).splitlines()}
+    missed = [r for r in reasons if r not in flagged]
+    assert not missed, f"check.sh would let these skips pass: {missed} — reword them or widen MOUNT_SKIP_REASON"
 
 
 def test_the_checked_in_shard_weights_name_only_test_files_once():

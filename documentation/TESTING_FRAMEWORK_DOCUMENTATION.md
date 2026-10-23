@@ -13,7 +13,8 @@ The GitHub Actions workflow was removed in 2026-09: it had never run on this rep
 enforced nothing. **One command runs all three gates — `./scripts/check.sh` (or `make check`;
 `--fast` skips the migration round trip) — and it is what to run before a push.** It runs the
 backend suite in the **report-worker** image (the backend image plus Quarto, `report-templates/`
-mounted) and **fails if any test skipped for want of Quarto or the templates**: with the plain
+mounted) and **fails if any test skipped for want of Quarto, the templates or another mount**
+(scripts/, the agent guide, the repository root): with the plain
 `backend` recipe below, the client-report tests — the hostile-text contract among them — skip,
 and the run is green without them. Its second step is `ruff check` over `backend/` in the same
 image (pyflakes rules only, `backend/ruff.toml`): any finding fails the gate. It ends with a

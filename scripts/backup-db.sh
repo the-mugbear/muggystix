@@ -24,9 +24,10 @@
 #   --volume                 Take a raw volume snapshot even if the database is up.
 #   --allow-missing-uploads  Exit 0 when the database was backed up but the
 #                            uploads archive (evidence images, issued reports,
-#                            screenshots) could not be written.  Without it
-#                            that is a FAILED backup (exit 1): the dump alone
-#                            restores rows that point at files which are gone.
+#                            screenshots) or the report-template files archive
+#                            could not be written.  Without it that is a
+#                            FAILED backup (exit 1): the dump alone restores
+#                            rows that point at files which are gone.
 #                            BACKUP_ALLOW_MISSING_UPLOADS=1 does the same.
 #   BACKUP_DIR               Where backups are written (made mode 700).
 #   BACKUP_KEEP              How many backups to keep (default 10, 0 = all).
@@ -49,9 +50,15 @@
 # What "success" means (exit 0): the database artifact was written AND read
 # back TO ITS END (pg_restore -f /dev/null for a dump — every data block is
 # decompressed and parsed; a gzip/tar listing for a snapshot), and the uploads
-# archive was written and read back.  The .meta beside each backup records the
-# size (bytes=) and SHA-256 (sha256=) of the artifact, and of the uploads
-# archive (uploads_bytes= / uploads_sha256=): restore-db.sh compares them
+# archive was written and read back — and so was the archive of the
+# report-template files installed on this server (nm-templates-*.tar.gz: the
+# images each report-templates/<name>/template.json declares, a logo, a cover;
+# not in version control; listed by scripts/template_assets.py, the list
+# upgrade-instance.sh carries; none written when none is present).  The .meta
+# beside each backup records the size (bytes=) and SHA-256 (sha256=) of the
+# artifact, of the uploads archive (uploads_bytes= / uploads_sha256=) and of
+# the templates archive (templates_bytes= / templates_sha256=); the schema
+# revision (alembic_revision=) is read from the dump itself.  restore-db.sh compares them
 # before it touches the database, so a file cut short or altered on the way
 # to another host is refused.  Everything is written mode 0600, owned by the
 # user running the script: a dump holds password hashes, TOTP ciphertext and
@@ -183,37 +190,10 @@ if ! $DC config --quiet >/dev/null 2>"$STEP_ERR"; then
 fi
 
 # --- DB credentials (from .env, falling back to docker-compose defaults) ---
-env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d'=' -f2-; }
-PG_USER="$(env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
-PG_DB="$(env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
-
-# --- Credential-encryption key fingerprint ---------------------------------
-# TOTP/2FA secrets and the LLM-provider, scanner-integration and webhook credentials are stored
-# in the DB as Fernet ciphertext, keyed (via HKDF) off CREDENTIAL_ENCRYPTION_KEY
-# — or SECRET_KEY when that's unset — which lives ONLY in .env, never in the
-# database.  Restoring this dump onto a deployment with a different key leaves
-# every such secret undecryptable (MFA silently stops working).  We stamp a
-# one-way fingerprint of the key into the backup metadata so restore-db.sh can
-# warn on a mismatch.  It's a SALTED, TRUNCATED SHA-256 — enough to detect
-# "different key", never enough to help recover the key itself.
-_sha256_hex() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | cut -d' ' -f1
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 | cut -d' ' -f1
-    elif command -v openssl >/dev/null 2>&1; then
-        openssl dgst -sha256 | sed 's/^.*= *//'
-    else
-        return 1
-    fi
-}
-key_fingerprint() {
-    local src
-    src="$(env_val CREDENTIAL_ENCRYPTION_KEY)"
-    [[ -z "$src" ]] && src="$(env_val SECRET_KEY)"
-    [[ -z "$src" ]] && return 1   # no key configured — nothing to fingerprint
-    printf 'networkmapper-keyfp-v1:%s' "$src" | _sha256_hex | cut -c1-16
-}
+# stack_env_val, key_fingerprint, resolve_volume and helper_image are
+# scripts/stack-lib.sh's (one copy, shared with restore-db.sh).
+PG_USER="$(stack_env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
+PG_DB="$(stack_env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
 
 # Default OUTSIDE the project root (sibling dir) so an in-place folder-content
 # replace doesn't wipe the dump.  Override with BACKUP_DIR=/path.
@@ -276,60 +256,6 @@ db_container_state() {
     docker inspect "$cid" --format '{{.State.Status}}' 2>/dev/null | awk '{print $1}'
 }
 
-# --- Resolve the EXACT postgres volume for this stack ---
-# A loose `--filter name=postgres_data` substring match + `head -1` can
-# pick another Compose project's *_postgres_data volume on a shared host
-# — backing up the wrong DB, or (on restore) overwriting it.  Resolve
-# authoritatively from the db container's mounts; fall back to an exact
-# <project>_postgres_data match.  Fail closed (empty output) rather than
-# guess.
-resolve_volume() {
-    local cid vol project expected
-    cid="$($DC ps -aq db 2>/dev/null | head -1)"
-    if [[ -n "$cid" ]]; then
-        vol="$(docker inspect "$cid" \
-            --format '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' \
-            2>/dev/null)"
-        if [[ -n "$vol" ]]; then
-            printf '%s\n' "$vol"
-            return 0
-        fi
-    fi
-    project="$(compose_project_name)"
-    expected="${project}_postgres_data"
-    if docker volume ls -q 2>/dev/null | grep -qx "$expected"; then
-        printf '%s\n' "$expected"
-        return 0
-    fi
-    return 1
-}
-
-# --- An image this host already has, to run tar in --------------------------
-# tar runs in a container because the files belong to the app's user (UID
-# 999) and PGDATA to postgres, not to the operator.  It used to be `alpine`,
-# which the stack never ships: on an isolated network the pull failed and the
-# uploads were silently not backed up (review 2026-10-01 R30).  The database
-# image is always present where there is a database to back up, and carries
-# tar + gzip.  Taken from the db CONTAINER when one exists (the exact image it
-# runs, by id), else from what compose resolves for the service; never pulled.
-helper_image() {
-    local cid img
-    cid="$($DC ps -aq db 2>/dev/null | head -1)"
-    if [[ -n "$cid" ]]; then
-        img="$(docker inspect "$cid" --format '{{.Image}}' 2>/dev/null)"
-        if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
-            printf '%s\n' "$img"
-            return 0
-        fi
-    fi
-    img="$($DC config --images db 2>/dev/null | head -1)"
-    if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
-        printf '%s\n' "$img"
-        return 0
-    fi
-    return 1
-}
-
 # Size and SHA-256 of a finished artifact, for the .meta.
 file_bytes() {
     stat -c %s "$1" 2>/dev/null || wc -c < "$1" | tr -d ' '
@@ -388,11 +314,16 @@ do_pgdump() {
     fi
     chmod 600 "$out"
 
-    # Capture the schema (alembic) revision so restore can sanity-check
-    # the migration direction.
+    # The schema (alembic) revision restore checks this build against — read
+    # from the DUMP itself (its alembic_version rows), not from the live
+    # database after the dump: a migration that ran in between (a backend
+    # starting beside the backup) would have recorded a revision the dump
+    # does not hold (review 2026-10-23, R-OPS5).  "unknown" when the dump has
+    # no such table.
     local rev
-    rev="$($DC exec -T db psql -U "$PG_USER" -d "$PG_DB" -tAc \
-        "SELECT version_num FROM alembic_version" 2>/dev/null | tr -d '[:space:]')"
+    rev="$($DC exec -T db pg_restore -a -t alembic_version -f - < "$out" 2>/dev/null \
+        | awk '/^COPY .*alembic_version/ {copy = 1; next} copy && $0 == "\\." {exit} copy {print; exit}' \
+        | tr -d '[:space:]' || true)"
     rev="${rev:-unknown}"
 
     {
@@ -400,7 +331,7 @@ do_pgdump() {
         echo "created=$TS"
         echo "database=$PG_DB"
         echo "alembic_revision=$rev"
-        echo "app_version=$(env_val APP_VERSION)"
+        echo "app_version=$(stack_env_val APP_VERSION)"
         echo "key_fingerprint=$(key_fingerprint || echo unknown)"
         echo "verified=pg_restore full read ($entries entries)"
         echo "bytes=$(file_bytes "$out")"
@@ -481,6 +412,59 @@ backup_uploads() {
         echo "uploads_sha256=$(file_sha256 "$BACKUP_DIR/$out")"
     } >> "$meta"
     print_success "Uploads archived: $BACKUP_DIR/$out ($(du -h "$BACKUP_DIR/$out" | cut -f1))"
+}
+
+# --- The report-template files installed on the server ------------------------
+# The images each report-templates/<name>/template.json declares (a logo, a
+# cover …) are not in version control: a fresh source tree has none, and a
+# backup used to leave them out (review 2026-10-23, R-OPS4).  Which files is
+# scripts/template_assets.py's answer — the list upgrade-instance.sh carries
+# too.  They live in this tree, readable by this account, so tar runs here.
+# Nothing is written when none of the declared files is present.
+backup_template_files() {
+    local meta="$1" list rel out="nm-templates-$TS.tar.gz" count=0
+    if ! command -v python3 >/dev/null 2>&1; then
+        # Said and recorded, not a failure: a host without python3 must still
+        # be able to take the pre-deploy backup.
+        print_warning "python3 is not installed — the report-template files (template.json → assets) cannot be"
+        print_warning "listed and are NOT in this backup. Copy report-templates/ by hand if you installed any."
+        echo "templates_archive_missing=no-python3" >> "$meta"
+        return 0
+    fi
+    list="$(mktemp "${TMPDIR:-/tmp}/bluestick-templates.XXXXXX")"
+    if ! python3 "$SCRIPT_DIR/template_assets.py" "$PROJECT_ROOT" > "$list.all" 2>"$STEP_ERR"; then
+        print_error "Listing the report-template files failed — they are NOT backed up."
+        show_step_error
+        rm -f "$list" "$list.all"
+        return 1
+    fi
+    while IFS= read -r rel; do
+        [[ -n "$rel" && -f "$PROJECT_ROOT/$rel" ]] || continue
+        printf '%s\n' "$rel" >> "$list"
+        count=$((count + 1))
+    done < "$list.all"
+    rm -f "$list.all"
+    if [[ "$count" -eq 0 ]]; then
+        rm -f "$list"
+        print_info "No report-template files installed on this server (template.json → assets) — none to archive."
+        return 0
+    fi
+    print_info "Archiving $count report-template file(s) installed on this server (logos, covers …)..."
+    if ! tar czf "$BACKUP_DIR/$out" -C "$PROJECT_ROOT" -T "$list" 2>"$STEP_ERR" \
+        || ! tar tzf "$BACKUP_DIR/$out" >/dev/null 2>>"$STEP_ERR"; then
+        print_error "Archiving the report-template files failed."
+        show_step_error
+        rm -f "$list" "$BACKUP_DIR/$out"
+        return 1
+    fi
+    rm -f "$list"
+    chmod 600 "$BACKUP_DIR/$out"
+    {
+        echo "templates_archive=$out"
+        echo "templates_bytes=$(file_bytes "$BACKUP_DIR/$out")"
+        echo "templates_sha256=$(file_sha256 "$BACKUP_DIR/$out")"
+    } >> "$meta"
+    print_success "Report-template files archived: $BACKUP_DIR/$out"
 }
 
 do_volume_tar() {
@@ -574,16 +558,21 @@ prune_old_backups() {
         return 0
     fi
 
+    local templates
     for f in "${doomed[@]}"; do
-        uploads=""
+        uploads=""; templates=""
         if [[ -f "$f.meta" ]]; then
             uploads="$(grep -E '^uploads_archive=' "$f.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
+            templates="$(grep -E '^templates_archive=' "$f.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
         fi
         rm -f -- "$f" "$f.meta"
         if [[ -n "$uploads" ]]; then
             rm -f -- "$BACKUP_DIR/$(basename "$uploads")"
         fi
-        print_info "Pruned: $(basename "$f")${uploads:+ + $(basename "$uploads")}"
+        if [[ -n "$templates" ]]; then
+            rm -f -- "$BACKUP_DIR/$(basename "$templates")"
+        fi
+        print_info "Pruned: $(basename "$f")${uploads:+ + $(basename "$uploads")}${templates:+ + $(basename "$templates")}"
         pruned=$((pruned + 1))
     done
     print_info "Retention: pruned $pruned backup(s) older than the newest $keep (BACKUP_KEEP)."
@@ -630,20 +619,28 @@ fi
 
 # Only after a database backup succeeded (set -e stops on a failed one).
 UPLOADS_FAILED=0
+TEMPLATES_FAILED=0
 if [[ -n "${META_FILE:-}" ]]; then
     backup_uploads "$META_FILE" || UPLOADS_FAILED=1
+    backup_template_files "$META_FILE" || TEMPLATES_FAILED=1
 fi
 
-if [[ "$UPLOADS_FAILED" -eq 1 ]]; then
+if [[ "$UPLOADS_FAILED" -eq 1 || "$TEMPLATES_FAILED" -eq 1 ]]; then
+    missing=()
+    [[ "$UPLOADS_FAILED" -eq 1 ]] && missing+=("./uploads (evidence images, issued reports, screenshots)")
+    [[ "$TEMPLATES_FAILED" -eq 1 ]] && missing+=("the report-template files installed on this server")
     echo ""
     if [[ "$ALLOW_MISSING_UPLOADS" == "1" ]]; then
-        print_warning "Continuing WITHOUT an uploads archive (--allow-missing-uploads): this backup"
-        print_warning "restores the database only — evidence images and issued report files are not in it."
-        echo "uploads_archive_missing=allowed" >> "$META_FILE"
+        print_warning "Continuing WITHOUT $(printf '%s; ' "${missing[@]}" | sed 's/; $//') (--allow-missing-uploads):"
+        print_warning "this backup restores the database without those files."
+        [[ "$UPLOADS_FAILED" -eq 1 ]] && echo "uploads_archive_missing=allowed" >> "$META_FILE"
+        [[ "$TEMPLATES_FAILED" -eq 1 ]] && echo "templates_archive_missing=allowed" >> "$META_FILE"
     else
         print_error "BACKUP INCOMPLETE: the database artifact is kept at"
         print_error "    ${DB_ARTIFACT:-$BACKUP_DIR}"
-        print_error "but ./uploads (evidence images, issued reports, screenshots) was NOT archived."
+        for what in "${missing[@]}"; do
+            print_error "but $what was NOT archived."
+        done
         print_info  "Fix the cause above and re-run, or accept a database-only backup with:"
         print_info  "    ./scripts/backup-db.sh --allow-missing-uploads"
         report_free_space

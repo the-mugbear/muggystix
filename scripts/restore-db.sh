@@ -14,9 +14,15 @@
 #                         Same PostgreSQL major version only.
 #
 # A backup whose schema is NEWER than the deployed code cannot be
-# migrated forward — alembic will not recognise the revision.  In that
-# case the backend stays unhealthy after restore; roll the code forward
-# (or restore a matching-or-older backup) instead.
+# migrated forward — alembic will not recognise the revision.  Such a dump
+# (its .meta's alembic_revision is not among the backend image's — else this
+# folder's — migrations) is REFUSED before anything is touched; roll the code
+# forward, or restore a matching-or-older backup (--allow-unknown-revision
+# overrides).
+#
+# Not restored: the ingestion queue's files (uploads/ingestion_queue is never
+# in a backup), so a staged or cut-short import waiting on its file cannot be
+# resumed after a restore — upload the file again.
 #
 # Usage:
 #   ./scripts/restore-db.sh                       # pick from the backup directory interactively
@@ -29,18 +35,23 @@
 #     the .meta beside it (a file cut short or altered in a copy is refused);
 #   * a dump is then read to its end (pg_restore -f /dev/null — every data
 #     block; `--list` alone reads only the table of contents at the front of
-#     the file, which a truncated dump still has), a volume snapshot and the
-#     uploads archive are listed to their end.
+#     the file, which a truncated dump still has), a volume snapshot, the
+#     uploads archive and the report-template files archive are listed to
+#     their end (the last may hold nothing outside report-templates/).
 # A backup with no .meta, or one made before sizes and checksums were
 # recorded, is verified by the full read alone.
+#
+# With the database, the restore puts back uploads/ (files in the archive
+# replace their namesakes) and the report-template files installed on the
+# server (only those this folder LACKS: one already here is kept).
 #
 # The restore ends with a summary of the state the instance is in.  If
 # pg_restore itself fails, the app is left STOPPED and the summary gives the
 # command that puts back the safety backup taken a moment earlier.
 #
-# Exit status: 0 = restored (database and uploads/); 1 = failed or refused
+# Exit status: 0 = restored (database and files); 1 = failed or refused
 # (the summary says what state that leaves); 4 = the database is restored but
-# extracting the uploads archive failed — the summary says PARTLY RESTORED and
+# putting back uploads/ or the template files failed — the summary says PARTLY RESTORED and
 # prints the command that retries the files (deploy.sh option 7 reads 4 as
 # "database restored, files not").
 #
@@ -54,7 +65,12 @@
 #                          to its end).  Whatever is readable is restored and
 #                          the rest is LOST — a last resort, when this file is
 #                          the only copy.
-#   --no-safety-backup     Don't take a fresh backup of the CURRENT database
+#   --allow-unknown-revision
+#                          Restore a dump whose schema revision this build does
+#                          not know (a newer build made it).  The backend will
+#                          not start on it until a build that knows the
+#                          revision is deployed.
+#   --no-safety-backup    Don't take a fresh backup of the CURRENT database
 #                          before the restore overwrites it.  Use this only
 #                          when the current database is unrecoverable anyway
 #                          (out of disk, corrupt, …) and you accept the loss.
@@ -78,6 +94,7 @@ IGNORE_KEY_MISMATCH=0
 ASSUME_YES=0
 NO_START=0
 FORCE_UNVERIFIED=0
+ALLOW_UNKNOWN_REVISION=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-safety-backup)
@@ -100,8 +117,12 @@ while [[ $# -gt 0 ]]; do
             FORCE_UNVERIFIED=1
             shift
             ;;
+        --allow-unknown-revision)
+            ALLOW_UNKNOWN_REVISION=1
+            shift
+            ;;
         -h|--help)
-            sed -n '2,65p' "$0"
+            sed -n '2,/^$/p' "$0"   # the header comment, however long
             exit 0
             ;;
         --)
@@ -147,30 +168,75 @@ fi
 # shellcheck source=stack-lib.sh
 source "$SCRIPT_DIR/stack-lib.sh"
 
-env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d'=' -f2-; }
-PG_USER="$(env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
-PG_DB="$(env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
+# stack_env_val, key_fingerprint / key_fingerprint_matches, resolve_volume and
+# helper_image are scripts/stack-lib.sh's (one copy, shared with backup-db.sh).
+PG_USER="$(stack_env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
+PG_DB="$(stack_env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
 
-# --- Credential-encryption key fingerprint (mirror of backup-db.sh) --------
-# Recomputes the one-way fingerprint of THIS deployment's key so we can compare
-# it to the value stamped in the backup's .meta.  See backup-db.sh for why.
-_sha256_hex() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | cut -d' ' -f1
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 | cut -d' ' -f1
-    elif command -v openssl >/dev/null 2>&1; then
-        openssl dgst -sha256 | sed 's/^.*= *//'
-    else
-        return 1
+# --- The schema revisions this build knows -----------------------------------
+# What the next start runs is the backend IMAGE compose names (option 7
+# re-tags the previous build's image, so it can differ from this folder's
+# source); its /app/alembic/versions is read when the image is on the host,
+# else this folder's backend/alembic/versions.  Read once.
+KNOWN_REVISIONS=""
+KNOWN_REVISIONS_FROM=""
+KNOWN_REVISIONS_READ=0
+load_known_revisions() {
+    [[ "$KNOWN_REVISIONS_READ" -eq 1 ]] && return 0
+    KNOWN_REVISIONS_READ=1
+    local image listed=""
+    image="$(service_image_ref backend)"
+    if [[ -n "$image" ]] && docker image inspect "$image" >/dev/null 2>&1; then
+        listed="$(docker run --rm --entrypoint ls "$image" /app/alembic/versions 2>/dev/null || true)"
+        if [[ -n "$listed" ]]; then
+            KNOWN_REVISIONS="$listed"
+            KNOWN_REVISIONS_FROM="the backend image $image"
+            return 0
+        fi
+    fi
+    if [[ -d "$PROJECT_ROOT/backend/alembic/versions" ]]; then
+        KNOWN_REVISIONS="$(ls -1 "$PROJECT_ROOT/backend/alembic/versions" 2>/dev/null || true)"
+        [[ -n "$KNOWN_REVISIONS" ]] && KNOWN_REVISIONS_FROM="this folder's backend/alembic/versions"
     fi
 }
-key_fingerprint() {
-    local src
-    src="$(env_val CREDENTIAL_ENCRYPTION_KEY)"
-    [[ -z "$src" ]] && src="$(env_val SECRET_KEY)"
-    [[ -z "$src" ]] && return 1
-    printf 'networkmapper-keyfp-v1:%s' "$src" | _sha256_hex | cut -c1-16
+
+# 0 the build has revision $1; 1 it does not; 2 it cannot be told (no
+# revision recorded, or no list of revisions could be read).
+revision_status() {
+    local rev="$1"
+    [[ -n "$rev" && "$rev" != "unknown" && "$rev" =~ ^[A-Za-z0-9_]+$ ]] || return 2
+    load_known_revisions
+    [[ -n "$KNOWN_REVISIONS" ]] || return 2
+    grep -qE "^${rev}_.*\.py$" <<< "$KNOWN_REVISIONS" && return 0
+    return 1
+}
+
+# Refuses (1) a backup whose recorded schema revision this build lacks, unless
+# --allow-unknown-revision.  A volume snapshot records none: it is not checked.
+check_backup_revision() {
+    local rev rc=0
+    rev="$(grep -E '^alembic_revision=' "${BACKUP_FILE}.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+    revision_status "$rev" || rc=$?
+    case "$rc" in
+        0)
+            print_success "This build knows the backup's schema revision ($rev)."
+            return 0 ;;
+        2)
+            if [[ -n "$rev" && "$rev" != "unknown" ]]; then
+                print_warning "Could not read this build's migrations to check the backup's schema revision ($rev)."
+            fi
+            return 0 ;;
+    esac
+    print_error "This backup's schema is NEWER than this build: it is at revision $rev, which"
+    print_error "$KNOWN_REVISIONS_FROM does not have. Restored, the backend could not"
+    print_error "migrate it (\"Can't locate revision\") and would not start."
+    print_info  "Deploy the build that made this backup (or a newer one), or choose an older backup."
+    if [[ "$ALLOW_UNKNOWN_REVISION" -eq 1 ]]; then
+        print_warning "--allow-unknown-revision: restoring it anyway."
+        return 0
+    fi
+    print_info  "To restore it regardless (you will deploy a matching build next): --allow-unknown-revision"
+    return 1
 }
 
 # The same default as backup-db.sh and deploy.sh: a sibling directory outside
@@ -179,61 +245,6 @@ key_fingerprint() {
 # The legacy ./backups is still offered when it holds dumps.
 BACKUP_DIR="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
 LEGACY_BACKUP_DIR="$PROJECT_ROOT/backups"
-
-# --- Resolve the EXACT postgres volume for this stack ---
-# A loose `--filter name=postgres_data` + `head -1` can pick another
-# Compose project's volume on a shared host — and a volume restore
-# `rm -rf`s + overwrites it.  Resolve authoritatively from the db
-# container's mounts; fall back to an exact <project>_postgres_data
-# match.  Fail closed (empty output) rather than guess.
-resolve_volume() {
-    local cid vol project expected
-    cid="$($DC ps -aq db 2>/dev/null | head -1)"
-    if [[ -n "$cid" ]]; then
-        vol="$(docker inspect "$cid" \
-            --format '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' \
-            2>/dev/null)"
-        if [[ -n "$vol" ]]; then
-            printf '%s\n' "$vol"
-            return 0
-        fi
-    fi
-    project="$(env_val COMPOSE_PROJECT_NAME)"
-    if [[ -z "$project" ]]; then
-        project="$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
-    fi
-    expected="${project}_postgres_data"
-    if docker volume ls -q 2>/dev/null | grep -qx "$expected"; then
-        printf '%s\n' "$expected"
-        return 0
-    fi
-    return 1
-}
-
-# --- An image this host already has, to run tar / pg_restore in (mirror of
-# backup-db.sh) ---------------------------------------------------------------
-# It used to be `alpine`, which the stack never ships: on an isolated network
-# a volume restore or the uploads restore failed on the pull — after the
-# database had already been dropped (review 2026-10-01 R30).  The db
-# container's own image when there is one, else what compose resolves for the
-# service; never pulled.
-helper_image() {
-    local cid img
-    cid="$($DC ps -aq db 2>/dev/null | head -1)"
-    if [[ -n "$cid" ]]; then
-        img="$(docker inspect "$cid" --format '{{.Image}}' 2>/dev/null)"
-        if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
-            printf '%s\n' "$img"
-            return 0
-        fi
-    fi
-    img="$($DC config --images db 2>/dev/null | head -1)"
-    if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
-        printf '%s\n' "$img"
-        return 0
-    fi
-    return 1
-}
 
 echo "=============================================="
 echo "   BlueStick — Database Restore"
@@ -254,7 +265,12 @@ if [[ -z "$BACKUP_FILE" ]]; then
     for i in "${!files[@]}"; do
         meta="${files[$i]}.meta"
         rev=""
-        [[ -f "$meta" ]] && rev="  [$(grep -E '^alembic_revision=' "$meta" 2>/dev/null | cut -d= -f2)]"
+        if [[ -f "$meta" ]]; then
+            r="$(grep -E '^alembic_revision=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+            rev="  [$r]"
+            rs=0; revision_status "$r" || rs=$?
+            [[ "$rs" -eq 1 ]] && rev="$rev  NEWER than this build — refused"
+        fi
         echo "  $((i + 1))) $(basename "${files[$i]}")${rev}"
     done
     echo ""
@@ -293,6 +309,9 @@ meta_val() {
     [[ -f "${BACKUP_FILE}.meta" ]] || return 0
     grep -E "^$1=" "${BACKUP_FILE}.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
+# The report-template files installed on the server (backups since review
+# 2026-10-23, R-OPS4; backup-db.sh's backup_template_files).
+templates_archive="$(meta_val templates_archive)"
 
 # A verification failure stops the restore — unless --force-unverified, which
 # turns it into a warning (returns 0).
@@ -409,8 +428,41 @@ validate_backup() {
         fi
         print_success "Uploads archive is readable."
     fi
+    if [[ -n "$templates_archive" && -f "$BACKUP_FILE_DIR/$templates_archive" ]]; then
+        local members
+        if ! check_against_record "$BACKUP_FILE_DIR/$templates_archive" templates_bytes templates_sha256 \
+            "report-template files archive"; then
+            verification_failed || return 1
+        fi
+        if ! members="$(tar tzf "$BACKUP_FILE_DIR/$templates_archive" 2>/dev/null)"; then
+            print_error "The report-template files archive that belongs to this backup is unreadable:"
+            print_error "    $BACKUP_FILE_DIR/$templates_archive"
+            print_error "To restore without those files, remove the templates_archive= line from"
+            print_error "    ${BACKUP_FILE}.meta"
+            return 1
+        fi
+        # It is extracted into this folder: nothing outside report-templates/.
+        if grep -vqE '^report-templates/[^/]+/' <<< "$members" || grep -qE '(^|/)\.\.(/|$)' <<< "$members"; then
+            print_error "The report-template files archive holds a path outside report-templates/ — refused:"
+            print_error "    $BACKUP_FILE_DIR/$templates_archive"
+            return 1
+        fi
+        print_success "Report-template files archive is readable ($(grep -c . <<< "$members") entries)."
+    fi
 }
 if ! validate_backup; then
+    print_error "Nothing was changed."
+    exit 1
+fi
+
+# --- Can this build run on the backup's schema? -------------------------------
+# A dump whose schema revision this build does not have is from a NEWER build:
+# alembic cannot migrate from a revision it does not know, so the backend
+# crash-loops on it ("Can't locate revision").  This used to be found only
+# after the DROP: after option 7, the safety dump of the migrated database is
+# the newest file and the picker's default (review 2026-10-23, H-OPS2).
+# Refused here, before the safety backup and before anything is dropped.
+if ! check_backup_revision; then
     print_error "Nothing was changed."
     exit 1
 fi
@@ -446,7 +498,7 @@ check_key_fingerprint() {
         print_warning "verify it matches the backup. Set it before users rely on MFA."
         return 0
     fi
-    if [[ "$backup_fp" == "$current_fp" ]]; then
+    if key_fingerprint_matches "$backup_fp"; then
         print_success "Credential-encryption key matches the backup."
         return 0
     fi
@@ -689,6 +741,7 @@ if [[ -n "$uploads_archive" && -f "$BACKUP_FILE_DIR/$uploads_archive" ]]; then
         < "$BACKUP_FILE_DIR/$uploads_archive" || uploads_rc=$?
     if [[ "$uploads_rc" -eq 0 ]]; then
         print_success "Uploads restored."
+        print_info "(Never in a backup: uploads/ingestion_queue — a staged or cut-short import waiting on its file cannot be resumed; upload that file again.)"
     else
         UPLOADS_RESTORE_FAILED=1
         UPLOADS_RETRY_CMD="docker run --rm -i -v \"$PROJECT_ROOT/uploads\":/uploads --entrypoint tar $HELPER_IMAGE xzf - -C /uploads < \"$BACKUP_FILE_DIR/$uploads_archive\""
@@ -704,21 +757,76 @@ else
     print_warning "images and issued report files in ./uploads are left as they are."
 fi
 
-# Printed under every summary from here on when the files did not come back.
-uploads_partial_note() {
-    [[ "$UPLOADS_RESTORE_FAILED" -eq 1 ]] || return 0
-    echo "  uploads/ is PARTLY RESTORED: extracting $uploads_archive failed (message above), so"
-    echo "  evidence images and issued report files may be missing. Fix the cause, then retry the files:"
-    echo "      $UPLOADS_RETRY_CMD"
-    echo ""
+# --- The report-template files installed on the server ------------------------
+# Put back where this folder LACKS them: a file already here is kept (the
+# release may ship its own; an operator may have replaced a logo since), the
+# way upgrade-instance.sh carries them.  Extracted on the host — the files are
+# this account's, in this tree — through a scratch folder, so nothing already
+# present is overwritten.  A failure ends PARTLY RESTORED, like uploads/.
+TEMPLATES_RESTORE_FAILED=0
+TEMPLATES_RETRY_CMD=""
+restore_template_files() {
+    local archive="$BACKUP_FILE_DIR/$templates_archive" scratch f rel put=0 same=0 kept=0
+    scratch="$(mktemp -d "${TMPDIR:-/tmp}/bluestick-templates.XXXXXX")"
+    if ! tar xzf "$archive" -C "$scratch"; then
+        rm -rf "$scratch"
+        return 1
+    fi
+    while IFS= read -r f; do
+        rel="${f#"$scratch"/}"
+        if [[ ! -e "$PROJECT_ROOT/$rel" ]]; then
+            mkdir -p "$(dirname "$PROJECT_ROOT/$rel")" && cp -p "$f" "$PROJECT_ROOT/$rel" || { rm -rf "$scratch"; return 1; }
+            put=$((put + 1))
+        elif cmp -s "$f" "$PROJECT_ROOT/$rel"; then
+            same=$((same + 1))
+        else
+            print_warning "$rel is here and differs from the backup's — kept this folder's."
+            kept=$((kept + 1))
+        fi
+    done < <(find "$scratch" -type f)
+    rm -rf "$scratch"
+    print_success "Report-template files: $put put back, $same already here, $kept kept as they are."
 }
+if [[ -n "$templates_archive" && -f "$BACKUP_FILE_DIR/$templates_archive" ]]; then
+    print_info "Restoring the report-template files installed on the server from $templates_archive..."
+    if ! restore_template_files; then
+        TEMPLATES_RESTORE_FAILED=1
+        TEMPLATES_RETRY_CMD="tar xzf \"$BACKUP_FILE_DIR/$templates_archive\" -C \"$PROJECT_ROOT\" --skip-old-files"
+        print_error "Restoring the report-template files FAILED (message above) — a template's logo or cover may be missing."
+    fi
+elif [[ -n "$templates_archive" ]]; then
+    print_warning "The backup names $templates_archive, but it is not in $BACKUP_FILE_DIR —"
+    print_warning "the report-template files installed on the server are NOT restored."
+fi
+
+# Printed under every summary from here on when the files did not come back.
+files_partial_note() {
+    if [[ "$UPLOADS_RESTORE_FAILED" -eq 1 ]]; then
+        echo "  uploads/ is PARTLY RESTORED: extracting $uploads_archive failed (message above), so"
+        echo "  evidence images and issued report files may be missing. Fix the cause, then retry the files:"
+        echo "      $UPLOADS_RETRY_CMD"
+        echo ""
+    fi
+    if [[ "$TEMPLATES_RESTORE_FAILED" -eq 1 ]]; then
+        echo "  report-templates/ is PARTLY RESTORED: putting back $templates_archive failed (message above)."
+        echo "  Fix the cause, then retry the files:"
+        echo "      $TEMPLATES_RETRY_CMD"
+        echo ""
+    fi
+}
+# The files did not all come back (uploads/ or the template files); NOT_BACK
+# names which, for the summary's title.
+files_partly_restored() { [[ "$UPLOADS_RESTORE_FAILED" -eq 1 || "$TEMPLATES_RESTORE_FAILED" -eq 1 ]]; }
+NOT_BACK="uploads/"
+[[ "$TEMPLATES_RESTORE_FAILED" -eq 1 ]] && NOT_BACK="report-templates/ files"
+[[ "$UPLOADS_RESTORE_FAILED" -eq 1 && "$TEMPLATES_RESTORE_FAILED" -eq 1 ]] && NOT_BACK="uploads/ and report-templates/ files"
 
 # --- Start the stack; the backend runs `alembic upgrade head` ---
 if [[ "$NO_START" -eq 1 ]]; then
-    if [[ "$UPLOADS_RESTORE_FAILED" -eq 1 ]]; then
-        restore_summary "STOPPED — PARTLY RESTORED (database restored, uploads/ not)" \
+    if files_partly_restored; then
+        restore_summary "STOPPED — PARTLY RESTORED (database restored, $NOT_BACK not)" \
             "'$PG_DB' holds the backup. The application containers are stopped (--no-start): the caller starts them."
-        uploads_partial_note
+        files_partial_note
         exit "$UPLOADS_PARTIAL_RC"
     fi
     restore_summary "STOPPED — database restored" \
@@ -743,10 +851,10 @@ stack_start_staged "$RESTORE_HEALTH_TIMEOUT" || start_rc=$?
 
 case "$start_rc" in
     0)
-        if [[ "$UPLOADS_RESTORE_FAILED" -eq 1 ]]; then
-            restore_summary "RUNNING — PARTLY RESTORED (database restored, uploads/ not)" \
+        if files_partly_restored; then
+            restore_summary "RUNNING — PARTLY RESTORED (database restored, $NOT_BACK not)" \
                 "The backend is healthy on the restored database, the schema is migrated to this build's head, and the workers and frontend are up — but the restore is NOT complete."
-            uploads_partial_note
+            files_partial_note
             exit "$UPLOADS_PARTIAL_RC"
         fi
         restore_summary "RUNNING" \
@@ -756,7 +864,7 @@ case "$start_rc" in
         restore_summary "PARTLY UP — database restored" \
             "The backend is healthy on the restored database, but starting the workers or the frontend failed ('$DC up' output above)." \
             "Retry:  $DC up -d      and look at:  $DC ps"
-        uploads_partial_note
+        files_partial_note
         exit 1
         ;;
     2)
@@ -766,7 +874,7 @@ case "$start_rc" in
             "If the backup's schema is NEWER than this build, alembic cannot migrate it (\"Can't locate revision\"): deploy the matching or a newer build, or restore an older backup."
         safety_recovery_line | sed 's/^/  /'
         echo ""
-        uploads_partial_note
+        files_partial_note
         exit 1
         ;;
     *)
@@ -776,7 +884,7 @@ case "$start_rc" in
             "When it is healthy:  $DC up -d" \
             "Wait longer next time:  RESTORE_HEALTH_TIMEOUT=7200 ./scripts/restore-db.sh …"
         print_migration_stall_help
-        uploads_partial_note
+        files_partial_note
         exit 1
         ;;
 esac

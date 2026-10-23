@@ -81,7 +81,7 @@ compose_project_name() {
     local project
     project="$($DC config 2>/dev/null | awk '/^name:/ {print $2; exit}')"
     [[ -z "$project" ]] && project="${COMPOSE_PROJECT_NAME:-}"
-    [[ -z "$project" ]] && project="$(grep -E '^COMPOSE_PROJECT_NAME=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [[ -z "$project" ]] && project="$(stack_env_val COMPOSE_PROJECT_NAME)"
     [[ -z "$project" ]] && project="$(basename "${PROJECT_ROOT:-$PWD}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
     printf '%s\n' "$project"
 }
@@ -167,13 +167,163 @@ backend_container_state() {
     docker inspect "$cid" --format '{{.State.Status}} {{.RestartCount}}' 2>/dev/null || echo "unknown 0"
 }
 
-_stack_env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2-; }
+# ------------------------------------------------------------------
+# .env, the database volume, the helper image, the key fingerprint — the ONE
+# copy each (review 2026-10-23, R-OPS1: backup-db.sh and restore-db.sh each
+# had their own, and restore derived the project name by itself).
+# ------------------------------------------------------------------
+
+# stack_env_val NAME [FILE] — NAME's value in FILE (default ./.env) as compose
+# reads it: the last assignment wins, blanks (and `export `) before the name
+# are allowed, ONE pair of matching surrounding quotes is removed, and so is a
+# trailing CR.  (The readers this replaced kept the quotes: POSTGRES_USER="x"
+# was passed to psql as "x" with its quotes.)  An inline `# comment` is NOT
+# removed — a secret may hold " #".  Prints nothing when it is not set.
+stack_env_val() {
+    local file="${2:-.env}" line value q
+    [[ -f "$file" ]] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$1=" "$file" 2>/dev/null | tail -n 1 || true)"
+    [[ -n "$line" ]] || return 0
+    value="${line#*=}"
+    value="${value%$'\r'}"
+    q="${value:0:1}"
+    if [[ ${#value} -ge 2 && ( "$q" == '"' || "$q" == "'" ) && "${value: -1}" == "$q" ]]; then
+        value="${value:1:${#value}-2}"
+    fi
+    printf '%s\n' "$value"
+}
+
+_sha256_hex() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 | sed 's/^.*= *//'
+    else
+        return 1
+    fi
+}
+
+# --- Credential-encryption key fingerprint ---------------------------------
+# TOTP/2FA secrets and the LLM-provider, scanner-integration and webhook
+# credentials are stored in the database as Fernet ciphertext, keyed (via
+# HKDF) off CREDENTIAL_ENCRYPTION_KEY — or SECRET_KEY when that is unset —
+# which lives ONLY in .env.  Restoring a dump onto a deployment with another
+# key leaves every such secret undecryptable (MFA silently stops working), so
+# backup-db.sh stamps a one-way fingerprint of the key into the .meta and
+# restore-db.sh compares it.  A SALTED, TRUNCATED SHA-256: enough to detect
+# "different key", never enough to help recover it.
+_key_fp_of() { printf 'networkmapper-keyfp-v1:%s' "$1" | _sha256_hex | cut -c1-16; }
+
+# The key's value as the application receives it (quotes removed).
+_credential_key() {
+    local src
+    src="$(stack_env_val CREDENTIAL_ENCRYPTION_KEY)"
+    [[ -z "$src" ]] && src="$(stack_env_val SECRET_KEY)"
+    printf '%s' "$src"
+}
+
+# The fingerprint of this .env's key; returns 1 when no key is set.
+key_fingerprint() {
+    local src
+    src="$(_credential_key)"
+    [[ -n "$src" ]] || return 1
+    _key_fp_of "$src"
+}
+
+# key_fingerprint_matches FP — 0 when FP is this .env's key's fingerprint.
+# Backups made before review 2026-10-23 hashed the RAW text after `=` (the old reader
+# kept quotes), so a quoted key's old fingerprint covered its quotes: those
+# forms are accepted too, so an existing backup is not called a mismatch for
+# its key's quoting — on this .env or one that quotes it differently.
+key_fingerprint_matches() {
+    local want="$1" src raw cand
+    src="$(_credential_key)"
+    raw="$(grep -E "^CREDENTIAL_ENCRYPTION_KEY=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+    [[ -z "$raw" ]] && raw="$(grep -E "^SECRET_KEY=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+    for cand in "$src" "\"$src\"" "'$src'" "$raw"; do
+        [[ -n "$cand" ]] || continue
+        [[ "$(_key_fp_of "$cand")" == "$want" ]] && return 0
+    done
+    return 1
+}
+
+# --- The EXACT postgres volume of this stack --------------------------------
+# A loose `--filter name=postgres_data` substring match + `head -1` can pick
+# another Compose project's *_postgres_data volume on a shared host — backing
+# up the wrong database, or (on restore) overwriting it.  Resolved from the db
+# container's mounts; else an exact <project>_postgres_data match
+# (compose_project_name).  Fails closed (no output, 1) rather than guess.
+resolve_volume() {
+    local cid vol expected
+    cid="$($DC ps -aq db 2>/dev/null | head -1)"
+    if [[ -n "$cid" ]]; then
+        vol="$(docker inspect "$cid" \
+            --format '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' \
+            2>/dev/null)"
+        if [[ -n "$vol" ]]; then
+            printf '%s\n' "$vol"
+            return 0
+        fi
+    fi
+    expected="$(compose_project_name)_postgres_data"
+    if docker volume ls -q 2>/dev/null | grep -qx "$expected"; then
+        printf '%s\n' "$expected"
+        return 0
+    fi
+    return 1
+}
+
+# The image compose builds or names for a service.  `config --images SERVICE`
+# also lists the images of every service it depends on, in no fixed order
+# (asking for the frontend's answered with the backend's one time in two), so
+# the one NAMED for the service is picked: <project>-<service>, else a name
+# ending in the service's, else — the database has no dependencies — the
+# first line.  (deploy.sh's, moved here for restore-db.sh's revision check.)
+service_image_ref() {
+    local service="$1" listed project ref=""
+    listed="$($DC config --images "$service" 2>/dev/null || true)"
+    [[ -n "$listed" ]] || return 0
+    if [[ "$service" == "db" ]]; then
+        printf '%s\n' "$listed" | head -1
+        return 0
+    fi
+    project="$(compose_project_name)"
+    ref="$(printf '%s\n' "$listed" | grep -xE "${project:-[^/]+}[-_]${service}(:[^/]+)?" | head -1 || true)"
+    [[ -n "$ref" ]] || ref="$(printf '%s\n' "$listed" | grep -E "(^|[-_/])${service}(:[^/]+)?\$" | head -1 || true)"
+    printf '%s\n' "$ref"
+}
+
+# --- An image this host already has, to run tar / pg_restore in -------------
+# tar runs in a container because uploads/ belongs to the app's user (UID 999)
+# and PGDATA to postgres, not to the operator.  It used to be `alpine`, which
+# the stack never ships: on an isolated network the pull failed (review
+# 2026-10-01 R30).  The db container's own image (by id) when there is one,
+# else what compose resolves for the service; never pulled.
+helper_image() {
+    local cid img
+    cid="$($DC ps -aq db 2>/dev/null | head -1)"
+    if [[ -n "$cid" ]]; then
+        img="$(docker inspect "$cid" --format '{{.Image}}' 2>/dev/null)"
+        if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
+            printf '%s\n' "$img"
+            return 0
+        fi
+    fi
+    img="$(service_image_ref db)"
+    if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
+        printf '%s\n' "$img"
+        return 0
+    fi
+    return 1
+}
 
 # Run one SQL statement in the db container; prints the bare result.
 stack_psql() {
     local pg_user pg_db
-    pg_user="$(_stack_env_val POSTGRES_USER)"
-    pg_db="$(_stack_env_val POSTGRES_DB)"
+    pg_user="$(stack_env_val POSTGRES_USER)"
+    pg_db="$(stack_env_val POSTGRES_DB)"
     $DC exec -T db psql -U "${pg_user:-nmapuser}" -d "${pg_db:-networkMapper}" -tAc "$1" 2>/dev/null
 }
 
@@ -192,8 +342,8 @@ database_alembic_revision() {
 # Wait for PostgreSQL to accept connections.  $1 = seconds (default 60).
 wait_for_database() {
     local timeout="${1:-60}" waited=0 pg_user pg_db
-    pg_user="$(_stack_env_val POSTGRES_USER)"
-    pg_db="$(_stack_env_val POSTGRES_DB)"
+    pg_user="$(stack_env_val POSTGRES_USER)"
+    pg_db="$(stack_env_val POSTGRES_DB)"
     while [[ "$waited" -lt "$timeout" ]]; do
         if $DC exec -T db pg_isready -U "${pg_user:-nmapuser}" -d "${pg_db:-networkMapper}" >/dev/null 2>&1; then
             return 0
@@ -416,7 +566,7 @@ print_tunable_settings() {
         name="${entry%%|*}"
         what="${entry#*|}"
         default="$(_tunable_default "$name")"
-        value="$(_stack_env_val "$name")"
+        value="$(stack_env_val "$name")"
         if [[ -n "$value" ]]; then
             source=".env"
         elif [[ -n "${!name:-}" && "${!name}" != "$default" ]]; then

@@ -33,8 +33,13 @@ CRT_FILE="$CERT_DIR/networkmapper.crt"
 
 echo "Generating SSL certificate for $DOMAIN..."
 
-# Generate private key
+# Generate private key — under umask 077, so it is never readable by other
+# accounts, not even between openssl writing it and the chmod (review
+# 2026-10-23, N4).
+old_umask="$(umask)"
+umask 077
 openssl genrsa -out "$KEY_FILE" 2048
+umask "$old_umask"
 chmod 600 "$KEY_FILE"
 
 # Build SAN entries — always include localhost and 127.0.0.1
