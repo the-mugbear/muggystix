@@ -16,6 +16,11 @@ edited them by hand (comprehensive review 2026-10-16, B-OPS-4):
      platform_version.json);
   4. frontend/package-lock.json — its two root "version" fields.
 
+and it starts the release's notes: backend/app/data/release_notes.json gets an
+empty entry for the new version pair, newest first (2.525.0).  The gate fails
+until someone writes its lines (tests/test_release_notes.py) — the notes are
+written with the change, not remembered at the end.
+
 It refuses, changing nothing, when any place already disagrees with
 platform_version.json: a drift is fixed by hand first, never carried on.
 Stdlib only; runs on the host.  ``--root`` points it at another tree (tests).
@@ -26,6 +31,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 PARTS = ("patch", "minor", "major")
@@ -42,6 +48,25 @@ def bump(version: str, part: str) -> str:
 
 def _compose_pattern(variable: str) -> re.Pattern:
     return re.compile(r"(\$\{" + variable + r":-)([0-9]+\.[0-9]+\.[0-9]+)(\})")
+
+
+_RELEASES_OPEN = '"releases": [\n'
+
+
+def _with_release(text: str, backend: str, frontend: str) -> str | None:
+    """The notes with an empty entry for this version pair at the top, or None
+    when it already has one.  Inserted as text, so the file keeps its layout."""
+    releases = json.loads(text)["releases"]
+    if any((r["backend"], r["frontend"]) == (backend, frontend) for r in releases):
+        return None
+    if _RELEASES_OPEN not in text:
+        raise SystemExit("Nothing changed — release_notes.json has no '\"releases\": [' line to add to")
+    block = (
+        f'    {{\n      "backend": "{backend}",\n      "frontend": "{frontend}",\n'
+        f'      "date": "{date.today().isoformat()}",\n      "entries": []\n    }}'
+        + (",\n" if releases else "\n")
+    )
+    return text.replace(_RELEASES_OPEN, _RELEASES_OPEN + block, 1)
 
 
 def plan(root: Path, backend: str | None, frontend: str | None) -> dict[Path, str]:
@@ -84,6 +109,10 @@ def plan(root: Path, backend: str | None, frontend: str | None) -> dict[Path, st
         compose_new = _compose_pattern(variable).sub(lambda m, v=new[side]: m.group(1) + v + m.group(3), compose_new)
     if compose_new != compose:
         out[compose_path] = compose_new
+    notes_path = root / "backend" / "app" / "data" / "release_notes.json"
+    notes = _with_release(notes_path.read_text(), new["backend"], new["frontend"])
+    if notes is not None:
+        out[notes_path] = notes
     print(f"backend  {old['backend']} -> {new['backend']}")
     print(f"frontend {old['frontend']} -> {new['frontend']}")
     return out
@@ -105,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
         for path, text in changes.items():
             path.write_text(text)
         print("Then run: cd frontend && npx vitest run src/tests/versionConsistency.test.ts")
+        if any(path.name == "release_notes.json" for path in changes):
+            print("And write this release's lines in backend/app/data/release_notes.json (the gate fails until you do).")
     return 0
 
 

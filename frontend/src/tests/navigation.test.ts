@@ -196,6 +196,13 @@ describe('navigation manifest', () => {
     for (const page of NAV_PAGES) {
       expect(pageLabelFor(page.path), page.path).not.toBe('Page not found');
     }
+    // …nor does any page App.tsx routes (5.420.0: /reference/release-notes
+    // was routed with no title and its tab read "Page not found").
+    const untitled = Object.keys(appRouteRoles())
+      .filter((path) => path !== '*')
+      .map((path) => path.replace(/:[^/]+/g, '7'))
+      .filter((path) => pageLabelFor(path) === 'Page not found');
+    expect(untitled).toEqual([]);
     expect(isCrossProjectPath('/portfolio')).toBe(true);
     expect(isCrossProjectPath('/hosts')).toBe(false);
   });
@@ -297,6 +304,8 @@ describe('navigation manifest', () => {
     '/reference/user-guide/agents',
     '/reference/user-guide/admin',
     '/reference/sbom',
+    // 5.420.0 — a Reference hub entry and the About dialog's link.
+    '/reference/release-notes',
     // v5.296.0 — a Reference hub entry, like the SBOM.
     '/reference/tool-coverage',
     // 5.401.0 — a Reference hub entry: the guide to changing report templates.

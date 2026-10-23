@@ -1,9 +1,11 @@
 """Public reference endpoints — extracted from main.py in v2.42.0.
 
-Unauthenticated by design (documentation / environment tooling, not sensitive
-data — same stance as ``/agents-guide``), with one exception noted below:
+Mostly unauthenticated by design (documentation / environment tooling, not
+sensitive data — same stance as ``/agents-guide``); the signed-in ones say so
+below:
 
   * ``GET  /api/v1/references/sbom``                — software bill of materials
+    (**signed in**: it names every exact dependency version)
   * ``GET  /api/v1/references/mcp-tools``           — MCP tool catalog, connect
     recipes, and this deployment's certificate info
   * ``GET  /api/v1/references/tls-certificate``     — deployment TLS cert (PEM)
@@ -13,6 +15,8 @@ data — same stance as ``/agents-guide``), with one exception noted below:
   * ``PATCH /api/v1/references/tools/{name}``       — vet one (**admin only**)
   * ``GET  /api/v1/references/parser-coverage``     — what each import format
     keeps, where it is shown, and what is discarded
+  * ``GET  /api/v1/references/release-notes``       — what changed in each
+    version (**signed in, analysts and above**, 2.525.0)
   * ``GET  /api/v1/references/``                    — listing of the above
   * ``GET  /api/v1/agents-guide``                   — agent guide slice
 
@@ -33,7 +37,9 @@ from sqlalchemy.orm import Session
 
 from app.api.downloads import attachment
 from app.api.deps import identify_agent_if_present
-from app.api.deps import get_current_user_if_present, require_password_changed, require_role
+from app.api.deps import (
+    can_write_in_some_project, get_current_user_if_present, require_password_changed, require_role,
+)
 from app.core.config import settings
 from app.db.models_auth import User, UserRole
 from app.db.session import get_db
@@ -253,6 +259,32 @@ def parser_coverage():
     return coverage_payload()
 
 
+@router.get("/references/release-notes", summary="What changed in each release (analysts and above)")
+def release_notes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_password_changed),
+):
+    """What changed in each version, in a line each, newest first (2.525.0).
+
+    ``{current: {backend, frontend}, kinds, releases: [{backend, frontend,
+    date, entries: [{kind, text}]}]}`` — ``kind`` is one of ``kinds``, in that
+    order within a release.  Signed-in and for analysts and above (an analyst
+    or admin on some project, or a global admin — ``can_write_in_some_project``;
+    owner, 2026-10-23): a public list of exactly which version runs here, with
+    what it fixed, would tell anyone who can reach the server what an older
+    installation is missing.
+    """
+    from app.services import release_notes as notes
+
+    if not can_write_in_some_project(db, current_user):
+        raise HTTPException(status_code=403, detail="Release notes are for analysts and administrators.")
+    return {
+        "current": {"backend": settings.APP_VERSION, "frontend": settings.FRONTEND_VERSION},
+        "kinds": list(notes.KINDS),
+        "releases": notes.releases(),
+    }
+
+
 class ToolRegistryUpdate(BaseModel):
     """What an admin may change when vetting a tool.
 
@@ -421,6 +453,13 @@ async def references_index():
                 "BlueStick takes it (scanner observation, field, raw text, "
                 "stored but not shown, discarded), where it is shown, and "
                 "the known gaps."
+            ),
+        },
+        "release_notes": {
+            "url": "/api/v1/references/release-notes",
+            "description": (
+                "What changed in each version, in a line each, newest first. "
+                "Signed in, analysts and administrators."
             ),
         },
         "mcp_tools": {

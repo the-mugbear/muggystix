@@ -1,0 +1,51 @@
+{
+  "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
+  "releases": [
+    {
+      "backend": "2.525.0",
+      "frontend": "5.420.0",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "new", "text": "Release notes: Reference lists what changed in each version, and About BlueStick links to the notes of the one you are running."}
+      ]
+    },
+    {
+      "backend": "2.524.0",
+      "frontend": "5.419.0",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "new", "text": "The host inspector's findings link to their finding page, and closing one asks for the reason right there instead of leaving the page."},
+        {"kind": "new", "text": "A scan's page names the upload batch it came in with; a query that was refused says, in your history, the character where it went wrong."},
+        {"kind": "changed", "text": "Promoting or dismissing a scanner observation on every host now reaches every host with that issue, whichever scanner reported it."},
+        {"kind": "changed", "text": "An account an administrator creates must choose its own password at first sign-in."},
+        {"kind": "changed", "text": "Removing someone from a project hides its notifications from them and ends their agent sessions in it."},
+        {"kind": "changed", "text": "A report whose template cannot be filled is refused when you issue it, instead of taking a report number it can never use."},
+        {"kind": "changed", "text": "The Scans page's import figures each open exactly the list they count."},
+        {"kind": "fixed", "text": "Enter in the Hosts list opens the highlighted host after a sort or filter change."},
+        {"kind": "fixed", "text": "The CVSS score cannot be typed over while a 3.x or 2.0 vector decides it."},
+        {"kind": "fixed", "text": "Two people changing the same finding at once no longer fail with an error."},
+        {"kind": "fixed", "text": "Cancelling an import, or a server under heavy load, answers at once instead of hanging."},
+        {"kind": "fixed", "text": "Names and Posture load faster on large projects; the evidence gap lists come in address order, IPv6 included."},
+        {"kind": "before_upgrading", "text": "Back up first. Deploy now starts a stopped database itself and stops, changing nothing, when the database holds rows an upgrade cannot accept, listing them."}
+      ]
+    },
+    {
+      "backend": "2.523.0",
+      "frontend": "5.418.0",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "new", "text": "The Query page can ask about sites, scope, open ports, whether an observation is judged, and a finding's hosts; long answers page on."},
+        {"kind": "new", "text": "Scanner observations show check ids, the highest CVSS, ports and when last seen, with a Judged filter and a highest-CVSS order."},
+        {"kind": "new", "text": "Giving a finding a new owner tells them."},
+        {"kind": "changed", "text": "The Scans page keeps one import history: uploads that were not imported are rows in it, with retry and dismiss. The separate Ingestion results view is gone."},
+        {"kind": "changed", "text": "A deleted account's host reviews are kept, shown as by \"a former member\"."},
+        {"kind": "changed", "text": "Operations moved from /workbench to /operations; old bookmarks to /workbench no longer open."},
+        {"kind": "fixed", "text": "With remediation tracking off, no remediation alert appears in the bell."},
+        {"kind": "fixed", "text": "An IPv6 address written two ways is one host, and a Nessus host named only by an unresolved hostname is no longer made a host."},
+        {"kind": "fixed", "text": "A worker restarted by a rebuild is no longer reported as stuck."},
+        {"kind": "fixed", "text": "Large draft reports open several times faster."},
+        {"kind": "before_upgrading", "text": "Back up first, and resume running agent sessions afterwards."}
+      ]
+    }
+  ]
+}

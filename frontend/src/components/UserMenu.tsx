@@ -17,6 +17,9 @@ import { Avatar, AvatarFallback } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { formatTimestamp } from '../utils/relativeTime';
+import { useProject } from '../contexts/ProjectContext';
+import { canWriteInSomeProject } from '../utils/projectRole';
+import { releaseNotesPath } from '../utils/releaseNotes';
 import {
   Dialog,
   DialogContent,
@@ -49,6 +52,8 @@ const UserMenu: React.FC = () => {
   const backendVersion =
     process.env.REACT_APP_BACKEND_VERSION || buildInfo.backendVersion || 'unknown';
   const gitCommit = process.env.REACT_APP_GIT_COMMIT || buildInfo.gitCommit || 'dev';
+  // The release notes' read is analysts and above (the server's floor).
+  const canReadReleaseNotes = canWriteInSomeProject(useProject().projects, user?.role);
 
   const renderRoleIcon = (role: string) => {
     const cls = 'size-3.5';
@@ -215,6 +220,18 @@ const UserMenu: React.FC = () => {
               <dd>Kevin M - Remember me fondly!</dd>
             </div>
           </dl>
+          {canReadReleaseNotes && (
+            <Button
+              variant="link"
+              className="h-auto justify-start p-0"
+              onClick={() => {
+                setAboutOpen(false);
+                navigate(releaseNotesPath(backendVersion, frontendVersion));
+              }}
+            >
+              What changed in this version
+            </Button>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setAboutOpen(false)}>
               Close

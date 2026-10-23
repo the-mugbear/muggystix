@@ -151,7 +151,42 @@ def _tree(tmp_path, backend="2.5.9", frontend="5.4.1", compose_backend=None):
     # The real file's shape since R10: the frontend image's two build args only.
     (tmp_path / "docker-compose.yml").write_text(
         f"BACKEND_VERSION: ${{APP_VERSION:-{cb}}}\nFRONTEND_VERSION: ${{FRONTEND_VERSION:-{frontend}}}\n")
+    # The release notes (2.525.0): the real file's layout, one release.
+    notes = tmp_path / "backend" / "app" / "data"
+    notes.mkdir(parents=True)
+    (notes / "release_notes.json").write_text(
+        '{\n  "_about": "x",\n  "releases": [\n'
+        f'    {{\n      "backend": "{backend}",\n      "frontend": "{frontend}",\n'
+        '      "date": "2026-01-01",\n      "entries": [\n'
+        '        {"kind": "fixed", "text": "Something."}\n      ]\n    }\n  ]\n}\n')
     return tmp_path
+
+
+def test_the_bump_script_starts_the_releases_notes(tmp_path):
+    """2.525.0 — the fifth place: an empty entry for the new pair, at the top,
+    the file's layout kept; a pair that already has one is left alone."""
+    from app.services import release_notes
+
+    script = _bump_script()
+    root = _tree(tmp_path)
+    path = root / "backend" / "app" / "data" / "release_notes.json"
+    assert script.main(["--root", str(root), "--backend", "minor"]) == 0
+    releases = release_notes.check(json.loads(path.read_text()))
+    assert [(r["backend"], r["frontend"], r["entries"]) for r in releases] == [
+        ("2.6.0", "5.4.1", []), ("2.5.9", "5.4.1", [{"kind": "fixed", "text": "Something."}]),
+    ]
+    assert '{"kind": "fixed", "text": "Something."}' in path.read_text()   # untouched lines keep their layout
+
+    # Bumped back to a pair the notes already have: nothing added.
+    (root / "platform_version.json").write_text(json.dumps({"backend": "2.5.9", "frontend": "5.4.0"}) + "\n")
+    for name in ("package.json", "package-lock.json"):
+        p = root / "frontend" / name
+        p.write_text(p.read_text().replace('"version": "5.4.1"', '"version": "5.4.0"', 2))
+    compose = root / "docker-compose.yml"
+    compose.write_text(compose.read_text().replace("2.6.0", "2.5.9").replace("5.4.1", "5.4.0"))
+    before = path.read_text()
+    assert script.main(["--root", str(root), "--frontend", "patch"]) == 0
+    assert path.read_text() == before
 
 
 def test_the_bump_script_changes_every_place_and_nothing_else(tmp_path):

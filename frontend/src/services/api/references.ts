@@ -55,6 +55,40 @@ export const getSbom = async (signal?: AbortSignal): Promise<SbomResponse> => {
 };
 
 
+// --- Release notes (5.420.0) ---
+// What changed in each version, in a line each, newest first.  Signed in,
+// analysts and above (403 otherwise — `canWriteInSomeProject` decides whether
+// to offer the page).
+
+export type ReleaseNoteKind = 'new' | 'changed' | 'fixed' | 'before_upgrading';
+
+export interface ReleaseNoteEntry {
+  kind: ReleaseNoteKind;
+  text: string;
+}
+
+export interface Release {
+  backend: string;
+  frontend: string;
+  /** YYYY-MM-DD. */
+  date: string;
+  /** In `kinds` order. */
+  entries: ReleaseNoteEntry[];
+}
+
+export interface ReleaseNotesResponse {
+  /** The versions this server runs. */
+  current: { backend: string; frontend: string };
+  kinds: ReleaseNoteKind[];
+  releases: Release[];
+}
+
+export const getReleaseNotes = async (signal?: AbortSignal): Promise<ReleaseNotesResponse> => {
+  const response = await api.get<ReleaseNotesResponse>('/references/release-notes', { signal });
+  return response.data;
+};
+
+
 
 // --- Tool registry ---
 // One source of truth for every tool BlueStick knows about: a catalogue, not

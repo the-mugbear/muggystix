@@ -1,9 +1,44 @@
 /** Reference index (5.266.0) — a list that says what each entry does; no tiles. */
 import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 import Reference from '../../pages/Reference';
+
+const account = vi.hoisted(() => ({ role: 'member', projects: [{ my_role: 'analyst' }] as Array<{ my_role?: string }> }));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: null, projects: account.projects }),
+}));
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 1, role: account.role } }),
+}));
+
+beforeEach(() => {
+  account.role = 'member';
+  account.projects = [{ my_role: 'analyst' }];
+});
+
+describe('Reference — release notes (5.420.0)', () => {
+  it('offers the release notes to an analyst somewhere', () => {
+    account.projects = [{ my_role: 'viewer' }, { my_role: 'analyst' }];
+    render(<MemoryRouter><Reference /></MemoryRouter>);
+    expect(screen.getByRole('link', { name: /Release notes/ })).toHaveAttribute('href', '/reference/release-notes');
+  });
+
+  it('and to a global admin', () => {
+    account.role = 'admin';
+    account.projects = [];
+    render(<MemoryRouter><Reference /></MemoryRouter>);
+    expect(screen.getByRole('link', { name: /Release notes/ })).toBeInTheDocument();
+  });
+
+  it('not to an account that is viewer or auditor everywhere (the read is analysts and above)', () => {
+    account.projects = [{ my_role: 'viewer' }, { my_role: 'auditor' }];
+    render(<MemoryRouter><Reference /></MemoryRouter>);
+    expect(screen.queryByRole('link', { name: /Release notes/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /User guide/ })).toBeInTheDocument();
+  });
+});
 
 describe('Reference', () => {
   it('lists every entry with what following it does', () => {

@@ -125,6 +125,7 @@ const TriageGuide = lazy(() => import('./pages/userguide/TriageGuide'));
 const AgentsGuide = lazy(() => import('./pages/userguide/AgentsGuide'));
 const AdminGuide = lazy(() => import('./pages/userguide/AdminGuide'));
 const SbomReference = lazy(() => import('./pages/SbomReference'));
+const ReleaseNotes = lazy(() => import('./pages/ReleaseNotes'));
 const ToolCoverage = lazy(() => import('./pages/ToolCoverage'));
 const ReportTemplateGuide = lazy(() => import('./pages/ReportTemplateGuide'));
 const McpReference = lazy(() => import('./pages/McpReference'));
@@ -740,6 +741,16 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <SbomReference />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/release-notes"
+                        element={
+                          // The page's read is analysts and above; below that
+                          // the server's 403 is said on the page.
+                          <ProtectedRoute requiredRole="viewer">
+                            <ReleaseNotes />
                           </ProtectedRoute>
                         }
                       />

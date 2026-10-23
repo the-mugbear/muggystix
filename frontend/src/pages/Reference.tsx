@@ -11,16 +11,22 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import {
-  BookOpen, Bot, Download, ExternalLink, FileCode, FileCog, FileSearch, FileText, KeyRound, Package, Plug, Terminal,
+  BookOpen, Bot, Download, ExternalLink, FileCode, FileCog, FileSearch, FileText, KeyRound, Package, Plug, ScrollText,
+  Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 import PostureSection from '../components/posture/PostureSection';
+import { useAuth } from '../contexts/AuthContext';
+import { useProject } from '../contexts/ProjectContext';
+import { canWriteInSomeProject } from '../utils/projectRole';
 
 type Entry = {
   title: string;
   description: string;
   Icon: LucideIcon;
+  /** Offered only to an account that is analyst or admin somewhere (the read's floor). */
+  analystsOnly?: true;
 } & (
   | { kind: 'page'; path: string }
   | { kind: 'download'; href: string; filename: string; label: string }
@@ -35,6 +41,10 @@ const GROUPS: Array<{ title: string; description: string; entries: Entry[] }> = 
       {
         kind: 'page', path: '/reference/user-guide', Icon: BookOpen, title: 'User guide',
         description: 'Getting started, bringing data in, triage and reporting, agents, administration.',
+      },
+      {
+        kind: 'page', path: '/reference/release-notes', Icon: ScrollText, title: 'Release notes', analystsOnly: true,
+        description: 'What changed in each version, in a line each — what is new, what changed, what was fixed.',
       },
       {
         kind: 'page', path: '/reference/mcp', Icon: Plug, title: 'MCP for AI Assist',
@@ -120,7 +130,12 @@ const EntryRow: React.FC<{ entry: Entry }> = ({ entry }) => {
   return <a href={entry.href} target="_blank" rel="noreferrer" className={cls}>{body}</a>;
 };
 
-const Reference: React.FC = () => (
+const Reference: React.FC = () => {
+  const analyst = canWriteInSomeProject(useProject().projects, useAuth().user?.role);
+  const groups = GROUPS.map((group) => ({
+    ...group, entries: group.entries.filter((entry) => analyst || !entry.analystsOnly),
+  }));
+  return (
   // The same container as the other hub pages (full width, p-md md:p-lg) —
   // a centred max-width box started the title further right than theirs.
   <div className="space-y-lg p-md md:p-lg">
@@ -130,7 +145,7 @@ const Reference: React.FC = () => (
         Guides and reference material, available from every page.
       </p>
     </header>
-    {GROUPS.map((group) => (
+    {groups.map((group) => (
       <PostureSection key={group.title} title={group.title} description={group.description}>
         <ul className="grid gap-x-lg gap-y-xxs md:grid-cols-2">
           {group.entries.map((entry) => (
@@ -140,6 +155,7 @@ const Reference: React.FC = () => (
       </PostureSection>
     ))}
   </div>
-);
+  );
+};
 
 export default Reference;
