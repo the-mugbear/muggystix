@@ -291,8 +291,12 @@ def read_raw_chunk(record: EvidenceRecord, offset: int, length: int) -> dict:
 
     A piece ends on a character boundary (it may be a few bytes short of
     ``length``), so the pieces' texts joined are the output exactly, and
-    ``sha256`` of their bytes is the record's ``raw_output_sha256``.  An
-    ``offset`` inside a character is a 422; past the end is an empty piece."""
+    ``sha256`` of their bytes is the record's ``raw_output_sha256``.  Before
+    the end a piece is never empty: a ``length`` shorter than the character
+    at ``offset`` returns that one character (acceptance run 2026-10-23,
+    feedback #80: an empty piece answered its own offset as ``next_offset``,
+    and a client following it looped for ever).  An ``offset`` inside a
+    character is a 422; past the end is an empty piece."""
     data = read_raw_output(record).encode("utf-8", errors="replace")
     total = len(data)
     if offset < total and (data[offset] & 0xC0) == 0x80:
@@ -300,6 +304,10 @@ def read_raw_chunk(record: EvidenceRecord, offset: int, length: int) -> dict:
     end = min(offset + length, total)
     while end < total and end > offset and (data[end] & 0xC0) == 0x80:
         end -= 1
+    if offset < total and end == offset:
+        end += 1
+        while end < total and (data[end] & 0xC0) == 0x80:
+            end += 1
     piece = data[offset:end] if offset < total else b""
     return {
         "evidence_id": record.id,

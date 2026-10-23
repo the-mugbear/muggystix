@@ -206,6 +206,22 @@ def test_the_raw_output_is_hashed_and_read_back_in_pieces(client, db_session, te
     assert hashlib.sha256("".join(pieces).encode("utf-8")).hexdigest() == body["sha256"]
     assert len(pieces) > 40
 
+    # A length shorter than the character at the offset still moves on: that
+    # one character (feedback #80 — an empty piece answered its own offset).
+    # 2-, 3- and 4-byte characters, lengths 1-3, read whole one piece at a time.
+    for length in (1, 2, 3):
+        pieces, offset = [], 0
+        while offset is not None:
+            body = client.get(f"{AGENT}/evidence/{record['id']}/raw-chunk", headers=key,
+                              params={"offset": offset, "length": length}).json()
+            assert body["text"] and (body["next_offset"] is None or body["next_offset"] > offset)
+            pieces.append(body["text"])
+            offset = body["next_offset"]
+            if len(pieces) == 40:
+                break
+        assert "".join(pieces) == raw[:len("".join(pieces))]
+        assert "".join(pieces).startswith("é€😀 line")
+
     # An offset inside a character is refused; past the end is an empty piece.
     assert client.get(f"{AGENT}/evidence/{record['id']}/raw-chunk", headers=key,
                       params={"offset": 1}).status_code == 422

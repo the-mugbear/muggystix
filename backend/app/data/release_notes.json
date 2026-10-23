@@ -2,6 +2,14 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.526.1",
+      "frontend": "5.421.0",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "fixed", "text": "An agent reading an evidence record's output a few bytes at a time no longer gets stuck repeating the same read at an accented or other non-ASCII character."}
+      ]
+    },
+    {
       "backend": "2.526.0",
       "frontend": "5.421.0",
       "date": "2026-10-23",
