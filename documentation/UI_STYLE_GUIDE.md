@@ -1015,7 +1015,11 @@ From the codebase review of 2026-10-07 (5.339.0).
   members" or an empty list. Project members come from the one cached loader,
   `hooks/useProjectMembers` (`useProjectRoster` → `{members, status, retry}`);
   `components/MembersLoadError` is the message. Do not call
-  `listProjectMembers()` from a page.
+  `listProjectMembers()` from a page: a screen that needs the query itself
+  (Project settings, Portfolio's members sheet, the admins' memberships
+  dialog) spreads the hook's `projectMembersQuery(projectId)` — one key, one
+  request, one shape — adding `staleTime: 0` where it changes members
+  (`tests/projectMembersOneLoader.test.ts`).
 - **A count that could not be read is not another filter's count.** When a
   summary request fails, its numbers are cleared and the page says they could
   not be counted (Scans); the previous filter's figures never stay on screen.

@@ -2,7 +2,9 @@
  * The current project's members — the ONE loader for every owner / assignee
  * picker and for @mention autocomplete and highlighting.
  *
- * One query per project (`['listProjectMembers', projectId]`), shared by
+ * One query per project (`['listProjectMembers', projectId]`,
+ * `projectMembersQuery` — also what the member-management screens spread,
+ * `tests/projectMembersOneLoader.test.ts`), shared by
  * everything on the page and kept for a few minutes whether or not anything
  * shows it; after that the next reader asks again (a member added mid-session
  * appears without a reload).  A failure is not kept: the next reader, or
@@ -34,20 +36,28 @@ export interface ProjectRoster {
   retry: () => void;
 }
 
+/** THE query of a project's members — key, request and lifetime — for every
+ *  reader of `['listProjectMembers', projectId]`: the roster below, Project
+ *  settings, Portfolio's members sheet (a project it is given, not the
+ *  selected one) and the admins' memberships dialog.  One definition, so the
+ *  shared cache entry has one shape and one lifetime whoever filled it
+ *  (review 2026-10-23, R-FE3: four loaders, one normalising and remembering,
+ *  three not).  Spread it into `useQuery` / `fetchQuery` and add `enabled`. */
+export const projectMembersQuery = (projectId: number) => ({
+  queryKey: ['listProjectMembers', projectId] as const,
+  queryFn: async ({ signal }: { signal?: AbortSignal }): Promise<ProjectMember[]> => {
+    const rows = await listProjectMembers(projectId, signal);
+    return Array.isArray(rows) ? rows : EMPTY;
+  },
+  ...rememberFor(TTL_MS),
+});
+
 /** `enabled: false` asks for nothing yet (a menu not opened, a role that has
  *  no picker); the status stays `loading`. */
 export function useProjectRoster({ enabled = true }: { enabled?: boolean } = {}): ProjectRoster {
   const projectId = useProjectId();
   const on = enabled && projectId !== NO_PROJECT;
-  const query = useQuery({
-    queryKey: ['listProjectMembers', projectId],
-    queryFn: async ({ signal }) => {
-      const rows = await listProjectMembers(projectId, signal);
-      return Array.isArray(rows) ? rows : EMPTY;
-    },
-    enabled: on,
-    ...rememberFor(TTL_MS),
-  });
+  const query = useQuery({ ...projectMembersQuery(projectId), enabled: on });
 
   const { refetch } = query;
   const retry = useCallback(() => { void refetch(); }, [refetch]);

@@ -23,9 +23,11 @@ import { Loader2, Trash2, UserPlus } from 'lucide-react';
 import { useProject } from '../contexts/ProjectContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  addProjectMember, deleteProject as deleteProjectRequest, getUserDirectory, listProjectMembers,
-  removeProjectMember, updateProject, updateProjectMemberRole,
+  addProjectMember, deleteProject as deleteProjectRequest, getUserDirectory,
+  removeProjectMember, updateProject, updateProjectMemberRole, type ProjectMember,
 } from '../services/api';
+import { NO_PROJECT } from '../hooks/useProjectId';
+import { projectMembersQuery } from '../hooks/useProjectMembers';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -52,16 +54,6 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../components/ui/dialog';
-
-interface Member {
-  id: number;
-  user_id: number;
-  username: string;
-  full_name: string | null;
-  role: string;
-  joined_at?: string | null;
-  created_at?: string | null;
-}
 
 interface DirectoryEntry {
   id: number;
@@ -161,19 +153,18 @@ const ProjectSettings: React.FC = () => {
   // One roster per project wherever it is shown: this page, Portfolio's sheet,
   // the admin's memberships dialog and the pickers (`hooks/useProjectMembers`)
   // read the same key, so a change made here is what the pickers show.
-  const projectId = currentProject?.id;
-  const membersKey = ['listProjectMembers', projectId];
-  const membersQuery = useQuery({
-    queryKey: membersKey,
-    queryFn: async ({ signal }) => (await listProjectMembers(projectId as number, signal)) as unknown as Member[],
-    enabled: !!projectId,
-  });
-  const members: Member[] | null = membersQuery.data ?? null;
+  const projectId = currentProject?.id ?? NO_PROJECT;
+  const membersOptions = projectMembersQuery(projectId);
+  // The roster's one query (`projectMembersQuery`); this page changes members,
+  // so it reads them afresh when it opens (`staleTime: 0`) rather than the
+  // pickers' remembered copy.
+  const membersQuery = useQuery({ ...membersOptions, staleTime: 0, enabled: projectId !== NO_PROJECT });
+  const members: ProjectMember[] | null = membersQuery.data ?? null;
   const membersError = queryErrorText(membersQuery.error, 'Could not load the members.');
   const loadMembers = () => { void membersQuery.refetch(); };
   /** Patch the roster on screen with what a write is known to have done. */
-  const setMembers = (update: (prev: Member[]) => Member[]) => {
-    queryClient.setQueryData<Member[]>(membersKey, (prev) => update(prev ?? []));
+  const setMembers = (update: (prev: ProjectMember[]) => ProjectMember[]) => {
+    queryClient.setQueryData<ProjectMember[]>(membersOptions.queryKey, (prev) => update(prev ?? []));
   };
   // (The pickers of this project — owner, assignee, @mention — read this same
   // entry, so a patch here is what they show: nothing more to tell them.)
@@ -222,7 +213,7 @@ const ProjectSettings: React.FC = () => {
   };
 
   const roleChange = useMutation({
-    mutationFn: (body: { projectId: number; member: Member; role: string; self: boolean }) =>
+    mutationFn: (body: { projectId: number; member: ProjectMember; role: string; self: boolean }) =>
       updateProjectMemberRole(body.projectId, body.member.user_id, body.role),
     onSuccess: async (_updated, { member, role, self }) => {
       setMembers((prev) => prev.map((x) => (x.user_id === member.user_id ? { ...x, role } : x)));
@@ -232,7 +223,7 @@ const ProjectSettings: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Could not change the role.')),
   });
   const removal = useMutation({
-    mutationFn: (body: { projectId: number; member: Member }) =>
+    mutationFn: (body: { projectId: number; member: ProjectMember }) =>
       removeProjectMember(body.projectId, body.member.user_id),
     onSuccess: async (_void, { member }) => {
       setMembers((prev) => prev.filter((x) => x.user_id !== member.user_id));
@@ -253,7 +244,7 @@ const ProjectSettings: React.FC = () => {
 
   // What is asked or refused first is `utils/projectMembers` — the same rules
   // and words as Portfolio's members sheet and the administrator's dialog.
-  const changeOf = (m: Member, projectName: string): MemberChange => ({
+  const changeOf = (m: ProjectMember, projectName: string): MemberChange => ({
     name: memberName(m),
     role: m.role,
     projectName,
@@ -261,14 +252,14 @@ const ProjectSettings: React.FC = () => {
     adminCount: countProjectAdmins(members ?? []),
   });
   const refuse = (reason: string) => { toast.error(reason); };
-  const changeRole = async (m: Member, role: string) => {
+  const changeRole = async (m: ProjectMember, role: string) => {
     if (!currentProject || role === m.role) return;
     const change = changeOf(m, currentProject.name);
     if (!(await allowMemberChange(roleChangeDecision(change, role), confirm, refuse))) return;
     roleChange.mutate({ projectId: currentProject.id, member: m, role, self: change.isSelf });
   };
 
-  const removeMember = async (m: Member) => {
+  const removeMember = async (m: ProjectMember) => {
     if (!currentProject) return;
     if (!(await allowMemberChange(removalDecision(changeOf(m, currentProject.name)), confirm, refuse))) return;
     removal.mutate({ projectId: currentProject.id, member: m });
@@ -429,7 +420,7 @@ const ProjectSettings: React.FC = () => {
                       </Select>
                     ) : roleLabel(m.role)}
                   </td>
-                  <td className="py-xs pr-md text-caption text-muted-foreground">{day(m.joined_at ?? m.created_at)}</td>
+                  <td className="py-xs pr-md text-caption text-muted-foreground">{day(m.created_at)}</td>
                   <td className="py-xs text-right">
                     {canAdmin && (
                       <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-destructive"
