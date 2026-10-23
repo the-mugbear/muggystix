@@ -396,7 +396,7 @@ def test_api_activity_owner_attribution_and_mine_filter(
     db_session.flush()
     other_agent = Agent(
         name="other-agent", project_id=test_project.id,
-        owner_id=other.id, is_active=True,
+        owner_id=other.id,
     )
     db_session.add(other_agent)
     db_session.flush()

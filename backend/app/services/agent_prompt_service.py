@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.48.0"
+PROMPT_VERSION = "4.49.0"
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None

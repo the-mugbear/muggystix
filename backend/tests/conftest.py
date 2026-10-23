@@ -358,7 +358,6 @@ def test_agent(db_session, test_project, test_user):
         project_id=test_project.id,
         owner_id=test_user.id,
         description="contract test fixture",
-        is_active=True,
     )
     db_session.add(agent)
     db_session.commit()
