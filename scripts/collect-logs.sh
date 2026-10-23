@@ -230,7 +230,15 @@ print_info "Harvesting identifying values to remove (kept in a private temp file
         echo "$v" | tr ',' '\n' | sed -E 's#^[a-z]+://##; s#[:/].*$##' \
             | { grep -vE '^([0-9.]+|localhost|)$' || true; } \
             | while IFS= read -r part; do printf 'env\t%s\n' "$part"; done
-        echo "$v" | grep -qE '^[0-9.]+$' || printf 'secret\t%s\n' "$v"
+        # An address is left to the scrubber's address rule; an all-digit
+        # secret (a numeric database password) is harvested too — review
+        # 2026-10-23, N2: it was skipped as "an IP" — unless it is shorter
+        # than 6 digits, which would blank every number like it in the logs.
+        if echo "$v" | grep -qE '^[0-9]+$'; then
+            [[ ${#v} -ge 6 ]] && printf 'secret\t%s\n' "$v"
+        elif ! echo "$v" | grep -qE '^[0-9.]+$'; then
+            printf 'secret\t%s\n' "$v"
+        fi
     done
 } >> "$TERMS" 2>/dev/null || true
 

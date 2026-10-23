@@ -247,3 +247,17 @@ describe('nginx security headers', () => {
     }
   });
 });
+
+describe('nginx TLS 1.2 cipher suites (review 2026-10-23, N5)', () => {
+  const ciphers = (active.match(/ssl_ciphers\s+([^;]+);/) ?? [])[1]?.split(':') ?? [];
+
+  it('offers forward-secret AEAD suites for an ECDSA certificate as well as an RSA one', () => {
+    expect(ciphers.some((c) => c.startsWith('ECDHE-ECDSA-') && c.includes('GCM'))).toBe(true);
+    expect(ciphers.some((c) => c.startsWith('ECDHE-RSA-') && c.includes('GCM'))).toBe(true);
+  });
+
+  it('lists no DHE suite, which nginx never offers without ssl_dhparam', () => {
+    expect(active).not.toContain('ssl_dhparam');
+    expect(ciphers.filter((c) => c.startsWith('DHE-'))).toEqual([]);
+  });
+});

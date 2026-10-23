@@ -175,7 +175,13 @@ def load_terms(paths: list[str], vocabulary: set[str] = frozenset()) -> tuple[di
             cat, _, value = raw.partition("\t") if "\t" in raw else ("term", "", raw)
             value = value.strip().strip(".")
             cat = cat.strip() or "term"
-            if len(value) < 3 or value.lower() in GENERIC or value.isdigit() or value in SAFE_IPS:
+            if len(value) < 3 or value.lower() in GENERIC or value in SAFE_IPS:
+                continue
+            # A number names no one — except an all-digit secret (a numeric
+            # database password), kept when it is long enough not to blank
+            # every other number in the logs (collect-logs.sh harvests only
+            # those of 6 digits or more).
+            if value.isdigit() and not (cat == "secret" and len(value) >= 6):
                 continue
             if cat != "secret" and DATE_OR_VERSION.match(value):
                 continue

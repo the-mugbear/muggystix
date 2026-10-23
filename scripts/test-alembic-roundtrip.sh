@@ -26,8 +26,11 @@
 
 set -euo pipefail
 
-CONTAINER="${ALEMBIC_TEST_CONTAINER:-nm-alembic-roundtrip-pg}"
-NETWORK="${ALEMBIC_TEST_NETWORK:-nm-alembic-roundtrip-net}"
+# Named per run ($$): two round trips at once (two worktrees' gates) used to
+# share one container and network, and each one's cleanup killed the other's
+# (review 2026-10-23, R-OPS3).  The environment still overrides both.
+CONTAINER="${ALEMBIC_TEST_CONTAINER:-nm-alembic-roundtrip-pg-$$}"
+NETWORK="${ALEMBIC_TEST_NETWORK:-nm-alembic-roundtrip-net-$$}"
 DB_USER="${ALEMBIC_TEST_USER:-nmaptest}"
 DB_PASS="${ALEMBIC_TEST_PASS:-nmaptest}"
 DB_NAME="${ALEMBIC_TEST_DB:-nmaptest}"
