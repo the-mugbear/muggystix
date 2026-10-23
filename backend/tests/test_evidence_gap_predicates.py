@@ -34,8 +34,9 @@ def _host(db, project_id, ip, ports=(), **fields):
     h.last_seen = datetime.now(timezone.utc)
     db.add(h)
     db.flush()
-    for number, service in ports:
-        db.add(models.Port(host_id=h.id, port_number=number, protocol="tcp", state="open", service_name=service))
+    for number, service, *state in ports:
+        db.add(models.Port(host_id=h.id, port_number=number, protocol="tcp",
+                           state=state[0] if state else "open", service_name=service))
     db.flush()
     return h
 
@@ -64,6 +65,10 @@ def _estate(db, project_id):
         "smb_gap": _host(db, project_id, "10.7.0.8", ports=[(445, "microsoft-ds")]),
         "smb_signing": _host(db, project_id, "10.7.0.9", ports=[(445, "microsoft-ds")], smb_signing="disabled"),
         "smb_netexec": _host(db, project_id, "10.7.0.10", ports=[(389, "ldap")]),
+        # Only a closed / filtered web or SMB port: nothing is exposed, so
+        # neither domain applies (review 2026-10-23, H-INV2).
+        "smb_closed": _host(db, project_id, "10.7.0.17", ports=[(445, "microsoft-ds", "closed"), (22, "ssh")]),
+        "web_filtered": _host(db, project_id, "10.7.0.18", ports=[(443, "https", "filtered"), (22, "ssh")]),
         # Vulnerability-assessed by a clean scanner run, and by a row only.
         "scanned_clean": _host(db, project_id, "10.7.0.11", ports=[(22, "ssh")]),
         "vuln_row": _host(db, project_id, "10.7.0.12", ports=[(22, "ssh")]),
@@ -136,6 +141,17 @@ def test_gap_in_the_hosts_query_opens_exactly_the_evidence_gap(client, db_sessio
     # ...and its negation is every other host of the project, none dropped.
     rest = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": f"NOT gap:{domain}", "limit": 100})
     assert rest.json()["total"] == len(estate) - gap["total"]
+
+
+@pytest.mark.parametrize("domain", ["web_tls", "auth_smb_ad"])
+def test_a_closed_or_filtered_port_exposes_nothing(db_session, test_project, estate, domain):
+    pid = test_project.id
+    shut = {estate["smb_closed"].id, estate["web_filtered"].id}
+    assert not shut & eligible_host_ids(db_session, pid, [domain])[domain]
+    assert not shut & _matching(db_session, pid, domain_eligible_condition(domain))
+    assert not shut & {h["host_id"] for h in evidence_gap_hosts(db_session, pid, domain)["items"]}
+    # Every listed gap names a port the host exposes.
+    assert all(h["ports"] for h in evidence_gap_hosts(db_session, pid, domain)["items"])
 
 
 def test_an_unknown_gap_is_refused_naming_the_accepted_ones(client, test_project):

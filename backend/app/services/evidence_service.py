@@ -41,6 +41,22 @@ _WEB_PORTS = {80, 443, 8080, 8443, 8000, 8888, 8081, 4443, 9443, 8008}
 _AUTH_PORTS = {139, 445, 389, 636, 3268, 3269, 88}  # SMB / LDAP / GC / Kerberos
 
 
+def _exposing_port_conditions(domain: str):
+    """The ``Port`` conditions under which a port makes ``web_tls`` or
+    ``auth_smb_ad`` apply to its host — ONE definition for the project sets,
+    the per-host predicates and the gap list's ports.  Only an OPEN port
+    exposes a service: a closed or filtered 445 from a ``-p-`` sweep made the
+    host "eligible" and listed it as a gap with no port to name (review
+    2026-10-23, H-INV2).  ``None`` for a domain no port decides."""
+    if domain == "web_tls":
+        port = or_(models.Port.port_number.in_(_WEB_PORTS), models.Port.service_name.ilike("http%"))
+    elif domain == "auth_smb_ad":
+        port = models.Port.port_number.in_(_AUTH_PORTS)
+    else:
+        return None
+    return (models.Port.state == "open", port)
+
+
 def _domain(key: str, label: str, note: str, assessed: int, eligible: int) -> Dict[str, Any]:
     return {
         "key": key,
@@ -246,17 +262,13 @@ def eligible_host_ids(
     queries (2.374.4 review R2)."""
     all_hosts = _memo(lambda: _ids(db, db.query(models.Host.id).filter(models.Host.project_id == project_id)))
     with_ports = _memo(lambda: _host_ids(db, project_id, models.Port))
-    web_port_filter = or_(
-        models.Port.port_number.in_(_WEB_PORTS),
-        models.Port.service_name.ilike("http%"),
-    )
     builders = {
         "port_discovery": all_hosts,
         "service_detection": with_ports,
         "os_detection": with_ports,
         "vuln_assessment": all_hosts,
-        "web_tls": lambda: _host_ids(db, project_id, models.Port, web_port_filter),
-        "auth_smb_ad": lambda: _host_ids(db, project_id, models.Port, models.Port.port_number.in_(_AUTH_PORTS)),
+        "web_tls": lambda: _host_ids(db, project_id, models.Port, *_exposing_port_conditions("web_tls")),
+        "auth_smb_ad": lambda: _host_ids(db, project_id, models.Port, *_exposing_port_conditions("auth_smb_ad")),
         "validation": lambda: _ids(db, (
             db.query(FindingHost.host_id)
             .join(Finding, FindingHost.finding_id == Finding.id)
@@ -341,12 +353,8 @@ def domain_eligible_condition(domain: str):
         return true()
     if domain in ("service_detection", "os_detection"):
         return _host_has(models.Port.host_id)
-    if domain == "web_tls":
-        return _host_has(models.Port.host_id, or_(
-            models.Port.port_number.in_(_WEB_PORTS), models.Port.service_name.ilike("http%"),
-        ))
-    if domain == "auth_smb_ad":
-        return _host_has(models.Port.host_id, models.Port.port_number.in_(_AUTH_PORTS))
+    if domain in ("web_tls", "auth_smb_ad"):
+        return _host_has(models.Port.host_id, *_exposing_port_conditions(domain))
     if domain == "validation":
         return _host_has(
             FindingHost.host_id, FindingHost.finding_id == Finding.id,
@@ -551,16 +559,12 @@ def evidence_gap_hosts(
         if gap_ids else []
     )
     chosen = [h.id for h in hosts]
-    port_filter = None
-    if domain == "web_tls":
-        port_filter = or_(models.Port.port_number.in_(_WEB_PORTS), models.Port.service_name.ilike("http%"))
-    elif domain == "auth_smb_ad":
-        port_filter = models.Port.port_number.in_(_AUTH_PORTS)
+    port_conditions = _exposing_port_conditions(domain)
     ports_by_host: Dict[int, List[int]] = {}
-    if port_filter is not None and chosen:
+    if port_conditions is not None and chosen:
         for hid, port in (
             db.query(models.Port.host_id, models.Port.port_number)
-            .filter(models.Port.host_id.in_(chosen), models.Port.state == "open", port_filter)
+            .filter(models.Port.host_id.in_(chosen), *port_conditions)
             .distinct()
             .all()
         ):
