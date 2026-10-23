@@ -2106,6 +2106,16 @@ def test_the_checked_in_shard_weights_name_only_test_files_once():
     assert len(seen) > 100          # a truncated file would still run everything, badly balanced
 
 
+def test_the_shards_write_their_progress_as_it_happens():
+    """The live line reads each shard's log for pytest's percentage; a shard
+    runs behind a pipe (`run -T`), where Python buffers its output, so the
+    line read a log minutes behind (48 % shown at 74 %, review 2026-10-23b,
+    CHK-1). The shard containers run unbuffered."""
+    text = (SCRIPTS / "check.sh").read_text(encoding="utf-8")
+    block = text.split("local -a suite_env=(", 1)[1].split(")", 1)[0]
+    assert "-e PYTHONUNBUFFERED=1" in block
+
+
 # ---------------------------------------------------------------------------
 # Every script still parses
 # ---------------------------------------------------------------------------

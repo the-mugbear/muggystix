@@ -524,8 +524,11 @@ backend_suite() {
     # default is <cwd>/report-templates and pytest runs from /tmp, so without
     # it the tests that read the shipped templates skip ("not mounted") even
     # though they are mounted.
+    # PYTHONUNBUFFERED: a shard's pytest writes to a pipe (`run -T`), which
+    # Python buffers, so the live line below read a log minutes behind (48 %
+    # shown at 74 %, 2026-10-23).
     local -a suite_env=(
-        -e COVERAGE_FILE=/tmp/.coverage -e DB_POOL_SIZE=5
+        -e COVERAGE_FILE=/tmp/.coverage -e DB_POOL_SIZE=5 -e PYTHONUNBUFFERED=1
         -e REPORT_TEMPLATES_DIR=/app/report-templates -e BLUESTICK_REPO_ROOT=/repo
     )
 
