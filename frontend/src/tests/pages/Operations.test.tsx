@@ -1159,6 +1159,16 @@ describe('Operations page', () => {
       renderPage();
       expect(await screen.findByText(/Welcome — let's set up this project/)).toBeInTheDocument();
       expect(screen.queryByText(/Scope is registered/)).not.toBeInTheDocument();
+      // Owner, 2026-10-22: nothing on a brand-new project to refresh — the
+      // header's Refresh goes; starting an agent session stays.
+      expect(screen.queryByRole('button', { name: 'Refresh Operations' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Start Agent Session/ })).toBeInTheDocument();
+    });
+
+    it('keeps Refresh once the project has a scope entry, though no host yet', async () => {
+      projectWith(noHosts);
+      renderPage();
+      await screen.findByText(/Scope is registered — time to discover hosts/);
       expect(screen.getByRole('button', { name: 'Refresh Operations' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Start Agent Session/ })).toBeInTheDocument();
     });
