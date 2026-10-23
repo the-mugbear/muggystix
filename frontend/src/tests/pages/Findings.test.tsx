@@ -807,3 +807,46 @@ describe('Findings — the old Scanner observations view', () => {
     expect(api.listFindings).not.toHaveBeenCalled();
   });
 });
+
+// Review 2026-10-23: the bulk assign ignored `skipped_ids` (it patched every
+// ticked row and said all were assigned), and both bulk answers counted rows
+// already as asked as changed (`unchanged_ids` now).
+describe('Findings — a bulk answer is said as the server gave it', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setResponse([
+      makeFinding(1, { owner_id: 1, owner_name: 'tester' }),
+      makeFinding(2, { owner_id: 1, owner_name: 'tester' }),
+      makeFinding(3, { owner_id: 1, owner_name: 'tester' }),
+    ]);
+    mocked.listFindings.mockImplementation(async () => currentResponse);
+    mocked.listProjectMembers.mockResolvedValue([]);
+    confirmMock.mockResolvedValue(true);
+  });
+
+  const unassignSelected = async () => {
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Assign selected findings to a user' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Unassigned' }));
+  };
+
+  it('the bulk assign names the skipped rows', async () => {
+    mocked.bulkAssignFindings.mockResolvedValue({ affected: 1, requested: 2, skipped_ids: [2], unchanged_ids: [] });
+    renderFindings('/findings?status=all');
+    await selectFinding(1);
+    await selectFinding(2);
+    await unassignSelected();
+    await waitFor(() => expect(mocked.bulkAssignFindings).toHaveBeenCalledWith(1, [1, 2], null));
+    await waitFor(() => expect(toastMock.warning).toHaveBeenCalledWith('1/2 updated; 1 skipped'));
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it('says the rows that were already as asked', async () => {
+    mocked.bulkAssignFindings.mockResolvedValue({ affected: 1, requested: 2, skipped_ids: [], unchanged_ids: [2] });
+    renderFindings('/findings?status=all');
+    await selectFinding(1);
+    await selectFinding(2);
+    await unassignSelected();
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith(
+      '1 finding unassigned; 1 already was', { autoHideMs: 2500 }));
+  });
+});

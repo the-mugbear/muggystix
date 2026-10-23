@@ -347,6 +347,10 @@ def update_finding(
     # Each field this changes gets its line on the finding's history, with
     # the value before and after (2.519.0, `finding_actions.record_edit`).
     finding = _load(db, project, finding_id)
+    # The finding's lock first, and its fields re-read under it, so each
+    # line's "before" is the value this edit replaced (review 2026-10-23,
+    # R-TR1: read unlocked, a concurrent edit's value was lost from the history).
+    FindingService(db).lock_finding(finding)
     if body.title is not None:
         # v2.375.0 — the title is authored content; since 2.519.0 any
         # analyst renames it (as they edit its report text), while delete
@@ -518,7 +522,7 @@ def add_finding_hosts(
         svc.restore_endpoint(
             finding=finding, host_id=ep.host_id, name_id=ep.name_id,
             host_status=ep.host_status.value if ep.host_status else None,
-            actor_id=current_user.id, retest_requested_at=ep.retest_requested_at,
+            actor_id=current_user.id,
         )
     # An Undo that puts a host back into Retest pending asks for its retest
     # again (stamped now): told like any other move into it (second review

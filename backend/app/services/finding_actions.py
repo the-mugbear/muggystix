@@ -172,9 +172,11 @@ def assign_findings(
     its history line (``set_owner``); the new owner gets ONE notification for
     the findings that actually changed hands, none when nothing changed or they
     took the findings themself.  Returns the findings that changed; the caller
-    commits."""
+    commits.  The findings' locks come first (id order) and the owner each
+    had is read under them (review 2026-10-23, R-TR1)."""
     from app.services.notification_service import NotificationService
 
+    FindingService(db).lock_findings(findings)
     changed = [f for f in findings if f.owner_id != owner_id]
     for finding in changed:
         set_owner(db, finding, owner_id, actor_id)

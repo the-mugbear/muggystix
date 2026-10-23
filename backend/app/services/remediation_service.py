@@ -1450,7 +1450,13 @@ def _record_follow_up(db, project_ids: Sequence[int], who, *, contact_email: str
     targets = {fh.id: fh for fh in db.query(FindingHost).options(joinedload(FindingHost.finding))
                .filter(FindingHost.id.in_(ids))}
     now = datetime.now(timezone.utc)
-    happened = datetime(on.year, on.month, on.day, 12, tzinfo=timezone.utc) if on != today else now
+    # A past day is noon of that day in the POLICY's zone (review 2026-10-23:
+    # noon UTC is the next day east of UTC+12, so the entry showed the wrong day).
+    happened = (
+        datetime(on.year, on.month, on.day, 12, tzinfo=deadlines.zone(policy.time_zone) or timezone.utc)
+        .astimezone(timezone.utc)
+        if on != today else now
+    )
     # A row already followed up on that day is left alone: a second click, or
     # a second admin the same day, is not a second follow-up.
     already = [r for r in records if r.last_follow_up_on == on]

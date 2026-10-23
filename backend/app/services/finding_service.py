@@ -6,6 +6,7 @@ a durable, roll-up-able record.  The annotation thread stays as the
 finding's evidence/discussion; the Finding carries severity + disposition +
 owner + the cross-host M2M.
 """
+import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -241,21 +242,33 @@ class FindingService:
         ``FOR NO KEY UPDATE``: the lock the revision UPDATE and any status
         UPDATE take anyway, so it adds no step at commit, and it does not hold
         up an insert that only references the finding (an endpoint, a comment,
-        a history row).  The caller's pending writes are flushed first; only
-        the status is re-read (the one column the writes decide on), so the
-        relationships a caller loaded stay loaded."""
-        if finding.id is None:
-            return finding
-        self.db.flush()
-        fresh = (
-            self.db.query(Finding.status)
-            .filter(Finding.id == finding.id)
-            .with_for_update(key_share=True)
-            .scalar()
-        )
-        if fresh is not None:
-            set_committed_value(finding, "status", fresh)
+        a history row).  The caller's pending writes are flushed first; the
+        finding's columns are re-read under the lock — the status a write
+        decides on, and the title, severity, owner and report text whose
+        "before" an edit's history line records (review 2026-10-23, R-TR1) —
+        while the relationships a caller loaded stay loaded."""
+        self.lock_findings([finding])
         return finding
+
+    def lock_findings(self, findings: Sequence[Finding]) -> None:
+        """``lock_finding`` for several, in ONE statement, in id order (the
+        bulk status change and the bulk assign)."""
+        held = {f.id: f for f in findings if f.id is not None}
+        if not held:
+            return
+        self.db.flush()
+        columns = [attr for attr in sa_inspect(Finding).column_attrs]
+        rows = (
+            self.db.query(Finding.id, *[attr.class_attribute for attr in columns])
+            .filter(Finding.id.in_(sorted(held)))
+            .order_by(Finding.id)
+            .with_for_update(key_share=True)
+            .all()
+        )
+        for row in rows:
+            finding = held[row[0]]
+            for attr, value in zip(columns, row[1:]):
+                set_committed_value(finding, attr.key, value)
 
     # ------------------------------------------------------------------
     # Create / promote
@@ -570,6 +583,11 @@ class FindingService:
         self.db.flush()
         return finding
 
+    def issue_finding(self, vuln, project_id: int) -> Optional[Finding]:
+        """The finding a promotion of ``vuln`` would join, or None when it
+        would make one (the lookup ``promote_vulnerability`` itself does)."""
+        return self._scanner_finding_for(vuln, project_id, issue_key_for(vuln))
+
     def _scanner_finding_for(self, vuln, project_id: int, key: Optional[str]) -> Optional[Finding]:
         """The scanner finding that already covers this row: the one promoted
         from it, else the ISSUE's (one per ``dedup_key`` in a project — the
@@ -825,8 +843,24 @@ class FindingService:
         self, *, finding: Finding, status: str, actor_id: Optional[int],
         summary: Optional[str] = None,
     ) -> Finding:
+        self.set_statuses(findings=[finding], status=status, actor_id=actor_id, summary=summary)
+        return finding
+
+    def set_statuses(
+        self, *, findings: Sequence[Finding], status: str, actor_id: Optional[int],
+        summary: Optional[str] = None,
+    ) -> List[Finding]:
+        """Give ``findings`` ``status`` — the one status write, single and
+        bulk.  The findings' locks come first, in id order, and the status
+        each had is read under them, so the history's "before" is the
+        status that was replaced (review 2026-10-23, R-TR1).  Returns the
+        findings that moved; one already at ``status`` writes nothing."""
         _validate_status(status)
-        if status != finding.status:
+        self.lock_findings(findings)
+        moved = []
+        for finding in findings:
+            if status == finding.status:
+                continue
             # A reason for a terminal determination is ASKED FOR, never required
             # (owner, 2026-10-02): the pages always prompt, and an empty answer is
             # accepted.  When given it lives in the status-history summary
@@ -838,7 +872,8 @@ class FindingService:
                 entity_id=finding.id, from_status=old, to_status=status,
                 changed_by_id=actor_id, summary=summary,
             )
-        return finding
+            moved.append(finding)
+        return moved
 
     def set_endpoint_status(
         self, *, finding: Finding, finding_host_id: int, host_status: str,
@@ -925,14 +960,17 @@ class FindingService:
             label = f"{row.name.fqdn} on {label}"
         return label
 
-    def _endpoint_line(self, finding: Finding, actor_id: Optional[int], summary: str) -> None:
+    def _endpoint_line(
+        self, finding: Finding, actor_id: Optional[int], summary: str, *, before_value: Optional[str] = None,
+    ) -> None:
         """A history line about the finding's endpoints: the finding's own
         status does not move.  Written directly — the shared transition helper
         is for the finding's status and skips a no-change move, which this is
-        by design."""
+        by design.  ``before_value``: a removal's record of the row
+        (``_removed_state``); no other endpoint line carries one."""
         self.db.add(FindingStatusHistory(
             finding_id=finding.id, from_status=finding.status, to_status=finding.status,
-            changed_by_id=actor_id, summary=summary,
+            changed_by_id=actor_id, summary=summary, before_value=before_value,
         ))
 
     def record_retest(
@@ -1142,11 +1180,41 @@ class FindingService:
 
     def _record_endpoint_removed(self, finding: Finding, row: FindingHost, actor_id: Optional[int]) -> None:
         """The history line of a removal: which endpoint, and the state it
-        was in (the row and that state are gone afterwards)."""
+        was in (the row and that state are gone afterwards).  The line also
+        keeps, for the server alone, which row it was and the retest that
+        stood on it (``before_value``, a field-less line: no reader shows it)
+        — what an Undo puts back (review 2026-10-23, H-TR2: the request used
+        to come back from the client, which could send none)."""
         self._endpoint_line(
             finding, actor_id,
             f"Removed endpoint {self._endpoint_label(row)} (was {row.host_status})",
+            before_value=json.dumps({
+                "host_id": row.host_id, "name_id": row.name_id,
+                "retest_requested_at": row.retest_requested_at.isoformat() if row.retest_requested_at else None,
+            }),
         )
+
+    def _removed_retest_request(self, finding: Finding, host_id: int, name_id: Optional[int]) -> Optional[datetime]:
+        """The retest that stood on this endpoint when it was last removed
+        from the finding (``_record_endpoint_removed``), or None."""
+        lines = (
+            self.db.query(FindingStatusHistory.before_value)
+            .filter(
+                FindingStatusHistory.finding_id == finding.id,
+                FindingStatusHistory.field.is_(None),
+                FindingStatusHistory.before_value.isnot(None),
+            )
+            .order_by(FindingStatusHistory.id.desc())
+        )
+        for (value,) in lines:
+            try:
+                state = json.loads(value)
+            except ValueError:
+                continue
+            if isinstance(state, dict) and state.get("host_id") == host_id and state.get("name_id") == name_id:
+                asked = state.get("retest_requested_at")
+                return datetime.fromisoformat(asked) if asked else None
+        return None
 
     def remove_endpoint(
         self, *, finding: Finding, finding_host_id: int,
@@ -1166,12 +1234,9 @@ class FindingService:
         self._before_endpoints_removed(
             finding, actor_id=actor_id, is_project_admin=is_project_admin, finding_host_id=finding_host_id,
         )
-        # With the retest request it carried: an Undo that dropped it made the
-        # restored row's Remediated free (third review 2026-10-15, H1).
-        snapshot = {
-            "host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status,
-            "retest_requested_at": row.retest_requested_at,
-        }
+        # The retest request it carried is kept by the removal's history line
+        # (``_record_endpoint_removed``), where ``restore_endpoint`` reads it.
+        snapshot = {"host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status}
         self._record_endpoint_removed(finding, row, actor_id)
         self.db.delete(row)
         self.db.flush()
@@ -1180,7 +1245,6 @@ class FindingService:
     def restore_endpoint(
         self, *, finding: Finding, host_id: int, name_id: Optional[int] = None,
         host_status: Optional[str] = None, actor_id: Optional[int] = None,
-        retest_requested_at: Optional[datetime] = None,
     ) -> Finding:
         """v2.325.0 — (re)attach one endpoint with its name and status intact.
         ``name_id`` must belong to the finding's project; a name from another
@@ -1191,11 +1255,13 @@ class FindingService:
         not an endpoint state is refused before anything is written and every
         change of state has its history line.
 
-        ``retest_requested_at`` (what the removal answered): the retest that
-        stood on the row goes back on it BEFORE the state is set, so the
-        guard holds — a restore straight to Remediated is refused like any
-        other move while it stands (third review 2026-10-15, H1).  A move
-        into ``retest`` stamps its own request."""
+        The retest that stood on the row when it was last removed (kept by
+        the removal's history line, ``_removed_retest_request``) goes back on
+        it BEFORE the state is set, so the guard holds — a restore straight
+        to Remediated is refused like any other move while it stands (third
+        review 2026-10-15, H1).  The server keeps it, never the client
+        (review 2026-10-23, H-TR2: a restore that sent no request skipped the
+        guard).  A move into ``retest`` stamps its own request."""
         if host_status:
             self._validate_endpoint_status(host_status)
         self.lock_finding(finding)
@@ -1226,8 +1292,9 @@ class FindingService:
         if row is not None:
             if not was_attached:
                 self._endpoint_line(finding, actor_id, f"Restored endpoint {self._endpoint_label(row)}")
-                if retest_requested_at is not None:
-                    row.retest_requested_at = retest_requested_at
+                asked = self._removed_retest_request(finding, host_id, name_id)
+                if asked is not None:
+                    row.retest_requested_at = asked
             if host_status:
                 self._move_endpoint(finding, row, host_status, actor_id, "restored")
         self.db.flush()

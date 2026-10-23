@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import exists, func, or_, select
 
 from app.db.models_project import (
-    Notification, NoteMention, Project, ProjectMembership,
+    Notification, NoteMention, Project, ProjectMembership, ProjectRole,
 )
 from app.db.models_auth import User, UserRole
 from app.db.models import Annotation
@@ -536,8 +536,22 @@ class NotificationService:
             return []
         actor = self.db.get(User, actor_id) if actor_id else None
         asked = f" — asked by {display_name(actor)}" if actor is not None else ""
+        # Who is told to act: a member who can record a result (analyst or
+        # admin).  An auditor or viewer told because nobody owns the finding
+        # is told only that it waits (review 2026-10-23: "Anyone in the
+        # project may record the retest's result" was said to them too).
+        writers = {
+            (uid, pid) for uid, pid in self.db.query(ProjectMembership.user_id, ProjectMembership.project_id)
+            .filter(
+                ProjectMembership.user_id.in_({uid for uid, _ in by_recipient}),
+                ProjectMembership.project_id.in_({pid for _, pid in by_recipient}),
+                ProjectMembership.role.in_([ProjectRole.ADMIN.value, ProjectRole.ANALYST.value]),
+            )
+        }
         out = []
         for (uid, project_id), items in sorted(by_recipient.items(), key=lambda kv: kv[0]):
+            act = (" Any analyst or admin of the project may record the retest's result."
+                   if (uid, project_id) in writers else "")
             if len(items) == 1:
                 finding, rows = items[0]
                 labels = [r.host.ip_address if r.host is not None else f"host {r.host_id}" for r in rows]
@@ -548,7 +562,7 @@ class NotificationService:
                     user_id=uid, project_id=project_id, type="retest",
                     title=f"Retest pending: {finding.title}"[:255],
                     body=(f"{n} host{'' if n == 1 else 's'} await{'s' if n == 1 else ''} a retest ({shown})"
-                          + asked + ". Anyone in the project may record the retest's result."),
+                          + asked + "." + act),
                     source_type="finding_retest", source_id=rows[0].id, finding_id=finding.id,
                     host_id=next(iter(host_ids)) if len(host_ids) == 1 else None, actor_id=actor_id,
                 )
@@ -558,7 +572,7 @@ class NotificationService:
                     user_id=uid, project_id=project_id, type="retest",
                     title=f"Retests pending on {len(items)} findings"[:255],
                     body=(f"{len(hosts)} host{'' if len(hosts) == 1 else 's'} across {len(items)} findings "
-                          f"await a retest{asked}. Anyone in the project may record the retest's result."),
+                          f"await a retest{asked}.{act}"),
                     source_type="finding_retests", source_id=None, actor_id=actor_id,
                 )
             self.db.add(notification)

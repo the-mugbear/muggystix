@@ -1196,9 +1196,10 @@ describe('FindingDetail — removing an endpoint from its row menu', () => {
     expect(message).toBe('Removed a.example.com (10.0.0.5) from the finding.');
     expect(options.action.label).toBe('Undo');
     await act(async () => { options.action.onClick(); });
-    // With the retest that stood on it (third review 2026-10-15, H1).
+    // The row and its state only: the server keeps the retest that stood on
+    // it (review 2026-10-23, H-TR2).
     expect(mocked.addFindingHosts).toHaveBeenCalledWith(1, 7, [], [{
-      host_id: 5, name_id: 9, host_status: 'retest', retest_requested_at: '2026-10-15T01:00:00Z',
+      host_id: 5, name_id: 9, host_status: 'retest',
     }]);
     await waitFor(() => expect(document.querySelector('[data-endpoint-row="31"]')).not.toBeNull());
   });

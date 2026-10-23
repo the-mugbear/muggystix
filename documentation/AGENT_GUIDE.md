@@ -305,7 +305,7 @@ Record a `failed` attempt too — it is part of the record — and say why in th
 
 ### A finding is a proposal
 
-An evidence record with `outcome: "finding"` does not create a finding. When your evidence shows something the team should conclude, **propose** it — `POST /agent/proposals/finding` (MCP `propose_finding`) citing the record in `evidence_ids` — and a person accepts or rejects it (see Evidence and proposals).
+An evidence record with `outcome: "finding"` does not create a finding. When your evidence shows something the team should conclude, **propose** it — `POST /agent/proposals/finding` (MCP `propose_finding`) citing the record in `evidence_ids` — and a person accepts or rejects it (see Evidence and proposals). Accepting it is that record's "Create finding": the cited records that showed the issue on the proposal's hosts are linked to the finding, so the test no longer waits for one. When the record answers a test of a scanner observation, the finding is that issue's — named and rated by the observation, and the one it already has if a person promoted it before; a proposal carrying `report_text` for an issue that already has a finding cannot be accepted (`409`), so propose the text on that finding (`finding-text`) instead.
 
 ### Named targets
 

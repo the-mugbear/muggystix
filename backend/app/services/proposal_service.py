@@ -46,6 +46,7 @@ from app.services.finding_actions import (
     apply_report_text, finding_actor, promote_or_dismiss_vulnerability,
 )
 from app.services import report_images
+from app.services.agent_evidence_service import promote_evidence
 from app.services.default_scope import project_scope
 from app.services.finding_service import FindingService, validate_severity
 from app.services.subnet_details import set_subnet_details
@@ -116,6 +117,25 @@ def _vulnerability(db: Session, project_id: int, vuln_id: int) -> Vulnerability:
     if vuln is None:
         raise HTTPException(status_code=404, detail="Scanner observation not found in this project")
     return vuln
+
+
+def _promotable_evidence(
+    db: Session, project_id: int, evidence_ids: Optional[Iterable[int]], host_ids: Iterable[int],
+) -> List[int]:
+    """The records a proposed finding cites that a person could promote with
+    "Create finding" on one of its hosts: outcome ``finding``, on no finding
+    yet, on a host the proposal names — in id order (an unlocked read that
+    only chooses; ``promote_evidence`` locks and checks again)."""
+    ids, hosts = sorted(set(evidence_ids or [])), sorted(set(host_ids or []))
+    if not ids or not hosts:
+        return []
+    return [
+        eid for (eid,) in db.query(EvidenceRecord.id).filter(
+            EvidenceRecord.id.in_(ids), EvidenceRecord.project_id == project_id,
+            EvidenceRecord.outcome == "finding", EvidenceRecord.finding_id.is_(None),
+            EvidenceRecord.host_id.in_(hosts),
+        ).order_by(EvidenceRecord.id)
+    ]
 
 
 def _check_evidence(db: Session, project_id: int, evidence_ids: Optional[Iterable[int]]) -> Optional[List[int]]:
@@ -852,13 +872,35 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         )
         return finding.id
     if kind == ProposalKind.FINDING_CREATE.value:
-        finding = FindingService(db).create_finding(
-            project_id=project_id, title=payload["title"], severity=payload["severity"],
-            status=payload.get("status") or FindingStatus.OPEN.value,
-            host_ids=payload.get("host_ids") or [], actor_id=user.id,
-            summary=f"Created {_provenance(proposal)}",
-        )
+        host_ids = payload.get("host_ids") or []
+        status = payload.get("status") or FindingStatus.OPEN.value
         text = payload.get("report_text") or {}
+        cited = _promotable_evidence(db, project_id, proposal.evidence_ids, host_ids)
+        if cited:
+            # The proposal cites a result that showed the issue: accepting is
+            # that result's "Create finding" (review 2026-10-23, H-TR1) — the
+            # record is linked, and a result confirming a scanner observation
+            # joins the issue's finding instead of making a second one.
+            made = promote_evidence(
+                db, project_id, cited[0], title=payload["title"], severity=payload["severity"],
+                status=status, actor_id=user.id, more_host_ids=host_ids, more_evidence_ids=cited[1:],
+                provenance=_provenance(proposal),
+            )
+            finding = made.finding
+            if text and not made.created:
+                raise HTTPException(status_code=409, detail=(
+                    f"Finding #{finding.id} already covers this issue: a result this proposal cites "
+                    "confirms its scanner observation. Accepting would join that finding, and the "
+                    "proposed report text would replace its own. Reject this proposal and use "
+                    "“Create finding” on the test's result, or ask the agent to propose the text "
+                    f"on finding #{finding.id}."
+                ))
+        else:
+            finding = FindingService(db).create_finding(
+                project_id=project_id, title=payload["title"], severity=payload["severity"],
+                status=status, host_ids=host_ids, actor_id=user.id,
+                summary=f"Created {_provenance(proposal)}",
+            )
         if text:
             # The accepter created it, so they are its author and may write it.
             apply_report_text(

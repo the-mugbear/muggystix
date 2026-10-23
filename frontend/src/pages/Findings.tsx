@@ -12,6 +12,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 import {
+  BulkFindingResult,
   Finding,
   FindingFilters,
   FindingHostStatus,
@@ -82,6 +83,25 @@ import { selectAllState } from '../utils/selection';
 // rendering "Invalid Date"; a future timestamp (clock skew) reads "now".
 /** The list read's failure when the server gave no reason of its own. */
 const LOAD_FAILED = 'Failed to load findings.';
+
+/** The rows a bulk answer says the server found (changed, or already as
+ *  asked) — a skipped id is not patched on the page. */
+const landedIds = (ids: number[], result: BulkFindingResult): Set<number> => {
+  const skipped = new Set(result.skipped_ids);
+  return new Set(ids.filter((id) => !skipped.has(id)));
+};
+
+/** What a bulk answer says, in one line: "3 findings → Confirmed", with the
+ *  ones already so ("; 2 already were") and, when the server skipped some,
+ *  "N/M updated; K skipped". */
+const bulkOutcomeText =(result: BulkFindingResult, done: string): { text: string; warn: boolean } => {
+  const unchanged = result.unchanged_ids?.length ?? 0;
+  const already = unchanged > 0 ? `; ${unchanged} already ${unchanged === 1 ? 'was' : 'were'}` : '';
+  if (result.skipped_ids.length > 0) {
+    return { text: `${result.affected}/${result.requested} updated${already}; ${result.skipped_ids.length} skipped`, warn: true };
+  }
+  return { text: `${result.affected} finding${result.affected === 1 ? '' : 's'} ${done}${already}`, warn: false };
+};
 
 const compactAge =(iso: string | null | undefined, now: number = Date.now()): string => {
   if (!iso) return '—';
@@ -448,6 +468,12 @@ const FindingsList: React.FC = () => {
       return next;
     });
 
+  const announceBulk = (result: BulkFindingResult, done: string) => {
+    const { text, warn } = bulkOutcomeText(result, done);
+    if (warn) toast.warning(text);
+    else toast.success(text, { autoHideMs: 2500 });
+  };
+
   // The actual bulk apply, with one optional rationale applied to every row's
   // history (the terminal-disposition audit trail).
   // v5.135.0 — one request, server-side. Previously this fired N independent
@@ -457,19 +483,12 @@ const FindingsList: React.FC = () => {
     mutationFn: (v: { ids: number[]; status: FindingStatus; summary?: string }) =>
       bulkSetFindingStatus(projectId, v.ids, v.status, v.summary),
     onSuccess: (result, { ids, status }) => {
-      const changed = new Set(ids.filter((id) => !result.skipped_ids.includes(id)));
-      patchFindings((f) => (changed.has(f.id) ? { ...f, status } : f));
+      const landed = landedIds(ids, result);
+      patchFindings((f) => (landed.has(f.id) ? { ...f, status } : f));
       listChanged();
       void queryClient.invalidateQueries({ queryKey: ['getFindingHistory'] });
       setSelected(new Set());
-      if (result.skipped_ids.length === 0) {
-        toast.success(
-          `${result.affected} finding${result.affected === 1 ? '' : 's'} → ${STATUS_LABEL[status]}`,
-          { autoHideMs: 2500 },
-        );
-      } else {
-        toast.warning(`${result.affected}/${result.requested} updated; ${result.skipped_ids.length} skipped`);
-      }
+      announceBulk(result, `→ ${STATUS_LABEL[status]}`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Bulk update failed — no findings were changed.')),
   });
@@ -482,19 +501,15 @@ const FindingsList: React.FC = () => {
       const name = assigneeId === null
         ? null
         : members.find((m) => m.user_id === assigneeId)?.username ?? 'user';
-      const assigned = new Set(ids);
+      // Only the rows the server found: a skipped id was not assigned.
+      const assigned = landedIds(ids, result);
       patchFindings((f) => (assigned.has(f.id) ? { ...f, owner_id: assigneeId, owner_name: name } : f));
       // Each finding's history gained an "Owner" line.
       void queryClient.invalidateQueries({ queryKey: ['getFindingHistory'] });
       // Under "Assigned to me" / "Unowned" a row may have left the filter.
       listChanged();
       setSelected(new Set());
-      toast.success(
-        assigneeId === null
-          ? `${result.affected} finding${result.affected === 1 ? '' : 's'} unassigned`
-          : `${result.affected} finding${result.affected === 1 ? '' : 's'} → ${name}`,
-        { autoHideMs: 2500 },
-      );
+      announceBulk(result, assigneeId === null ? 'unassigned' : `→ ${name}`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Bulk assignment failed — no findings were changed.')),
   });
