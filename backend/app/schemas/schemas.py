@@ -570,6 +570,10 @@ class Host(HostBase):
     weakness_labels: Dict[str, str] = {}
     # The misconfiguration checks recorded on the host (list rows only).
     check_ids: List[str] = []
+    # List rows only: the ids among `ports` that the active port / service /
+    # version conditions matched (`host_query.matched_port_condition`).  A
+    # list row's `ports` are its open ones plus those — not every stored port.
+    matched_port_ids: List[int] = []
     # The kinds of evidence that apply to the host and that nothing imported
     # so far provides — the Evidence page's gaps, per host (list rows only):
     # `[{key, label}]`, `key` being a value of the query's `gap:`.
@@ -637,6 +641,9 @@ class HostListResponse(BaseModel):
     sort_by: str = "critical_vulns"
     sort_order: str = "desc"
     vulnerability_error: bool = False
+    #: A `version:` condition is among those that marked a row's
+    #: `matched_port_ids` — the row then names the matched port's product.
+    match_by_product: bool = False
 
 class ScanInfoBase(BaseModel):
     type: Optional[str] = None

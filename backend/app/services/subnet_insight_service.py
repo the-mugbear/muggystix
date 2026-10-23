@@ -156,10 +156,10 @@ def resolve_host_locations(
     absent).  The SUBNET is most-specific-wins (a host in both a /16 and a /24
     resolves to the /24).  The SITE is inherited from the nearest *site-bearing*
     subnet — a host in an unlabelled /24 inside a /16 labelled "DC-East" counts
-    under DC-East.  This matches the attention model's ``_resolve_host_sites``
-    so every site-attribution surface (attention, subnet/systemic insights,
-    posture, reports) agrees on which site a host belongs to.  Keep the two
-    functions' inheritance rule in lockstep.
+    under DC-East.  This is the ONE site rule: the attention model's
+    ``_resolve_host_sites`` is a projection of it, and every site-attribution
+    surface (attention, subnet/systemic insights, posture, reports, the Hosts
+    row, the Query page's ``hosts.site`` via ``host_site_expression``) reads it.
 
     ``host_ids`` answers for those hosts only (a page of the Hosts list): it
     reads their mappings and just the subnets those name, instead of every

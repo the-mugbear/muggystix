@@ -129,11 +129,8 @@ def subnet_predicate(values: Sequence[str]) -> Optional[ColumnElement]:
     return or_(*conditions)
 
 
-#: The three scope-coverage states (v2.322.0; the list row's `scope_coverage`).
-SCOPE_COVERAGE_STATES = ("subnet", "name", "none")
-
-
-#: The three coverage states, in the order a host is tested for them.
+#: The three scope-coverage states (v2.322.0; the list row's `scope_coverage`),
+#: in the order a host is tested for them.
 SCOPE_COVERAGE_STATES = ("subnet", "name", "none")
 
 
@@ -324,16 +321,29 @@ def port_predicate(db: Session, values: Sequence, states: Optional[Sequence[str]
     builder validates and rejects non-numeric input upstream; this guard
     is defense-in-depth for any other caller.
     """
+    conditions = port_number_conditions(values, states)
+    return host_has_port(*conditions) if conditions is not None else false()
+
+
+def port_number_conditions(values: Sequence, states: Optional[Sequence[str]] = None) -> Optional[List[ColumnElement]]:
+    """The ``Port`` row conditions of ``port:`` — what ``port_predicate``
+    asks of ONE port, and what the Hosts list marks as the port a row matched
+    (``host_query_dsl.positive_port_conditions``).  None for no number."""
     port_ints = [int(v) for v in values if is_id(v)]
     if not port_ints:
-        return false()
-    return host_has_port(*port_match_conditions(ports=port_ints, port_states=states))
+        return None
+    return port_match_conditions(ports=port_ints, port_states=states)
+
+
+def service_conditions(values: Sequence[str], states: Optional[Sequence[str]] = None) -> List[ColumnElement]:
+    """The ``Port`` row conditions of ``service:`` (see ``port_number_conditions``)."""
+    return port_match_conditions(services=list(values), port_states=states)
 
 
 def service_predicate(db: Session, values: Sequence[str], states: Optional[Sequence[str]] = None) -> ColumnElement:
     """Host has at least one OPEN port (or one in ``states``) whose service
     name ILIKE-matches a value."""
-    return host_has_port(*port_match_conditions(services=list(values), port_states=states))
+    return host_has_port(*service_conditions(values, states))
 
 
 def product_version_text() -> ColumnElement:
@@ -357,7 +367,6 @@ def version_predicate(db: Session, values: Sequence[str], states: Optional[Seque
     version (or the two together, "OpenSSH 7.4") ILIKE-matches a value
     (v2.390.0 — `service:` matched the name only, so "which hosts run
     OpenSSH 7.x" had no filter)."""
-    joined = product_version_text()
     # LIKE wildcards in the value are literal, as in service: (review
     # 2026-09-23 R12 — `path:/admin_x` matched `/adminYx`).
     #
@@ -366,11 +375,18 @@ def version_predicate(db: Session, values: Sequence[str], states: Optional[Seque
     # OR in matched nothing extra — and an OR whose arms need three different
     # indexes is an OR Postgres scans the table for.
     # ``tests/test_read_path_review.py`` pins old == new.
+    conditions = version_conditions(values, states)
+    return host_has_port(*conditions) if conditions is not None else false()
+
+
+def version_conditions(values: Sequence[str], states: Optional[Sequence[str]] = None) -> Optional[List[ColumnElement]]:
+    """The ``Port`` row conditions of ``version:`` (see ``port_number_conditions``)."""
+    joined = product_version_text()
     conds = [joined.ilike(f"%{escape_like(v)}%", escape="\\") for v in values if v]
     if not conds:
-        return false()
+        return None
     resolved = resolve_endpoint_states(states, has_endpoint=True)
-    return host_has_port(*([port_state_condition(resolved)] if resolved else []), or_(*conds))
+    return [*([port_state_condition(resolved)] if resolved else []), or_(*conds)]
 
 
 def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
@@ -670,16 +686,14 @@ def exploit_on_port_predicate(ports: Sequence[int]) -> ColumnElement:
 # ---------------------------------------------------------------------------
 
 def has_notes_predicate() -> ColumnElement:
-    """Host has at least one note — directly, or on one of its ports.
+    """Host has at least one note — the notes ``untouched``, ``note:`` and a
+    row's note count read (host notes).
 
-    The annotations table pins each note to exactly one target (host, port,
-    scan, …), so a note left on a host's port carries ``host_id = NULL``.
-    Counting only direct host notes would miss those, so a host also matches
-    through a port-level note."""
-    return or_(
-        _host_has(AnnotationModel.host_id),
-        _host_has(models.Port.host_id, AnnotationModel.port_id == models.Port.id),
-    )
+    It also matched a note on one of the host's PORTS; nothing writes one
+    (``annotations.port_id`` has no writer in the code or its history, and no
+    row holds one), so that branch counted what ``untouched`` ignored and was
+    dropped (review 2026-10-23)."""
+    return _host_has(AnnotationModel.host_id)
 
 
 def note_predicate(values: Sequence[str]) -> ColumnElement:

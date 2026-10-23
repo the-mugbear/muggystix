@@ -26,7 +26,7 @@ import { reviewerName } from '../../utils/people';
 import {
   exposureChips,
 } from '../../utils/portsOfInterest';
-import { matchedEndpoints, type EndpointMatchCriteria } from '../../utils/endpointMatch';
+import { matchedEndpoints } from '../../utils/endpointMatch';
 import { matchedWeaknesses, type WeaknessMatchCriteria } from '../../utils/weaknessMatch';
 
 /**
@@ -455,11 +455,12 @@ export interface UseHostColumnsOptions {
    */
   onAddFilter?: (pivot: HostFilterPivot) => void;
   /**
-   * The active port / service / version conditions (`endpointMatchCriteria`).
-   * When set, the Exposure cell names the port(s) that made the row match —
-   * the risk-ranked chips alone never said why a "service ftp" row was listed.
+   * The list answer's `match_by_product`. The Exposure cell names the port(s)
+   * the server marked on the row (`matched_port_ids`) — the risk-ranked chips
+   * alone never said why a "service ftp" row was listed — by product when a
+   * `version:` condition matched.
    */
-  endpointMatch?: EndpointMatchCriteria | null;
+  matchByProduct?: boolean;
   /** The weakness flags / checks the conditions name (`weaknessMatchCriteria`):
    *  the Exposure cell names the ones the row carries. */
   weaknessMatch?: WeaknessMatchCriteria | null;
@@ -507,7 +508,7 @@ export function useHostColumns({
   canSetReview: canWrite = true,
   onOpen,
   onAddFilter,
-  endpointMatch = null,
+  matchByProduct = false,
   weaknessMatch = null,
   weaknessLabels,
   markNew = true,
@@ -730,7 +731,7 @@ export function useHostColumns({
           const host = row.original;
           const openCount = host.ports?.filter((port) => port.state === 'open').length ?? 0;
           const chips = exposureChips(host.ports);
-          const matched = matchedEndpoints(host.ports, endpointMatch);
+          const matched = matchedEndpoints(host.ports, host.matched_port_ids, matchByProduct);
           const weaknesses = matchedWeaknesses(host, weaknessMatch, weaknessLabels);
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
@@ -939,6 +940,6 @@ export function useHostColumns({
     // return to the inspector with stale list context that didn't
     // match the current filter set, while mouse row-click (which
     // uses the live callback) worked correctly.
-    [canWrite, updatingHostId, onFollowChange, onOpen, onAddFilter, endpointMatch, weaknessMatch, weaknessLabels, markNew],
+    [canWrite, updatingHostId, onFollowChange, onOpen, onAddFilter, matchByProduct, weaknessMatch, weaknessLabels, markNew],
   );
 }

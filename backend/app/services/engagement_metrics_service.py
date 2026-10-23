@@ -56,7 +56,7 @@ from app.db.models import (
 from app.db.models_host_tests import ACTIVE_TEST_STATUSES, HostTest
 from app.db.models_auth import User
 from app.db.models_findings import (
-    Finding, FindingHost, FindingHostStatus, FindingSource, FindingStatus,
+    ACTIVE_FINDING_STATUSES, Finding, FindingHost, FindingHostStatus, FindingSource, FindingStatus,
     FindingStatusHistory,
 )
 from app.db.models_project import ProjectMembership
@@ -124,6 +124,10 @@ class ProjectEngagement:
     host_count: int = 0
     hosts_in_review: int = 0
     hosts_reviewed: int = 0
+    #: Hosts in review OR reviewed, each once (`in_review_condition`) — the
+    #: pages say "taken into review".  The wire name predates the one
+    #: definition of TESTED (`host_test_queries`) and is kept on the Portfolio
+    #: and Oversight answers until those pages are next changed with it.
     hosts_tested: int = 0
     findings: SeverityCounts = field(default_factory=SeverityCounts)
     finding_states: StateCounts = field(default_factory=StateCounts)
@@ -258,12 +262,33 @@ def finding_is_a_result():
     )
 
 
-def tested_host_ids(tester_id: Optional[int] = None):
-    """Subquery of host ids in review or reviewed (by ``tester_id`` if given)."""
-    q = select(HostFollow.host_id).where(HostFollow.status.in_(REVIEW_STATES))
+def finding_is_active():
+    """SQL condition on ``Finding``: an ACTIVE finding — the ONE definition.
+
+    Still being worked (``ACTIVE_FINDING_STATUSES``: under investigation or
+    confirmed) AND a result (``finding_is_a_result``: a finding judged a false
+    positive on every endpoint is not one, whatever its own status says).
+    Posture's active counts (``attention_service``, ``posture_service``) and
+    the Findings list's ``status=active`` group — the page's and the agents'
+    door — all filter with it, so each count is the total of the list it
+    opens (review 2026-10-23, H-INV1)."""
+    return and_(Finding.status.in_(ACTIVE_FINDING_STATUSES), finding_is_a_result())
+
+
+def in_review_condition(host_id_column, tester_id: Optional[int] = None):
+    """The host in ``host_id_column`` is IN REVIEW OR REVIEWED (by
+    ``tester_id`` if given) — what this module's "tested" / "taken into
+    review" figures count.  Not ``host_test_queries.tested_host_ids`` (a
+    tested evidence record), the one definition of TESTED elsewhere; this was
+    called ``tested_host_ids`` too until review 2026-10-23 (R-INV2).
+
+    A correlated EXISTS on the row's host, so it reads only the follows of the
+    hosts in hand — it was ``host_id IN (SELECT host_id FROM host_follows)``
+    over every project's follows."""
+    conditions = [HostFollow.host_id == host_id_column, HostFollow.status.in_(REVIEW_STATES)]
     if tester_id is not None:
-        q = q.where(HostFollow.user_id == tester_id)
-    return q
+        conditions.append(HostFollow.user_id == tester_id)
+    return exists().where(*conditions)
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +311,7 @@ def project_engagement(
     out: Dict[int, ProjectEngagement] = {pid: ProjectEngagement() for pid in ids}
     if not ids:
         return out
-    scoped_hosts = tested_host_ids(tester_id) if tester_id is not None else None
+    scoped = tester_id is not None
 
     for pid, n in (
         db.query(Host.project_id, func.count(Host.id))
@@ -322,10 +347,10 @@ def project_engagement(
     if recorded_in is not None:
         base_finding_filters.append(recorded_in.clause(Finding.created_at))
     finding_filters = [*base_finding_filters, finding_is_a_result()]
-    if scoped_hosts is not None:
+    if scoped:
         finding_filters.append(exists().where(
             FindingHost.finding_id == Finding.id,
-            FindingHost.host_id.in_(scoped_hosts),
+            in_review_condition(FindingHost.host_id, tester_id),
             FindingHost.host_status != _FP_ENDPOINT,
         ))
     for pid, severity, n in (
@@ -346,9 +371,9 @@ def project_engagement(
     # False positives, counted apart: a finding dismissed by its own status or
     # on every endpoint.  With a tester, those touching the tester's hosts.
     fp_filters = [*base_finding_filters, ~finding_is_a_result()]
-    if scoped_hosts is not None:
+    if scoped:
         fp_filters.append(exists().where(
-            FindingHost.finding_id == Finding.id, FindingHost.host_id.in_(scoped_hosts),
+            FindingHost.finding_id == Finding.id, in_review_condition(FindingHost.host_id, tester_id),
         ))
     for pid, n in (
         db.query(Finding.project_id, func.count(Finding.id))
@@ -364,8 +389,8 @@ def project_engagement(
         Finding.status != _FP,
         FindingHost.host_status != _FP_ENDPOINT,
     ]
-    if scoped_hosts is not None:
-        endpoint_filters.append(FindingHost.host_id.in_(scoped_hosts))
+    if scoped:
+        endpoint_filters.append(in_review_condition(FindingHost.host_id, tester_id))
     affected_filters = list(endpoint_filters)
     if recorded_in is not None:
         affected_filters.append(recorded_in.clause(Finding.created_at))
@@ -377,19 +402,21 @@ def project_engagement(
         .all()
     ):
         out[pid].finding_affected_targets = n
-    # Defect rate numerators: tested hosts only (the tester's, when scoped).
+    # Defect rate numerators: hosts in review or reviewed only (the tester's,
+    # when scoped — `endpoint_filters` already holds that condition).
+    defect_filters = endpoint_filters if scoped else [*endpoint_filters, in_review_condition(FindingHost.host_id)]
     for pid, severity, n in (
         db.query(Finding.project_id, Finding.severity, func.count(distinct(FindingHost.host_id)))
         .join(FindingHost, FindingHost.finding_id == Finding.id)
-        .filter(*endpoint_filters, FindingHost.host_id.in_(scoped_hosts if scoped_hosts is not None else tested_host_ids()))
+        .filter(*defect_filters)
         .group_by(Finding.project_id, Finding.severity)
         .all()
     ):
         out[pid].defect_targets.add(severity, n)
 
     obs_filters = [Host.project_id.in_(ids), Vulnerability.severity.in_(_VULN_SEVERITIES)]
-    if scoped_hosts is not None:
-        obs_filters.append(Vulnerability.host_id.in_(scoped_hosts))
+    if scoped:
+        obs_filters.append(in_review_condition(Vulnerability.host_id, tester_id))
     if recorded_in is not None:
         # vulnerabilities.first_seen is a naive UTC column.
         obs_filters.append(recorded_in.naive_clause(Vulnerability.first_seen))

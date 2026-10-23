@@ -35,7 +35,7 @@ from app.db.models import FollowStatus, HostFollow, Scan, Site
 from app.db.models_findings import (
     ACTIVE_FINDING_STATUSES as _ACTIVE_FINDING_STATUSES, Finding, FindingHost, finding_active_on_host,
 )
-from app.services.engagement_metrics_service import finding_is_a_result
+from app.services.engagement_metrics_service import finding_is_active
 
 _UNASSIGNED = "__unassigned__"
 # Severity weights for the exposure raw score — transparent, not hidden.
@@ -52,14 +52,12 @@ def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
     # --- Exposure: severity-weighted active findings -----------------------
     # A finding judged a false positive on EVERY endpoint is not a result —
     # Oversight and the client report already left it out, while this counted
-    # it (review 2026-09-23 R7).
+    # it (review 2026-09-23 R7).  `finding_is_active` is the ONE definition,
+    # which the Findings list's `status=active` these counts open uses too
+    # (review 2026-10-23, H-INV1).
     sev_rows = dict(
         db.query(Finding.severity, func.count(Finding.id))
-        .filter(
-            Finding.project_id == project_id,
-            Finding.status.in_(_ACTIVE_FINDING_STATUSES),
-            finding_is_a_result(),
-        )
+        .filter(Finding.project_id == project_id, finding_is_active())
         .group_by(Finding.severity)
         .all()
     )
@@ -72,8 +70,7 @@ def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
         db.query(func.count(Finding.id))
         .filter(
             Finding.project_id == project_id,
-            Finding.status.in_(_ACTIVE_FINDING_STATUSES),
-            finding_is_a_result(),
+            finding_is_active(),
             Finding.owner_id.is_(None),
         )
         .scalar()

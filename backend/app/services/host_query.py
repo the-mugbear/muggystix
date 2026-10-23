@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import cast, func, not_, or_, select
+from sqlalchemy import and_, cast, func, not_, or_, select
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Session
 
@@ -387,6 +387,36 @@ def port_filter_conditions(
         port_states=[s.strip().lower() for s in port_states.split(',') if s.strip()] if port_states else None,
         require_open=bool(has_open_ports),
     )
+
+
+def matched_port_condition(
+    *, ports: Optional[str] = None, services: Optional[str] = None,
+    port_states: Optional[str] = None, has_open_ports: Optional[bool] = None,
+    q: Optional[str] = None,
+):
+    """``(condition, by_product)``: the condition a ``Port`` row meets when
+    it is a port the active filters MATCHED — the discrete port filters
+    (``port_filter_conditions``) OR a positive ``port:`` / ``service:`` /
+    ``version:`` leaf of ``q`` (``host_query_dsl.positive_port_conditions``)
+    — or ``None`` when no condition names a port.  ``by_product``: a
+    ``version:`` leaf is among them (the row then names the product).
+
+    The Hosts list marks those ports on each row (``matched_port_ids``) and
+    ships them beside the open ones; the page no longer re-reads the query
+    (review 2026-10-23, R-FE2)."""
+    arms = []
+    # A state alone ("has open ports", `port_states=closed`) marks nothing:
+    # every port in that state would match, which says nothing about the row.
+    if (ports and ports.strip()) or (services and services.strip()):
+        arms.append(and_(*port_filter_conditions(
+            ports=ports, services=services, port_states=port_states, has_open_ports=has_open_ports,
+        )))
+    by_product = False
+    if q and q.strip():
+        from app.services.host_query_dsl import parse_query, positive_port_conditions
+        leaves, by_product = positive_port_conditions(parse_query(q))
+        arms.extend(leaves)
+    return (or_(*arms) if arms else None), by_product
 
 
 # ---------------------------------------------------------------------------

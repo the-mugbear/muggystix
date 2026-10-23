@@ -69,7 +69,6 @@ import { copyToClipboard } from '../utils/clipboard';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { inertWhen, stickyBelowChrome } from '../utils/uiStyles';
 import { exposureChips } from '../utils/portsOfInterest';
-import { endpointMatchCriteria } from '../utils/endpointMatch';
 import { weaknessMatchCriteria } from '../utils/weaknessMatch';
 import { useConfirm } from '../hooks/useConfirm';
 import { hostConditionChips } from '../utils/hostConditionChips';
@@ -1392,19 +1391,6 @@ export default function Hosts() {
     toast.info(`Filtered to ${pivot.kind === 'os' ? 'OS' : pivot.kind} "${pivot.value}"`, { autoHideMs: 2000 });
   }, [setFilters, setPage, toast]);
 
-  // The active port / service / version conditions, so each row can name the
-  // endpoint that made it match (the Exposure chips are a risk read and may
-  // not include it).
-  const endpointMatch = useMemo(
-    () => endpointMatchCriteria({
-      ports: filters.ports,
-      services: filters.services,
-      portStates: filters.portStates,
-      hasOpenPorts: filters.hasOpenPorts,
-      query: filters.query,
-    }),
-    [filters.ports, filters.services, filters.portStates, filters.hasOpenPorts, filters.query],
-  );
   const weaknessMatch = useMemo(
     () => weaknessMatchCriteria({ weaknesses: filters.weaknesses, checks: filters.checks, query: filters.query }),
     [filters.weaknesses, filters.checks, filters.query],
@@ -1427,7 +1413,9 @@ export default function Hosts() {
     // focusable — semantically wrong as a link.
     onOpen: openInspector,
     onAddFilter: handleAddFilter,
-    endpointMatch,
+    // Each row names the port(s) the server marked as matched (the Exposure
+    // chips are a risk read and may not include them).
+    matchByProduct: shown?.match_by_product ?? false,
     weaknessMatch,
     weaknessLabels,
     // "New" on every row of a fresh engagement says nothing (UX review
