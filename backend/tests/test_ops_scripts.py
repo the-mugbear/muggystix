@@ -1660,6 +1660,63 @@ def test_shard_tallies_are_summed_into_one(tmp_path):
     assert result.stdout.strip() == "3 failed, 2870 passed, 6 skipped, 5 deselected, 8 warnings, 3 errors"
 
 
+def _mount_skips(text: str) -> str:
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "check.sh"), "--mount-skips"], capture_output=True, text=True, input=text,
+    )
+    assert result.returncode == 0, _output(result)
+    return result.stdout
+
+
+def test_the_gate_fails_on_a_skip_for_want_of_any_mount():
+    """H-OPS1 (review 2026-10-23): the gate failed only on skips that said
+    'quarto' or 'report-templates', so a test that skipped with "the shipped
+    templates are not mounted here" ran nowhere for months and the gate was
+    green."""
+    flagged = [
+        "SKIPPED [1] ../app/tests/test_a.py:76: the shipped templates are not mounted here",
+        "SKIPPED [7] ../app/tests/test_b.py:62: the agent guide is not mounted in this environment",
+        "SKIPPED [1] ../app/tests/test_c.py:32: scripts/seed_demo_data.py not reachable from this checkout",
+        "SKIPPED [1] ../app/tests/test_d.py:30: rdap-lookup.py not present in this checkout",
+        "SKIPPED [1] ../app/tests/test_e.py:9: the repository root is not mounted here (check.sh mounts it)",
+        "SKIPPED [4] ../app/tests/test_f.py:1: Quarto is only in the report-worker image",
+    ]
+    kept = [
+        "SKIPPED [1] ../app/tests/test_g.py:271: nothing follows it",
+        "test_h.py ....s.   [100%]",
+    ]
+    out = _mount_skips("\n".join(flagged + kept) + "\n")
+    assert out.splitlines() == flagged
+
+
+def _suite_skip_reasons() -> set[str]:
+    import re
+    found: set[str] = set()
+    for path in HERE.parent.glob("test_*.py"):
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"""(?:pytest\.skip\(\s*|reason=)f?(["'])(.+?)\1""", text):
+            found.add(m.group(2))
+    return found
+
+
+# A skip reason that names something outside backend/ — a file the gate mounts.
+_NAMES_A_MOUNT = r"scripts|\.md\b|template|agent guide|frontend|docker-compose|repository|repo root|checkout|mounted"
+
+
+def test_every_skip_for_want_of_a_mount_is_one_the_gate_fails_on():
+    """check.sh mounts everything such a test reads, so its skip there is a
+    defect; the gate sees it only when the reason matches MOUNT_SKIP_REASON.
+    A new test that skips with a reason of another wording fails HERE, not
+    silently in the gate."""
+    import re
+    reasons = sorted(r for r in _suite_skip_reasons() if re.search(_NAMES_A_MOUNT, r, re.I))
+    assert len(reasons) >= 5, reasons            # the scan found the suite's reasons
+    lines = "".join(f"SKIPPED [1] ../app/tests/test_x.py:1: {r}\n" for r in reasons)
+    flagged = {line.split(": ", 1)[1] for line in _mount_skips(lines).splitlines()}
+    missed = [r for r in reasons if r not in flagged]
+    assert not missed, f"check.sh would let these skips pass: {missed} — reword them or widen MOUNT_SKIP_REASON"
+
+
 def test_the_checked_in_shard_weights_name_only_test_files_once():
     """A stale line is harmless (it is ignored), but a line that is not
     '<seconds> <file>' or a file listed twice means the file was edited by

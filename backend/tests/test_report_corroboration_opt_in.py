@@ -69,10 +69,22 @@ def test_a_template_that_asks_gets_the_tools(client, db_session, test_project, s
     assert templates.get_template("plain").corroboration is False
 
 
+# The shipped templates, found where the app finds them — read at import,
+# before the autouse fixture points the setting at a scratch folder.  (The old
+# ``parents[2] / "report-templates"`` was ``/report-templates`` in every
+# container, so this test skipped everywhere; review 2026-10-23, H-OPS1.)
+SHIPPED = next(
+    (p for p in (Path(settings.REPORT_TEMPLATES_DIR), Path("/app/report-templates"),
+                 Path(__file__).resolve().parents[2] / "report-templates")
+     if (p / "pentest" / "template.json").is_file()),
+    None,
+)
+
+
 def test_no_shipped_template_asks():
-    shipped = Path(__file__).resolve().parents[2] / "report-templates"
-    manifests = sorted(shipped.glob("*/template.json"))
-    if not manifests:
-        pytest.skip("the shipped templates are not mounted here")
+    if SHIPPED is None:
+        pytest.skip("report-templates/ is not mounted here")
+    manifests = sorted(SHIPPED.glob("*/template.json"))
+    assert manifests
     for manifest in manifests:
         assert json.loads(manifest.read_text()).get("corroboration") is not True, manifest.parent.name

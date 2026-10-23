@@ -17,7 +17,8 @@
 #
 #   1. Backend suite in the REPORT-WORKER image — the backend image plus
 #      Quarto — with report-templates/ mounted, SHARDED (below).  FAILS if
-#      any test was skipped for want of Quarto or the templates: here they
+#      any test was skipped for want of Quarto, the templates or another
+#      mount (scripts/, the agent guide, the repository root): here they
 #      must run.
 #   2. Backend lint: `ruff check` in the same image — pyflakes (F) rules only
 #      (backend/ruff.toml), --no-cache.  Any finding fails the gate.
@@ -95,11 +96,12 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { echo "--only needs a step: backend | ruff | frontend | alembic" >&2; exit 2; }
             ONLY="$2"; shift 2 ;;
         --update-shard-weights) UPDATE_WEIGHTS=1; ONLY=backend; shift ;;
-        # The next two run nothing: they exist for tests/test_ops_scripts.py.
+        # The next three run nothing: they exist for tests/test_ops_scripts.py.
         --plan-shards)
             [[ $# -ge 2 ]] || { echo "--plan-shards needs a number" >&2; exit 2; }
             MODE=plan; PLAN_SHARDS="$2"; shift 2 ;;
         --sum-tallies) MODE=sum; shift ;;
+        --mount-skips) MODE=mount_skips; shift ;;
         -h|--help) awk 'NR > 1 { if ($0 !~ /^#/) exit; print }' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
     esac
@@ -211,8 +213,25 @@ sum_tallies() {
     '
 }
 
+# stdin: pytest output.  stdout: the SKIPPED lines of tests that did not run
+# because something this script provides was missing — Quarto, the templates,
+# or any mount (scripts/, the agent guide, the repository root, a file outside
+# backend/).  Here everything is mounted, so such a skip means the test ran
+# nowhere: the corroboration template test skipped as "the shipped templates
+# are not mounted here", a reason the old 'quarto|report-templates' match did
+# not see (review 2026-10-23, H-OPS1).  Matched on the REASON pytest prints;
+# tests/test_ops_scripts.py checks that every such reason in the suite matches.
+MOUNT_SKIP_REASON='quarto|report-templates|not mounted|not reachable|not present|repo(sitory)? root'
+mount_skips() {
+    grep -aE '^SKIPPED \[[0-9]+\]' | grep -aiE "$MOUNT_SKIP_REASON" || true
+}
+
 if [[ "$MODE" == sum ]]; then
     sum_tallies
+    exit 0
+fi
+if [[ "$MODE" == mount_skips ]]; then
+    mount_skips
     exit 0
 fi
 if [[ "$MODE" == plan ]]; then
@@ -614,9 +633,10 @@ backend_suite() {
     else
         summed="${tallies[0]:-pytest exited ${rcs[0]}} ($(elapsed "$started"))"
     fi
-    # A Quarto/template test that skipped ran nowhere: that is the defect this
-    # script exists to close.  Matched on the skip REASON pytest prints.
-    quarto_skips="$(cat "${logs[@]}" 2>/dev/null | grep -aE '^SKIPPED \[[0-9]+\]' | grep -icE 'quarto|report-templates' || true)"
+    # A Quarto/template/mount test that skipped ran nowhere: that is the
+    # defect this script exists to close (mount_skips, above).
+    mount_skipped="$(cat "${logs[@]}" 2>/dev/null | mount_skips)"
+    quarto_skips="$(grep -c . <<< "$mount_skipped" || true)"
 
     if [[ "${#broken[@]}" -gt 0 ]]; then
         echo ""
@@ -639,13 +659,13 @@ backend_suite() {
         record "backend suite" FAIL "no tests ran (pytest's arguments selected nothing) — $LOG_DIR"
     elif [[ "${quarto_skips:-0}" -ne 0 ]]; then
         echo ""
-        grep -aE '^SKIPPED \[[0-9]+\]' "${logs[@]}" | grep -iE 'quarto|report-templates' | sed 's/^/  /'
-        record "backend suite" FAIL "$quarto_skips Quarto/template skip reason(s): those tests did not run — $LOG_DIR"
+        sed 's/^/  /' <<< "$mount_skipped"
+        record "backend suite" FAIL "$quarto_skips Quarto/template/mount skip reason(s): those tests did not run — $LOG_DIR"
     else
         other_skips="$(cat "${logs[@]}" | grep -acE '^SKIPPED \[[0-9]+\]' || true)"
         if [[ "${other_skips:-0}" -ne 0 ]]; then
             echo ""
-            echo "Skipped (not Quarto / templates — listed so a new skip is seen):"
+            echo "Skipped (not Quarto / templates / a mount — listed so a new skip is seen):"
             cat "${logs[@]}" | grep -aE '^SKIPPED \[[0-9]+\]' | sed 's/^/  /'
         fi
         if [[ "$UPDATE_WEIGHTS" -eq 1 ]]; then
@@ -657,7 +677,7 @@ backend_suite() {
                 echo "check.sh: wrote $(grep -cvE '^#' "$out") test files' seconds to $out"
             fi
         fi
-        record "backend suite" PASS "$summed; no Quarto/template test skipped"
+        record "backend suite" PASS "$summed; no Quarto/template/mount test skipped"
     fi
 }
 
