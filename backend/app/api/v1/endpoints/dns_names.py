@@ -62,6 +62,13 @@ router = APIRouter()
 _STATES = ("all", "unresolved", "resolved", "in_scope", "out_of_scope", "wildcard", "shared")
 
 
+def _state_param():
+    """The list's and the export's ``state``: an unknown one is a 422 naming
+    the value, as every other unusable filter value is (it was a 400 checked
+    by hand in each route; review 2026-10-23)."""
+    return Query("all", pattern=f"^({'|'.join(_STATES)})$", description=" | ".join(_STATES))
+
+
 def _apply_state_filter(q, state: str, project_id: int):
     n = models.DNSName
     if state == "unresolved":
@@ -122,14 +129,12 @@ def list_names(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     search: Optional[str] = Query(None, description="Case-insensitive substring on the FQDN"),
-    state: str = Query("all", description="all | unresolved | resolved | in_scope | out_of_scope | wildcard | shared"),
+    state: str = _state_param(),
     sort: str = Query("fqdn", pattern="^(fqdn|last_seen|first_seen)$"),
     order: str = Query("asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    if state not in _STATES:
-        raise HTTPException(status_code=400, detail=f"state must be one of {', '.join(_STATES)}")
     q = _names_query(db, project.id, search=search, state=state, sort=sort, order=order)
     total = q.with_entities(func.count(models.DNSName.id)).order_by(None).scalar() or 0
     rows = q.offset(skip).limit(limit).all()
@@ -163,7 +168,7 @@ _EXPORT_CHUNK = 500
 def export_names(
     format: str = Query("txt", pattern="^(txt|csv)$"),
     search: Optional[str] = Query(None, description="Case-insensitive substring on the FQDN"),
-    state: str = Query("all", description="all | unresolved | resolved | in_scope | out_of_scope | wildcard | shared"),
+    state: str = _state_param(),
     sort: str = Query("fqdn", pattern="^(fqdn|last_seen|first_seen)$"),
     order: str = Query("asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
@@ -176,8 +181,6 @@ def export_names(
     columns: ``fqdn, kind, in_scope, current_ips, last_seen`` where
     ``current_ips`` is ``;``-joined and derived by the one "currently
     resolves to" rule."""
-    if state not in _STATES:
-        raise HTTPException(status_code=400, detail=f"state must be one of {', '.join(_STATES)}")
     # Streamed: its queries run after the response has started, over the whole
     # inventory — exempt from the API statement timeout (review 2026-10-01 R23).
     disable_statement_timeout(db)

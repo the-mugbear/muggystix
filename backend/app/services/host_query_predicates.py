@@ -129,11 +129,8 @@ def subnet_predicate(values: Sequence[str]) -> Optional[ColumnElement]:
     return or_(*conditions)
 
 
-#: The three scope-coverage states (v2.322.0; the list row's `scope_coverage`).
-SCOPE_COVERAGE_STATES = ("subnet", "name", "none")
-
-
-#: The three coverage states, in the order a host is tested for them.
+#: The three scope-coverage states (v2.322.0; the list row's `scope_coverage`),
+#: in the order a host is tested for them.
 SCOPE_COVERAGE_STATES = ("subnet", "name", "none")
 
 
@@ -670,16 +667,14 @@ def exploit_on_port_predicate(ports: Sequence[int]) -> ColumnElement:
 # ---------------------------------------------------------------------------
 
 def has_notes_predicate() -> ColumnElement:
-    """Host has at least one note — directly, or on one of its ports.
+    """Host has at least one note — the notes ``untouched``, ``note:`` and a
+    row's note count read (host notes).
 
-    The annotations table pins each note to exactly one target (host, port,
-    scan, …), so a note left on a host's port carries ``host_id = NULL``.
-    Counting only direct host notes would miss those, so a host also matches
-    through a port-level note."""
-    return or_(
-        _host_has(AnnotationModel.host_id),
-        _host_has(models.Port.host_id, AnnotationModel.port_id == models.Port.id),
-    )
+    It also matched a note on one of the host's PORTS; nothing writes one
+    (``annotations.port_id`` has no writer in the code or its history, and no
+    row holds one), so that branch counted what ``untouched`` ignored and was
+    dropped (review 2026-10-23)."""
+    return _host_has(AnnotationModel.host_id)
 
 
 def note_predicate(values: Sequence[str]) -> ColumnElement:

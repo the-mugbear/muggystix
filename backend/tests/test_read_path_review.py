@@ -1063,15 +1063,13 @@ def _wide_pairs(db, pid, user, facts):
             (models.Host.first_seen <= _T0) & (
                 models.Host.id.in_(db.query(models.Port.host_id).filter(models.Port.first_seen > _T0).distinct())
                 | _old_vuln_in(db, pid, V.created_at > _T0))),
+        # Host notes only since review 2026-10-23: the port-note half (no
+        # writer exists) was dropped so `has:notes` and `has:untouched` agree.
         "has notes": (
             P.has_notes_predicate(),
             models.Host.id.in_(
                 db.query(Annotation.host_id).join(H1, H1.id == Annotation.host_id)
-                .filter(H1.project_id == pid, Annotation.host_id.isnot(None))
-                .union(
-                    db.query(models.Port.host_id)
-                    .join(Annotation, Annotation.port_id == models.Port.id)
-                    .join(H2, H2.id == models.Port.host_id).filter(H2.project_id == pid)))),
+                .filter(H1.project_id == pid, Annotation.host_id.isnot(None)))),
         "note": (
             P.note_predicate(["rotate"]),
             models.Host.id.in_(

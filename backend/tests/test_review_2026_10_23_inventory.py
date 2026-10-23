@@ -100,3 +100,62 @@ def test_posture_active_counts_are_the_active_lists_totals(client, db_session, t
     assert d["scanner_active"] + d["non_scanner_active"] == d["active_total"] == exposure["active_findings"]
     # Ownership is the same selection (every seeded finding is unowned).
     assert out["headline"]["ownership"]["unowned"] == whole["total"]
+
+
+# --- Nits -------------------------------------------------------------------
+
+def test_the_scan_host_list_refuses_an_unknown_state(client, db_session, test_project):
+    scan = models.Scan(project_id=test_project.id, filename="s.xml", tool_name="nmap")
+    db_session.add(scan)
+    db_session.commit()
+    base = f"/api/v1/projects/{test_project.id}/hosts/scan/{scan.id}"
+    assert client.get(base, params={"state": "up"}).status_code == 200
+    r = client.get(base, params={"state": "upp"})
+    assert r.status_code == 422 and "upp" in r.text
+
+
+def test_has_notes_is_the_host_notes_untouched_reads(client, db_session, test_project, test_user):
+    """A note on a PORT has no writer; ``has:notes`` matched one while
+    ``has:untouched`` ignored it, so a host could be both."""
+    noted = _host(db_session, test_project.id, "10.232.0.1")
+    port_only = _host(db_session, test_project.id, "10.232.0.2")
+    port = models.Port(host_id=port_only.id, port_number=22, protocol="tcp", state="open")
+    db_session.add(port)
+    db_session.flush()
+    db_session.add(models.Annotation(host_id=noted.id, user_id=test_user.id, body="n"))
+    db_session.add(models.Annotation(port_id=port.id, user_id=test_user.id, body="legacy port note"))
+    db_session.commit()
+
+    def ips(q):
+        r = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": q})
+        assert r.status_code == 200, r.text
+        return {h["ip_address"] for h in r.json()["items"]}
+
+    assert ips("has:notes") == {"10.232.0.1"}
+    assert ips("has:untouched") == {"10.232.0.2"}
+    assert not ips("has:notes") & ips("has:untouched")
+
+
+def test_conflict_history_breaks_ties_by_id(db_session, test_project):
+    from datetime import datetime, timezone
+
+    from app.db.models_confidence import ConflictHistory
+    from app.services.host_detail_service import host_conflict_counts, host_conflict_history
+
+    host = _host(db_session, test_project.id, "10.233.0.1")
+    at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    ids = []
+    for n in range(5):
+        row = ConflictHistory(host_id=host.id, field_name="hostname", previous_value=f"a{n}",
+                              new_value=f"b{n}", resolved_at=at)
+        db_session.add(row)
+        db_session.flush()
+        ids.append(row.id)
+    db_session.commit()
+    listed = host_conflict_history(db_session, host, host_limit=3)
+    # Newest first; in one instant the latest row first — the cap keeps the
+    # same rows on every read.
+    assert [c["id"] for c in listed] == sorted(ids, reverse=True)[:3]
+    # The badge counts every host-level row; the pane lists the newest under
+    # its cap and says how many it left out (HostConflictsPanel's `unlisted`).
+    assert host_conflict_counts(db_session, [host.id])[host.id] == 5

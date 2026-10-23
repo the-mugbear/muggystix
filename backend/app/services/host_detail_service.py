@@ -90,7 +90,9 @@ def host_conflict_history(
     host_conflicts = (
         db.query(ConflictHistory)
         .filter(ConflictHistory.host_id == host.id)
-        .order_by(ConflictHistory.resolved_at.desc())
+        # The id breaks a tie: one import records several conflicts in one
+        # instant, and which of them the cap kept was the planner's choice.
+        .order_by(ConflictHistory.resolved_at.desc(), ConflictHistory.id.desc())
         .limit(host_limit)
         .all()
     )
@@ -98,7 +100,7 @@ def host_conflict_history(
     port_conflicts = (
         db.query(ConflictHistory)
         .filter(ConflictHistory.port_id.in_(port_ids))
-        .order_by(ConflictHistory.resolved_at.desc())
+        .order_by(ConflictHistory.resolved_at.desc(), ConflictHistory.id.desc())
         .limit(port_limit)
         .all()
     )

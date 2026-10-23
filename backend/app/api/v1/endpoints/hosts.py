@@ -1363,6 +1363,9 @@ def get_hosts_by_scan_v2(
     Get hosts that were discovered in a specific scan.
     Uses HostScanHistory to find hosts associated with the scan.
     """
+    # An unknown `state` is a 422 naming it, as on every other host list —
+    # it read as an ordinary empty page (review 2026-10-23).
+    host_query.check_discrete_filters(state=state)
     # Check if scan exists and belongs to project
     scan = db.query(models.Scan).filter(models.Scan.id == scan_id, models.Scan.project_id == project.id).first()
     if not scan:
