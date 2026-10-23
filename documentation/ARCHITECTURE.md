@@ -119,7 +119,7 @@ backend/app/
 │       ├── audit.py          # admin audit log browsing
 │       ├── system_metrics.py # admin GET /system/queue-metrics (both job queues)
 │       ├── projects.py       # project CRUD + membership (add/remove/role)
-│       ├── notifications.py  # read/unread, mark-seen
+│       ├── notifications.py  # read/unread, mark-read
 │       ├── portfolio.py      # cross-project dashboard (members' projects)
 │       ├── oversight.py      # administrators' programme dashboard (global admins only)
 │       ├── llm_providers.py  # per-user LLM provider credentials
@@ -165,7 +165,7 @@ backend/app/
 │   │                         # WebInterface/WebPath, DNSName/DNSRecord, ParseError,
 │   │                         # Script/HostScript + ScriptSighting/HostScriptSighting (one row per scan that reported one),
 │   │                         # Annotation, NoteAttachment (AnnotationStatusHistory was dropped in v2.447.0),
-│   │                         # host follow/tags/filter-views/queries, Operations/Activity cursors)
+│   │                         # host follow/tags/filter-views/queries, the Operations cursor)
 │   ├── models_findings.py    # Finding spine — canonical correlated-finding layer
 │   │                         # (Finding, FindingHost (per-endpoint state), FindingVulnerability,
 │   │                         # FindingStatusHistory) that powers reports / posture / comments

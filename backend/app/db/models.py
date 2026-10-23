@@ -1439,29 +1439,6 @@ class OperationsCursor(Base):
     )
 
 
-class ActivityCursor(Base):
-    """Per-user, per-project "I've seen the Activity feed up to here" cursor.
-
-    RV-6 — previously the Activity page's unread-notes count used a single
-    ``User.last_activity_seen_at`` column, so viewing project A advanced the
-    cursor for every project and hid unread activity in project B.  This
-    scopes the cursor per (user, project), mirroring OperationsCursor.
-    """
-    __tablename__ = "activity_cursors"
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    last_seen_at = Column(DateTime(timezone=True), nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    user = relationship("User")
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "project_id", name="uq_activity_cursor_user_project"),
-    )
-
-
 class Annotation(Base):
     __tablename__ = "annotations"
 

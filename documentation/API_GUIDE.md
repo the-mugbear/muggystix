@@ -100,7 +100,7 @@ X-API-Key: nm_agent_<plaintext>
 ├── /portfolio                # cross-project dashboard (member's own projects)
 ├── /oversight                # global admin: programme dashboard over any subset of projects
 ├── /activity                 # scan-correlation timeline ("what was scanning at time X") — NOT the note feed, which is /hosts/notes/activity
-├── /notifications            # read/unread, mark-seen
+├── /notifications            # read/unread, mark-read
 ├── /llm-providers            # per-user LLM credentials + /{id}/complete
 ├── /integrations             # scanner credentials (global admin writes; list/types any user)
 ├── /feedback                 # admin triage of agent feedback rows
@@ -357,8 +357,6 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | PATCH | `/hosts/{host_id}/notes/{note_id}` | Analyst+. `body` is author-only; the thread's labels `note_type` (`observation` \| `question` \| `decision` \| `handoff`, or `null` to clear; `finding` and `action` are refused since v2.447.0) and `pinned` (stored on the thread root) can be changed by any analyst. Notes are discussion: status, assignee, due date, resolution and the `/history` route were removed in v2.446.0 (work is a host test and its evidence). |
 | DELETE | `/hosts/{host_id}/notes/{note_id}` | Analyst+; author delete only. |
 | GET | `/hosts/notes/activity` | Activity-grouped feed for the Activity page with host enrichment. Filters: `author_id`, `search`. No note status since v2.446.0 (`status` filter, `status_counts` and `thread_root_status` are gone). |
-| GET | `/hosts/notes/unread-count` | Count of notes updated since `last_viewed_at`. |
-| POST | `/hosts/notes/mark-seen` | Mark all activity as seen. |
 
 ### 4.4 Dashboard
 
