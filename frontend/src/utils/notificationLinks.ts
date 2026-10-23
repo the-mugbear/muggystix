@@ -1,7 +1,10 @@
 /**
- * Where a notification opens (client-free; `pages/Collaboration.tsx` navigates
- * there).  One function, so a new notification kind gets its link — and its
- * test — in one place instead of falling through to "the host, or nothing".
+ * Where a notification opens (client-free; `components/UnreadNotifications`
+ * navigates there).  One function, so a new notification kind gets its link —
+ * and its test — in one place instead of falling through to "the host, or
+ * nothing".  A path names no project: the opener switches to the
+ * notification's `project_id` first (`hooks/useOpenInProject`) unless the
+ * path is a cross-project page (`isCrossProjectPath`).
  */
 import type { NotificationItem } from '../services/api';
 

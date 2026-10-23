@@ -13,13 +13,13 @@
  */
 import React, { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 
 import {
   listRemediationProjects, type RemediationPage, type RemediationProjects, type RemediationRow,
   type RemediationState,
 } from '../services/api';
-import { useProject } from '../contexts/ProjectContext';
+import { useOpenInProject } from '../hooks/useOpenInProject';
 import { idParam } from '../utils/remediation';
 import RemediationTrend from '../components/remediation/RemediationTrend';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
@@ -56,18 +56,13 @@ const countButton = (value: number, label: string, onClick: () => void, tone: st
 const RemediationDeadlines: React.FC = () => {
   const { policy, enabled, loading, error: policyError, retry: retryPolicy } = useRemediationPolicy();
   const [params, setParams] = useSearchParams();
-  const navigate = useNavigate();
-  const { projects: mine, selectProject } = useProject();
-  // A row opens its host or finding in ITS project: switch, then go.  Only a
-  // project the reader can switch to — an archived one is not in that list —
-  // so the page never shows one project's page under another's name.
-  const canOpen = (row: RemediationRow) => mine.some((p) => p.id === row.project_id);
-  const onOpen = (row: RemediationRow, path: string) => {
-    const project = mine.find((p) => p.id === row.project_id);
-    if (!project) return;
-    selectProject(project);
-    navigate(path);
-  };
+  // A row opens its host or finding in ITS project: switch, then go
+  // (`useOpenInProject`).  Only a project the reader can switch to — an
+  // archived one is not in that list — so the page never shows one project's
+  // page under another's name; such a row stays text.
+  const { openInProject, canOpen: canOpenProject } = useOpenInProject();
+  const canOpen = (row: RemediationRow) => canOpenProject(row.project_id);
+  const onOpen = (row: RemediationRow, path: string) => { openInProject(row.project_id, path); };
   // Re-read after a save by the write itself (`invalidateRemediationReads`).
   const query = useQuery({
     queryKey: ['listRemediationProjects'],

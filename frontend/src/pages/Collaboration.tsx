@@ -20,8 +20,8 @@
  *
  * Behaviour kept: search (debounced), the author filter, paging via
  * Load more, and the unread notifications panel with the ?mentions=mine deep
- * link.  Opening the page writes nothing (5.42x: the "seen" cursor it posted
- * on mount had no reader and went, with its routes and table).
+ * link.  Opening the page writes nothing (review 2026-10-23: the "seen" cursor
+ * it posted on mount had no reader and went, with its routes and table).
  */
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';

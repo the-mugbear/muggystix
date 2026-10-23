@@ -14,6 +14,9 @@ export interface NotificationItem {
   type: string;
   title: string;
   body: string | null;
+  /** The project it is about (null: the installation's own alerts).  The
+   *  bell lists every project's, so opening one switches to its project. */
+  project_id: number | null;
   source_type: string | null;
   source_id: number | null;
   host_id: number | null;
