@@ -566,7 +566,9 @@ frontend/src/
 │   │                        # (SeverityBar, data-table, code-block, info-tip)
 │   ├── host-inspector/      # the inspector's sections (InspectorSection, ServiceEvidencePanel,
 │   │                        # PortDetailsCard, VulnerabilityGroup, HostConflictsPanel, NoteComposer,
-│   │                        # HostTestsSection — the host's tests — and HostEvidenceSection, …)
+│   │                        # HostTestsSection — the host's tests — HostEvidenceSection, and the
+│   │                        # sections with writes of their own: ScannerObservationsSection (+ its
+│   │                        # VulnerabilityTriageDialog), HostDiscussionSection, HostReviewControls, …)
 │   ├── scans/               # UploadReviewDialog (staged upload), FormatRetryDialog, ImportResult,
 │   │                        # UninterpretedLines, ScanBatchList; the Scans page's parts: IngestionQueue,
 │   │                        # UploadBanner, ImportHistoryTable, DeleteScanDialog

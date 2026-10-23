@@ -4,10 +4,17 @@
  * Renders host overview, tests, vulnerabilities, notes (threaded),
  * data conflicts (when toggled) and port details.  Owns its reads
  * (`getHost` — the host, its notes and the caller's follow state —
- * `getHostConflicts`, `getHostFollowers`) and the per-action mutations
- * (follow, note CRUD, promote / dismiss).  The other sections read their own
- * data; what a write changes elsewhere on the page is invalidated by the
- * read's name, never passed down as a refresh counter.
+ * `getHostConflicts`, `getHostFollowers`); each section with writes of its
+ * own is its own component under `host-inspector/` (the review controls, the
+ * scanner observations with their promote / dismiss, the discussion), and the
+ * other sections read their own data.  What a write changes elsewhere on the
+ * page is invalidated by the read's name, never passed down as a refresh
+ * counter.
+ *
+ * Two components, so that no hook is ever below an early return:
+ * `HostInspectorBody` holds the reads and decides between the skeleton, the
+ * error and the host; `HostInspectorView` renders a host that is loaded and
+ * returns nothing early.
  *
  * Used in two contexts:
  *  - Standalone page (`pages/HostDetail.tsx`): the page renders
@@ -22,35 +29,20 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, SEVERITY_HSL, type Severity } from '../utils/severity';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { issueFromWeaknessHash } from '../utils/observationsPath';
+import { SEVERITY_HSL } from '../utils/severity';
+import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-  CheckCircle2,
   Computer,
   ExternalLink,
-  Eye,
-  Loader2,
-  MessageSquare,
   NotebookPen,
   RefreshCw,
-  RotateCcw,
-  ShieldAlert,
 } from 'lucide-react';
 import {
   getHost,
   getHostConflicts,
-  followHost,
-  unfollowHost,
-  createAnnotation,
-  uploadNoteAttachment,
-  updateAnnotation,
-  deleteAnnotation,
-  promoteVulnerability,
-  previewPromoteVulnerability,
   recordHostView,
   getHostFollowers,
   PromotedEvidence,
@@ -61,18 +53,11 @@ import type {
   ConflictHistoryEntry,
   FollowStatus,
   Annotation,
-  NoteAttachment,
-  NoteType,
   HostFollowerEntry,
-  FindingHostStatus,
-  FindingStatus,
-  HostVulnerability,
 } from '../services/api';
-import { buildHostsUrl } from '../utils/drilldownLinks';
 import { storedReviewConclusionLabel } from '../utils/reviewConclusion';
 import { reviewerName } from '../utils/people';
 import { ReviewNote } from './host-inspector/ReviewNote';
-import { buildSameVulnQuery, buildExploitOnPortsQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
 import NseScriptsCard from './NseScriptsCard';
@@ -81,64 +66,36 @@ import HostNamesCard from './HostNamesCard';
 import { TimeAgo } from './TimeAgo';
 import { AssigneeControl, TagControl } from './host-inspector/HostWorkControls';
 import { stickyBelowChrome } from '../utils/uiStyles';
-import { NoteThread } from './host-inspector/NoteThread';
-import { NoteComposer } from './host-inspector/NoteComposer';
-import { InspectorSection, jumpToInspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
-import { previewThreads, rootNoteId } from '../utils/notePreview';
-import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
-import ProductObservationGroup from './host-inspector/ProductObservationGroup';
+import { jumpToInspectorSection } from './host-inspector/InspectorSection';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
-import HostEvidenceSection, { hostEvidenceKey } from './host-inspector/HostEvidenceSection';
+import HostEvidenceSection from './host-inspector/HostEvidenceSection';
 import { HostTestsSection } from './host-inspector/HostTestsSection';
-import { HostTestsProvider, useHostTestsController } from './host-inspector/hostTestsController';
+import {
+  HostTestsProvider, useHostTestsController, type HostTestsController,
+} from './host-inspector/hostTestsController';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
+import { HostReviewControls } from './host-inspector/HostReviewControls';
+import { ScannerObservationsSection, type InformationalRows } from './host-inspector/ScannerObservationsSection';
+import { HostDiscussionSection } from './host-inspector/HostDiscussionSection';
 import { changesSinceReview, freshnessFacts } from '../utils/evidenceFreshness';
 import DiscoveryTimelineCard from './host-inspector/DiscoveryTimelineCard';
 import HostConflictsPanel from './host-inspector/HostConflictsPanel';
-import { groupByProduct, groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { usePageSubject } from '../hooks/usePageSubject';
 import { useProjectId } from '../hooks/useProjectId';
-import { useObjectUrls } from '../lib/objectUrls';
-import { queryErrorText, useLastSettled } from '../lib/query';
+import { useLastSettled } from '../lib/query';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { promotedResultMessage, testNeedsWork } from '../utils/hostTests';
-import { asAxiosError, formatApiError } from '../utils/apiErrors';
+import { asAxiosError } from '../utils/apiErrors';
 import { cn } from '../utils/cn';
-import { announceMentionOutcome } from '../utils/mentions';
-import { imagesFromClipboard } from '../utils/clipboardImages';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { DetailSkeleton } from './PageSkeleton';
-import { useConfirm } from '../hooks/useConfirm';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
-import { InfoTip } from './ui/info-tip';
-import { Label } from './ui/label';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from './ui/select';
-import { Textarea } from './ui/textarea';
-import {
-  ENDPOINT_STATUS_LABEL, STATUS_LABEL as FINDING_STATUS_LABEL,
-} from '../utils/findingStatus';
 
-// One line per issue since v5.240.0, so the preview can afford most hosts'
-// whole list (the largest host here carries 26).
 /** Where a host's display name came from (Host.hostname_source). */
 const HOSTNAME_SOURCE_LABEL: Record<string, string> = {
   operator: 'set by an operator',
@@ -147,57 +104,14 @@ const HOSTNAME_SOURCE_LABEL: Record<string, string> = {
   forward: 'from a forward DNS record',
 };
 
-const VULNERABILITY_PREVIEW_LIMIT = 25;
-const NOTE_THREAD_PREVIEW_LIMIT = 3;
-
-const VULNERABILITY_SEVERITY_ORDER = SEVERITY_RANK;
-
-// Thin null-tolerant wrapper over the canonical severity→badge-variant map.
-const severityBadgeVariant = (severity: string | null | undefined): string =>
-  SEVERITY_BADGE_VARIANT[(severity ?? '').toLowerCase() as Severity] ?? 'outline';
-
-const FOLLOW_STATUS_META: Record<
-  FollowStatus,
-  { label: string; description: string; badgeVariant: 'info' | 'warning' | 'success' }
-> = {
-  watching: {
-    label: 'Watching',
-    description: 'Track this host for future review or to share with teammates.',
-    badgeVariant: 'info',
-  },
-  in_review: {
-    label: 'In Review',
-    description: 'You are actively investigating this host and its findings.',
-    badgeVariant: 'warning',
-  },
-  reviewed: {
-    label: 'Reviewed',
-    description: 'Investigation completed — leave a note with outcomes if relevant.',
-    badgeVariant: 'success',
-  },
-};
-
-
-
-
 // One empty list each, so "nothing loaded" is the same value on every render.
 const NO_NOTES: Annotation[] = [];
 const NO_CONFLICTS: HostConflict[] = [];
 const NO_CONFLICT_HISTORY: ConflictHistoryEntry[] = [];
 const NO_FOLLOWERS: HostFollowerEntry[] = [];
 
-interface PendingImage {
-  file: File;
-  url: string;
-  /** Why its upload failed (kept while a retry runs). */
-  error?: string;
-  /** A retry is in flight. */
-  uploading?: boolean;
-  /** The saved note this file belongs to once its upload failed — retry
-   *  targets THIS id, never a later note's (a queue-wide id was wrong when
-   *  two notes in a row had failures). */
-  noteId?: number;
-}
+const toTimestamp = (value: string | null | undefined) =>
+  value ? new Date(value).getTime() : 0;
 
 export interface HostInspectorProps {
   hostId: number;
@@ -260,6 +174,11 @@ export const HostInspector: React.FC<HostInspectorProps> = (props) => (
   <HostInspectorBody key={props.hostId} {...props} />
 );
 
+/**
+ * The reads, and the choice between the skeleton, the error and the host.
+ * Its early returns are its last statements: everything with hooks of its own
+ * that needs a loaded host is `HostInspectorView` or one of its sections.
+ */
 const HostInspectorBody: React.FC<HostInspectorProps> = ({
   hostId,
   density = 'page',
@@ -271,41 +190,10 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   namesThePage = false,
 }) => {
   const navigate = useNavigate();
-  const locationHash = useLocation().hash;
   const toast = useToast();
   const { user } = useAuth();
   // The PROJECT role (analyst+), not the account role every member has (R32).
-  const { canWrite: canManageEntries, isProjectAdmin } = useProjectRole();
-
-  // Pivot a vuln to the host inventory filtered to every host with the same
-  // vulnerability. When the parent supplies onQueryHosts (the Hosts SideSheet)
-  // it closes the sheet + applies the query; otherwise (standalone HostDetail)
-  // we navigate to the filtered /hosts ourselves.
-  const handleQueryHosts = useCallback(
-    (vuln: HostVulnerability) => {
-      const q = buildSameVulnQuery(vuln);
-      if (!q) return;
-      if (onQueryHosts) onQueryHosts(q);
-      else navigate(buildHostsUrl({ q }));
-    },
-    [onQueryHosts, navigate],
-  );
-
-  // Pivot a vuln GROUP to the host inventory filtered to every host with an
-  // exploitable finding on ANY of the group's exploitable ports (same-row
-  // correlation, not "port open anywhere AND exploit anywhere"). Takes all the
-  // group's exploit ports, not one representative row's — a plugin exploitable
-  // on 80/443/8080 pivots on all three. Same close-sheet-or-navigate contract
-  // as handleQueryHosts.
-  const handleQueryExploitPort = useCallback(
-    (ports: number[]) => {
-      const q = buildExploitOnPortsQuery(ports);
-      if (!q) return;
-      if (onQueryHosts) onQueryHosts(q);
-      else navigate(buildHostsUrl({ q }));
-    },
-    [onQueryHosts, navigate],
-  );
+  const { canWrite: canManageEntries } = useProjectRole();
   const projectId = useProjectId();
   const queryClient = useQueryClient();
   // THE read of this host.  Its notes and the caller's follow state come with
@@ -334,107 +222,31 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const host = useLastSettled(hostQuery.data) ?? null;
   usePageSubject(namesThePage ? host?.ip_address : null);
   const informationalPending = showInformational && hostQuery.data === undefined;
-  const loadingInformational = informationalPending && hostQuery.isFetching;
-  const informationalFailed = informationalPending && hostQuery.isError && !hostQuery.isFetching;
+  const informational: InformationalRows = {
+    loading: informationalPending && hostQuery.isFetching,
+    failed: informationalPending && hostQuery.isError && !hostQuery.isFetching,
+    error: hostQuery.error,
+    onShow: () => setShowInformational(true),
+    onRetry: () => void hostQuery.refetch(),
+  };
   const putHost = useCallback((update: (previous: Host) => Host) => {
     queryClient.setQueryData<Host>(hostKey, (previous) => (previous ? update(previous) : previous));
   }, [queryClient, hostKey]);
-  const notes = host?.notes ?? NO_NOTES;
-  const followStatus: FollowStatus | '' = host?.follow?.status ?? '';
 
   const conflictsQuery = useQuery({
     queryKey: ['getHostConflicts', projectId, hostId],
     queryFn: ({ signal }) => getHostConflicts(projectId, hostId, signal),
   });
-  const conflicts = conflictsQuery.data?.confidence || NO_CONFLICTS;
-  const conflictHistory = conflictsQuery.data?.conflict_history || NO_CONFLICT_HISTORY;
-  // Canonical conflict count from the API (same definition as the Hosts-list
-  // badge).  The old "N conflicts" derived from `conflicts.length` (per-field
-  // confidence records, host + port) — a different number that disagreed with
-  // the list badge.
-  const conflictCount = conflictsQuery.data?.conflict_count ?? 0;
-  // getHostConflicts already swallows 404 (older deployments), so a failure
-  // here is a real one — said, instead of letting an empty list read as "no
-  // conflicts" (a data-quality false negative).
-  const conflictsError = conflictsQuery.isError;
-  const [showConflicts, setShowConflicts] = useState(false);
 
   const followersQuery = useQuery({
     queryKey: ['getHostFollowers', projectId, hostId],
     queryFn: ({ signal }) => getHostFollowers(projectId, hostId, signal),
   });
-  const followersError = followersQuery.isError;
-  const otherFollowers = (!followersError && followersQuery.data?.followers) || NO_FOLLOWERS;
 
   // Opening a host is recorded (the "viewed" fact), and again on Retry.
   const { mutate: recordView } = useMutation({ mutationFn: (id: number) => recordHostView(projectId, id) });
   useEffect(() => { recordView(hostId); }, [recordView, hostId]);
 
-  // The skeleton stands for "nothing to show yet": the first read, and a
-  // Retry after it failed.  A re-read behind a host that is on screen does
-  // not bring it back.
-  const loading = !host && (hostQuery.isPending || hostQuery.isFetching);
-  const fetchError = !hostQuery.isError
-    ? null
-    : (() => {
-      const status = asAxiosError(hostQuery.error).response?.status;
-      if (status === 404) return 'Host not found';
-      if (status === 401 || status === 403) return 'You do not have permission to view this host';
-      return 'Failed to load host details. The server may be unavailable.';
-    })();
-  const retry = () => {
-    void hostQuery.refetch();
-    void conflictsQuery.refetch();
-    void followersQuery.refetch();
-    recordView(hostId);
-  };
-
-  // v2.43.0 — MONO-2: thread grouping for <NoteThread>.  MUST live above
-  // the conditional early returns (loading / !host) so the hook count is
-  // stable across the first-paint-with-skeleton → data-loaded transition.
-  // Pre-v2.43.3 it sat below the early returns and triggered React error
-  // #310 ("Rendered more hooks than during the previous render") the
-  // moment the loading skeleton flipped to real content.
-  const noteThreadGroups = React.useMemo(() => {
-    const topLevel = notes.filter((n) => !n.parent_id);
-    const repliesByParent: Record<number, Annotation[]> = {};
-    notes.filter((n) => n.parent_id).forEach((n) => {
-      const pid = n.parent_id!;
-      if (!repliesByParent[pid]) repliesByParent[pid] = [];
-      repliesByParent[pid].push(n);
-    });
-    Object.values(repliesByParent).forEach((arr) =>
-      arr.sort(
-        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-      ),
-    );
-    return { topLevel, repliesByParent };
-  }, [notes]);
-  // Hoisted above the loading / !host early returns for the same reason as
-  // noteThreadGroups: a useMemo below them is skipped on the first
-  // (skeleton) render and runs once data lands, changing the hook count and
-  // throwing React #310. Null-guarded so it's safe before `host` resolves.
-  const connectionHelpersByPort = React.useMemo(() => {
-    const map = new Map<number, ConnectionHelper[]>();
-    if (!host) return map;
-    host.ports
-      .filter((port) => port.state === 'open')
-      .forEach((port) => {
-        map.set(port.id, getConnectionHelpers(host.ip_address, port, host.hostname));
-      });
-    return map;
-  }, [host]);
-  const [noteBody, setNoteBody] = useState('');
-  // Images pasted/attached into the composer, uploaded to the note on save.
-  // `error` marks a file whose upload failed after the note itself was
-  // created; it stays here (bound to its own `noteId`) until the user
-  // retries or removes it — never silently dropped (UX review C3).
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
-  const [replyBody, setReplyBody] = useState('');
-  const [noteError, setNoteError] = useState<string | null>(null);
-  // The thread shows its newest threads until asked for the rest (v5.240.0).
-  const [showAllNotes, setShowAllNotes] = useState(false);
   // The host's tests, held once: the Weaknesses rows and the Tests section
   // both read them, and the result panel is rendered once (5.322.0).  What a
   // result or a finding from one changes elsewhere on this page (the findings,
@@ -455,176 +267,21 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     userId: user?.id,
     onFindingCreated: onTestFindingCreated,
   });
-  const testsToDo = (hostTests.tests ?? []).filter(testNeedsWork).length;
-  // Note-details editor: a thread's type and pin.
-  const [detailsNote, setDetailsNote] = useState<Annotation | null>(null);
-  const [detailsType, setDetailsType] = useState<string>('none');
-  const NOTE_TYPES = ['observation', 'question', 'decision', 'handoff'] as const;
-  const [detailsPinned, setDetailsPinned] = useState(false);
-
-  const openNoteDetails = (note: Annotation) => {
-    setDetailsNote(note);
-    setDetailsType(note.note_type || 'none');
-    setDetailsPinned(!!note.pinned);
-  };
-
-  const noteDetails = useMutation({
-    mutationFn: ({ note, type, pinned }: { note: Annotation; type: string; pinned: boolean }) => {
-      // The type goes only when it changed: a thread labelled before 5.326.0
-      // may carry "finding" or "action", which can be kept but not chosen.
-      const typeChanged = type !== (note.note_type || 'none');
-      return updateAnnotation(projectId, hostId, note.id, {
-        ...(typeChanged ? { note_type: type === 'none' ? null : (type as NoteType) } : {}),
-        pinned,
-      });
-    },
-    onSuccess: (updated) => {
-      putHost((previous) => ({
-        ...previous, notes: (previous.notes ?? []).map((n) => (n.id === updated.id ? updated : n)),
-      }));
-      toast.success('Note details updated.');
-      setDetailsNote(null);
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Failed to update note details.')),
-  });
-  const detailsSaving = noteDetails.isPending;
-  const handleSaveNoteDetails = () => {
-    if (!detailsNote) return;
-    noteDetails.mutate({ note: detailsNote, type: detailsType, pinned: detailsPinned });
-  };
-
-  // Promote / dismiss a scanner vulnerability as a finding (status 'confirmed'
-  // promotes; a terminal status dismisses). Idempotent server-side.
-  // §11 — triage a scanner vuln through a confirm step that previews the
-  // cross-host blast radius first (promotion attaches EVERY project host
-  // sharing the plugin_id — an icon-click used to do that silently).
-  const [triageVuln, setTriageVuln] = useState<
-    { id: number; title: string; intent: 'confirmed' | 'false_positive' } | null
-  >(null);
-  const [triageReason, setTriageReason] = useState('');
-  // v5.238.0 — how far a false-positive dismissal reaches.  It is made in ONE
-  // host's inspector about that host's observation, so it defaults to this
-  // host; marking the issue a false positive everywhere is an explicit choice.
-  const [triageScope, setTriageScope] = useState<'host' | 'issue'>('host');
-
-  // The blast radius, read whenever a triage opens (and again on Retry).
-  // The action reaches hosts other than this one, so without the preview the
-  // dialog does not offer it: confirm stays disabled until the set is known.
-  // A failed read leaves it unknown: the dialog offers Retry, not proceed.
-  const triageVulnId = triageVuln?.id;
-  const triagePreviewQuery = useQuery({
-    queryKey: ['previewPromoteVulnerability', projectId, triageVulnId],
-    queryFn: ({ signal }) => previewPromoteVulnerability(projectId, triageVulnId as number, signal),
-    enabled: triageVulnId != null,
-  });
-  const triagePreview = (triageVulnId != null && triagePreviewQuery.data) || null;
-  const triagePreviewLoading = triageVulnId != null && triagePreviewQuery.isFetching;
-
-  type Triage = { vulnId: number; intent: 'confirmed' | 'false_positive'; scope: 'host' | 'issue'; reason: string };
-  const triage = useMutation({
-    mutationFn: ({ vulnId, intent, scope, reason }: Triage) => promoteVulnerability(projectId, vulnId, {
-      status: intent,
-      summary: reason || undefined,
-      // ALWAYS sent (v5.245.0): what the dialog showed is what the server
-      // does, whatever its default — the API's default for a promotion is
-      // still the whole issue, the dialog's is this host.
-      scope,
-    }),
-    // The toast names the finding and is true wherever the reader is by then.
-    onSuccess: (finding, { vulnId, intent, scope }) => {
-      const hostOnly = intent === 'false_positive' && scope === 'host';
-      // Scanner findings span every host with the same plugin — report it.
-      const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
-      toast.success(
-        intent === 'confirmed'
-          ? (scope === 'host'
-            ? `Promoted to finding for this host: ${finding.title}`
-            : `Promoted to finding${span}: ${finding.title}`)
-          : hostOnly
-            ? `Dismissed as false positive on this host only: ${finding.title}`
-            : `Dismissed as false positive${span}: ${finding.title}`,
-        {
-          autoHideMs: 8000,
-          // A promotion leads to the write-up; a dismissal has none to write.
-          action: intent === 'confirmed'
-            ? { label: 'Write it up', onClick: () => navigate(`/findings/${finding.id}?edit=report-text`) }
-            : { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) },
-        },
-      );
-      // The row says it at once, in the server's own words: the finding it
-      // answered with, and this host's row on it.  (5.364.0 — it was two maps
-      // of "done in this session" that every row was checked against, which
-      // knew nothing of the finding's status: an issue-wide false positive
-      // read "Promoted → finding" until the page was reloaded.)
-      const here = (finding.hosts ?? []).find((h) => h.host_id === hostId);
-      putHost((previous) => ({
-        ...previous,
-        vulnerabilities: previous.vulnerabilities?.map((row) => (row.id !== vulnId ? row : {
-          ...row,
-          finding_id: finding.id,
-          finding_status: finding.status,
-          finding_on_this_host: true,
-          finding_endpoint_status: here?.host_status ?? (hostOnly ? 'false_positive' : row.finding_endpoint_status),
-        })),
-      }));
-      // …then the host is read again: the issue's OTHER rows on this host
-      // are covered by the same finding now.
-      void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
-      // This host has a finding it did not (or one changed); the promotion
-      // took the issue's test results onto the finding, so the tests and the
-      // other evidence are out of date too.
-      void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
-      void queryClient.invalidateQueries({ queryKey: ['listHostTests'] });
-      void queryClient.invalidateQueries({ queryKey: hostEvidenceKey(projectId, hostId) });
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Failed to update vulnerability.')),
-  });
-  const vulnActionId = triage.isPending ? triage.variables.vulnId : null;
-  const handlePromoteVuln = () => {
-    if (!triageVuln) return;
-    const { id: vulnId, intent } = triageVuln;
-    const scope = triageScope;
-    // The rest is this panel's own state: it is set only while the reader is
-    // still on this host.
-    triage.mutate({ vulnId, intent, scope, reason: triageReason.trim() }, {
-      onSuccess: () => {
-        setTriageVuln(null);
-        setTriageReason('');
-      },
-    });
-  };
-  const openTriage = (vulnId: number, title: string, intent: 'confirmed' | 'false_positive') => {
-    setTriageReason('');
-    setTriageScope('host');
-    setTriageVuln({ id: vulnId, title, intent });
-  };
-
-  const [showAllVulnerabilities, setShowAllVulnerabilities] = useState(false);
-  // Per-vuln expand state for the (often long) description writeup.
-  const [expandedVulnIds, setExpandedVulnIds] = useState<Set<number>>(new Set());
-  const toggleVulnDescription = (id: number) =>
-    setExpandedVulnIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  const [confirmEl, confirm] = useConfirm();
 
   // This inspector is one host's for its whole life (it is keyed by the host).
   // What a write that answers after the reader stepped on must not do is
   // speak about "this host" over the next one: those toasts are given to
   // `mutate()` itself, which answers only while the inspector is on screen.
 
+  // Unsaved work: the discussion's (note, screenshots, reply) and the tests'
+  // (an edited summary), each said by the section that holds it.
   const onDirtyChangeRef = React.useRef(onDirtyChange);
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
   }, [onDirtyChange]);
-  const [findingsDraftDirty, setFindingsDraftDirty] = useState(false);
-  const composerDirty = noteBody.trim().length > 0
-    || pendingImages.length > 0
-    || replyBody.trim().length > 0
-    || findingsDraftDirty;
+  const [discussionDirty, setDiscussionDirty] = useState(false);
+  const [testsDraftDirty, setTestsDraftDirty] = useState(false);
+  const composerDirty = discussionDirty || testsDraftDirty;
   useEffect(() => {
     onDirtyChangeRef.current?.(composerDirty);
   }, [composerDirty]);
@@ -634,263 +291,24 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     if (host) onHostLoadedRef.current?.(host);
   }, [host]);
 
-  // Deep-link to an exact note: when the URL carries #note-<id> (from the
-  // Activity feed / mentions / a finding's evidence link), scroll that note
-  // into view once the thread has rendered and flash a highlight. Runs once
-  // per hash so adding a note later doesn't re-trigger it.
-  //
-  // MUST live above the loading/!host early returns below — a hook placed
-  // after them runs only on some renders (React error #310).
-  //
-  // v5.244.0 (code review finding 19) — REVEAL, then scroll. This effect used
-  // to look for an element that was already mounted and give up otherwise. The
-  // density pass then made two things unmount a note: the thread preview (only
-  // some roots render) and a collapsed Notes section (its children unmount).
-  // A link to evidence that silently lands nowhere is worse than no link, so:
-  // resolve the hash against the LOADED notes, keep its root thread in the
-  // preview (`linkedRootId`, read by previewThreads below), open the section,
-  // and only then scroll — retrying across a few frames while the reveal
-  // commits. A hash naming a note this host does not have is left alone.
-  const consumedNoteHashRef = React.useRef<string | null>(null);
-  const [linkedNoteId, setLinkedNoteId] = useState<number | null>(null);
-  useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const read = () => {
-      const match = window.location.hash.match(/^#note-(\d+)$/);
-      setLinkedNoteId(match ? Number(match[1]) : null);
-    };
-    read();
-    window.addEventListener('hashchange', read);
-    return () => window.removeEventListener('hashchange', read);
-  }, [hostId]);
-  const linkedRootId = React.useMemo(
-    () => (linkedNoteId != null ? rootNoteId(linkedNoteId, notes) : null),
-    [linkedNoteId, notes],
-  );
-  useEffect(() => {
-    if (typeof window === 'undefined' || linkedNoteId == null || linkedRootId == null) return undefined;
-    const key = `${hostId}#note-${linkedNoteId}`;
-    if (consumedNoteHashRef.current === key) return undefined;
-    openInspectorSection('host-detail-notes');
-    let frame = 0;
-    let tries = 0;
-    let timer = 0;
-    const attempt = () => {
-      const el = document.getElementById(`note-${linkedNoteId}`);
-      if (!el) {
-        // The reveal (section open + preview membership) lands on a later commit.
-        if (tries++ < 20) frame = requestAnimationFrame(attempt);
-        return;
-      }
-      consumedNoteHashRef.current = key;
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.classList.add('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control');
-      timer = window.setTimeout(
-        () => el.classList.remove('ring-2', 'ring-info', 'ring-offset-2', 'rounded-control'),
-        2400,
-      );
-    };
-    frame = requestAnimationFrame(attempt);
-    return () => {
-      cancelAnimationFrame(frame);
-      // Leave the highlight timer running: it only removes classes.
-      void timer;
-    };
-  }, [hostId, linkedNoteId, linkedRootId]);
-
-  // The composer's screenshots are this host's draft: each preview's object
-  // URL is held under its file (`lib/objectUrls`) and released when the image
-  // is taken out or has been uploaded — and whatever is left, when the
-  // inspector goes (a host change included).
-  const previews = useObjectUrls<File>();
-
-  type FollowChange = { status: FollowStatus | 'none' };
-  // The server's answer about the reader's review, onto the cached host; the
-  // list's row is told too (the callback names the host).
-  const putFollow = (response: Host['follow']) => {
-    onFollowChange?.(hostId, response ?? null);
-    putHost((previous) => ({ ...previous, follow: response ?? null }));
+  // The skeleton stands for "nothing to show yet": the first read, and a
+  // Retry after it failed.  A re-read behind a host that is on screen does
+  // not bring it back.
+  const loading = !host && (hostQuery.isPending || hostQuery.isFetching);
+  const fetchError = !hostQuery.isError
+    ? null
+    : (() => {
+      const status = asAxiosError(hostQuery.error).response?.status;
+      if (status === 404) return 'Host not found';
+      if (status === 401 || status === 403) return 'You do not have permission to view this host';
+      return 'Failed to load host details. The server may be unavailable.';
+    })();
+  const retry = () => {
+    void hostQuery.refetch();
+    void conflictsQuery.refetch();
+    void followersQuery.refetch();
+    recordView(hostId);
   };
-  const follow = useMutation({
-    mutationFn: ({ status }: FollowChange): Promise<Host['follow']> => (
-      status === 'none' ? unfollowHost(projectId, hostId).then(() => null) : followHost(projectId, hostId, status)
-    ),
-    onSuccess: putFollow,
-  });
-  const followLoading = follow.isPending;
-  const updateFollow = (status: FollowChange['status'], onSaved?: () => void) => {
-    // The toasts say "this host", so only while the reader is still on it.
-    follow.mutate({ status }, {
-      onSuccess: () => {
-        if (status === 'none') toast.info('Removed from your follow list', { autoHideMs: 2000 });
-        else toast.success(`Marked as ${FOLLOW_STATUS_META[status].label}`, { autoHideMs: 2000 });
-        onSaved?.();
-      },
-      onError: () => toast.error('Failed to update follow status. Please try again.'),
-    });
-  };
-
-  // Finishing a review is ONE click, like starting one (owner decision
-  // 2026-10-10): no dialog, no conclusion — a host that needs more evidence
-  // stays In Review.  `advance`: then move to the next host nobody has
-  // started.  Only after the save succeeded: a failed save must not carry the
-  // reader away from the host that was not marked.
-  const markReviewed = (advance = false) => {
-    updateFollow('reviewed', advance ? onNextUnreviewed : undefined);
-  };
-
-  const addPendingImages = useCallback((files: File[]) => {
-    // The preview's URL is made by the store that will revoke it.  (None is
-    // handed back only once the inspector has gone — nothing would show it.)
-    const imgs = files
-      .filter((f) => f.type.startsWith('image/'))
-      .flatMap((file) => {
-        const url = previews.putBlob(file, file);
-        return url === null ? [] : [{ file, url }];
-      });
-    if (imgs.length) setPendingImages((prev) => [...prev, ...imgs]);
-  }, [previews]);
-
-  // Paste an image straight into the note composer (QoL) — captured here so it
-  // attaches to the note on save instead of pasting a garbage data URL into
-  // the text. Non-image clipboard content (plain text) pastes normally.
-  const handleComposerPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = imagesFromClipboard(e.clipboardData);
-    if (files.length) {
-      e.preventDefault();
-      addPendingImages(files);
-    }
-  }, [addPendingImages]);
-
-  const removePendingImage = useCallback((idx: number) => {
-    setPendingImages((prev) => {
-      const target = prev[idx];
-      if (target) previews.release(target.file);
-      return prev.filter((_, i) => i !== idx);
-    });
-  }, [previews]);
-
-  // A new thread: the note, then its screenshots one after another — one
-  // write as far as the composer is concerned.  A screenshot that fails does
-  // not fail the note: it comes back bound to the note that now exists.
-  const postNote = useMutation({
-    mutationFn: async ({ body, images }: { body: string; images: PendingImage[] }) => {
-      // The note is this project's, and so is each screenshot: every request
-      // carries the project this inspector was rendered in.
-      const note = await createAnnotation(projectId, hostId, { body });
-      const uploaded: NoteAttachment[] = [];
-      const failed: PendingImage[] = [];
-      for (const img of images) {
-        try {
-          uploaded.push(await uploadNoteAttachment(projectId, hostId, note.id, img.file));
-          previews.release(img.file);
-        } catch (e) {
-          failed.push({ ...img, error: formatApiError(e, 'Upload failed.'), noteId: note.id });
-        }
-      }
-      return { note, uploaded, failed };
-    },
-    onSuccess: ({ note, uploaded, failed }) => {
-      if (note.mention_warning) toast.warning(note.mention_warning);
-      else announceMentionOutcome(toast, note);
-      const noteWithImages = uploaded.length ? { ...note, attachments: uploaded } : note;
-      putHost((previous) => ({ ...previous, notes: [noteWithImages, ...(previous.notes ?? [])] }));
-      // Keep the failed files (with their previews) so they can be retried
-      // against the note that now exists — the clipboard is gone, this is
-      // the only copy (UX review C3).
-      setPendingImages((prev) => [...prev.filter((p) => p.noteId != null), ...failed]);
-      setNoteBody('');
-      setNoteError(null);
-    },
-    onError: () => setNoteError('Unable to save note right now. Please try again.'),
-  });
-  const handleCreateNote = () => {
-    if (!noteBody.trim()) {
-      setNoteError('Add a short note before saving.');
-      return;
-    }
-    // Files still bound to an earlier note's retry queue stay with that note
-    // (`noteId` — failed or being retried); only fresh files go on the new one.
-    postNote.mutate({ body: noteBody.trim(), images: pendingImages.filter((p) => p.noteId == null) });
-  };
-
-  // Retry one failed attachment against the note it was meant for.  Never
-  // creates a second note.
-  const retryImage = useMutation({
-    mutationFn: ({ target, noteId }: { target: PendingImage; noteId: number }) =>
-      uploadNoteAttachment(projectId, hostId, noteId, target.file),
-    onMutate: ({ target }) => setPendingImages(
-      (prev) => prev.map((p) => (p.url === target.url ? { ...p, uploading: true } : p)),
-    ),
-    onSuccess: (attachment, { target, noteId }) => {
-      previews.release(target.file);
-      setPendingImages((prev) => prev.filter((p) => p.url !== target.url));
-      // On the note at once, so the thumbnail shows without a re-read.
-      putHost((previous) => ({
-        ...previous,
-        notes: (previous.notes ?? []).map((n) => (
-          n.id === noteId ? { ...n, attachments: [...(n.attachments ?? []), attachment] } : n
-        )),
-      }));
-    },
-    onError: (e, { target }) => setPendingImages(
-      (prev) => prev.map((p) => (
-        p.url === target.url ? { ...p, uploading: false, error: formatApiError(e, 'Upload failed.') } : p
-      )),
-    ),
-  });
-  const retryPendingImage = (idx: number) => {
-    const target = pendingImages[idx];
-    if (!target || target.noteId == null) return;
-    retryImage.mutate({ target, noteId: target.noteId });
-  };
-
-  const failedAttachmentCount = pendingImages.filter((p) => p.error && !p.uploading).length;
-
-  const deleteNote = useMutation({
-    mutationFn: (noteId: number) => deleteAnnotation(projectId, hostId, noteId),
-    onSuccess: (_none, noteId) => {
-      putHost((previous) => ({
-        ...previous, notes: (previous.notes ?? []).filter((note) => note.id !== noteId),
-      }));
-      toast.success('Note deleted.');
-    },
-    // Pre-audit (C8): console.error only — user clicked Trash and
-    // the note stayed in the list with no signal whether the click
-    // did anything.
-    onError: (err) => toast.error(formatApiError(err, 'Failed to delete note.')),
-  });
-  const noteActionId = deleteNote.isPending ? deleteNote.variables : null;
-  const handleDeleteNote = async (noteId: number) => {
-    const note = notes.find((n) => n.id === noteId);
-    const preview = note?.body ? note.body.slice(0, 140) : 'This note';
-    const ok = await confirm({
-      title: 'Delete note',
-      body: `Delete this note? "${preview}${note?.body && note.body.length > 140 ? '…' : ''}"`,
-      severity: 'danger',
-      confirmLabel: 'Delete',
-    });
-    if (!ok) return;
-    deleteNote.mutate(noteId);
-  };
-
-  const postReply = useMutation({
-    mutationFn: ({ body, parentId }: { body: string; parentId: number }) =>
-      createAnnotation(projectId, hostId, { body, parent_id: parentId }),
-    onSuccess: (newNote) => {
-      if (newNote.mention_warning) toast.warning(newNote.mention_warning);
-      else if (!announceMentionOutcome(toast, newNote)) toast.success('Reply posted.');
-      putHost((previous) => ({ ...previous, notes: [newNote, ...(previous.notes ?? [])] }));
-      setReplyTo(null);
-      setReplyBody('');
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Failed to post reply.')),
-  });
-  const handleReply = () => {
-    if (!replyTo || !replyBody.trim()) return;
-    postReply.mutate({ body: replyBody.trim(), parentId: replyTo.id });
-  };
-  const noteSubmitting = postNote.isPending || postReply.isPending;
 
   if (loading) {
     return <DetailSkeleton />;
@@ -916,12 +334,106 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     );
   }
 
-  const hasConflicts = conflictCount > 0;
+  const followersError = followersQuery.isError;
+  return (
+    <HostInspectorView
+      host={host}
+      hostId={hostId}
+      density={density}
+      putHost={putHost}
+      onFollowChange={onFollowChange}
+      onQueryHosts={onQueryHosts}
+      onNextUnreviewed={onNextUnreviewed}
+      informational={informational}
+      conflicts={conflictsQuery.data?.confidence || NO_CONFLICTS}
+      conflictHistory={conflictsQuery.data?.conflict_history || NO_CONFLICT_HISTORY}
+      // Canonical conflict count from the API (same definition as the
+      // Hosts-list badge).  The old "N conflicts" derived from
+      // `conflicts.length` (per-field confidence records, host + port) — a
+      // different number that disagreed with the list badge.
+      conflictCount={conflictsQuery.data?.conflict_count ?? 0}
+      // getHostConflicts already swallows 404 (older deployments), so a
+      // failure here is a real one — said, instead of letting an empty list
+      // read as "no conflicts" (a data-quality false negative).
+      conflictsError={conflictsQuery.isError}
+      otherFollowers={(!followersError && followersQuery.data?.followers) || NO_FOLLOWERS}
+      followersError={followersError}
+      hostTests={hostTests}
+      hostTestsElement={hostTestsElement}
+      onDiscussionDirtyChange={setDiscussionDirty}
+      onTestsDirtyChange={setTestsDraftDirty}
+    />
+  );
+};
 
-  // (noteThreadGroups useMemo hoisted to the top of the component body —
-  // see line ~221.  Pre-fix it sat below the loading/!host early returns
-  // and triggered React error #310 "Rendered more hooks than during the
-  // previous render" on the first post-load render.)
+interface HostInspectorViewProps
+  extends Pick<HostInspectorProps, 'onFollowChange' | 'onQueryHosts' | 'onNextUnreviewed'> {
+  host: Host;
+  hostId: number;
+  density: 'page' | 'sheet';
+  putHost: (update: (previous: Host) => Host) => void;
+  informational: InformationalRows;
+  conflicts: HostConflict[];
+  conflictHistory: ConflictHistoryEntry[];
+  conflictCount: number;
+  conflictsError: boolean;
+  otherFollowers: HostFollowerEntry[];
+  followersError: boolean;
+  hostTests: HostTestsController;
+  hostTestsElement: React.ReactNode;
+  onDiscussionDirtyChange: (dirty: boolean) => void;
+  onTestsDirtyChange: (dirty: boolean) => void;
+}
+
+/** A loaded host.  It returns nothing early, so any hook may go anywhere in it. */
+const HostInspectorView: React.FC<HostInspectorViewProps> = ({
+  host,
+  hostId,
+  density,
+  putHost,
+  onFollowChange,
+  onQueryHosts,
+  onNextUnreviewed,
+  informational,
+  conflicts,
+  conflictHistory,
+  conflictCount,
+  conflictsError,
+  otherFollowers,
+  followersError,
+  hostTests,
+  hostTestsElement,
+  onDiscussionDirtyChange,
+  onTestsDirtyChange,
+}) => {
+  const { user } = useAuth();
+  // The PROJECT role (analyst+), not the account role every member has (R32).
+  const { canWrite: canManageEntries, isProjectAdmin } = useProjectRole();
+  const [showConflicts, setShowConflicts] = useState(false);
+
+  const notes = host.notes ?? NO_NOTES;
+  const followStatus: FollowStatus | '' = host.follow?.status ?? '';
+  const testsToDo = (hostTests.tests ?? []).filter(testNeedsWork).length;
+
+  // The server's answer about the reader's review, onto the cached host; the
+  // list's row is told too (the callback names the host).
+  const putFollow = (response: Host['follow']) => {
+    onFollowChange?.(hostId, response ?? null);
+    putHost((previous) => ({ ...previous, follow: response ?? null }));
+  };
+
+  const connectionHelpersByPort = useMemo(() => {
+    const map = new Map<number, ConnectionHelper[]>();
+    host.ports
+      .filter((port) => port.state === 'open')
+      .forEach((port) => {
+        map.set(port.id, getConnectionHelpers(host.ip_address, port, host.hostname));
+      });
+    return map;
+  }, [host]);
+
+  const hasConflicts = conflictCount > 0;
+  const vulnSummaryError = host.vulnerability_summary?.error === true;
 
   const webLinks: HostWebLink[] = getHostWebLinks(host);
   const primaryWebLink = webLinks[0] ?? null;
@@ -951,21 +463,13 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     host.attributions, host.cert_orgs, host.cert_status,
   );
   const openPorts = host.ports.filter((port) => port.state === 'open');
-  // connectionHelpersByPort is computed once per host above the early
-  // returns (see note near noteThreadGroups) to keep the hook count stable.
   const closedPorts = host.ports.filter((port) => port.state === 'closed');
   // v5.299.0 — every other state too (open|filtered, closed|filtered,
   // unfiltered): a UDP port nmap could not settle was on no list at all.
   const filteredPorts = host.ports.filter((port) => port.state !== 'open' && port.state !== 'closed');
   const followInfo = host.follow;
   const storedConclusion = storedReviewConclusionLabel(followInfo?.review_conclusion);
-  const followHelperText = followStatus
-    ? FOLLOW_STATUS_META[followStatus].description
-    : 'Select a review status to keep track of this host.';
   const discoveryTimeline = host.discoveries ?? [];
-
-  const toTimestamp = (value: string | null | undefined) =>
-    value ? new Date(value).getTime() : 0;
 
   // §9 — a Reviewed host has gone stale if a scan re-observed it AFTER the
   // review (last_seen = newest observation; followInfo.updated_at = when the
@@ -986,60 +490,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     : 0;
   const freshness = host.assessment ? freshnessFacts(host.assessment) : [];
 
-  const sortedVulnerabilities = (host.vulnerabilities ?? []).slice().sort((a, b) => {
-    const severityA = (a.severity ?? 'unknown').toLowerCase();
-    const severityB = (b.severity ?? 'unknown').toLowerCase();
-    const rankA =
-      VULNERABILITY_SEVERITY_ORDER[severityA] ?? VULNERABILITY_SEVERITY_ORDER['unknown'];
-    const rankB =
-      VULNERABILITY_SEVERITY_ORDER[severityB] ?? VULNERABILITY_SEVERITY_ORDER['unknown'];
-    if (rankA !== rankB) return rankA - rankB;
-    const timeA = toTimestamp(a.last_seen ?? a.first_seen);
-    const timeB = toTimestamp(b.last_seen ?? b.first_seen);
-    if (timeA !== timeB) return timeB - timeA;
-    return b.id - a.id;
-  });
-  // Group by the ISSUE, not the scanner — Nessus and GreenBone report the same
-  // problem in their own words, and a flat list made the operator correlate by
-  // eye on every host. See utils/vulnGrouping.ts for the keying rules and why
-  // there is deliberately no fuzzy matching.
-  // Plain computation, NOT useMemo: this sits after the component's early
-  // returns, and a hook here changes the hook count between the loading and
-  // loaded renders ("Rendered more hooks than during the previous render").
-  // HostInspector.smoke.test.tsx guards exactly that. It's an O(n) pass over
-  // one host's findings, so memoising buys nothing anyway.
-  const vulnGroups = groupVulnerabilities(sortedVulnerabilities);
-  // The header count stays the raw finding total (what the scanners reported);
-  // the preview limit now counts ISSUES, since that's what a row is.
-  const totalVulnerabilities =
-    host.vulnerability_summary?.total_vulnerabilities ?? sortedVulnerabilities.length;
-  const vulnSummaryError = host.vulnerability_summary?.error === true;
-  // v5.292.0 — issues about one product on the same ports (one CPE) fold into
-  // a product line, so an outdated Tomcat's dozen advisory checks no longer
-  // bury the host. The preview limit counts LINES.
-  // v5.298.0 — misconfigurations (catalog checks, issue key `check:…`) are
-  // listed apart from vulnerabilities, misconfigurations first; each list
-  // keeps its severity order.
-  const isMisconfig = (item: (typeof groupedItems)[number]) =>
-    item.kind !== 'product' && item.group.key.startsWith('check:');
-  const groupedItems = groupByProduct(vulnGroups);
-  const observationItems = [
-    ...groupedItems.filter(isMisconfig),
-    ...groupedItems.filter((i) => !isMisconfig(i)),
-  ];
-  const displayedVulnerabilities = showAllVulnerabilities
-    ? observationItems
-    : observationItems.slice(0, VULNERABILITY_PREVIEW_LIMIT);
-  const misconfigCount = groupedItems.filter(isMisconfig).length;
-  const splitWeaknesses = misconfigCount > 0 && misconfigCount < groupedItems.length;
-  // v5.215.0 — a host whose only findings are informational still gets the
-  // card, so the "N informational hidden · show" affordance has somewhere to
-  // live; otherwise the hidden rows would be invisible exactly when they are
-  // all there is.
-  const hiddenInformational =
-    host.informational_included === false ? (host.informational_count ?? 0) : 0;
-  const hasVulnerabilities = vulnGroups.length > 0 || hiddenInformational > 0;
-
   // v4.55.0 — intra-page jump helper.  Each card below carries
   // ``id="host-detail-{section}"`` so the triage strip cells and
   // Host Overview counts can scroll to them.  Smooth-scroll with
@@ -1050,136 +500,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     // like a dead link.
     jumpToInspectorSection(id);
   };
-
-  // Newest threads first in line for the space; the API's order is kept, and a
-  // thread being replied to is never hidden.
-  // v5.244.0 — membership is decided in utils/notePreview: pinned threads, the
-  // one being replied to and the one a #note- link points into are always
-  // visible; the rest compete on latest ACTIVITY (a reply today keeps an old
-  // thread up), not on when the root was written.
-  const notePreview = previewThreads(noteThreadGroups.topLevel, noteThreadGroups.repliesByParent, {
-    limit: NOTE_THREAD_PREVIEW_LIMIT,
-    // A reply target can itself be a reply; what must stay visible is its ROOT.
-    keepIds: [replyTo ? rootNoteId(replyTo.id, notes) : null, linkedRootId],
-    showAll: showAllNotes,
-  });
-  const visibleTopLevelNotes = notePreview.visible;
-  const hiddenNoteCount = notePreview.hidden;
-
-  // Scanner observations — what scanners reported on this host, grouped by
-  // issue, not yet judged (v5.225.0 vocabulary). One line per issue.
-  const observationsSection = hasVulnerabilities ? (
-    <InspectorSection
-      id="host-detail-vulnerabilities"
-      // A `#weakness-<issue>` link (the Scanner observations inspector) opens
-      // the section, so its row can open itself (review 2026-10-16, O4 / O7).
-      forceOpen={issueFromWeaknessHash(locationHash) !== null}
-      title="Scanner observations"
-      titleHint="What the scanners reported on this host — one row per observation whichever tool reported it (nmap, NetExec, Nessus…). Not yet judged: promote one to make it a finding under investigation."
-      icon={<ShieldAlert className="size-4 shrink-0 text-destructive" aria-hidden />}
-      // Rows are issues, so the count is issues. When scanners overlapped,
-      // say so rather than showing a number that doesn't match the rows.
-      count={vulnGroups.length}
-      actions={(
-        <>
-          {/* v5.289.0 — "5 … from 6 scanner observations" read as a
-              contradiction; name both units and say why they differ. */}
-          {totalVulnerabilities > vulnGroups.length && (
-            <span className="inline-flex min-w-0 items-center gap-xxs text-caption text-muted-foreground" data-testid="observation-grouping">
-              <span className="min-w-0 truncate">
-                {vulnGroups.length} {vulnGroups.length === 1 ? 'observation' : 'observations'} · from {totalVulnerabilities} scanner rows
-              </span>
-              <InfoTip
-                label="About observations and scanner rows"
-                text="Scanners can report the same thing more than once on a host (on several ports, or from more than one scanner). Rows of the same observation are grouped into one line, so there are fewer observations than scanner rows."
-              />
-            </span>
-          )}
-          {/* v5.215.0 — informational rows are hidden until asked; say how
-              many there are so nothing looks lost. */}
-          {(host.informational_count ?? 0) > 0 && host.informational_included === false && !informationalFailed && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-caption text-muted-foreground"
-              onClick={() => setShowInformational(true)}
-              disabled={loadingInformational}
-              aria-label={`Show ${host.informational_count} informational findings`}
-            >
-              {loadingInformational
-                ? 'Loading…'
-                : `${host.informational_count} informational hidden · show`}
-            </Button>
-          )}
-          {/* Said where the rows would have been, with Retry (it was a toast
-              over a link that had stopped spinning). */}
-          {informationalFailed && (
-            <p role="alert" className="break-words text-caption text-destructive">
-              {queryErrorText(hostQuery.error, 'The informational observations could not be loaded.')}{' '}
-              <button type="button" className="text-info hover:underline" onClick={() => void hostQuery.refetch()}>Retry</button>
-            </p>
-          )}
-        </>
-      )}
-    >
-      <div className="space-y-xs">
-        {displayedVulnerabilities.map((item, index) => {
-          const prev = displayedVulnerabilities[index - 1];
-          // A heading where the list changes kind — only when it has both.
-          const heading = splitWeaknesses && (index === 0 || isMisconfig(prev) !== isMisconfig(item))
-            ? (isMisconfig(item)
-              ? `Misconfigurations (${misconfigCount})`
-              : `Vulnerabilities (${groupedItems.length - misconfigCount})`)
-            : null;
-          const rowProps = {
-            severityBadgeVariant,
-            expandedVulnIds,
-            onToggleDescription: toggleVulnDescription,
-            vulnActionId,
-            onTriage: openTriage,
-            onQueryHosts: handleQueryHosts,
-            onQueryExploitPort: handleQueryExploitPort,
-          };
-          const row = item.kind === 'product' ? (
-            <ProductObservationGroup
-              key={`${host.id}:${item.product.key}`}
-              product={item.product}
-              hostId={host.id}
-              {...rowProps}
-            />
-          ) : (
-            <VulnerabilityGroup
-              // Host-qualified, on top of the inspector's body being keyed by
-              // host: an issue shared by two hosts must never carry its open
-              // state over.
-              key={`${host.id}:${item.group.key}`}
-              group={item.group}
-              {...rowProps}
-            />
-          );
-          return heading ? (
-            <React.Fragment key={`h-${heading}`}>
-              <h3 className="pt-xxs text-caption font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
-              {row}
-            </React.Fragment>
-          ) : row;
-        })}
-        {observationItems.length > VULNERABILITY_PREVIEW_LIMIT && (
-          <div className="flex justify-end">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowAllVulnerabilities((prev) => !prev)}
-            >
-              {showAllVulnerabilities
-                ? 'Show fewer issues'
-                : `Show all issues (${vulnGroups.length})`}
-            </Button>
-          </div>
-        )}
-      </div>
-    </InspectorSection>
-  ) : null;
 
   const glanceLinkClass =
     'rounded hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -1246,7 +566,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   return (
     <HostTestsProvider value={hostTests}>
     <div className="space-y-md">
-      {confirmEl}
       {hostTestsElement}
       {vulnSummaryError && (
         <Alert variant="warning">
@@ -1309,62 +628,13 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           </span>
         ) : null}
 
-        {/* v5.240.0 — the review control lives in the title row. It used to
-            own 5/12 of the overview card, which for an unreviewed host was one
-            button over ~200px of nothing while the OS beside it truncated. */}
-        <div className="ml-auto flex flex-wrap items-center gap-xs">
-          {/* 5.303.0 — the bookmark icon that stood here looked like a button
-              and did nothing; the badge says the state. */}
-          <Badge
-            variant={followStatus ? FOLLOW_STATUS_META[followStatus].badgeVariant : 'outline'}
-            title={followHelperText}
-          >
-            {followStatus ? FOLLOW_STATUS_META[followStatus].label : 'Not reviewed'}
-          </Badge>
-          {/* §6/§9 — one state-aware review control: primary action for the
-              common path + an overflow for the off-path transitions
-              (mark-reviewed-direct, clear status).  Setting a review status
-              is a write (analyst and up): below that the badge above is the
-              whole of it — the controls are hidden, not disabled. */}
-          {canManageEntries && (<>
-          {followStatus === 'reviewed' ? (
-            <Button size="sm" variant="outline" disabled={followLoading}
-              onClick={() => updateFollow('in_review')}>
-              <RotateCcw className="size-3.5" aria-hidden /> Re-open review
-            </Button>
-          ) : followStatus === 'in_review' ? (
-            <Button size="sm" disabled={followLoading} onClick={() => markReviewed()}>
-              <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
-            </Button>
-          ) : (
-            <Button size="sm" disabled={followLoading}
-              onClick={() => updateFollow('in_review')}>
-              <Eye className="size-3.5" aria-hidden /> Start review
-            </Button>
-          )}
-          {/* 5.303.0 — the off-path transitions as quiet buttons: the "⋯"
-              menu they lived in held one item on almost every host. */}
-          {followStatus !== 'in_review' && followStatus !== 'reviewed' && (
-            <Button size="sm" variant="ghost" disabled={followLoading} onClick={() => markReviewed()}>
-              Mark reviewed
-            </Button>
-          )}
-          {/* Only inside a queue (the Hosts side sheet passes the step): mark
-              it Reviewed and go to the next host nobody has started. */}
-          {followStatus !== 'reviewed' && onNextUnreviewed && (
-            <Button size="sm" variant="ghost" disabled={followLoading} onClick={() => markReviewed(true)}
-              title="Mark this host Reviewed, then open the next host nobody has started">
-              Reviewed, next unreviewed
-            </Button>
-          )}
-          {followStatus && (
-            <Button size="sm" variant="ghost" disabled={followLoading} onClick={() => updateFollow('none')}
-              title="Clear this host's review status">
-              Clear status
-            </Button>
-          )}
-          </>)}
-        </div>
+        <HostReviewControls
+          hostId={hostId}
+          followStatus={followStatus}
+          canEdit={canManageEntries}
+          onSaved={putFollow}
+          onNextUnreviewed={onNextUnreviewed}
+        />
       </div>
 
       {/* Scope is part of what this host IS to the engagement, so it sits with
@@ -1761,7 +1031,12 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       {/* v5.297.0 — the host's weaknesses first (scanner observations, one
           row per issue, whichever tool reported it), then this host's
           findings, then each service with everything known about it. */}
-      {observationsSection}
+      <ScannerObservationsSection
+        host={host}
+        putHost={putHost}
+        onQueryHosts={onQueryHosts}
+        informational={informational}
+      />
 
       {/* This host's findings, inline. */}
       <HostFindingsCard hostId={host.id} />
@@ -1809,325 +1084,21 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       {/* v5.316.0 — what agents ran against this host (renders nothing when none). */}
       {/* Tests proposed for this host, then every command an agent recorded
           against it (the evidence a test's result is). */}
-      <HostTestsSection key={host.id} hostId={host.id} canEdit={canManageEntries} userId={user?.id} onDirtyChange={setFindingsDraftDirty} />
+      <HostTestsSection key={host.id} hostId={host.id} canEdit={canManageEntries} userId={user?.id} onDirtyChange={onTestsDirtyChange} />
 
       <HostEvidenceSection hostId={host.id} />
 
       {/* Discussion — one section: the composer (a single line until used)
-          over the thread, after the evidence it is written about. Notes are
-          talk about the host; work is a test and its result (5.325.0). */}
-      <InspectorSection
-        id="host-detail-notes"
-        title="Discussion"
-        titleHint="Notes and replies about this host, for the team. Record work as a test and its result; a finding comes from a weakness or a test result."
-        icon={<MessageSquare className="size-4 shrink-0 text-primary" aria-hidden />}
-        count={notes.length}
-      >
-        <div className="space-y-sm">
-          {/* Writing a note is a project analyst's (R32); a reader sees the
-              discussion without a composer whose Post the server refuses. */}
-          {!canManageEntries && notes.length === 0 && (
-            <p className="text-caption text-muted-foreground">No notes on this host.</p>
-          )}
-          {canManageEntries && (
-          <NoteComposer
-            hostId={hostId}
-            body={noteBody}
-            onBodyChange={setNoteBody}
-            submitting={noteSubmitting}
-            onSubmit={handleCreateNote}
-            error={noteError}
-            onDismissError={() => setNoteError(null)}
-            onPaste={handleComposerPaste}
-            images={pendingImages}
-            failedAttachmentCount={failedAttachmentCount}
-            onRemoveImage={removePendingImage}
-            onRetryImage={retryPendingImage}
-          />
-          )}
-          {notes.length > 0 && (
-            // v2.43.0 — MONO-2: notes rendering is now <NoteThread> (see
-            // ./host-inspector/NoteThread.tsx).  Pre-extraction this was
-            // a 120-line closure capturing 11 pieces of parent state.
-            <NoteThread
-              topLevel={visibleTopLevelNotes}
-              repliesByParent={noteThreadGroups.repliesByParent}
-              replyTo={replyTo}
-              replyBody={replyBody}
-              onReplyToChange={setReplyTo}
-              onReplyBodyChange={setReplyBody}
-              onSubmitReply={handleReply}
-              noteSubmitting={noteSubmitting}
-              noteActionId={noteActionId}
-              onDeleteNote={handleDeleteNote}
-              onEditDetails={openNoteDetails}
-              currentUserId={user?.id ?? null}
-              hostId={hostId}
-              canManageNotes={canManageEntries}
-              isProjectAdmin={isProjectAdmin}
-            />
-          )}
-          {hiddenNoteCount > 0 && (
-            <Button size="sm" variant="ghost" className="text-caption" onClick={() => setShowAllNotes(true)}>
-              Show {hiddenNoteCount} earlier thread{hiddenNoteCount === 1 ? '' : 's'}
-            </Button>
-          )}
-        </div>
-      </InspectorSection>
-
-      {/* §11 — vuln triage confirm. Promotion fans out across every project
-          host sharing the plugin_id, so show that blast radius (and capture
-          a rationale, esp. for a false-positive dismissal) before committing. */}
-      <Dialog open={triageVuln !== null} onOpenChange={(v) => { if (!v) { setTriageVuln(null); setTriageReason(''); } }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {triageVuln?.intent === 'confirmed' ? 'Promote to finding' : 'Dismiss as false positive'}
-            </DialogTitle>
-            <DialogDescription className="break-words">
-              {triageVuln?.title}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-sm">
-            {/* v5.238.0 — a dismissal is made in one host's inspector about
-                that host's observation: it defaults to THIS host.  Marking the
-                issue a false positive on every host is the explicit choice.
-                v5.245.0 — the same rule for a PROMOTION: it could only be
-                issue-wide, so confirming what was verified on one host recorded
-                "confirmed" for every host carrying the issue, including hosts
-                nobody had looked at.  What is done in one host's inspector is
-                about that host unless it is widened. */}
-            {triagePreview && (
-              <fieldset className="space-y-xxs">
-                <legend className="text-caption font-semibold text-foreground">Applies to</legend>
-                <label className="flex items-start gap-xs text-caption">
-                  <input
-                    type="radio" name="triage-scope" className="mt-[3px]"
-                    checked={triageScope === 'host'} onChange={() => setTriageScope('host')}
-                  />
-                  <span className="min-w-0 break-words">
-                    <strong>This host only</strong>
-                    {triagePreview.host_ip ? ` (${triagePreview.host_ip})` : ''} — the other hosts carrying
-                    this issue are left as they are.
-                  </span>
-                </label>
-                <label className="flex items-start gap-xs text-caption">
-                  <input
-                    type="radio" name="triage-scope" className="mt-[3px]"
-                    checked={triageScope === 'issue'} onChange={() => setTriageScope('issue')}
-                    disabled={triagePreview.affected_host_count <= 1}
-                  />
-                  <span className="min-w-0 break-words">
-                    <strong>
-                      All {triagePreview.affected_host_count} host{triagePreview.affected_host_count === 1 ? '' : 's'} carrying this issue
-                    </strong>
-                    {triagePreview.affected_host_count <= 1
-                      ? ' — no other host carries it.'
-                      : triageVuln?.intent === 'confirmed'
-                        ? ' — record the finding on every host that reports it, verified here or not.'
-                        : ' — the issue itself is a false positive (a scanner misfire, not something about this host).'}
-                  </span>
-                </label>
-              </fieldset>
-            )}
-            {/* Blast-radius preview */}
-            <div className="rounded-control border border-border bg-muted/30 p-sm text-caption">
-              {triagePreviewLoading ? (
-                <span className="flex items-center gap-xs text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" aria-hidden /> Checking affected hosts…
-                </span>
-              ) : triagePreview && triageVuln?.intent === 'false_positive' && triageScope === 'host' ? (
-                <span className="text-foreground">
-                  {triagePreview.already_promoted && triagePreview.host_endpoint_status === 'false_positive' ? (
-                    <>
-                      <strong>{triagePreview.host_ip ?? 'This host'}</strong> is already a false positive on
-                      <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">finding #{triagePreview.finding_id}</Link>; nothing changes.
-                    </>
-                  ) : triagePreview.already_promoted ? (
-                    <>
-                      <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">Finding #{triagePreview.finding_id}</Link> already covers this issue
-                      {triagePreview.host_endpoint_status
-                        ? <> ({ENDPOINT_STATUS_LABEL[triagePreview.host_endpoint_status as FindingHostStatus] ?? triagePreview.host_endpoint_status})</>
-                        : ' on other hosts'}
-                      . This marks <strong>{triagePreview.host_ip ?? 'this host'}</strong> a false positive on it; the
-                      finding stays{' '}
-                      <strong>{FINDING_STATUS_LABEL[(triagePreview.finding_status ?? 'open') as FindingStatus] ?? triagePreview.finding_status}</strong>{' '}
-                      for its other hosts.
-                    </>
-                  ) : (
-                    <>
-                      Records a false positive for <strong>{triagePreview.host_ip ?? 'this host'}</strong> only.
-                      {triagePreview.affected_host_count > 1 && (
-                        <> The other {triagePreview.affected_host_count - 1} host{triagePreview.affected_host_count - 1 === 1 ? '' : 's'} carrying
-                          this issue stay untriaged.</>
-                      )}
-                    </>
-                  )}
-                </span>
-              ) : triagePreview && triageVuln?.intent === 'confirmed' && triageScope === 'host' ? (
-                <span className="text-foreground">
-                  {triagePreview.already_promoted && triagePreview.host_endpoint_status ? (
-                    <>
-                      <strong>{triagePreview.host_ip ?? 'This host'}</strong> is already on <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">finding #{triagePreview.finding_id}</Link>{' '}
-                      ({ENDPOINT_STATUS_LABEL[triagePreview.host_endpoint_status as FindingHostStatus] ?? triagePreview.host_endpoint_status});
-                      this records this scanner&rsquo;s evidence on it.
-                    </>
-                  ) : triagePreview.already_promoted ? (
-                    <>
-                      <Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">Finding #{triagePreview.finding_id}</Link> already covers this issue. This adds{' '}
-                      <strong>{triagePreview.host_ip ?? 'this host'}</strong> to it and records this
-                      scanner&rsquo;s evidence; no other host is attached.
-                    </>
-                  ) : (
-                    <>
-                      Creates a finding for <strong>{triagePreview.host_ip ?? 'this host'}</strong> only.
-                      {triagePreview.affected_host_count > 1 && (
-                        <> The other {triagePreview.affected_host_count - 1} host{triagePreview.affected_host_count - 1 === 1 ? '' : 's'} reporting
-                          this issue stay untriaged; promoting it from one of them later joins this same finding.</>
-                      )}
-                    </>
-                  )}
-                </span>
-              ) : triagePreview ? (
-                triagePreview.already_promoted ? (
-                  <>
-                    <span className="text-foreground">
-                      A finding for this issue already exists
-                      {triagePreview.finding_id != null && <> (<Link to={`/findings/${triagePreview.finding_id}`} className="text-primary underline-offset-2 hover:underline">#{triagePreview.finding_id}</Link>)</>}
-                      {triagePreview.new_host_count > 0
-                        ? ' — this attaches '
-                        : ' — this re-dispositions it; no new hosts are attached.'}
-                      {triagePreview.new_host_count > 0 && (
-                        <>
-                          <strong>{triagePreview.new_host_count}</strong>{' '}
-                          more host{triagePreview.new_host_count === 1 ? '' : 's'} and records this
-                          scanner&rsquo;s evidence.
-                        </>
-                      )}
-                    </span>
-                    {/* The issue can already be promoted from a different host or
-                        a different scanner's wording, which is not obvious from
-                        the row the operator clicked — name the total so the
-                        dialog doesn't read as "nothing happens". */}
-                    <span className="mt-xxs block text-muted-foreground">
-                      Covers <strong>{triagePreview.affected_host_count}</strong>{' '}
-                      host{triagePreview.affected_host_count === 1 ? '' : 's'} in total.
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-foreground">
-                      {triageVuln?.intent === 'confirmed' ? 'Creates one finding across ' : 'Records a finding across '}
-                      <strong>{triagePreview.affected_host_count}</strong>{' '}
-                      host{triagePreview.affected_host_count === 1 ? '' : 's'}
-                      {triagePreview.affected_host_count > 1
-                        ? ' carrying this same issue — including rows reported by other scanners under different wording.'
-                        : ' (this host only).'}
-                    </span>
-                    {triagePreview.affected_host_sample.length > 0 && (
-                      <span className="mt-xxs block break-words text-muted-foreground">
-                        {triagePreview.affected_host_sample.join(', ')}
-                        {triagePreview.affected_host_count > triagePreview.affected_host_sample.length
-                          ? `, +${triagePreview.affected_host_count - triagePreview.affected_host_sample.length} more`
-                          : ''}
-                      </span>
-                    )}
-                  </>
-                )
-              ) : (
-                <span role="alert" className="flex flex-wrap items-center gap-xs text-warning">
-                  <span className="min-w-0 flex-1">
-                    Couldn&rsquo;t determine which hosts this affects. It can reach hosts other
-                    than this one, so it isn&rsquo;t offered until that is known.
-                  </span>
-                  <Button size="sm" variant="outline" onClick={() => void triagePreviewQuery.refetch()}>
-                    Retry
-                  </Button>
-                </span>
-              )}
-            </div>
-
-            <div>
-              <Label htmlFor="vuln-triage-reason" className="text-caption">
-                Rationale{triageVuln?.intent === 'false_positive' ? '' : ' (optional)'}
-              </Label>
-              <Textarea
-                id="vuln-triage-reason"
-                rows={3}
-                placeholder={triageVuln?.intent === 'false_positive'
-                  ? 'e.g. scanner flagged the backported package, not the CVE'
-                  : 'Optional context recorded on the finding history'}
-                value={triageReason}
-                onChange={(e) => setTriageReason(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setTriageVuln(null); setTriageReason(''); }}>
-              Cancel
-            </Button>
-            <Button
-              variant={triageVuln?.intent === 'false_positive' ? 'destructive' : 'default'}
-              disabled={vulnActionId === triageVuln?.id
-                || !triagePreview
-                || (triageVuln?.intent === 'false_positive' && !triageReason.trim())}
-              onClick={handlePromoteVuln}
-            >
-              {triageVuln?.intent === 'confirmed' ? 'Promote' : 'Dismiss'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Note-details editor — a thread's type and pin. */}
-      <Dialog open={detailsNote !== null} onOpenChange={(v) => { if (!v) setDetailsNote(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Note details</DialogTitle>
-            <DialogDescription>
-              Label what kind of thread this is, and pin it to keep it at the top of the discussion.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-sm">
-            <div className="space-y-xxs">
-              <Label htmlFor="note-type">Type</Label>
-              <Select value={detailsType} onValueChange={setDetailsType}>
-                <SelectTrigger id="note-type"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">— none —</SelectItem>
-                  {NOTE_TYPES.map((t) => (
-                    <SelectItem key={t} value={t} className="capitalize">{t}</SelectItem>
-                  ))}
-                  {detailsNote?.note_type && !(NOTE_TYPES as readonly string[]).includes(detailsNote.note_type) && (
-                    <SelectItem value={detailsNote.note_type} className="capitalize">
-                      {detailsNote.note_type} (older label)
-                    </SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-            <Button
-              type="button"
-              variant={detailsPinned ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setDetailsPinned((v) => !v)}
-              aria-pressed={detailsPinned}
-            >
-              {detailsPinned ? 'Pinned' : 'Pin to top'}
-            </Button>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDetailsNote(null)} disabled={detailsSaving}>
-              Cancel
-            </Button>
-            <Button onClick={handleSaveNoteDetails} disabled={detailsSaving}>
-              {detailsSaving ? 'Saving…' : 'Save'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          over the thread, after the evidence it is written about. */}
+      <HostDiscussionSection
+        hostId={hostId}
+        notes={notes}
+        putHost={putHost}
+        canEdit={canManageEntries}
+        isProjectAdmin={isProjectAdmin}
+        currentUserId={user?.id ?? null}
+        onDirtyChange={onDiscussionDirtyChange}
+      />
 
       {/* Scan discovery timeline — audit evidence, relevant occasionally, so it
           lives at the bottom with a show-all expander (was pinned in the header,
