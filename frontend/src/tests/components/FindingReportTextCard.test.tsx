@@ -513,6 +513,28 @@ describe('FindingReportTextCard — unsaved text is guarded', () => {
     await waitFor(() => expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument());
     expect(unload()).toBe(false);
   });
+
+  // Review 2026-10-23, H-FC1 — the editor diffed against the LIVE cached
+  // finding: a colleague's newer impact arriving while it was open read as
+  // the reader's edit, and saving wrote the old impact back over theirs.
+  it('saves only what the reader changed since the editor opened, whatever the cache holds now', async () => {
+    updateFinding.mockResolvedValue(written);
+    const onDirtyChange = vi.fn();
+    const { rerender } = render(<FindingReportTextCard finding={written} canEdit onDirtyChange={onDirtyChange} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    const newer = {
+      ...(written as object),
+      report_text: { ...(written as { report_text: object }).report_text, impact: 'A colleague rewrote this.' },
+    } as never;
+    rerender(<FindingReportTextCard finding={newer} canEdit onDirtyChange={onDirtyChange} />);
+    // Nothing typed yet: nothing to lose.
+    expect(unload()).toBe(false);
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'TLS 1.0 and 1.1 are accepted.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save report text/ }));
+    await waitFor(() => expect(updateFinding).toHaveBeenCalledTimes(1));
+    expect(updateFinding).toHaveBeenCalledWith(1, 42, { description: 'TLS 1.0 and 1.1 are accepted.' });
+  });
 });
 
 // Review 2026-10-22, A-R13 — the score field was editable while a 3.x / 2.0
