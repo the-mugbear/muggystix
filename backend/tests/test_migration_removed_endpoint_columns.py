@@ -2,7 +2,7 @@
 columns, review 2026-10-23b TRI-5), walked on a scratch database BUILT BY THE
 CHAIN (the pattern of ``test_migration_review_marks_outlive_their_reviewer.py``).
 
-Seeded at ``7b83a791a783``: two removal lines as 2.526.0 wrote them (one with
+Seeded at ``9c4e2b7d1a3f`` (its parent): two removal lines as 2.526.0 wrote them (one with
 a retest request, one on a host deleted since), an edit line and a status line.
 
 Asserted:
@@ -29,7 +29,7 @@ from sqlalchemy.engine import make_url
 from tests.conftest import USING_POSTGRES, _drop_database, _ensure_database, engine as suite_engine
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BEFORE = "7b83a791a783"
+BEFORE = "9c4e2b7d1a3f"
 HEAD = "d4a8c2e6f1b3"
 
 pytestmark = pytest.mark.skipif(

@@ -20,13 +20,13 @@ changes.
 as the JSON 2.526.0 reads, then drops the indexes and the three columns.
 
 Revision ID: d4a8c2e6f1b3
-Revises: 7b83a791a783
+Revises: 9c4e2b7d1a3f
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = "d4a8c2e6f1b3"
-down_revision = "7b83a791a783"
+down_revision = "9c4e2b7d1a3f"
 branch_labels = None
 depends_on = None
 
