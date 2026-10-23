@@ -329,7 +329,7 @@ def _selects_during(db, call):
 @pytest.mark.parametrize("path", [
     "/api/v1/agent/assist/hosts?limit=5&state=up",       # project only
     "/api/v1/agent/assist/coverage",                     # project only
-    "/api/v1/agent/assist/workbench/terrain",            # project only
+    "/api/v1/agent/assist/operations/terrain",           # project only
     "/api/v1/agent/proposals?mine=true",                 # the session's id
     "/api/v1/agent/host-tests",                          # the session, for attribution
 ])

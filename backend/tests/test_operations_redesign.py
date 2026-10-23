@@ -35,7 +35,7 @@ _USER_ID_SEQ = [4200]
 
 
 def _wb(pid, suffix=""):
-    return f"/api/v1/projects/{pid}/workbench{suffix}"
+    return f"/api/v1/projects/{pid}/operations{suffix}"
 
 
 def _host_ips(client, pid, q):
@@ -129,7 +129,7 @@ def _proposal(db, pid, **over):
 
 
 # ---------------------------------------------------------------------------
-# Project status left the workbench (v2.451.0); the terrain's sums still agree
+# Project status left Operations (v2.451.0); the terrain's sums still agree
 # with the Hosts lists they open
 # ---------------------------------------------------------------------------
 
@@ -174,9 +174,9 @@ def test_the_terrain_sentence_counts_exactly_the_hosts_its_lists_open(
     assert sum(b["critical_untouched"] for b in blocks) == len(untouched_critical_list) == 3
 
 
-def test_the_workbench_carries_no_project_status(client, db_session, test_project, test_user):
+def test_operations_carries_no_project_status(client, db_session, test_project, test_user):
     """Operations is the reader's own page (v2.451.0): no ``measures`` block,
-    no ``/workbench/measures`` route — project status is Posture's."""
+    no ``/operations/measures`` route — project status is Posture's."""
     pid = test_project.id
     _seed_measures(db_session, pid, test_user.id)
     body = client.get(_wb(pid)).json()
@@ -185,13 +185,13 @@ def test_the_workbench_carries_no_project_status(client, db_session, test_projec
     assert client.get(_wb(pid, "/measures")).status_code == 404
 
 
-def test_the_agents_workbench_carries_the_same_queue_total(db_session, test_project, test_user):
+def test_the_agents_operations_carries_the_same_queue_total(db_session, test_project, test_user):
     """Agent parity: the agents' read is the same service, so it carries the
     queue's total — and, like the page, no project-wide measures."""
-    from app.services.workbench_service import compute_workbench
+    from app.services.operations_service import compute_operations
 
     _seed_measures(db_session, test_project.id, test_user.id)
-    wb = compute_workbench(db_session, test_user, test_project, include_investigate=False)
+    wb = compute_operations(db_session, test_user, test_project, include_investigate=False)
     assert not hasattr(wb, "measures")
     assert wb.my_work.total == wb.my_work.hosts_in_review == 1
 
@@ -549,12 +549,12 @@ def test_changed_since_review_count_is_its_hosts_list(client, db_session, test_p
 
 def test_the_agents_followups_are_its_operators(db_session, client, test_project, test_user):
     """The agent read is the same service, keyed to the session's operator."""
-    from app.services.workbench_service import compute_workbench
+    from app.services.operations_service import compute_operations
 
     pid = test_project.id
     hosts = _seed_followups(client, db_session, pid)
     _teammates_followups(db_session, pid, hosts)
-    wb = compute_workbench(db_session, test_user, test_project, include_investigate=False)
+    wb = compute_operations(db_session, test_user, test_project, include_investigate=False)
     assert {r.ip_address for r in wb.followups.items} == {"10.24.0.3", "10.24.0.4"}
     assert wb.followups.total == 2
 

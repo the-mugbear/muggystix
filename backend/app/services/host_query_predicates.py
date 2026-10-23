@@ -1121,7 +1121,7 @@ def scan_predicate(
 # Time windows (v2.363.0) — "what changed since my last visit", as host sets.
 #
 # ONE definition, used twice: the Operations "since your last visit" counts
-# (workbench_service.compute_since_last_visit) and the DSL fields those counts link
+# (operations_service.compute_since_last_visit) and the DSL fields those counts link
 # to (firstseen: / changedsince: / vulnsince:).  A count that opens a list
 # derived some other way is how "12 new hosts" comes to open 9.
 #

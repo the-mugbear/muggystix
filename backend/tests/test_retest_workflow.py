@@ -307,7 +307,7 @@ def test_the_project_retest_list_is_the_operations_count_on_both_doors(client, d
 
     page = client.get(f"{_p(test_project)}/findings", params={"host_state": "retest"}).json()
     agents = client.get("/api/v1/agent/assist/findings", headers=agent_headers, params={"host_state": "retest"}).json()
-    work = client.get(f"{_p(test_project)}/workbench", params={"include_investigate": "false",
+    work = client.get(f"{_p(test_project)}/operations", params={"include_investigate": "false",
                                                                 "include_rows": "false"}).json()
     assert page["total"] == agents["total"] == work["retests_pending"]["findings"] == 2
     assert work["retests_pending"]["hosts"] == 3
@@ -319,7 +319,7 @@ def test_the_project_retest_list_is_the_operations_count_on_both_doors(client, d
     c = client.post(f"{_p(test_project)}/findings", json={"title": "Weak TLS", "severity": "low", "host_ids": [host_id]})
     assert c.status_code == 201, c.text
     _move(client, test_project, c.json()["id"], c.json()["hosts"][0]["id"], "retest")
-    work = client.get(f"{_p(test_project)}/workbench", params={"include_investigate": "false",
+    work = client.get(f"{_p(test_project)}/operations", params={"include_investigate": "false",
                                                                 "include_rows": "false"}).json()
     assert work["retests_pending"] == {"findings": 3, "hosts": 3}
 
@@ -346,7 +346,7 @@ def test_a_retest_stands_by_one_rule_on_every_list_and_on_the_guard(
         page = client.get(f"{_p(test_project)}/findings", params={"host_state": "retest"}).json()
         agents = client.get("/api/v1/agent/assist/findings", headers=agent_headers,
                             params={"host_state": "retest"}).json()
-        work = client.get(f"{_p(test_project)}/workbench", params={"include_investigate": "false",
+        work = client.get(f"{_p(test_project)}/operations", params={"include_investigate": "false",
                                                                     "include_rows": "false"}).json()
         ids = sorted(f["id"] for f in page["items"])
         assert work["retests_pending"]["findings"] == page["total"] == agents["total"] == len(ids)

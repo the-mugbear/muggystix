@@ -108,7 +108,8 @@ router = APIRouter()
 # screenshots) declare none: the UI serves both to a viewer.
 #: The whole-project dossier and the bulk inventory are exports (AUDITOR).
 _EXPORT_READ = [Depends(agent_read_floor(ProjectRole.AUDITOR))]
-#: Ingestion Results is an analyst page (every ``/parse-errors`` route).
+#: Ingestion Results is an analyst page (``/ingestion-results``, and every
+#: ``/parse-errors`` route).
 _INGESTION_RESULTS_READ = [Depends(agent_read_floor(ProjectRole.ANALYST))]
 
 

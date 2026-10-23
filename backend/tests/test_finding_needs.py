@@ -256,7 +256,7 @@ def test_operations_says_the_older_needs_as_before_and_lists_a_missing_caption(
     _finding(db_session, test_project, "Written up", **mine)          # needs nothing: not listed
     db_session.commit()
 
-    body = client.get(f"/api/v1/projects/{test_project.id}/workbench/findings").json()
+    body = client.get(f"/api/v1/projects/{test_project.id}/operations/findings").json()
     said = {i["title"]: [(n["kind"], n["text"]) for n in i["needs"]] for i in body["items"]}
     assert said == {
         "Decide": [("under_investigation", "under investigation"), ("proposals", "1 proposal to decide")],
@@ -269,7 +269,7 @@ def test_operations_says_the_older_needs_as_before_and_lists_a_missing_caption(
     assert by_title["Caption"]["uncaptioned_images"] == 1
     assert by_title["Decide"]["pending_proposals"] == 1
     written = client.get(
-        f"/api/v1/projects/{test_project.id}/workbench/findings", params={"need": "write"},
+        f"/api/v1/projects/{test_project.id}/operations/findings", params={"need": "write"},
     ).json()
     assert {i["title"] for i in written["items"]} == {"Write", "Caption"}
 

@@ -522,7 +522,7 @@ export const getIngestionResults = async (
   if (query.sortBy) params.set('sort_by', query.sortBy);
   if (query.sortOrder) params.set('sort_order', query.sortOrder);
   const qs = params.toString();
-  const response = await api.get(`${projectPath(projectId)}/parse-errors/ingestion-results${qs ? `?${qs}` : ''}`, { signal });
+  const response = await api.get(`${projectPath(projectId)}/ingestion-results${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 
@@ -538,6 +538,6 @@ export interface UninterpretedLines {
 }
 
 export const getUninterpretedLines = async (projectId: number, jobId: number, signal?: AbortSignal): Promise<UninterpretedLines> => {
-  const response = await api.get(`${projectPath(projectId)}/parse-errors/ingestion-results/${jobId}/uninterpreted`, { signal });
+  const response = await api.get(`${projectPath(projectId)}/ingestion-results/${jobId}/uninterpreted`, { signal });
   return response.data;
 };

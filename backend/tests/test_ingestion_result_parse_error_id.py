@@ -68,7 +68,7 @@ def test_ingestion_results_expose_the_parse_error_id(
 ):
     job, parse_error = failed_job_with_parse_error
 
-    resp = client.get(f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results")
+    resp = client.get(f"/api/v1/projects/{test_project.id}/ingestion-results")
     assert resp.status_code == 200, resp.text
 
     row = next((i for i in resp.json()["items"] if i["id"] == job.id), None)
@@ -148,7 +148,7 @@ def test_rows_that_tie_on_the_sort_column_page_without_repeating_or_skipping(
     paged = []
     for skip in (0, 10, 20):
         page = client.get(
-            f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results",
+            f"/api/v1/projects/{test_project.id}/ingestion-results",
             params={"sort_by": "status", "sort_order": sort_order, "skip": skip, "limit": 10},
         )
         assert page.status_code == 200, page.text

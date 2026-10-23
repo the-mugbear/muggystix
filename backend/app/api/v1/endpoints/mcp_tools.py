@@ -513,8 +513,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/patterns",
     },
     # v2.428.0 — Operations, Evidence gaps and scan compare, each the SAME
-    # service its page uses (agent_assist_operations.py).
-    "assist_get_workbench": {
+    # service its page uses (agent_assist_operations.py).  The tool was
+    # ``assist_get_workbench`` until 2026-10-22 (owner: no alias).
+    "assist_get_operations": {
         "description": (
             "Your operator's Operations page. `my_work` is what waits on them BY "
             "KIND — answer with the kinds apart: findings_to_decide, "
@@ -547,7 +548,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "q='follow:in_review'."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/assist/workbench",
+        "path": "/api/v1/agent/assist/operations",
         # The untouched-hosts queue has its own tool (assist_list_worth_a_look).
         "hidden": ["include_investigate"],
     },
@@ -564,7 +565,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "with `tier`). A 503 means it could not be computed — not that the queue is empty."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/assist/workbench/investigate",
+        "path": "/api/v1/agent/assist/operations/investigate",
     },
     # The Operations "Findings" tab as a whole list
     # (operations_read_service.compute_my_findings, the page's own function).
@@ -587,7 +588,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "teammate's never is."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/assist/workbench/findings",
+        "path": "/api/v1/agent/assist/operations/findings",
     },
     "assist_get_terrain": {
         "description": (
@@ -599,7 +600,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "(`total` = every block)."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/assist/workbench/terrain",
+        "path": "/api/v1/agent/assist/operations/terrain",
     },
     "assist_list_evidence_gaps": {
         "description": (

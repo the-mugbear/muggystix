@@ -10,7 +10,7 @@ depend on routers, and a router call another router's handler — FastAPI
 bearing for internal code.
 
 This module owns the query logic and its DTOs.  Routers (``dashboard.py``,
-``workbench.py``) now call ``compute_*`` and map the result to HTTP; the
+``operations.py``) now call ``compute_*`` and map the result to HTTP; the
 DTOs are imported from here (dashboard re-exports them for back-compat with
 any caller that imported the names from the router).
 
@@ -83,7 +83,7 @@ def compute_my_attention_queue(
     queue widget is for "what do I need to do today?".
 
     ``limit`` / ``offset`` page the list in that order (v2.452.0 — the
-    Operations "Hosts" tab, ``GET /workbench/hosts``); ``in_review_count`` is
+    Operations "Hosts" tab, ``GET /operations/hosts``); ``in_review_count`` is
     the whole list whatever they say, and ``limit=0`` returns the count alone
     (one statement).
     """
@@ -271,7 +271,7 @@ def compute_review_followups(
     """The CALLER'S reviewed hosts whose review is not the end of the matter.
 
     ``limit`` / ``offset`` page the list in its own order (v2.452.0 — the
-    Operations "Changed since review" tab, ``GET /workbench/followups``);
+    Operations "Changed since review" tab, ``GET /operations/followups``);
     ``total`` is the whole list whatever they say.
 
     A teammate's review is never listed (v2.451.0), whatever happened to the
@@ -425,7 +425,7 @@ def compute_investigation_queue(
     # candidate before 25 were kept.  Now the untouched set stays a SUBQUERY, the
     # signals come back one aggregated row per host, the pass over all hosts is
     # integers only, and names / labels / reasons are built for the rows shown.
-    # Same tiers, same order, same rows — test_workbench pins that.
+    # Same tiers, same order, same rows — test_operations pins that.
     untouched_filter = (
         models.Host.project_id == project.id,
         *P.untouched_conditions(db),
@@ -816,7 +816,7 @@ def compute_my_tasks(
     over a list with no claimable row in it.  Each group now brings its own
     top rows, and ``group_counts`` says how many each holds.
 
-    **Paged (v2.452.0 — the Operations "Tests" tab, ``GET /workbench/tests``):**
+    **Paged (v2.452.0 — the Operations "Tests" tab, ``GET /operations/tests``):**
     with ``offset`` (or ``group``) the rows are ONE list in the order above —
     every test once, under its strongest reason — cut to ``limit`` rows from
     ``offset``, optionally narrowed to one ``group`` (``MY_TASK_GROUPS``).
@@ -1120,7 +1120,7 @@ def compute_my_findings(
     ``finding_needs.needs_of``.
 
     ``limit`` / ``offset`` page the list in that order (v2.452.0 — the
-    Operations "Findings" tab, ``GET /workbench/findings``); ``total_open`` is
+    Operations "Findings" tab, ``GET /operations/findings``); ``total_open`` is
     the whole list whatever they say (a page past the end, or ``limit=0``,
     counts with one statement of the same filter).
 
@@ -1272,7 +1272,7 @@ class OperationsBlockers(BaseModel):
 def blocked_import_condition():
     """An import that needs someone: it FAILED, or it finished PARTIAL, and
     nobody has dismissed it.  ONE definition — the Operations blockers count
-    it, `GET /parse-errors/ingestion-results?status=needs_attention` lists it,
+    it, `GET /ingestion-results?status=needs_attention` lists it,
     and `POST /upload/jobs/{id}/dismiss` is what clears it.  The count on the
     "Inspect import errors" button and the list it opens cannot disagree.
 

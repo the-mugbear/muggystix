@@ -593,7 +593,7 @@ def test_the_results_page_reads_the_row_not_the_disk(client, db_session, test_pr
         raise AssertionError(f"the page asked the disk about {self}")
 
     monkeypatch.setattr(Path, "exists", no_disk)
-    resp = client.get(f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results")
+    resp = client.get(f"/api/v1/projects/{test_project.id}/ingestion-results")
     monkeypatch.undo()
 
     assert resp.status_code == 200, resp.text

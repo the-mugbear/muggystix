@@ -1,6 +1,6 @@
 """Operations as tabs (v2.452.0): one list on screen, complete and paged.
 
-Each tab's COUNT comes from the light ``GET /workbench?include_rows=false``;
+Each tab's COUNT comes from the light ``GET /operations?include_rows=false``;
 its ROWS come from a paged route built on the same function.  What is pinned
 here, for every tab, with more rows than one page (25) holds:
 
@@ -34,7 +34,7 @@ PAGE = 25
 
 
 def _wb(pid, suffix=""):
-    return f"/api/v1/projects/{pid}/workbench{suffix}"
+    return f"/api/v1/projects/{pid}/operations{suffix}"
 
 
 def _counts(client, pid):
@@ -317,7 +317,7 @@ def test_tests_tab_counts_are_the_lists_it_pages_through(client, db_session, tes
     assert client.get(_wb(pid, "/tests"), params={"kind": "everyone"}).status_code == 422
 
 
-def test_the_workbench_preview_is_unchanged_by_paging(client, db_session, test_project, test_user):
+def test_the_operations_preview_is_unchanged_by_paging(client, db_session, test_project, test_user):
     """The agents' read keeps its previews: per group, the top rows."""
     pid = test_project.id
     host = _host(db_session, pid, "10.41.5.1")
@@ -379,12 +379,12 @@ def test_changed_tab_count_is_the_list_it_pages_through(client, db_session, test
 
 
 def test_the_changed_list_says_when_it_failed(client, test_project, monkeypatch):
-    from app.api.v1.endpoints import workbench as workbench_module
+    from app.api.v1.endpoints import operations as operations_module
 
     def _boom(*args, **kwargs):
         raise RuntimeError("no")
 
-    monkeypatch.setattr(workbench_module, "compute_review_followups", _boom)
+    monkeypatch.setattr(operations_module, "compute_review_followups", _boom)
     r = client.get(_wb(test_project.id, "/followups"))
     assert r.status_code == 503
 
@@ -481,7 +481,7 @@ def test_the_light_call_has_the_full_calls_counts_and_fewer_statements(
     # v2.476.0 — 15 measured: one more for ``setup`` (has hosts / has a scope
     # entry), which replaced the page's whole scope-coverage request; and the
     # light call here is now the caller's SECOND read (the full one above
-    # started the cursor — its upsert is counted in ``test_workbench.py``), so
+    # started the cursor — its upsert is counted in ``test_operations.py``), so
     # it is no longer answered as a first visit: the since-last-visit window
     # counts changed hosts apart from new ones, and this fixture opens a
     # SAVEPOINT after the first read's commit.

@@ -1392,11 +1392,11 @@ class QueryHistory(Base):
 class OperationsCursor(Base):
     """Per-user, per-project "I've seen Operations up to here" cursor.
 
-    Backs the Operations workbench "Since your last visit" section: the
-    GET /workbench diff compares new scans / findings / hosts against
-    ``last_viewed_at``; POST /workbench/seen advances it to now once the
+    Backs the Operations "Since your last visit" section: the
+    GET /operations diff compares new scans / findings / hosts against
+    ``last_viewed_at``; POST /operations/seen advances it to now once the
     operator has acknowledged them.  Exactly one row per (user, project),
-    created by the person's first GET /workbench of the project (v2.476.0) —
+    created by the person's first GET /operations of the project (v2.476.0) —
     never by an agent's read.
     """
     __tablename__ = "operations_cursors"

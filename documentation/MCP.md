@@ -73,9 +73,9 @@ On the reference page each tool is filed under a heading — `assist` (the
 `assist_*` and `remediation_*` tools), `testing` (`host_tests_*`) or `scope`
 (`scope_*`); every other tool (the session and catalogue tools,
 `get_upload_job`, evidence and proposals) is under all three and shown once, as
-shared. The catalogue carries the headings in each tool's `workflows` field,
-which names no kind of session (there is one kind): it is presentation, never a
-filter.
+shared. The catalogue carries the headings in each tool's `groups` field (it
+was `workflows` until 2026-10-22; renamed with no alias), which names no kind
+of session (there is one kind): it is presentation, never a filter.
 
 **Paged lists.** Every list tool a caller can page takes `limit` and `offset`
 and answers `{items, total, limit, offset, returned, has_more}` beside whatever
@@ -154,7 +154,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
 | "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
 | "What's the evidence behind this finding?" | `assist_get_finding` — the notes and thread, the affected endpoints, scanner rows and evidence records, the report text and its history (each edit's before and after: `assist_get_finding_edit`), `writing_guidance`, and the finding's `images`; `assist_get_image` to look at one |
-| "What is mine? What changed since I was last here?" | `assist_get_workbench` — the operator's Operations page (see below) |
+| "What is mine? What changed since I was last here?" | `assist_get_operations` — the operator's Operations page (see below) |
 | "Which findings are waiting on me — all of them?" | `assist_list_my_findings` — whole and paged, `need=decide\|write\|retest` (retest: a host awaiting a retest, a part of decide); `total` is the size of the list the call pages |
 | "What needs a retest?" | `assist_list_findings host_state=retest` — every finding with a host awaiting one, owned or not (a retest is per host; `status=retest` is refused); `assist_get_finding` says which hosts (`retest_stands`). To close one: `record_evidence` on that `finding_host_id`, then `propose_endpoint_status` |
 | "What should we look at next?" | `assist_list_worth_a_look` — Operations' "Untouched, with a reason" queue |
@@ -173,7 +173,9 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "What does the scanner say about this issue?" | `assist_get_scanner_observation` — description, remediation, CVSS, CVE, plugin, references (the Scanner observations inspector; `source=` for another scanner's words); per host, `assist_get_host_vulnerabilities` |
 | "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (the operator needs `auditor`) — an issued report is its frozen text, a draft what it would say now |
 
-**The workbench.** `assist_get_workbench` is the operator's own Operations page:
+**Operations.** `assist_get_operations` (`assist_get_workbench` until
+2026-10-22; the old name is an unknown tool) is the operator's own Operations
+page:
 
 * `my_work` — what waits on them **by kind**: `findings_to_decide`,
   `findings_to_write` (required report text or a report image's caption is
@@ -213,7 +215,7 @@ outliers and blind spots are cross-sectional — *this* subnet against the other
 baseline to compare a quarter against. An agent that phrases these as trends is
 making a claim the data does not support. "What changed" has its own, narrower
 answers: `assist_compare_scans` (two scans), the `q=` time windows
-(`firstseen:` / `changedsince:` / `vulnsince:`), and the workbench's
+(`firstseen:` / `changedsince:` / `vulnsince:`), and `assist_get_operations`'
 `since_last_visit` and `followups` — none of them is a trend.
 
 The derivation of the assist tool set from the analyst's workflow — including

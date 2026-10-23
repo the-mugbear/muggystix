@@ -56,10 +56,10 @@ as real project members:
   * An ISSUED client report (the report worker renders its files).
   * A NetExec import with lines the parser does not interpret, processed by
     the ingestion worker.
-  * Work that waits on the ANALYST, so its session's workbench is not empty
+  * Work that waits on the ANALYST, so its session's Operations is not empty
     and a preview can be told from the whole list: 18 findings it owns that
     need it (10 under investigation = "decide", 8 confirmed with no report
-    text = "write" — more than the workbench's 15-row preview), a host it has
+    text = "write" — more than the Operations 15-row preview), a host it has
     in review, a test assigned to it, and a test on the host in review.
   * A host test proposed by ANOTHER person (the lead), for an agent to work.
   * A SECOND project ("Acceptance — other project") holding a host at the
@@ -354,7 +354,7 @@ def _start_key(api: Api, purpose: str) -> str:
     return api("POST", "/assist/start", json={"purpose": purpose})["api_key"]
 
 
-#: Findings the analyst owns that need them: more than the workbench's 15-row
+#: Findings the analyst owns that need them: more than the Operations 15-row
 #: preview, in both kinds ("decide" = under investigation, "write" = confirmed
 #: with no report text).
 OWNED_DECIDE, OWNED_WRITE = 10, 8

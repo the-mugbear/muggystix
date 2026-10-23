@@ -8,7 +8,7 @@
  * component test has no page around it, so these stand in for the page's
  * reads; `reread` says which of them was asked for again.
  *
- *   const { reread, ReadsOnScreen } = readsOnScreen({ getMyTestsPage: 'list', getWorkbench: 'counts' });
+ *   const { reread, ReadsOnScreen } = readsOnScreen({ getMyTestsPage: 'list', getOperations: 'counts' });
  *   render(<><ReadsOnScreen /><MyTestsTable … /></>);
  *   …the action…
  *   await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));

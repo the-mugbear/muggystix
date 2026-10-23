@@ -65,7 +65,7 @@ def _seed(db_session, project, user):
 
 def test_terrain_counts_each_block_by_stage(client, db_session, test_project, test_user):
     _seed(db_session, test_project, test_user)
-    resp = client.get(f"/api/v1/projects/{test_project.id}/workbench/terrain")
+    resp = client.get(f"/api/v1/projects/{test_project.id}/operations/terrain")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     by = {b["cidr"]: b for b in body["blocks"]}
@@ -85,7 +85,7 @@ def test_terrain_counts_match_their_drilldowns(client, db_session, test_project,
     `has:tested` / `has:critical` within it — the same hosts."""
     _seed(db_session, test_project, test_user)
     pid = test_project.id
-    block = next(b for b in client.get(f"/api/v1/projects/{pid}/workbench/terrain").json()["blocks"]
+    block = next(b for b in client.get(f"/api/v1/projects/{pid}/operations/terrain").json()["blocks"]
                  if b["cidr"] == "10.1.1.0/24")
 
     def total(q):

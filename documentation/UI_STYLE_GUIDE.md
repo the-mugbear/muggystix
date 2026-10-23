@@ -265,7 +265,7 @@ Anything else gets cut.  A card whose first impression is a row of pastel chips 
 - For inline loading spinners, use `<Loader2 className="size-4 animate-spin" />` from lucide-react.
 
 ### 13. Empty States
-- **Unavailable is not empty.** A section that failed to load, or has not loaded yet, renders as *unavailable* (say what could not be checked, offer a retry) — never as a zero or an empty list. "Nothing needs your approval" is a claim about the data; a failed request has not earned it. The API follows the same rule (`*_unavailable` flags on the workbench), so render them.
+- **Unavailable is not empty.** A section that failed to load, or has not loaded yet, renders as *unavailable* (say what could not be checked, offer a retry) — never as a zero or an empty list. "Nothing needs your approval" is a claim about the data; a failed request has not earned it. The API follows the same rule (`*_unavailable` flags on `GET /operations`), so render them.
 - Empty states must not destabilize layout.
 - Pages should still preserve the overall structure so controls and context remain visible.
 - Empty text should be concise and action-oriented where applicable.

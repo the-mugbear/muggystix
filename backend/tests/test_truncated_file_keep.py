@@ -185,7 +185,7 @@ def _needs_someone(db, project_id: int):
 
 def _results_row(client, project, job_id: int, **params):
     r = client.get(
-        f"/api/v1/projects/{project.id}/parse-errors/ingestion-results",
+        f"/api/v1/projects/{project.id}/ingestion-results",
         params={"limit": 200, **params},
     )
     assert r.status_code == 200, r.text

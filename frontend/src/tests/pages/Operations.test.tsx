@@ -45,10 +45,10 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-/** What the workbench says the project holds: hosts, and a scope with entries. */
+/** What the summary says the project holds: hosts, and a scope with entries. */
 const SETUP: { has_hosts: boolean; has_scopes: boolean } = { has_hosts: true, has_scopes: true };
 
-const emptyWorkbench = {
+const emptySummary = {
   setup: SETUP,
   my_queue: { items: [], in_review_count: 0 },
   my_tasks: {
@@ -79,19 +79,19 @@ const emptyQueue = { items: [], queue_total: 0, untouched_total: 0, tiers: TIERS
 
 vi.mock('../../services/api', () => ({
   listAgentSessions: vi.fn(),
-  // Posture's reads — and, since 5.365.0, the scope coverage (the workbench
+  // Posture's reads — and, since 5.365.0, the scope coverage (the summary
   // says whether the project has hosts and scope entries): mocked only so
   // the page can be shown NOT to make them.
   getProjectCoverage: vi.fn(),
   getDashboardStats: vi.fn(),
   getAddressTerrain: vi.fn(),
-  getWorkbench: vi.fn(),
+  getOperations: vi.fn(),
   getInvestigationQueue: vi.fn(),
   getMyFindingsPage: vi.fn(),
   getMyReviewHostsPage: vi.fn(),
   getMyTestsPage: vi.fn(),
   getReviewFollowupsPage: vi.fn(),
-  markWorkbenchSeen: vi.fn(),
+  markOperationsSeen: vi.fn(),
   markStillReviewed: vi.fn(),
   followHost: vi.fn(),
   unfollowHost: vi.fn(),
@@ -168,7 +168,7 @@ const q = (el: HTMLElement) => new URL(el.getAttribute('href') ?? '', 'https://x
 
 // -- a project with work in every tab (the owner's: 24 · 37 · 40 · 27 · 112) --
 const busy = (over: Record<string, unknown> = {}) => ({
-  ...emptyWorkbench,
+  ...emptySummary,
   my_queue: { items: [], in_review_count: 37 },
   my_tasks: {
     items: [], total_open: 55,
@@ -214,7 +214,7 @@ const queueRow = {
 const busyQueue = { items: [queueRow], queue_total: 112, untouched_total: 251, tiers: TIERS, tier_counts: [3, 30, 4, 74, 1] };
 
 const withWork = (over: Record<string, unknown> = {}) => {
-  mockedApi.getWorkbench.mockResolvedValue(busy(over));
+  mockedApi.getOperations.mockResolvedValue(busy(over));
   mockedApi.getInvestigationQueue.mockResolvedValue(busyQueue);
   mockedApi.getMyFindingsPage.mockResolvedValue({
     items: [findingRow(21), findingRow(1)], total_open: 24, need_counts: NEEDS,
@@ -246,13 +246,13 @@ beforeEach(() => {
   navigateSpy.mockReset();
   projectRole.value = undefined;
   accountRole.value = 'admin';
-  mockedApi.getWorkbench.mockResolvedValue(emptyWorkbench);
+  mockedApi.getOperations.mockResolvedValue(emptySummary);
   mockedApi.getInvestigationQueue.mockResolvedValue(emptyQueue);
   mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0, need_counts: { decide: 0, write: 0 } });
   mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [], in_review_count: 0 });
-  mockedApi.getMyTestsPage.mockResolvedValue({ ...emptyWorkbench.my_tasks });
+  mockedApi.getMyTestsPage.mockResolvedValue({ ...emptySummary.my_tasks });
   mockedApi.getReviewFollowupsPage.mockResolvedValue({ items: [], total: 0 });
-  mockedApi.markWorkbenchSeen.mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' });
+  mockedApi.markOperationsSeen.mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' });
   mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [session()], total: 1 });
 });
 
@@ -282,7 +282,7 @@ describe('Operations page', () => {
 
   it('a first read that fails says so with Retry — no setup block is guessed, and the lists still answer', async () => {
     withWork();
-    mockedApi.getWorkbench.mockRejectedValue(new Error('workbench unavailable'));
+    mockedApi.getOperations.mockRejectedValue(new Error('summary unavailable'));
     renderPage();
     expect(await screen.findByText('Couldn\'t load your work\'s counts')).toBeInTheDocument();
     expect(screen.getByText(/a count shown as “—” could not be checked/)).toBeInTheDocument();
@@ -290,7 +290,7 @@ describe('Operations page', () => {
     expect(screen.queryByText(/Scope is registered/)).not.toBeInTheDocument();
     expect(await screen.findByRole('table', { name: 'Findings that need me' })).toBeInTheDocument();
     // Retry reads the counts again, and the page follows the answer.
-    mockedApi.getWorkbench.mockResolvedValue(busy());
+    mockedApi.getOperations.mockResolvedValue(busy());
     fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
     await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings24'));
     expect(screen.queryByText('Couldn\'t load your work\'s counts')).not.toBeInTheDocument();
@@ -303,7 +303,7 @@ describe('Operations page', () => {
     renderPage();
     await screen.findByRole('table');
     await screen.findByText('Your agent sessions');
-    expect(mockedApi.markWorkbenchSeen).not.toHaveBeenCalled();
+    expect(mockedApi.markOperationsSeen).not.toHaveBeenCalled();
     expect(screen.queryByText('Since your last visit')).not.toBeInTheDocument();
   });
 
@@ -314,7 +314,7 @@ describe('Operations page', () => {
     afterEach(() => { vi.useRealTimers(); });
 
     const countReads = () => ({
-      workbench: mockedApi.getWorkbench.mock.calls.length,
+      summary: mockedApi.getOperations.mock.calls.length,
       // The queue's SIZE: the one-row request.
       queueTotal: mockedApi.getInvestigationQueue.mock.calls.filter((c) => c[2]?.limit === 1).length,
     });
@@ -325,14 +325,14 @@ describe('Operations page', () => {
       renderPage('/operations?tab=hosts');
       await screen.findByRole('link', { name: '10.9.0.1' });
       expect(tab(/^Hosts/)).toHaveTextContent('Hosts37');
-      expect(countReads()).toEqual({ workbench: 1, queueTotal: 1 });
+      expect(countReads()).toEqual({ summary: 1, queueTotal: 1 });
       expect(listCalls()).toEqual({ findings: 0, hosts: 1, tests: 0, changed: 0, pickup: 0 });
 
       // Not before the minute is up.
       await act(async () => { await vi.advanceTimersByTimeAsync(59_000); });
-      expect(countReads()).toEqual({ workbench: 1, queueTotal: 1 });
+      expect(countReads()).toEqual({ summary: 1, queueTotal: 1 });
 
-      mockedApi.getWorkbench.mockResolvedValue(busy({
+      mockedApi.getOperations.mockResolvedValue(busy({
         my_queue: { items: [], in_review_count: 41 },
         my_work: { ...busy().my_work, hosts_in_review: 41 },
       }));
@@ -340,8 +340,8 @@ describe('Operations page', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
       // The light counts — not the queue's total: that is the queue's ranking
       // statement, the page's costliest read on a large project.
-      expect(countReads()).toEqual({ workbench: 2, queueTotal: 1 });
-      expect(mockedApi.getWorkbench).toHaveBeenLastCalledWith(
+      expect(countReads()).toEqual({ summary: 2, queueTotal: 1 });
+      expect(mockedApi.getOperations).toHaveBeenLastCalledWith(
         1, { includeInvestigate: false, includeRows: false }, expect.any(AbortSignal),
       );
       // The badges follow; the list was not asked for again, and nothing was written.
@@ -349,10 +349,10 @@ describe('Operations page', () => {
       expect(tab(/^Pick up/)).not.toHaveTextContent('Pick up118');
       expect(listCalls()).toEqual({ findings: 0, hosts: 1, tests: 0, changed: 0, pickup: 0 });
       expect(screen.getByRole('link', { name: '10.9.0.1' })).toBeInTheDocument();
-      expect(mockedApi.markWorkbenchSeen).not.toHaveBeenCalled();
+      expect(mockedApi.markOperationsSeen).not.toHaveBeenCalled();
 
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-      expect(countReads()).toEqual({ workbench: 3, queueTotal: 1 });
+      expect(countReads()).toEqual({ summary: 3, queueTotal: 1 });
       expect(listCalls()).toMatchObject({ hosts: 1 });
     });
 
@@ -361,7 +361,7 @@ describe('Operations page', () => {
       withWork();
       renderPage('/operations?tab=hosts');
       await screen.findByRole('link', { name: '10.9.0.1' });
-      mockedApi.getWorkbench.mockRejectedValue(new Error('offline'));
+      mockedApi.getOperations.mockRejectedValue(new Error('offline'));
       await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
       expect(await screen.findByText('Couldn\'t load your work\'s counts')).toBeInTheDocument();
       expect(tab(/^Hosts/)).toHaveTextContent('Hosts—');
@@ -440,11 +440,11 @@ describe('Operations page', () => {
       withWork();
       renderPage();
       await screen.findByRole('table');
-      // No rows and no queue in the workbench; the queue's size on its own.
-      expect(mockedApi.getWorkbench).toHaveBeenCalledWith(
+      // No rows and no queue in the summary; the queue's size on its own.
+      expect(mockedApi.getOperations).toHaveBeenCalledWith(
         1, { includeInvestigate: false, includeRows: false }, expect.any(AbortSignal),
       );
-      expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(1);
+      expect(mockedApi.getOperations).toHaveBeenCalledTimes(1);
       expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(1, null, { limit: 1, signal: expect.any(AbortSignal) });
     });
 
@@ -508,7 +508,7 @@ describe('Operations page', () => {
       await screen.findByRole('table', { name: 'Findings that need me' });
       expect(selectedTab()).toBe('Findings24');
       // The last finding was dealt with; the page is refreshed.
-      mockedApi.getWorkbench.mockResolvedValue(busy({
+      mockedApi.getOperations.mockResolvedValue(busy({
         my_findings: { items: [], total_open: 0 },
         my_work: { ...busy().my_work, ...NO_FINDINGS, total: 77 },
       }));
@@ -748,7 +748,7 @@ describe('Operations page', () => {
     });
 
     it('with an empty queue it still says a host the reader reviewed changed', async () => {
-      mockedApi.getWorkbench.mockResolvedValue({ ...emptyWorkbench, followups: { items: [], total: 1 } });
+      mockedApi.getOperations.mockResolvedValue({ ...emptySummary, followups: { items: [], total: 1 } });
       renderPage();
       const lead = await leadOf();
       expect(lead).toHaveTextContent(/^Nothing is waiting on a decision from you\. 1 host you reviewed has changed since\.$/);
@@ -828,7 +828,7 @@ describe('Operations page', () => {
 
     it('counts that are not known are a dash on the chips — never 0', async () => {
       withWork();
-      mockedApi.getWorkbench.mockRejectedValue(new Error('offline'));
+      mockedApi.getOperations.mockRejectedValue(new Error('offline'));
       mockedApi.getMyFindingsPage.mockRejectedValue(new Error('HTTP 500'));
       renderPage('/operations?tab=findings');
       await screen.findByText('Couldn\'t load your work\'s counts');
@@ -847,9 +847,9 @@ describe('Operations page', () => {
       expect(screen.queryByText(/changed since/)).not.toBeInTheDocument();
     });
 
-    it('a failed workbench is "—" on every tab it counts, said once, and the lists still answer', async () => {
+    it('a failed summary is "—" on every tab it counts, said once, and the lists still answer', async () => {
       withWork();
-      mockedApi.getWorkbench.mockRejectedValue(new Error('offline'));
+      mockedApi.getOperations.mockRejectedValue(new Error('offline'));
       renderPage();
       expect(await screen.findByText('Couldn\'t load your work\'s counts')).toBeInTheDocument();
       await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up112'));
@@ -867,9 +867,9 @@ describe('Operations page', () => {
     // (the bar with "…" used to wait on the scope-coverage read instead).
     it('while the counts load nothing is invented: no bar, no setup block, no list', async () => {
       let release: (v: unknown) => void = () => undefined;
-      mockedApi.getWorkbench.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+      mockedApi.getOperations.mockReturnValue(new Promise((resolve) => { release = resolve; }));
       renderPage('/operations?tab=hosts');
-      await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockedApi.getOperations).toHaveBeenCalledTimes(1));
       expect(screen.getByRole('status', { name: 'Loading your work…' })).toBeInTheDocument();
       expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
       expect(screen.queryByText(/Welcome — let's set up this project|Scope is registered/)).not.toBeInTheDocument();
@@ -1005,7 +1005,7 @@ describe('Operations page', () => {
       renderPage('/operations?tab=changed');
       fireEvent.click(await screen.findByRole('button', { name: 'Still reviewed' }));
       await waitFor(() => expect(mockedApi.markStillReviewed).toHaveBeenCalledWith(1, [21]));
-      await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(mockedApi.getOperations).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(mockedApi.getReviewFollowupsPage).toHaveBeenCalledTimes(2));
       // The queue's count too: taking a host into review changes it.
       await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalledTimes(2));
@@ -1115,10 +1115,10 @@ describe('Operations page', () => {
   // session the scan task, in place. 5.313.1 — the task is a scan uploaded to
   // the session, not a recon run.
   describe('a project with nothing in it yet', () => {
-    /** The workbench of a project in this state (5.365.0: `setup` — the page
+    /** The summary of a project in this state (5.365.0: `setup` — the page
      *  read the scope coverage for it). */
     const projectWith = (setup: Partial<typeof SETUP>) =>
-      mockedApi.getWorkbench.mockResolvedValue({ ...emptyWorkbench, setup: { ...SETUP, ...setup } });
+      mockedApi.getOperations.mockResolvedValue({ ...emptySummary, setup: { ...SETUP, ...setup } });
     /** A scope with entries, nothing discovered yet. */
     const noHosts = { has_hosts: false };
 
@@ -1192,22 +1192,22 @@ describe('Operations page', () => {
       new_high_findings: 0,
       as_of: '2026-09-19T08:00:00+00:00',
     };
-    const workbench = (s: Record<string, unknown>) => ({ ...emptyWorkbench, since_last_visit: s });
+    const summary = (s: Record<string, unknown>) => ({ ...emptySummary, since_last_visit: s });
     beforeEach(() => {
-      mockedApi.getWorkbench.mockResolvedValue(workbench(since));
+      mockedApi.getOperations.mockResolvedValue(summary(since));
     });
 
     it('acknowledges the snapshot that was displayed, not the time of the click', async () => {
       renderPage();
       fireEvent.click(await screen.findByRole('button', { name: /Acknowledge updates/ }));
-      await waitFor(() => expect(mockedApi.markWorkbenchSeen).toHaveBeenCalledWith(1, since.as_of));
+      await waitFor(() => expect(mockedApi.markOperationsSeen).toHaveBeenCalledWith(1, since.as_of));
       await waitFor(() => expect(screen.queryByText('Since your last visit')).not.toBeInTheDocument());
       // "Mark reviewed" claimed a review nobody did.
       expect(screen.queryByRole('button', { name: /Mark reviewed/ })).not.toBeInTheDocument();
     });
 
     it('keeps the banner and says so when the acknowledgement cannot be saved', async () => {
-      mockedApi.markWorkbenchSeen.mockRejectedValue(new Error('offline'));
+      mockedApi.markOperationsSeen.mockRejectedValue(new Error('offline'));
       renderPage();
       fireEvent.click(await screen.findByRole('button', { name: /Acknowledge updates/ }));
       expect(await screen.findByText(/Could not save the acknowledgement|offline/)).toBeInTheDocument();
@@ -1234,7 +1234,7 @@ describe('Operations page', () => {
       };
 
       it('names what is blocked and carries the recovery action, above the tab bar', async () => {
-        mockedApi.getWorkbench.mockResolvedValue({ ...workbench(since), blockers });
+        mockedApi.getOperations.mockResolvedValue({ ...summary(since), blockers });
         renderPage();
         const heading = await screen.findByRole('heading', { name: 'Blocked' });
         // eslint-disable-next-line no-bitwise
@@ -1248,8 +1248,8 @@ describe('Operations page', () => {
       });
 
       it('renders nothing when nothing is blocked', async () => {
-        mockedApi.getWorkbench.mockResolvedValue({
-          ...workbench(since),
+        mockedApi.getOperations.mockResolvedValue({
+          ...summary(since),
           blockers: { failed_import_count: 0, partial_import_count: 0, imports: [] },
         });
         renderPage();
@@ -1258,7 +1258,7 @@ describe('Operations page', () => {
       });
 
       it('a failed check says so — never "nothing blocked"', async () => {
-        mockedApi.getWorkbench.mockResolvedValue({ ...workbench(since), blockers_unavailable: true });
+        mockedApi.getOperations.mockResolvedValue({ ...summary(since), blockers_unavailable: true });
         renderPage();
         expect(await screen.findByText(/Blocked work \(failed imports\) could not be checked/)).toBeInTheDocument();
         expect(screen.queryByRole('heading', { name: 'Blocked' })).not.toBeInTheDocument();
@@ -1281,7 +1281,7 @@ describe('Operations page', () => {
     expect(sessionReads()).toBe(1);
     fireEvent.click(refresh);
     await waitFor(() => expect(sessionReads()).toBe(2));
-    await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedApi.getOperations).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mockedApi.getMyReviewHostsPage).toHaveBeenCalledTimes(2));
     // Still only the selected tab's rows.
     expect(listCalls()).toEqual({ findings: 0, hosts: 2, tests: 0, changed: 0, pickup: 0 });

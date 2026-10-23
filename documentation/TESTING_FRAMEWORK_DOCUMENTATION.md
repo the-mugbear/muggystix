@@ -233,7 +233,7 @@ Update these WITH the change, never around it:
 | `test_remediation_vocabulary.py` | the gap between the contact's record and the assessor's endpoint status has one definition (`remediation_policy.verification_expr`); each `verification_counts` figure equals the list `?verification=` returns, across pages and on the agent and cross-project mounts; neither status is written from the other; the list routes' and the MCP tools' descriptions say that the record's `closed` means "reported fixed" |
 | `test_db_init_concurrent_boot.py` | five real processes booting together finish their migrations (no hang on the migration lock) |
 | `test_ops_scripts.py` | the real deploy / backup / restore / rollback scripts against a fake `docker` (`tests/ops_fake_docker.py`); a change to those scripts gets a case there |
-| `test_workbench.py::test_workbench_query_count_is_bounded` | the Operations surface's statement count (add grouped queries, never per-row ones) |
+| `test_operations.py::test_operations_query_count_is_bounded` | the Operations surface's statement count (add grouped queries, never per-row ones) |
 | `test_note_serialization_loads.py`, `test_host_detail_loads.py` | serialising notes / opening a host costs a fixed number of queries; `note_load_options()` loads everything `_serialize_note` reads |
 | `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | the agent guide's section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
 | `test_db_init_migration.py` | migration-step error handling; importing `app.main` / `app.worker` runs no migration; the backend's CMD and the worker's command run `python -m app.db.migrate` first, the report worker never |

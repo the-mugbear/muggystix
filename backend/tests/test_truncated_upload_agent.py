@@ -302,7 +302,7 @@ def test_an_agreed_request_imports_what_the_file_holds_and_is_recorded(
 
     # The people's page shows it as a partial import that needs someone.
     page = client.get(
-        f"/api/v1/projects/{pid}/parse-errors/ingestion-results",
+        f"/api/v1/projects/{pid}/ingestion-results",
         params={"status": "needs_attention", "limit": 200},
     )
     assert page.status_code == 200, page.text

@@ -1,7 +1,8 @@
-"""Tests for the Operations workbench (refactor P2).
+"""Tests for the Operations page's data (refactor P2; ``test_workbench.py``
+and ``/workbench`` until 2026-10-22).
 
-Covers the batched ``GET /workbench`` composition and the durable
-``POST /workbench/seen`` cursor that drives "since your last visit".
+Covers the batched ``GET /operations`` composition and the durable
+``POST /operations/seen`` cursor that drives "since your last visit".
 
 The ``client`` fixture authenticates as ``test_user`` (id=1).
 """
@@ -16,7 +17,7 @@ from app.db.models_vulnerability import (
 
 
 def _url(pid, suffix=""):
-    return f"/api/v1/projects/{pid}/workbench{suffix}"
+    return f"/api/v1/projects/{pid}/operations{suffix}"
 
 
 def _make_host(db_session, project_id, ip, first_seen=None):
@@ -52,8 +53,8 @@ def _make_vuln(db_session, host_id, scan_id, severity, created_at=None):
     return v
 
 
-def test_workbench_query_count_is_bounded(client, db_session, test_project):
-    """Review #6 — regression guard / query-count tracing: one /workbench
+def test_operations_query_count_is_bounded(client, db_session, test_project):
+    """Review #6 — regression guard / query-count tracing: one /operations
     request must stay well under a fan-out bound (it composes several
     aggregations on one connection).  Seed a little data so every section
     runs its real query."""
@@ -144,11 +145,11 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # fixture's RELEASE SAVEPOINT for its commit — the write the page used to
     # send as a second request.  Bound = measured + 2.
     assert counter["n"] <= 29, (
-        f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
+        f"GET /operations issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )
 
 
-def test_workbench_returns_all_sections(client, test_project):
+def test_operations_returns_all_sections(client, test_project):
     r = client.get(_url(test_project.id))
     assert r.status_code == 200, r.text
     body = r.json()
@@ -253,7 +254,7 @@ def test_seen_never_moves_past_now(client, test_project):
 def test_failed_investigation_queue_is_reported_unavailable(client, test_project, monkeypatch):
     """An empty queue reads as "every host has been touched by someone"; a
     queue that could not be computed must say so instead."""
-    from app.services import workbench_service as workbench  # the composition (v2.428.0)
+    from app.services import operations_service as composer  # the composition (v2.428.0)
 
     ok = client.get(_url(test_project.id)).json()
     assert ok["investigate_unavailable"] is False
@@ -261,7 +262,7 @@ def test_failed_investigation_queue_is_reported_unavailable(client, test_project
     def _boom(*args, **kwargs):
         raise RuntimeError("queue down")
 
-    monkeypatch.setattr(workbench, "compute_investigation_queue", _boom)
+    monkeypatch.setattr(composer, "compute_investigation_queue", _boom)
     r = client.get(_url(test_project.id))
     assert r.status_code == 200, r.text
     body = r.json()
@@ -359,12 +360,12 @@ def test_viewing_a_reviewed_host_does_not_reset_changed_since_review(client, db_
 
 
 def test_failed_followups_are_reported_unavailable(client, test_project, monkeypatch):
-    from app.services import workbench_service as workbench  # the composition (v2.428.0)
+    from app.services import operations_service as composer  # the composition (v2.428.0)
 
     def _boom(*args, **kwargs):
         raise RuntimeError("down")
 
-    monkeypatch.setattr(workbench, "compute_review_followups", _boom)
+    monkeypatch.setattr(composer, "compute_review_followups", _boom)
     body = client.get(_url(test_project.id)).json()
     assert body["followups_unavailable"] is True and body["followups"]["items"] == []
 
@@ -424,7 +425,7 @@ def test_the_first_read_starts_the_cursor_and_is_still_answered_as_a_first_visit
 
 def test_a_later_read_never_moves_the_cursor(client, db_session, test_project):
     """Reading is not acknowledging: once there is a baseline, the same change
-    is reported on every read until ``POST /workbench/seen``."""
+    is reported on every read until ``POST /operations/seen``."""
     client.get(_url(test_project.id))
     rewound = _rewind_cursor(db_session, test_project.id)
     _make_scan(db_session, test_project.id, "unseen.xml", created_at=rewound + timedelta(hours=1))
@@ -446,7 +447,7 @@ def test_a_later_read_never_moves_the_cursor(client, db_session, test_project):
 # scope-coverage answer for that.)
 # ---------------------------------------------------------------------------
 
-def test_the_workbench_says_whether_the_project_has_hosts_and_scope_entries(client, db_session, test_project):
+def test_operations_says_whether_the_project_has_hosts_and_scope_entries(client, db_session, test_project):
     from app.db.models_project import Project
 
     pid = test_project.id
@@ -493,7 +494,7 @@ def test_the_workbench_says_whether_the_project_has_hosts_and_scope_entries(clie
     assert setup() == light
 
 
-def test_workbench_returns_my_recent_authored_notes(client, db_session, test_project, test_user):
+def test_operations_returns_my_recent_authored_notes(client, db_session, test_project, test_user):
     """recent_notes surfaces the caller's latest authored notes (distinct from
     my_notes, the assigned-work queue)."""
     host = _make_host(db_session, test_project.id, "10.7.7.7")
@@ -561,12 +562,12 @@ def test_legacy_sessions_do_not_break_the_session_list_and_are_not_listed(
 
 # v2.424.1 — Operations loads the "Worth a look" queue on its own request so
 # the personal sections are not held up by it on a large project.
-def test_workbench_can_leave_out_the_queue(client, test_project, monkeypatch):
-    from app.api.v1.endpoints import workbench
+def test_operations_can_leave_out_the_queue(client, test_project, monkeypatch):
+    from app.api.v1.endpoints import operations as route
 
     calls = []
-    real = workbench.compute_investigation_queue
-    monkeypatch.setattr(workbench, "compute_investigation_queue",
+    real = route.compute_investigation_queue
+    monkeypatch.setattr(route, "compute_investigation_queue",
                         lambda *a, **k: calls.append(1) or real(*a, **k))
     r = client.get(_url(test_project.id), params={"include_investigate": "false"})
     assert r.status_code == 200, r.text
@@ -585,12 +586,12 @@ def test_the_queue_alone_matches_the_embedded_one(client, test_project):
 
 
 def test_the_queue_alone_says_when_it_failed(client, test_project, monkeypatch):
-    from app.api.v1.endpoints import workbench
+    from app.api.v1.endpoints import operations as route
 
     def _boom(*args, **kwargs):
         raise RuntimeError("queue down")
 
-    monkeypatch.setattr(workbench, "compute_investigation_queue", _boom)
+    monkeypatch.setattr(route, "compute_investigation_queue", _boom)
     r = client.get(_url(test_project.id, "/investigate"))
     assert r.status_code == 503
     assert "could not be computed" in r.json()["detail"]

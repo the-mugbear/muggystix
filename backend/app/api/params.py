@@ -19,8 +19,8 @@ from app.services.finding_needs import NEED_FILTERS
 
 
 #: ``need=`` on "findings that need me" — the Operations tab's list
-#: (``GET /projects/{id}/workbench/findings``) and the agents' read of it
-#: (``GET /agent/assist/workbench/findings``): a value neither understands is
+#: (``GET /projects/{id}/operations/findings``) and the agents' read of it
+#: (``GET /agent/assist/operations/findings``): a value neither understands is
 #: a 422 on both doors, and the two advertise the same words
 #: (``operations_read_service.FINDING_NEEDS``).  The agents' route takes this
 #: declaration; ``test_agent_assist_operations.py`` pins that the page's route

@@ -103,7 +103,7 @@ could write about an engagement.
 | The project's attention profile — exposure against neglect | `assist_get_posture` |
 | What is untriaged or unreviewed | `assist_get_posture` |
 | Which site is worst (multi-site engagements) | `assist_get_posture` → `sites` |
-| What waits on my operator, by kind | `assist_get_workbench` → `my_work` |
+| What waits on my operator, by kind | `assist_get_operations` → `my_work` |
 | Which findings are waiting on my operator — all of them | `assist_list_my_findings` (`need=decide\|write\|retest`; `total`) |
 | Which hosts await a retest — the project's, owned or not | `assist_list_findings` (`host_state=retest`) |
 | What should we look at next | `assist_list_worth_a_look` — Operations' "Untouched, with a reason" queue |
@@ -127,8 +127,9 @@ Per subnet it carries `exposure` (active findings by severity, tier-weighted),
 `neglect` (unowned active findings, unreviewed hosts), `hygiene` (end-of-life
 OS, certificate problems, weak auth, risky services) and a recommended action.
 
-**`assist_get_workbench` is the operator's own Operations page**, by the same
-service:
+**`assist_get_operations` is the operator's own Operations page**, by the same
+service (`GET /agent/assist/operations`; the tool was `assist_get_workbench`
+and the route `/agent/assist/workbench` until 2026-10-22, with no alias):
 
 * `my_work` — the operator's queue by kind: `findings_to_decide`,
   `findings_to_write` (they add up to `findings_needing_me`; a finding with a

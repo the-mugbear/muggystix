@@ -10,7 +10,7 @@ change.  Pins:
 * every row carries reasons, the tools that observed it, and a next action
   whose kind matches the tier (plan for exploitable/critical, collect for
   an exposed service with no vulnerability data, inspect for conflicts);
-* the workbench carries the block and survives the queue failing.
+* ``GET /operations`` carries the block and survives the queue failing.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -134,11 +134,11 @@ def test_limit_keeps_the_true_total(db_session, test_project):
     assert empty.items == [] and empty.queue_total == 4 and empty.tier_counts == [0, 4, 0, 0, 0]
 
 
-def test_workbench_carries_the_block(client, db_session, test_project):
+def test_operations_carries_the_block(client, db_session, test_project):
     h, s = _host(db_session, test_project.id, "10.7.0.1")
     _vuln(db_session, h, s, VulnerabilitySeverity.CRITICAL, exploitable=True)
     db_session.commit()
-    r = client.get(f"/api/v1/projects/{test_project.id}/workbench")
+    r = client.get(f"/api/v1/projects/{test_project.id}/operations")
     assert r.status_code == 200, r.text
     block = r.json()["investigate"]
     assert block["queue_total"] == 1
@@ -152,13 +152,13 @@ def test_taking_a_host_into_review_removes_it_from_the_queue(client, db_session,
     h, s = _host(db_session, test_project.id, "10.7.0.2")
     _vuln(db_session, h, s, VulnerabilitySeverity.CRITICAL, exploitable=True)
     db_session.commit()
-    before = client.get(f"/api/v1/projects/{test_project.id}/workbench").json()
+    before = client.get(f"/api/v1/projects/{test_project.id}/operations").json()
     assert [r["host_id"] for r in before["investigate"]["items"]] == [h.id]
 
     r = client.post(f"/api/v1/projects/{test_project.id}/hosts/{h.id}/follow", json={"status": "in_review"})
     assert r.status_code in (200, 201), r.text
 
-    after = client.get(f"/api/v1/projects/{test_project.id}/workbench").json()
+    after = client.get(f"/api/v1/projects/{test_project.id}/operations").json()
     assert after["investigate"]["items"] == []
     assert [x["host_id"] for x in after["my_queue"]["items"]] == [h.id]
 

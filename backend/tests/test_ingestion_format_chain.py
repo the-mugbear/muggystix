@@ -127,7 +127,7 @@ def test_results_item_and_job_schema_carry_the_chain_with_labels(client, db_sess
     job.source_tool = "nmap 7.94"
     db_session.commit()
 
-    r = client.get(f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results")
+    r = client.get(f"/api/v1/projects/{test_project.id}/ingestion-results")
     if r.status_code == 404:
         r = client.get(f"/api/v1/projects/{test_project.id}/ingestion-results")
     assert r.status_code == 200, r.text

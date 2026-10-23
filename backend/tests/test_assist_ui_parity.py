@@ -754,7 +754,7 @@ def test_expired_staged_uploads_are_not_failed_imports(client, db_session, test_
     db_session.commit()
 
     agent = client.get("/api/v1/agent/assist/ingestion-issues", headers=_assist(client, test_project.id)).json()
-    page = client.get(f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results").json()
+    page = client.get(f"/api/v1/projects/{test_project.id}/ingestion-results").json()
     summary = page.get("summary") or page
     assert (agent["failed"], agent["expired"], agent["discarded"]) == (1, 2, 1)
     assert (agent["failed"], agent["expired"], agent["discarded"]) == (

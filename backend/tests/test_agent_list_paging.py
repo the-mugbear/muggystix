@@ -43,9 +43,9 @@ PAGED = {
     "/agent/assist/scanner-observations": "assist_list_scanner_observations",
     "/agent/assist/scanner-observations/hosts": "assist_list_observation_hosts",
     "/agent/assist/uninterpreted-lines": "assist_list_uninterpreted_lines",
-    "/agent/assist/workbench/investigate": "assist_list_worth_a_look",
-    "/agent/assist/workbench/terrain": "assist_get_terrain",
-    "/agent/assist/workbench/findings": "assist_list_my_findings",
+    "/agent/assist/operations/investigate": "assist_list_worth_a_look",
+    "/agent/assist/operations/terrain": "assist_get_terrain",
+    "/agent/assist/operations/findings": "assist_list_my_findings",
     "/agent/evidence": "list_evidence",
     "/agent/proposals": "list_proposals",
     "/agent/host-tests": "host_tests_list",
@@ -322,7 +322,7 @@ def test_a_paged_route_answers_the_envelope_and_pages_to_its_total(client, estat
 
 def test_one_tier_of_the_untouched_queue_pages_to_that_tiers_total(client, estate):
     """`total` is the list THIS call pages: with `tier`, that tier's count."""
-    path = "/agent/assist/workbench/investigate"
+    path = "/agent/assist/operations/investigate"
     whole = _read(client, estate, path)
     tier = whole["items"][0]["tier"]
     one = _read(client, estate, path, tier=tier, limit=2)

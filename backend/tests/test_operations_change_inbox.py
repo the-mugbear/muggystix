@@ -22,7 +22,7 @@ from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, Vu
 
 
 def _wb(pid, suffix=""):
-    return f"/api/v1/projects/{pid}/workbench{suffix}"
+    return f"/api/v1/projects/{pid}/operations{suffix}"
 
 
 def _hosts(client, pid, q):
@@ -112,7 +112,7 @@ def test_severity_and_time_are_matched_on_the_same_row(client, db_session, test_
 
 def test_a_window_is_bounded_by_the_snapshot(client, db_session, test_project):
     """Something arriving after the displayed snapshot belongs to the NEXT one —
-    the same contract `POST /workbench/seen {as_of}` acknowledges."""
+    the same contract `POST /operations/seen {as_of}` acknowledges."""
     _seed(client, db_session, test_project)
     since = client.get(_wb(test_project.id)).json()["since_last_visit"]
     _host(db_session, test_project.id, "10.7.0.9", datetime.now(timezone.utc) + timedelta(minutes=5))
@@ -198,7 +198,7 @@ def test_nothing_blocked_is_empty_not_unavailable(client, test_project):
 # --- the list the "Inspect import errors" button opens ----------------------
 
 def _results(client, pid, **params):
-    r = client.get(f"/api/v1/projects/{pid}/parse-errors/ingestion-results", params=params)
+    r = client.get(f"/api/v1/projects/{pid}/ingestion-results", params=params)
     assert r.status_code == 200, r.text
     return r.json()
 

@@ -224,10 +224,9 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
                 "method": spec["method"],
                 "path": spec["path"],
                 # The reference page's headings for the tool — presentation
-                # only.  The key is still called `workflows` because the page
-                # (`McpReference.tsx`) reads it by that name; it names no kind
-                # of session.  Rename it together with the page.
-                "workflows": tool_groups(name),
+                # only; it names no kind of session.  (The key was `workflows`
+                # until 2026-10-22; owner: renamed with the page, no alias.)
+                "groups": tool_groups(name),
                 "input_schema": advertised_schema(spec),
             }
             for name, spec in _TOOLS.items()

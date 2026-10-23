@@ -1,6 +1,6 @@
 """Ingestion Results — the ONE implementation (review 2026-10-10, R1b).
 
-The page (``GET /parse-errors/ingestion-results``) and the agents' read
+The page (``GET /ingestion-results``) and the agents' read
 (``GET /agent/assist/ingestion-issues``, MCP ``assist_list_ingestion_issues``)
 both call this module.  The agents' read used to be a second implementation:
 it loaded every failed job with ``.all()`` and told an expired or discarded

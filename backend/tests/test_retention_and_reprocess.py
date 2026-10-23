@@ -44,7 +44,7 @@ def test_finished_job_file_is_retained_and_the_row_says_until_when(client, db_se
     until = retained_until(job)
     assert until is not None and until > datetime.now(timezone.utc) + timedelta(days=6)
 
-    rows = client.get(f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results").json()["items"]
+    rows = client.get(f"/api/v1/projects/{test_project.id}/ingestion-results").json()["items"]
     row = next(r for r in rows if r["id"] == job_id)
     assert row["file_retained"] is True and row["retained_until"] is not None
 
