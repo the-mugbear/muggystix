@@ -386,7 +386,7 @@ def test_the_refusal_list_is_one_file_every_reader_runs():
     statements = [s for s in text.splitlines() if s.startswith("SELECT ")]
     revisions = [s.split("'", 2)[1].split(" ", 1)[0] for s in statements]
     assert revisions == ["b2e5a8c1d4f6", "e1b4c7d0a2f5", "a4f8c2e6b0d1",
-                         "e3b7a1c9d5f0", "f4c8b2d0e6a1", "b6e0d4f2a8c3"]
+                         "e3b7a1c9d5f0", "f4c8b2d0e6a1", "b6e0d4f2a8c3", "47e5e79b90a9"]
     versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
     for rev, statement in zip(revisions, statements):
         assert next(versions.glob(f"{rev}_*.py"), None) is not None, rev

@@ -17,8 +17,24 @@ from app.api.deps import get_current_user, require_password_changed
 from app.main import app
 
 #: Routes that take a signed-in user and are deliberately outside the gate:
-#: the ``/auth`` surface is how a blocked account finishes its setup.
-_EXEMPT_PREFIXES = ("/api/v1/auth/",)
+#: the setup routes, by which a blocked account signs out, sees itself,
+#: changes its password, enrols (or manages) its second factor and keeps its
+#: session alive.  Named one by one (review 2026-10-23, H-DB1): the whole
+#: ``/auth/`` prefix was exempt, and ``POST /auth/register`` — creating an
+#: account, administration — passed with it.
+EXEMPT = {
+    ("POST", "/api/v1/auth/logout"),
+    ("GET", "/api/v1/auth/profile"),
+    ("POST", "/api/v1/auth/change-password"),
+    ("GET", "/api/v1/auth/sessions"),
+    ("DELETE", "/api/v1/auth/sessions/{session_id}"),
+    ("POST", "/api/v1/auth/session/renew"),
+    ("GET", "/api/v1/auth/2fa/status"),
+    ("POST", "/api/v1/auth/2fa/setup"),
+    ("POST", "/api/v1/auth/2fa/enable"),
+    ("POST", "/api/v1/auth/2fa/recovery-codes"),
+    ("POST", "/api/v1/auth/2fa/disable"),
+}
 
 
 def _calls(dependant):
@@ -59,15 +75,32 @@ def _all_routes():
     return found
 
 
+def _keys(path, route):
+    return {(method, path) for method in route.methods}
+
+
 def test_every_jwt_route_resolves_the_password_change_gate():
     outside = []
     for path, route, inherited in _all_routes():
-        if path.startswith(_EXEMPT_PREFIXES):
+        if _keys(path, route) <= EXEMPT:
             continue
         calls = _resolved(route, inherited)
         if get_current_user in calls and require_password_changed not in calls:
             outside.append(f"{sorted(route.methods)} {path}")
     assert outside == [], "signed-in routes outside require_password_changed:\n" + "\n".join(outside)
+
+
+def test_every_exempt_route_exists_takes_a_user_and_is_outside_the_gate():
+    """No stale line: each exemption names a mounted route that signs in and
+    really is outside the gate (else it needs no exemption)."""
+    found = {}
+    for path, route, inherited in _all_routes():
+        for key in _keys(path, route):
+            found[key] = _resolved(route, inherited)
+    for key in sorted(EXEMPT):
+        assert key in found, key
+        assert get_current_user in found[key], key
+        assert require_password_changed not in found[key], key
 
 
 def test_the_guard_sees_the_routers_it_should():
@@ -77,4 +110,6 @@ def test_the_guard_sees_the_routers_it_should():
     }
     assert any(p.startswith("/api/v1/mcp-telemetry") for p in gated)
     assert any(p.startswith("/api/v1/projects/") for p in gated)
-    assert not any(p.startswith("/api/v1/auth/") for p in gated)
+    # Creating an account is behind the gate; the setup routes are not.
+    assert "/api/v1/auth/register" in gated
+    assert not any(p.startswith("/api/v1/auth/") for p in gated - {"/api/v1/auth/register"})

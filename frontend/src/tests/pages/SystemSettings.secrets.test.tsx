@@ -45,6 +45,9 @@ const account = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const refused = (detail: string) => ({ response: { status: 400, data: { detail } } });
+const pageOf = (items: unknown[]) => ({
+  items, total: items.length, limit: 100, offset: 0, returned: items.length, has_more: false,
+});
 
 const show = () => {
   const client = createQueryClient();
@@ -60,7 +63,7 @@ const expectForgotten = async (client: ReturnType<typeof createQueryClient>) => 
 
 beforeEach(() => {
   vi.clearAllMocks();
-  api.listUsers.mockResolvedValue([account()]);
+  api.listUsers.mockResolvedValue(pageOf([account()]));
 });
 
 describe('System settings — creating an account', () => {
@@ -75,17 +78,19 @@ describe('System settings — creating an account', () => {
   };
 
   it('sends the account without the confirmation, lists it, and keeps the password nowhere', async () => {
-    // The server answers the users-list row (5.365.0 / v2.476.0): what it says
-    // is what the table holds — the page fills in nothing of its own.
+    // The table holds what the server lists: the new account takes its place
+    // by username on whichever page that is, so the list is read again
+    // (review 2026-10-23, H-DB3) — the page fills in nothing of its own.
     const answered = account({ id: 9, username: 'linus', full_name: 'Linus T.', created_by_id: 4, totp_enabled: true });
     api.registerUser.mockResolvedValue(answered);
     const client = show();
     await screen.findByText('@grace');
+    api.listUsers.mockResolvedValue(pageOf([account(), answered]));
     const dialog = await openAndFill();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create User' }));
 
     expect(await screen.findByText('@linus')).toBeInTheDocument();
-    expect(client.getQueryData<unknown[]>(['listUsers'])?.slice(-1)).toEqual([answered]);
+    expect(api.listUsers).toHaveBeenCalledTimes(2);
     expect(api.registerUser).toHaveBeenCalledTimes(1);
     expect(api.registerUser).toHaveBeenCalledWith({
       username: 'linus', password: PASSWORD, full_name: 'Linus T.', role: 'member',

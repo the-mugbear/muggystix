@@ -8,6 +8,7 @@ changing roles, activating/deactivating accounts.
 from typing import List, Optional
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +22,7 @@ from app.core.security import (
 )
 from app.api.deps import get_current_user, require_role, get_client_info
 from app.services.agent_session_service import end_sessions_of_operator
+from app.services.paging import page_envelope
 
 
 # --- Shared error responses for role-gated endpoints ---
@@ -51,6 +53,39 @@ def _end_everything_signed_in_as(
         synchronize_session=False,
     )
     end_sessions_of_operator(db, user.id, ended_by=ended_by, reason=agent_reason)
+
+
+def keep_an_active_admin(db: Session, *, actor: User, target: User) -> None:
+    """Before a change that takes ``target`` out of the active administrators
+    (demotion, deactivation, deletion): lock every active admin row and
+    refuse the change when it would leave none, or when ``actor`` is no
+    longer one of them.
+
+    ``require_role`` read the actor's role when the request began; two
+    administrators demoting or deactivating each other at the same moment
+    both passed it, and the installation was left with no administrator
+    (review 2026-10-23).  Under the lock the second request waits for the
+    first, then sees its actor demoted and is refused.  Rows are locked in
+    id order, so two such requests never deadlock.  The caller commits."""
+    active_admins = {
+        uid for (uid,) in (
+            db.query(User.id)
+            .filter(User.role == UserRole.ADMIN, User.is_active.is_(True))
+            .order_by(User.id)
+            .with_for_update()
+            .all()
+        )
+    }
+    if actor.id not in active_admins:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account is no longer an active administrator.",
+        )
+    if target.id in active_admins and not active_admins - {target.id}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This would leave the installation with no active administrator.",
+        )
 
 
 # Pydantic models
@@ -172,16 +207,15 @@ def update_own_profile(
         changes["full_name"] = {"old": current_user.full_name, "new": profile_data.full_name}
         current_user.full_name = profile_data.full_name
 
-    db.commit()
-
-    # Log profile update
     log_audit_event(
         db=db,
         user_id=current_user.id,
         action="profile_updated",
         details={"changes": changes},
+        commit=False,
         **client_info
     )
+    db.commit()
 
     return {"message": "Profile updated successfully"}
 
@@ -297,23 +331,50 @@ def user_directory(
 #  Admin endpoints — all require admin role                           #
 # ------------------------------------------------------------------ #
 
+#: The users list's page size, and the most a caller may ask for at once.
+USERS_PAGE_DEFAULT = 100
+USERS_PAGE_MAX = 200
+
+
+class UserListPage(BaseModel):
+    """One page of the installation's accounts, in the one paging envelope
+    (``services/paging.page_envelope``): ``total`` is every account."""
+    items: List[UserListItem]
+    total: int
+    limit: int
+    offset: int
+    returned: int
+    has_more: bool
+
+
 @router.get(
     "/",
-    response_model=List[UserListItem],
+    response_model=UserListPage,
     responses=_AUTH_RESPONSES,
     summary="List all users (admin)",
 )
 def list_users(
-    # v2.86.4 — pagination caps added.
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=200),
+    limit: int = Query(USERS_PAGE_DEFAULT, ge=1, le=USERS_PAGE_MAX),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_role(UserRole.ADMIN)),
     db: Session = Depends(get_db)
 ):
-    """List all users. Requires admin role."""
-    users = db.query(User).offset(skip).limit(limit).all()
+    """Every account, by username, one page at a time (admin).
 
-    return [user_list_item(user) for user in users]
+    Ordered by ``(username, id)`` so consecutive pages neither repeat nor
+    skip an account; ``total`` says how many there are (review 2026-10-23,
+    H-DB3: the page read the first 100 in no order and said nothing)."""
+    total = db.query(func.count(User.id)).scalar()
+    users = (
+        db.query(User)
+        .order_by(User.username, User.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return page_envelope(
+        [user_list_item(user) for user in users], total=total, limit=limit, offset=offset,
+    )
 
 
 @router.get(
@@ -434,6 +495,12 @@ def update_user(
             detail="User not found"
         )
 
+    # A demotion or a deactivation may take an administrator away: decided
+    # under the lock on the admin rows, on the rows as they are now.
+    if (update_data.role is not None and update_data.role != UserRole.ADMIN.value) or update_data.is_active is False:
+        keep_an_active_admin(db, actor=current_user, target=user)
+        db.refresh(user)
+
     # Prevent admin from demoting themselves
     if user_id == current_user.id and update_data.role and update_data.role != UserRole.ADMIN:
         raise HTTPException(
@@ -479,9 +546,8 @@ def update_user(
             )
         user.is_active = update_data.is_active
 
-    db.commit()
-
-    # Log the changes
+    # The audit row lands with the change or not at all (review 2026-10-23,
+    # R-DB3: it was written after the commit, by a second commit).
     log_audit_event(
         db=db,
         user_id=current_user.id,
@@ -489,8 +555,10 @@ def update_user(
         resource_type="user",
         resource_id=str(user_id),
         details={"changes": changes, "target_user": user.username},
+        commit=False,
         **client_info
     )
+    db.commit()
 
     return user_list_item(user)
 
@@ -546,10 +614,6 @@ def admin_reset_password(
         session_reason="admin_password_reset",
         agent_reason="the operator's password was reset by an administrator",
     )
-
-    db.commit()
-
-    # Log password reset
     log_audit_event(
         db=db,
         user_id=current_user.id,
@@ -557,8 +621,10 @@ def admin_reset_password(
         resource_type="user",
         resource_id=str(user_id),
         details={"target_user": user.username},
+        commit=False,
         **client_info
     )
+    db.commit()
 
     return {"message": f"Password reset for user {user.username}"}
 
@@ -591,13 +657,15 @@ def admin_reset_two_factor(
     user.totp_last_step = None   # the next secret starts with no accepted step
     db.query(UserRecoveryCode).filter(UserRecoveryCode.user_id == user.id).delete()
     # A reset is the recovery step for an account whose second factor is lost
-    # or no longer trusted, so agent sessions opened before it end with it.
-    end_sessions_of_operator(
-        db, user.id, ended_by=current_user,
-        reason="the operator's two-factor enrollment was reset by an administrator",
+    # or no longer trusted, so everything signed in before it ends with it —
+    # browser sessions too: a token minted with the distrusted factor could
+    # otherwise start a new agent session (review 2026-10-23, H-DB2).  The
+    # same step as the password reset and the deactivation.
+    _end_everything_signed_in_as(
+        db, user, ended_by=current_user,
+        session_reason="admin_2fa_reset",
+        agent_reason="the operator's two-factor enrollment was reset by an administrator",
     )
-    db.commit()
-
     log_audit_event(
         db=db,
         user_id=current_user.id,
@@ -605,8 +673,10 @@ def admin_reset_two_factor(
         resource_type="user",
         resource_id=str(user_id),
         details={"target_user": user.username},
+        commit=False,
         **client_info,
     )
+    db.commit()
     return {"message": f"2FA reset for user {user.username}"}
 
 
@@ -642,6 +712,10 @@ def delete_user(
             detail="User not found"
         )
 
+    # Deleting an administrator takes one away: decided under the lock on the
+    # admin rows, as a demotion is.
+    keep_an_active_admin(db, actor=current_user, target=user)
+
     username = user.username  # Store before deletion
 
     # The account's agent sessions end with it (owner, 2026-10-11: "Deleting a
@@ -662,9 +736,9 @@ def delete_user(
     # clears the assignment), so an assignment committed while this request
     # runs cannot survive it (external review of 2c1007ba).
     db.delete(user)
-    db.commit()
-
-    # Log user deletion
+    # In the delete's transaction (review 2026-10-23, R-DB3).  The audit row
+    # names the actor, never the deleted account, so the delete's SET NULL
+    # on ``audit_logs.user_id`` does not touch it.
     log_audit_event(
         db=db,
         user_id=current_user.id,
@@ -672,7 +746,9 @@ def delete_user(
         resource_type="user",
         resource_id=str(user_id),
         details={"deleted_username": username},
+        commit=False,
         **client_info
     )
+    db.commit()
 
     return {"message": f"User {username} deleted successfully"}

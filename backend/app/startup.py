@@ -341,6 +341,21 @@ def _parse_admin_marker(marker: str) -> tuple[Optional[str], Optional[str]]:
     return username, password
 
 
+def discard_admin_marker_of(username: str) -> None:
+    """Delete the first-boot credential file once ITS account has changed its
+    password — and only then.  Another account's password change says
+    nothing about the first-boot admin's (review 2026-10-23: any user's
+    change used to delete the file, leaving an admin whose password was in
+    no file and never logged)."""
+    marker = admin_marker_path()
+    if _parse_admin_marker(marker)[0] != username:
+        return
+    try:
+        os.unlink(marker)
+    except OSError:
+        pass  # already gone
+
+
 def _reconcile_admin_marker(db) -> None:
     """An admin already exists — make sure a lingering first-boot credential
     file still opens a live account.
@@ -417,12 +432,37 @@ def seed_default_admin() -> None:
                 {"k": _BOOTSTRAP_ADMIN_LOCK},
             )
 
-        existing_admin = db.query(User).filter(User.role == UserRole.ADMIN).first()
+        # Only an ACTIVE admin can sign in and administer: a deactivated one
+        # does not count as "an admin exists" (review 2026-10-23).
+        existing_admin = (
+            db.query(User)
+            .filter(User.role == UserRole.ADMIN, User.is_active.is_(True))
+            .first()
+        )
         if existing_admin:
             _reconcile_admin_marker(db)
             return
 
         admin_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
+        # The name is already an account's (a member, or the deactivated
+        # admin): creating the admin would fail on the unique username, and
+        # promoting or reactivating that account would hand admin to whoever
+        # holds its password.  Neither happens: it is said loudly, with what
+        # to do, and the server starts without an administrator — members can
+        # still work, and a restart with a free name creates one.
+        holder = db.query(User).filter(User.username == admin_username).first()
+        if holder is not None:
+            logger.error(
+                "NO ACTIVE ADMINISTRATOR, AND NONE WAS CREATED: the first-boot admin's "
+                "username %r is already taken by an existing %s account (id %s). Set "
+                "DEFAULT_ADMIN_USERNAME to an unused name and restart the backend to "
+                "create a new administrator; the existing account is left as it is.",
+                admin_username,
+                "inactive" if not holder.is_active else (holder.role or "member"),
+                holder.id,
+            )
+            return
+
         raw_password = os.getenv("DEFAULT_ADMIN_PASSWORD")
         # Treat unset, empty, or the literal "admin" as "no password
         # provided" — that last case used to be a silent foot-gun.

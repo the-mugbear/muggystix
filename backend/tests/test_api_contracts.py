@@ -140,10 +140,9 @@ class TestUserManagement:
         response = client.get("/api/v1/users/")
         assert response.status_code == 200
         data = response.json()
-        assert isinstance(data, list)
-        # Even an empty list proves the route works; if populated, check schema.
-        if data:
-            assert "email" in data[0]
+        # The paging envelope (review 2026-10-23, H-DB3); the caller is listed.
+        assert isinstance(data["items"], list) and data["total"] >= 1
+        assert "email" in data["items"][0]
 
     def test_update_user_by_id(self, client, db_session):
         """PUT /api/v1/users/{id} should update a user."""
