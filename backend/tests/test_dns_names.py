@@ -956,4 +956,4 @@ class TestNamesExport:
 
     def test_bad_format_or_state_is_rejected(self, client, db_session, test_project):
         assert client.get(f"/api/v1/projects/{test_project.id}/names/export?format=xlsx").status_code == 422
-        assert client.get(f"/api/v1/projects/{test_project.id}/names/export?state=nope").status_code == 400
+        assert client.get(f"/api/v1/projects/{test_project.id}/names/export?state=nope").status_code == 422

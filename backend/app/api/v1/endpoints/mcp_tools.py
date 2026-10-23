@@ -886,10 +886,12 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_recent_notes": {
         "description": (
-            "Recent notes across the whole project, newest first — what the "
-            "team has been discussing, as opposed to what a scanner found. "
-            "Paged; filter by author ('me' or a username; an unknown one is a "
-            "400). Each "
+            "Recent notes across the whole project, newest activity first (an "
+            "edit counts) — what the team has been discussing, as opposed to "
+            "what a scanner found; the Collaboration page's feed, over every "
+            "target. Paged; filter by author ('me' or a username; an unknown "
+            "one is a 400) and by `search` (the note's text or its host's "
+            "address or name). Each "
             "note names its `target` ({kind: host/port/finding/scan/scope/"
             "project, id, label}) and carries the same thread, "
             "label and attachment fields as assist_get_host_notes. Notes are "
@@ -919,7 +921,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "covers the name — it does NOT put the address in subnet scope), "
             "`current_ips` (the first 10 of current_ip_total, from the latest "
             "A/AAAA observations) and `sources`. in_scope=true with resolved=false "
-            "is the names approved for testing that no upload has resolved. A "
+            "is the names approved for testing that no upload has resolved. "
+            "`state` takes the Names page's chips (state=shared: names whose "
+            "current address other names share). A "
             "name that shares its address with other names must be tested by "
             "name, not by IP. host_id lists the names CURRENTLY resolving to that "
             "host; assist_get_host's `names` is wider — every name ever seen "
@@ -1169,7 +1173,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "Correct a host's hostname and/or OS after investigation. Writes project "
             "data (see agent_identity's `can_write_project_data`). "
             "Only these two operator-curated fields are editable "
-            "— scan-derived facts (ports, services, vulns) are never mutated here. Send "
+            "— scan-derived facts (ports, services, vulns) are never mutated here. A "
+            "correction is kept: no later import replaces it (an empty string clears "
+            "it and hands it back to the scanners). Send "
             "just the field you're fixing; sending neither is refused with a 400."
         ),
         "method": "PATCH",

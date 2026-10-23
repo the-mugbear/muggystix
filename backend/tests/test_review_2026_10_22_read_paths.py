@@ -22,6 +22,7 @@ from sqlalchemy import and_, distinct, event, func, or_, select, text, update
 from sqlalchemy.orm import aliased
 
 from app.api.v1.endpoints import dns_names as dns_names_routes
+from app.services import names_list_service
 from app.db import models
 from app.db.models import DNS_RESOLVING_TYPES
 from app.db.models_project import Project
@@ -264,7 +265,7 @@ def test_the_export_is_the_list_in_its_order_across_chunks(
     _names_estate(db_session, test_project.id)
     monkeypatch.setattr(dns_names_routes, "_EXPORT_CHUNK", 3)  # 11 names = 4 chunks
     expected = [
-        name.fqdn for name, _in_scope in dns_names_routes._names_query(
+        name.fqdn for name, _in_scope in names_list_service.names_query(
             db_session, test_project.id, search=None, state="all", sort=sort, order=order,
         ).all()
     ]

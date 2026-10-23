@@ -676,12 +676,28 @@ def claim_replaced(
     person's to decide), still pending, and about what one target is about
     (the same finding and section, the same new finding, the same
     observation, the same endpoint).  Locked as a decision locks
-    (``lock_for_decision``), so it cannot be accepted at the same moment."""
+    (``lock_for_decision``), so it cannot be accepted at the same moment.
+
+    Several are locked in ONE global order — by what ``lock_for_decision``
+    locks first (the subnet, the finding, the endpoint), then the proposal's
+    id — never by proposal id alone (review 2026-10-23): two requests
+    replacing proposals for subnets A and B, numbered the other way round,
+    took A-then-B and B-then-A and could deadlock.  A decision holds one
+    proposal's locks at a time, so it cannot close a cycle with this."""
     ids = sorted(set(replaces or []))
     if not ids:
         return []
     if len(ids) > REPLACES_MAX:
         raise HTTPException(status_code=422, detail=f"replaces names at most {REPLACES_MAX} proposals.")
+    heads = {
+        row.id: (row.subnet_id or 0, row.finding_id or 0, row.finding_host_id or 0, row.id)
+        for row in db.query(
+            AgentProposal.id, AgentProposal.subnet_id, AgentProposal.finding_id, AgentProposal.finding_host_id,
+        ).filter(AgentProposal.id.in_(ids), AgentProposal.project_id == project_id)
+    }
+    # An id not found here is refused by ``lock_for_decision``; last, so the
+    # order of the others is unchanged.
+    ids.sort(key=lambda pid: heads.get(pid, (float("inf"), 0, 0, pid)))
     claimed = []
     for pid in ids:
         old = lock_for_decision(db, project_id, pid)

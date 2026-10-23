@@ -777,7 +777,9 @@ def update_agent_host(
 
     v2.309.0 — gated by the operator's project role; see ``create_agent_note``.
     Still deliberately narrow: only these two operator-correctable attributes
-    are editable, and scan-derived facts are never mutated here. The change is
+    are editable, and scan-derived facts are never mutated here. Either one,
+    once set, is the operator's: no later import replaces it (an empty string
+    clears it and hands it back to the scanners). The change is
     captured by the agent API audit middleware (touched host id), so
     who-changed-what stays reconstructable.
     """
@@ -799,11 +801,22 @@ def update_agent_host(
             if getattr(host, field) != new_value:
                 setattr(host, field, new_value)
                 changed.append(field)
-                if field == "os_name":
-                    # v2.421.0 — the family follows the corrected name; left
-                    # alone, a scanner's "Linux" stayed beside "Windows".
-                    from app.services.os_family import os_family_from_name
-                    host.os_family = os_family_from_name(new_value)
+            if field == "os_name":
+                # The other OS fields follow the corrected name: the family
+                # from it (v2.421.0 — left alone, a scanner's "Linux" stayed
+                # beside "Windows"), and the scanner's vendor / type /
+                # generation / accuracy, which described the guess being
+                # replaced, are cleared.  ``os_source`` locks it as the host
+                # name's source does: no later import replaces an operator's
+                # OS (``HostDeduplicationService._update_existing_host``);
+                # clearing the OS drops the lock.
+                from app.services.os_family import os_family_from_name
+                host.os_family = os_family_from_name(new_value)
+                host.os_vendor = None
+                host.os_type = None
+                host.os_generation = None
+                host.os_accuracy = None
+                host.os_source = "operator" if new_value else None
             if field == "hostname":
                 # An operator correction is the top-ranked display-name source:
                 # no later scan, PTR or forward answer may replace it (see

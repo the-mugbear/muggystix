@@ -112,8 +112,7 @@ def resolve_project_agent(
 
     One implementation for what used to be three copies (recon, plan,
     assist).  Prefers ``prefer_agent_id`` (a resumed session's original
-    agent), then the user's own agent on the project.  Reactivates a
-    deactivated agent rather than minting a second identity.
+    agent), then the user's own agent on the project.
     """
     agent: Optional[Agent] = None
     if prefer_agent_id is not None:
@@ -125,8 +124,6 @@ def resolve_project_agent(
             .first()
         )
     if agent is not None:
-        if not agent.is_active:
-            agent.is_active = True
         return agent
     agent = Agent(
         name=f"{user.username}-agent",

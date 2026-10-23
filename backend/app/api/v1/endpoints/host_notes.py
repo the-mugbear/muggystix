@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from fastapi.responses import FileResponse
-from sqlalchemy import func, desc
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from pydantic import BaseModel
@@ -19,7 +19,7 @@ from app.services.note_attachment_service import (
 )
 from app.db.session import get_db
 from app.db import models
-from app.services.host_query_common import escape_like
+from app.services.note_activity_service import project_notes_page
 from app.db.models import Annotation as AnnotationModel, ActivityCursor
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_user
@@ -114,31 +114,17 @@ def get_note_activity(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Get all note activity grouped by host for the activity page."""
-    query = (
-        db.query(AnnotationModel)
-        .options(selectinload(AnnotationModel.author))
-        .join(models.Host, AnnotationModel.host_id == models.Host.id)
-        .filter(models.Host.project_id == project.id)
+    """Get all note activity grouped by host for the activity page.
+
+    The notes are ``note_activity_service.project_notes_page`` — the agents'
+    ``/agent/assist/notes`` reads the same function, over every target."""
+    _, feed = project_notes_page(
+        db, project.id, every_target=False,
+        author_id=author_id or None, search=search or None,
+        offset=skip, limit=limit, with_total=False,
+        load_options=(selectinload(AnnotationModel.author),),
     )
-
-    if author_id:
-        query = query.filter(AnnotationModel.user_id == author_id)
-
-    if search:
-        escaped = escape_like(search)
-        query = query.filter(
-            (models.Host.ip_address.ilike(f"%{escaped}%"))
-            | (models.Host.hostname.ilike(f"%{escaped}%"))
-            | (AnnotationModel.body.ilike(f"%{escaped}%"))
-        )
-
-    notes = (
-        query.order_by(desc(func.coalesce(AnnotationModel.updated_at, AnnotationModel.created_at)))
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    notes = [row.note for row in feed]
 
     ancestor_note_map = {note.id: note for note in notes}
     pending_parent_ids = {

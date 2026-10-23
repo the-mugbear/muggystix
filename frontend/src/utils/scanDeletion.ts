@@ -25,8 +25,8 @@ const WORK_KINDS: ReadonlyArray<readonly [string, string, string]> = [
   ['remediation_entries', 'remediation entry', 'remediation entries'],
   ['reviews', 'review', 'reviews'],
   ['tags', 'tag', 'tags'],
-  // A host name someone typed in place of the scanner's.
-  ['corrections', 'corrected name', 'corrected names'],
+  // A host name or OS someone typed in place of the scanner's (one per host).
+  ['corrections', 'hand correction', 'hand corrections'],
 ];
 
 /**

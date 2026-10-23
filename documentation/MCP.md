@@ -417,7 +417,10 @@ error (`-32001`) whose message is the endpoint's detail. One of its reasons is
 password was last changed or reset. It is not recoverable by renewing; the
 operator starts a new session. `session_renew` also answers
 `operator_inactive` (not recoverable) when the operator's account has been
-deactivated; deactivating an account ends its sessions.
+deactivated; deactivating an account ends its sessions — and
+`operator_not_a_member` (not recoverable) when the operator, a global
+administrator with no membership of the project, has lost that role: the
+session is ended then, so a later membership brings no key back.
 
 A host query that names an assignee nobody here can be (`q=assigned:<name>`
 outside the usernames `assist_get_vocabulary` lists — the project's members,
