@@ -14,9 +14,16 @@ from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.session import disable_statement_timeout, get_db
-from app.db.models_project import Project, ProjectMembership
+from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User, UserRole
-from app.api.deps import get_client_info, get_current_user, require_role
+from app.api.deps import (
+    get_client_info,
+    get_current_user,
+    has_project_role,
+    is_project_admin,
+    membership_role,
+    require_role,
+)
 from app.core.security import log_audit_event
 from app.services.agent_session_service import end_sessions_of_operator
 
@@ -198,20 +205,13 @@ def _allocate_project_slug(db: Session, name: str, excluding_project_id: Optiona
         counter += 1
 
 
-def _can_manage_project(
-    project: Project,
-    current_user: User,
-    db: Session,
-) -> bool:
-    """Check if user can manage project settings/members."""
-    if current_user.role == UserRole.ADMIN:
-        return True
-    membership = db.query(ProjectMembership).filter(
-        ProjectMembership.project_id == project.id,
-        ProjectMembership.user_id == current_user.id,
-        ProjectMembership.role == "admin",
-    ).first()
-    return membership is not None
+# Access on this router.  These routes reach an ARCHIVED project too (to read
+# it, unarchive it, manage its members), so they cannot resolve
+# ``get_current_project`` (410 on an archived project) or
+# ``require_project_role``; each asks the one rule in ``app.api.deps``
+# instead — ``membership_role`` / ``has_project_role`` / ``is_project_admin``
+# (review 2026-10-23, R-DB1: this file held its own copies).
+# ``tests/test_every_project_route_checks_membership.py`` names them.
 
 
 # --- Project CRUD ---
@@ -271,10 +271,10 @@ def list_projects(
     return result
 
 
-def _my_role(user: User, membership_role) -> Optional[str]:
+def _my_role(user: User, role) -> Optional[str]:
     if user.role == UserRole.ADMIN:
         return "admin"
-    return getattr(membership_role, "value", membership_role)
+    return getattr(role, "value", role)
 
 
 @router.post(
@@ -355,12 +355,8 @@ def get_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Check access
-    membership = db.query(ProjectMembership).filter(
-        ProjectMembership.project_id == project_id,
-        ProjectMembership.user_id == current_user.id,
-    ).first()
-    if current_user.role != UserRole.ADMIN and not membership:
+    role = membership_role(db, project_id, current_user)
+    if current_user.role != UserRole.ADMIN and role is None:
         raise HTTPException(status_code=403, detail="Not a member of this project")
 
     count = db.query(func.count(ProjectMembership.id)).filter(
@@ -368,7 +364,7 @@ def get_project(
     ).scalar()
     resp = ProjectResponse.model_validate(project)
     resp.member_count = count
-    resp.my_role = _my_role(current_user, membership.role if membership else None)
+    resp.my_role = _my_role(current_user, role)
     return resp
 
 
@@ -390,7 +386,7 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if not _can_manage_project(project, current_user, db):
+    if not is_project_admin(db, project.id, current_user):
         raise HTTPException(status_code=403, detail="Only project admins can update project settings")
 
     before = {
@@ -477,19 +473,6 @@ def update_project(
     return ProjectResponse.model_validate(project)
 
 
-def _can_ingest_into_project(project: Project, current_user: User, db: Session) -> bool:
-    """Analyst or above on the project (or a global admin) — the people who
-    upload scans are the people who may decide what an upload keeps."""
-    if current_user.role == UserRole.ADMIN:
-        return True
-    membership = db.query(ProjectMembership).filter(
-        ProjectMembership.project_id == project.id,
-        ProjectMembership.user_id == current_user.id,
-        ProjectMembership.role.in_(["admin", "analyst"]),
-    ).first()
-    return membership is not None
-
-
 @router.patch(
     "/{project_id}/ingest-settings",
     response_model=ProjectResponse,
@@ -513,7 +496,9 @@ def update_project_ingest_settings(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if not _can_ingest_into_project(project, current_user, db):
+    # Analyst or above — the people who upload scans are the people who may
+    # decide what an upload keeps.
+    if not has_project_role(db, project.id, current_user, ProjectRole.ANALYST):
         raise HTTPException(
             status_code=403,
             detail="Only project analysts or admins can change ingest settings",
@@ -641,13 +626,8 @@ def list_members(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if current_user.role != UserRole.ADMIN:
-        membership = db.query(ProjectMembership).filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.user_id == current_user.id,
-        ).first()
-        if not membership:
-            raise HTTPException(status_code=403, detail="Not a member of this project")
+    if not has_project_role(db, project_id, current_user, ProjectRole.VIEWER):
+        raise HTTPException(status_code=403, detail="Not a member of this project")
 
     memberships = db.query(ProjectMembership).filter(
         ProjectMembership.project_id == project_id
@@ -697,7 +677,7 @@ def add_member(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if not _can_manage_project(project, current_user, db):
+    if not is_project_admin(db, project.id, current_user):
         raise HTTPException(status_code=403, detail="Only project admins can manage members")
 
     if data.role not in _VALID_ROLES:
@@ -764,7 +744,7 @@ def update_member(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if not _can_manage_project(project, current_user, db):
+    if not is_project_admin(db, project.id, current_user):
         raise HTTPException(status_code=403, detail="Only project admins can manage members")
 
     if data.role not in _VALID_ROLES:
@@ -818,7 +798,7 @@ def remove_member(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if not _can_manage_project(project, current_user, db):
+    if not is_project_admin(db, project.id, current_user):
         raise HTTPException(status_code=403, detail="Only project admins can manage members")
 
     membership = db.query(ProjectMembership).filter(

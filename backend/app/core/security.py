@@ -95,6 +95,12 @@ def validate_password_strength(password: str) -> Dict[str, Any]:
     """
     errors = []
 
+    # bcrypt cannot take a NUL byte (``_password_bytes`` raises), so a new
+    # password holding one is refused here, with the other rules, rather than
+    # reaching the hash as a 500.
+    if "\x00" in password:
+        errors.append("Password must not contain a NUL character")
+
     if len(password) < 12:
         errors.append("Password must be at least 12 characters long")
 

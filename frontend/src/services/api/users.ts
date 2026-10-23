@@ -57,8 +57,23 @@ export interface UserProjectMembership {
 
 // --- Every account (global admin) ---
 
-export const listUsers = async (signal?: AbortSignal): Promise<UserAccount[]> => {
-  const response = await api.get<UserAccount[]>('/users/', { signal });
+/** One page of `GET /users/`: every account, by username (the server's paging
+ *  envelope; `total` is every account, never the page's length). */
+export interface UserAccountPage {
+  items: UserAccount[];
+  total: number;
+  limit: number;
+  offset: number;
+  returned: number;
+  has_more: boolean;
+}
+
+/** At most 200 a page (the server's cap); it answers 100 when not asked. */
+export const listUsers = async (
+  params: { limit: number; offset: number },
+  signal?: AbortSignal,
+): Promise<UserAccountPage> => {
+  const response = await api.get<UserAccountPage>('/users/', { params, signal });
   return response.data;
 };
 

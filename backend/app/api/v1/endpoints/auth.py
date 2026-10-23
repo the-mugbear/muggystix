@@ -411,7 +411,16 @@ def logout(
     return {"message": "Successfully logged out"}
 
 
-@router.post("/register", response_model=UserListItem)
+@router.post(
+    "/register",
+    response_model=UserListItem,
+    # Creating an account is administration, not finishing one's own setup:
+    # an admin still on a transit password (or owing 2FA enrolment) is held
+    # at the gate here like everywhere else outside the setup routes (review
+    # 2026-10-23, H-DB1).  ``test_password_change_gate_coverage.py`` names
+    # the setup routes that are exempt.
+    dependencies=[Depends(require_password_changed)],
+)
 def register(
     registration_data: RegisterRequest,
     request: Request,
@@ -465,10 +474,9 @@ def register(
     )
 
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    # Log user creation
+    db.flush()
+    # The audit row is written in the account's own transaction: both land,
+    # or neither does (review 2026-10-23, R-DB3).
     log_audit_event(
         db=db,
         user_id=current_user.id,
@@ -476,8 +484,11 @@ def register(
         resource_type="user",
         resource_id=str(new_user.id),
         details={"new_username": new_user.username, "role": new_user.role},
+        commit=False,
         **client_info
     )
+    db.commit()
+    db.refresh(new_user)
 
     return user_list_item(new_user)
 
@@ -556,24 +567,20 @@ def change_password(
         reason="the operator changed their password",
     )
 
-    db.commit()
-
-    # Log password change
     log_audit_event(
         db=db,
         user_id=current_user.id,
         action="password_changed",
+        commit=False,
         **client_info
     )
+    db.commit()
 
-    # Auto-delete the first-boot admin-password marker once a rotation has
-    # happened — it must not outlive the forced first-login change (C4).
-    try:
-        import os
-        from app.startup import admin_marker_path
-        os.unlink(admin_marker_path())
-    except OSError:
-        pass  # already gone / never existed / operator-supplied password
+    # The first-boot admin-password file must not outlive that account's
+    # forced first-login change (C4) — and only that account's change ends
+    # it (review 2026-10-23).
+    from app.startup import discard_admin_marker_of
+    discard_admin_marker_of(current_user.username)
 
     return {"message": "Password successfully changed. All sessions have been revoked — please log in again."}
 

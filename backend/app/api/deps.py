@@ -130,10 +130,12 @@ def get_current_user(
             detail="User not found or inactive"
         )
 
-    # Check if session is still valid
+    # Check if session is still valid — and that it is THIS user's session: a
+    # token whose ``jti`` names another account's session row is not one.
     token_jti = payload.get("jti")
     session = db.query(UserSession).filter(
         UserSession.token_jti == token_jti,
+        UserSession.user_id == user.id,
         UserSession.revoked_at.is_(None),
         UserSession.expires_at > datetime.now(timezone.utc)
     ).first()
@@ -1166,32 +1168,27 @@ def get_current_project(
     if current_user.role == UserRole.ADMIN:
         return project
 
-    membership = db.query(ProjectMembership).filter(
-        ProjectMembership.project_id == project_id,
-        ProjectMembership.user_id == current_user.id,
-    ).first()
-    if not membership:
+    if membership_role(db, project_id, current_user) is None:
         raise HTTPException(status_code=403, detail="Not a member of this project")
 
     return project
 
 
-def is_project_admin(db: Session, project_id: int, user: User) -> bool:
-    """True when ``user`` has admin authority over ``project_id``.
-
-    Either a global admin, or a project member whose ProjectMembership
-    role satisfies the admin tier.  Plain function (not a dependency)
-    so route handlers can call it inline for per-row ownership checks
-    — e.g. "the session owner OR a project admin may abandon this
-    session" (v2.45.9).
-    """
-    if user.role == UserRole.ADMIN:
-        return True
-    membership = db.query(ProjectMembership).filter(
-        ProjectMembership.project_id == project_id,
-        ProjectMembership.user_id == user.id,
-    ).first()
-    return membership is not None and check_permissions(membership.role, ProjectRole.ADMIN)
+def membership_role(db: Session, project_id: int, user: User) -> Optional[str]:
+    """``user``'s ``ProjectMembership.role`` on ``project_id``, or None when
+    they have no membership row — whatever their global role.  The ONE
+    membership read behind every project-access answer below (and the
+    project routes that must also reach an archived project, which
+    ``get_current_project`` refuses with 410)."""
+    role = (
+        db.query(ProjectMembership.role)
+        .filter(
+            ProjectMembership.project_id == project_id,
+            ProjectMembership.user_id == user.id,
+        )
+        .scalar()
+    )
+    return getattr(role, "value", role)
 
 
 def has_project_role(db: Session, project_id: int, user: User, required: ProjectRole) -> bool:
@@ -1202,11 +1199,16 @@ def has_project_role(db: Session, project_id: int, user: User, required: Project
     its failures).  A global admin always does."""
     if user.role == UserRole.ADMIN:
         return True
-    membership = db.query(ProjectMembership).filter(
-        ProjectMembership.project_id == project_id,
-        ProjectMembership.user_id == user.id,
-    ).first()
-    return membership is not None and check_permissions(membership.role, ProjectRole(required).value)
+    role = membership_role(db, project_id, user)
+    return role is not None and check_permissions(role, ProjectRole(required).value)
+
+
+def is_project_admin(db: Session, project_id: int, user: User) -> bool:
+    """True when ``user`` has admin authority over ``project_id``: a global
+    admin, or a project admin.  Plain function (not a dependency) so route
+    handlers can call it inline for per-row ownership checks — e.g. "the
+    session owner OR a project admin may abandon this session" (v2.45.9)."""
+    return has_project_role(db, project_id, user, ProjectRole.ADMIN)
 
 
 def require_project_role(required_role: "ProjectRole | str"):
@@ -1233,14 +1235,11 @@ def require_project_role(required_role: "ProjectRole | str"):
         if current_user.role == UserRole.ADMIN:
             return current_user
 
-        membership = db.query(ProjectMembership).filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.user_id == current_user.id,
-        ).first()
-        if not membership:
+        role = membership_role(db, project_id, current_user)
+        if role is None:
             raise HTTPException(status_code=403, detail="Not a member of this project")
 
-        if not check_permissions(membership.role, required.value):
+        if not check_permissions(role, required.value):
             raise HTTPException(
                 status_code=403,
                 detail=f"Insufficient project role. Required: {required.value}",

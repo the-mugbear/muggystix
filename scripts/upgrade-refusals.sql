@@ -37,3 +37,6 @@ SELECT 'f4c8b2d0e6a1 API keys not bound to an agent session' AS revision, count(
 
 -- b6e0d4f2a8c3: one scanner row per identity (NULLs compare equal, as the unique index's NULLS NOT DISTINCT).
 SELECT 'b6e0d4f2a8c3 scanner rows sharing one identity' AS revision, count(*) AS refused, 'extra rows: ' || coalesce(sum(n) - count(*), 0) AS detail FROM (SELECT count(*) AS n FROM vulnerabilities GROUP BY host_id, source, plugin_id, port_id, name_id, title HAVING count(*) > 1) d;
+
+-- 47e5e79b90a9: the global role, the project role and the project status hold only their known values.
+SELECT '47e5e79b90a9 roles and project statuses outside their vocabularies' AS revision, u + m + p AS refused, 'users.role: ' || u || ', project_memberships.role: ' || m || ', projects.status: ' || p AS detail FROM (SELECT (SELECT count(*) FROM users WHERE role NOT IN ('admin', 'member')) AS u, (SELECT count(*) FROM project_memberships WHERE role NOT IN ('admin', 'analyst', 'auditor', 'viewer')) AS m, (SELECT count(*) FROM projects WHERE status NOT IN ('active', 'completed', 'archived')) AS p) n;

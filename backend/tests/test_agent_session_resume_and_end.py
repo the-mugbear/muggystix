@@ -197,7 +197,7 @@ def test_resume_is_owner_only_and_active_only(client, test_project, db_session):
     # admin client is refused (End is the admin's tool, not Resume).
     # Explicit id: the ``test_user`` fixture inserts id=1 by hand, so the
     # sequence has not advanced and a default-id insert collides with it.
-    other = User(id=4242, username="other", email="other@example.com", hashed_password="x", role="analyst")
+    other = User(id=4242, username="other", email="other@example.com", hashed_password="x", role="member")
     db_session.add(other)
     db_session.flush()
     owner_id = row.started_by_id

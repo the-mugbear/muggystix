@@ -1,6 +1,6 @@
 import { formatClockTime, formatDate, formatTimestamp } from '../utils/relativeTime';
 import React, { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
   ShieldCheck,
@@ -22,11 +22,14 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import {
   deleteUser, listUsers, registerUser, resetUserPassword, resetUserTwoFactor, updateUserAccount,
-  type UserAccount,
+  type UserAccount, type UserAccountPage,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { SECRET_MUTATION, queryErrorText } from '../lib/query';
+import { usePagedList } from '../hooks/usePagedList';
+import { useUrlPage } from '../hooks/useUrlPage';
+import { SECRET_MUTATION, invalidateReads } from '../lib/query';
+import { PagedFooter } from '../components/operations/QueueParts';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
@@ -119,8 +122,9 @@ const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
   );
 };
 
-/** Every account on the installation — not a project's. */
-const USERS_KEY = ['listUsers'];
+/** Accounts per page of the users table: the server's default page (it
+ *  allows up to 200). */
+const USERS_PAGE_SIZE = 100;
 
 const TABS = ['users', 'remediation', 'report-writing'] as const;
 const DEFAULT_TAB = 'users';
@@ -162,30 +166,26 @@ const SystemSettings: React.FC = () => {
   // Reset Password flows that share selectedUser.
   const [membershipsUser, setMembershipsUser] = useState<User | null>(null);
 
-  // Every account on the installation.  A failed read is said where the
-  // table would be, with Retry — never a toast over an empty table.
-  const usersQuery = useQuery({
-    queryKey: USERS_KEY,
-    queryFn: ({ signal }) => listUsers(signal),
-    enabled: isAdmin,
-  });
-  const users: User[] = usersQuery.data ?? [];
-  const loading = isAdmin && usersQuery.isPending;
-  const usersError = queryErrorText(usersQuery.error, 'Failed to load users.');
+  // Every account on the installation, by username, one page at a time — the
+  // page in the address (`?page=`).  The heading counts every account, and
+  // the footer says which of them are on screen.  A failed read is said where
+  // the table would be, with Retry — never a toast over an empty table.
+  const usersList = usePagedList<User, UserAccountPage>(
+    'listUsers',
+    ({ offset, limit, signal }) => listUsers({ offset, limit }, signal),
+    [],
+    { pageSize: USERS_PAGE_SIZE, page: useUrlPage(), enabled: isAdmin, errorMessage: 'Failed to load users.' },
+  );
+  const users: User[] = usersList.rows ?? [];
+  const usersError = usersList.error;
+  const loading = isAdmin && usersList.rows === null && usersError === null;
   /** The accounts were never read: there is no table to show, only the failure. */
-  const usersUnread = usersQuery.data == null && usersError != null;
-  /** Put what a write returned (or is known to have done) into the table.
-   *  With no table read yet there is nothing to put it into — a list made of
-   *  the one account just written would pass for every account — so the list
-   *  is asked for instead. */
-  const setUsers = (update: (prev: User[]) => User[]) => {
-    if (queryClient.getQueryData<User[]>(USERS_KEY) == null) {
-      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
-      return;
-    }
-    queryClient.setQueryData<User[]>(USERS_KEY, (prev) => (prev ? update(prev) : prev));
-  };
-  const replaceUser = (updated: User) => setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+  const usersUnread = usersList.rows === null && usersError != null;
+  /** An account the server just answered goes onto the page on screen. */
+  const replaceUser = (updated: User) => usersList.mapRows((u) => (u.id === updated.id ? updated : u));
+  /** An account added or removed moves the others between pages and changes
+   *  the count: the list is read again. */
+  const usersChanged = () => { void invalidateReads(queryClient, 'listUsers'); };
 
   // Leaving the dialog ends the attempt: the password typed into it goes too
   // (the name and the role stay, as they did).
@@ -207,9 +207,10 @@ const SystemSettings: React.FC = () => {
     ...SECRET_MUTATION,
     // confirm_password is a client-only guard against typos — don't send it.
     mutationFn: ({ confirm_password: _confirm, ...payload }: NewUserForm) => registerUser(payload),
-    onSuccess: (created) => {
-      // The answer is the row the users list returns: it goes in as it is.
-      setUsers((prev) => [...prev, created]);
+    onSuccess: () => {
+      // The new account takes its place by username, on whichever page that
+      // is: the list (and its count) is read again.
+      usersChanged();
       setNewUserDialogOpen(false);
       setNewUserForm({ username: '', password: '', confirm_password: '', full_name: '', role: 'member' });
       toast.success('User created.');
@@ -273,7 +274,7 @@ const SystemSettings: React.FC = () => {
   const twoFactorReset = useMutation({
     mutationFn: (user: User) => resetUserTwoFactor(user.id),
     onSuccess: (_response, user) => {
-      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, totp_enabled: false } : u)));
+      usersList.mapRows((u) => (u.id === user.id ? { ...u, totp_enabled: false } : u));
       toast.success(`2FA reset for ${user.username}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to reset 2FA.')),
@@ -300,8 +301,8 @@ const SystemSettings: React.FC = () => {
 
   const deletion = useMutation({
     mutationFn: (user: User) => deleteUser(user.id),
-    onSuccess: (_response, user) => {
-      setUsers((prev) => prev.filter((u) => u.id !== user.id));
+    onSuccess: () => {
+      usersChanged();
       toast.success('User deleted.');
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to delete user.')),
@@ -444,18 +445,19 @@ const SystemSettings: React.FC = () => {
 
         <TabsContent value="users" className="space-y-lg">
       <PostureSection
-        title={<>User management{!loading && !usersUnread && <SectionCount>{users.length}</SectionCount>}</>}
+        title={<>User management{usersList.rows !== null && <SectionCount>{usersList.total}</SectionCount>}</>}
         description="Account roles are global; what a user can do with project data is set per project."
       >
           {usersError && (
             <p role="alert" className="break-words text-metadata text-destructive">
               {usersError}{' '}
-              <button type="button" className="text-info hover:underline" onClick={() => { void usersQuery.refetch(); }}>Retry</button>
+              <button type="button" className="text-info hover:underline" onClick={() => { void usersList.reload(); }}>Retry</button>
             </p>
           )}
           {loading ? (
             <InlineLoader label="Loading users…" size="lg" centered />
           ) : usersUnread ? null : (
+            <>
             <div className="overflow-x-auto">
               {/* Fixed columns + a floor so the User column never collapses;
                   a narrow window scrolls this table, not the page. */}
@@ -616,6 +618,15 @@ const SystemSettings: React.FC = () => {
                 </TableBody>
               </Table>
             </div>
+            {usersList.total > 0 && (
+              <PagedFooter
+                pager={{ page: usersList.page, pageSize: USERS_PAGE_SIZE, total: usersList.total, onPage: usersList.setPage }}
+                shown={users.length}
+                noun="users"
+                busy={usersList.loading}
+              />
+            )}
+            </>
           )}
       </PostureSection>
 

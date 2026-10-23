@@ -479,7 +479,7 @@ def test_deploy_stops_when_a_refusal_check_cannot_run_unless_told_to_skip(projec
 
     out = _output(refused)
     assert refused.returncode == 1
-    assert "1 of the 6 checks could not run" in out and "b6e0d4f2a8c3" in out
+    assert "1 of the 7 checks could not run" in out and "b6e0d4f2a8c3" in out
     assert _index(project.calls(), "compose build") == -1
 
     forced = project.run("deploy.sh", stdin="1\n", env={"DEPLOY_SKIP_REFUSAL_CHECK": "1"})

@@ -44,7 +44,7 @@ const show = (path = '/system-settings') => render(
 
 beforeEach(() => {
   listUsers.mockReset();
-  listUsers.mockResolvedValue([]);
+  listUsers.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0, returned: 0, has_more: false });
 });
 
 describe('System settings tabs', () => {

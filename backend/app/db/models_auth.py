@@ -6,7 +6,7 @@ Models for user accounts, roles, and session management for security intelligenc
 
 from typing import Optional
 
-from sqlalchemy import BigInteger, Column, Index, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, event, text
+from sqlalchemy import BigInteger, CheckConstraint, Column, Index, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, event, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -119,6 +119,13 @@ class User(Base):
     # /2fa/disable and regenerated on demand).
     recovery_codes = relationship(
         "UserRecoveryCode", back_populates="user", cascade="all, delete-orphan",
+    )
+
+    # The global role is binary, and the database says so (revision
+    # ``47e5e79b90a9``): ``check_permissions`` reads an unknown role as no
+    # rights at all, so a stray value must not be storable.
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'member')", name="ck_users_role"),
     )
 
 

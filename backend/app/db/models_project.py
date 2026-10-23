@@ -8,7 +8,7 @@ infrastructure for @mentions and team coordination.
 from enum import Enum
 
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Boolean, ForeignKey,
+    CheckConstraint, Column, Integer, String, Text, DateTime, Boolean, ForeignKey,
     UniqueConstraint, Index, JSON,
 )
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -69,6 +69,12 @@ class Project(Base):
         "ProjectMembership", back_populates="project", cascade="all, delete-orphan"
     )
 
+    # Revision ``47e5e79b90a9``: ``status`` takes the three values and nothing
+    # else (``in_progress`` was merged into ``active`` by ``d9f1b3c5e7a2``).
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'completed', 'archived')", name="ck_projects_status"),
+    )
+
     @hybrid_property
     def is_archived(self) -> bool:
         """Whether the project is archived: ``status == 'archived'``, as a
@@ -123,6 +129,10 @@ class ProjectMembership(Base):
 
     __table_args__ = (
         UniqueConstraint("project_id", "user_id", name="uq_project_user"),
+        # Revision ``47e5e79b90a9``: the four ``ProjectRole`` values only.
+        CheckConstraint(
+            "role IN ('admin', 'analyst', 'auditor', 'viewer')", name="ck_project_memberships_role",
+        ),
     )
 
 

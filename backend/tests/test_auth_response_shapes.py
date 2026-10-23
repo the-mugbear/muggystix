@@ -45,7 +45,7 @@ def test_register_answers_the_users_list_row(client, test_user):
     assert row["totp_enabled"] is False
     assert row["email"] is None
 
-    listed = {u["id"]: u for u in client.get("/api/v1/users/").json()}
+    listed = {u["id"]: u for u in client.get("/api/v1/users/").json()["items"]}
     assert listed[row["id"]] == row
     assert client.get(f"/api/v1/users/{row['id']}").json() == row
 

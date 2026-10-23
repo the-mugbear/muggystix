@@ -41,7 +41,7 @@ beforeEach(() => {
   Object.values(api).forEach((m) => m.mockReset());
   Object.values(toast).forEach((m) => m.mockReset());
   auth.admin = true;
-  api.listUsers.mockResolvedValue([]);
+  api.listUsers.mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0, returned: 0, has_more: false });
 });
 
 describe('ReportDefaultsSection', () => {

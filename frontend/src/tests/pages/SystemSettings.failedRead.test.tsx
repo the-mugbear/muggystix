@@ -44,7 +44,7 @@ const show = () => render(<MemoryRouter initialEntries={['/system-settings']}><S
 
 beforeEach(() => {
   vi.clearAllMocks();
-  api.listUsers.mockResolvedValue([account()]);
+  api.listUsers.mockResolvedValue({ items: [account()], total: 1, limit: 100, offset: 0, returned: 1, has_more: false });
 });
 
 describe('System settings — the accounts could not be read', () => {
