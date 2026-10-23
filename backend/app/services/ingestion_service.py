@@ -16,7 +16,7 @@ import shutil
 import threading
 import time
 import zlib
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1702,32 +1702,33 @@ class IngestionService:
         was_paused = getattr(_import_lock, "paused", False)
         _import_lock.paused = True
         # The cleanup of a large scan is one long step with no heartbeat
-        # (review 2026-10-23, R-ING1).  It is not a stalled PARSE: the
-        # watchdog's window starts again when it begins and when it ends, and
-        # its statements are not held to the stall window — a big DELETE
+        # (review 2026-10-23, R-ING1; 2026-10-23b, ING-3).  It is not a
+        # stalled PARSE: the watchdog gives no verdict while it runs, and its
+        # statements are not held to the stall window — a big DELETE
         # cancelled at the window left the scan behind and, at the claim,
-        # failed the job.  Its lock waits stay bounded where they were
-        # (``lock_timeout_s``), and the watchdog still ends a cleanup that
-        # outlasts a whole window plus its grace.
+        # failed the job.  What a working DELETE is not, a lock WAIT can be:
+        # each wait stays bounded — by ``lock_timeout_s`` where the caller
+        # gives one, else by the stall window.
         watchdog = getattr(_active_job, "watchdog", None)
-        if watchdog is not None:
-            watchdog.progressed()
         try:
-            db.rollback()
-            if _on_postgres(db):
-                # After the transaction's begin, where the stall listener set
-                # its timeout; SET LOCAL ends with this transaction.
-                db.execute(text("SET LOCAL statement_timeout = 0"))
-            removed = delete_partial_scan(db, scan_id, lock_timeout_s=lock_timeout_s)
-            db.commit()
+            with watchdog.suspended() if watchdog is not None else nullcontext():
+                db.rollback()
+                if _on_postgres(db):
+                    # After the transaction's begin, where the stall listener
+                    # set its timeout; SET LOCAL ends with this transaction.
+                    db.execute(text("SET LOCAL statement_timeout = 0"))
+                    if not lock_timeout_s and settings.INGESTION_STALL_TIMEOUT > 0:
+                        db.execute(text(
+                            f"SET LOCAL lock_timeout = '{int(settings.INGESTION_STALL_TIMEOUT)}s'"
+                        ))
+                removed = delete_partial_scan(db, scan_id, lock_timeout_s=lock_timeout_s)
+                db.commit()
         except Exception:  # noqa: BLE001
             db.rollback()
             logger.warning("Could not delete partial scan %s (%s)", scan_id, why, exc_info=True)
             return False
         finally:
             _import_lock.paused = was_paused
-            if watchdog is not None:
-                watchdog.progressed()
         logger.info(
             "Deleted partial scan %s (%s): %d host(s), %d port(s), %d scanner observation(s) "
             "that only it had created; %d row(s) a later scan had re-observed were kept and "
