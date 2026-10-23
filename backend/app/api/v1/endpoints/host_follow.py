@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -136,9 +137,10 @@ def record_host_view(
 
 class HostFollowerEntry(BaseModel):
     """One row of the host followers response — a single user who is
-    actively following this host."""
-    user_id: int
-    username: str
+    actively following this host.  ``user_id`` / ``username`` are null for a
+    mark whose reviewer's account was deleted (kept, attributed to no one)."""
+    user_id: Optional[int] = None
+    username: Optional[str] = None
     full_name: Optional[str] = None
     status: str  # "watching" | "in_review" | "reviewed"
     since: datetime  # follow record's updated_at if present, else created_at
@@ -178,12 +180,15 @@ def list_host_followers(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
+    # OUTER, and a NULL reviewer kept: a mark whose reviewer's account was
+    # deleted stays (owner, 2026-10-22) and is listed with no user — the page
+    # says "a former member".  ``!=`` alone would drop it (NULL != x is NULL).
     rows = (
         db.query(HostFollow, User)
-        .join(User, HostFollow.user_id == User.id)
+        .outerjoin(User, HostFollow.user_id == User.id)
         .filter(
             HostFollow.host_id == host_id,
-            HostFollow.user_id != current_user.id,
+            or_(HostFollow.user_id.is_(None), HostFollow.user_id != current_user.id),
         )
         .all()
     )
@@ -208,9 +213,9 @@ def list_host_followers(
 
     followers = [
         HostFollowerEntry(
-            user_id=user.id,
-            username=user.username,
-            full_name=user.full_name,
+            user_id=user.id if user else None,
+            username=user.username if user else None,
+            full_name=user.full_name if user else None,
             status=follow.status.value if hasattr(follow.status, "value") else str(follow.status),
             since=follow.updated_at or follow.created_at,
         )

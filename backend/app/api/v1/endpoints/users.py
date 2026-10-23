@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.db.session import disable_statement_timeout, get_db
 from app.db.models_auth import FULL_NAME_MAX, User, UserRole
 from app.db.models_project import Project, ProjectMembership
+from app.db.models import HostFollow
 from app.core.security import (
     get_password_hash,
     validate_password_strength,
@@ -651,6 +652,15 @@ def delete_user(
     end_sessions_of_operator(
         db, user.id, ended_by=current_user, reason="The operator's account was deleted.",
     )
+    # Their host review marks are KEPT (owner, 2026-10-22): the database's
+    # SET NULL leaves each row — In review / Reviewed, ``reviewed_at``, the
+    # note — attributed to no one, so a reviewed host stays reviewed.  What
+    # ends with the person is the ASSIGNMENT those rows carried: nobody holds
+    # the host now, so ``assigned:none`` lists it for someone to pick up, as
+    # it did when the rows were deleted.  Nothing here deletes a follow row.
+    db.query(HostFollow).filter(
+        HostFollow.user_id == user.id, HostFollow.assigned_at.isnot(None),
+    ).update({"assigned_at": None, "assigned_by_id": None}, synchronize_session=False)
     db.delete(user)
     db.commit()
 

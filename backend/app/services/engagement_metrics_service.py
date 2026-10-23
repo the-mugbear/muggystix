@@ -483,7 +483,8 @@ def contribution_events(project_ids: List[int]):
     is NULL when no author is recorded — a deleted account (SET NULL), or a
     row written without one (seeds, older records) — which is the
     "unattributed" bucket, never guessed at.  A deleted user's host reviews
-    are gone entirely (``host_follows`` CASCADE).
+    are kept with ``user_id`` NULL (``host_follows`` SET NULL since
+    ``e8c4a2f6d1b9``; owner, 2026-10-22) and land in that bucket too.
     """
     ids = project_ids
 
@@ -738,10 +739,16 @@ def tester_rows(db: Session, project_ids: Iterable[int], window: Window) -> List
             cells[key] = TesterProject(project_id=pid)
         return cells[key]
 
+    # A row per PERSON: a former member's kept mark (``user_id`` NULL — the
+    # account was deleted, owner 2026-10-22) has no person to be a row for.
+    # It still counts in the project totals (``project_engagement``).
     base = (
         db.query(HostFollow.user_id, Host.project_id, HostFollow.status, func.count(distinct(HostFollow.host_id)))
         .join(Host, Host.id == HostFollow.host_id)
-        .filter(Host.project_id.in_(ids), HostFollow.status.in_(REVIEW_STATES))
+        .filter(
+            Host.project_id.in_(ids), HostFollow.status.in_(REVIEW_STATES),
+            HostFollow.user_id.isnot(None),
+        )
         .group_by(HostFollow.user_id, Host.project_id, HostFollow.status)
     )
     for uid, pid, status, n in base.all():
@@ -756,6 +763,7 @@ def tester_rows(db: Session, project_ids: Iterable[int], window: Window) -> List
         .join(Host, Host.id == HostFollow.host_id)
         .filter(
             Host.project_id.in_(ids),
+            HostFollow.user_id.isnot(None),
             HostFollow.status == FollowStatus.REVIEWED,
             HostFollow.reviewed_at.isnot(None),
             window.clause(HostFollow.reviewed_at),

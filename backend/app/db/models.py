@@ -1127,7 +1127,14 @@ class HostFollow(Base):
 
     id = Column(Integer, primary_key=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # NULL = the reviewer's account was deleted (owner, 2026-10-22; revision
+    # ``e8c4a2f6d1b9``): the mark is KEPT, attributed to no one, so a reviewed
+    # host stays reviewed.  Every reader keyed on a person (``follow:mine``,
+    # ``assigned:``, "Still reviewed", notifications) compares with an id and
+    # never matches NULL; a display of who reviewed says "a former member".
+    # ``uq_host_follow_user`` treats NULLs as distinct, so each former
+    # member's row on a host is its own.
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # No default, here or in the database: every writer names the status it
     # means (``HostFollowService.apply_review_status``, the bulk assign's
     # ``in_review``).  The model's default was the retired ``watching`` until

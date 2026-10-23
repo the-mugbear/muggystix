@@ -22,6 +22,7 @@ import {
 } from '../ui/dropdown-menu';
 import { cn } from '../../utils/cn';
 import { hostTestCounts } from '../../utils/hostTests';
+import { reviewerName } from '../../utils/people';
 import {
   exposureChips,
 } from '../../utils/portsOfInterest';
@@ -879,18 +880,18 @@ export function useHostColumns({
           const detail = [
             owner ? `Assigned: ${owner}${(host.assignees?.length ?? 0) > 1 ? ` +${host.assignees!.length - 1}` : ''}` : null,
             otherReviewerCount > 0
-              ? `${host.other_reviewers![0].name}${otherReviewerCount > 1 ? ` +${otherReviewerCount - 1}` : ''} reviewing`
+              ? `${reviewerName(host.other_reviewers![0].name)}${otherReviewerCount > 1 ? ` +${otherReviewerCount - 1}` : ''} reviewing`
               : null,
             reviewedCount > 0 && state.kind !== 'reviewed'
-              ? `Reviewed by ${host.reviewed_by![0].name}${reviewedCount > 1 ? ` +${reviewedCount - 1}` : ''}`
+              ? `Reviewed by ${reviewerName(host.reviewed_by![0].name)}${reviewedCount > 1 ? ` +${reviewedCount - 1}` : ''}`
               : null,
             // A count is shown when it says something; "0 notes" was noise.
             noteCount > 0 ? `${noteCount} note${noteCount === 1 ? '' : 's'}` : null,
           ].filter(Boolean).join(' · ');
           const titles = [
             host.assignees?.length ? `Assigned: ${host.assignees.map((a) => a.name).join(', ')}` : null,
-            otherReviewerCount > 0 ? `Reviewing: ${host.other_reviewers!.map((r) => r.name).join(', ')}` : null,
-            reviewedCount > 0 ? `Reviewed by: ${host.reviewed_by!.map((r) => r.name).join(', ')}` : null,
+            otherReviewerCount > 0 ? `Reviewing: ${host.other_reviewers!.map((r) => reviewerName(r.name)).join(', ')}` : null,
+            reviewedCount > 0 ? `Reviewed by: ${host.reviewed_by!.map((r) => reviewerName(r.name)).join(', ')}` : null,
           ].filter(Boolean).join('\n');
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
