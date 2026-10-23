@@ -59,6 +59,20 @@ const STATUS_HELP: Record<VettedStatus, string> = {
   rejected: 'Declined. The row stays so the next agent that asks gets the same answer.',
 };
 
+/** How the server's stand-in description for a suggestion begins
+ *  (`tool_registry_service.SUGGESTED_DESCRIPTION_PREFIX`).  Adding the tool to
+ *  the catalogue needs a description that does not begin so — the server
+ *  refuses it (422; owner, 2026-10-22). */
+const STAND_IN_PREFIX = 'Suggested by an agent.';
+
+/** The agent's text without the stand-in's prefix ("Suggested by an agent.
+ *  Rationale: …" → "…"), to start a person's description from. */
+const withoutStandIn =(text: string): string => {
+  const t = text.trim();
+  if (!t.startsWith(STAND_IN_PREFIX)) return t;
+  return t.slice(STAND_IN_PREFIX.length).trim().replace(/^Rationale:\s*/, '');
+};
+
 /** Mounted per tool opened (the wrapper below), so the fields start from that
  *  tool's row and a save's failure never shows on the next one. */
 const VettingForm: React.FC<Props & { tool: ToolRegistryEntry }> = ({ tool, open, onOpenChange }) => {
@@ -69,7 +83,15 @@ const VettingForm: React.FC<Props & { tool: ToolRegistryEntry }> = ({ tool, open
   const [status, setStatus] = useState<VettedStatus>(
     tool.status === 'suggested' ? 'reference' : tool.status,
   );
-  const [description, setDescription] = useState(tool.description ?? '');
+  // A suggestion's description starts as the agent's text without the
+  // stand-in's prefix: the person edits it into the catalogue's, and the
+  // status and the description go in ONE PATCH.
+  const [description, setDescription] = useState(
+    tool.status === 'suggested' ? withoutStandIn(tool.description ?? '') : (tool.description ?? ''),
+  );
+  const accepting = tool.status === 'suggested' && status === 'reference';
+  const needsDescription = accepting
+    && (!description.trim() || description.trim().startsWith(STAND_IN_PREFIX));
   const [category, setCategory] = useState(tool.category ?? '');
   const [install, setInstall] = useState(tool.install ?? '');
   const [url, setUrl] = useState(tool.url ?? '');
@@ -160,6 +182,11 @@ const VettingForm: React.FC<Props & { tool: ToolRegistryEntry }> = ({ tool, open
                   : 'Write it as documentation before adding the tool; this is what the catalogue shows.'}
               </p>
             ) : null}
+            {needsDescription ? (
+              <p className="mt-xxs text-caption text-warning">
+                Adding it to the catalogue needs a description written by a person.
+              </p>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-2 gap-sm">
@@ -207,7 +234,7 @@ const VettingForm: React.FC<Props & { tool: ToolRegistryEntry }> = ({ tool, open
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={busy}>
+          <Button onClick={save} disabled={busy || needsDescription}>
             {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
             Save
           </Button>

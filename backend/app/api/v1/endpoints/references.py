@@ -292,7 +292,8 @@ def update_tool_registry_entry(
     Admin-only, and global rather than project-scoped: the catalogue is one
     deployment-wide list.  No status grants or withholds anything (v2.433.0).
     """
-    from app.db.models_tools import TOOL_REFERENCE, TOOL_REJECTED, ToolRegistryEntry
+    from app.db.models_tools import TOOL_REFERENCE, TOOL_REJECTED, TOOL_SUGGESTED, ToolRegistryEntry
+    from app.services import tool_registry_service
 
     entry = (
         db.query(ToolRegistryEntry).filter(ToolRegistryEntry.name == name).one_or_none()
@@ -312,6 +313,14 @@ def update_tool_registry_entry(
                     "agent's ask produces, not a decision you can set."
                 ),
             )
+        # Taking a suggestion into the catalogue publishes its description:
+        # a person writes it, in this same call (owner, 2026-10-22).  The
+        # agent's text stays in `suggested_rationale`.
+        if entry.status == TOOL_SUGGESTED and status == TOOL_REFERENCE:
+            problem = tool_registry_service.accept_description_problem(fields.get("description"))
+            if problem:
+                raise HTTPException(status_code=422, detail=problem)
+            fields["description"] = fields["description"].strip()
         entry.status = status
     for field, value in fields.items():
         setattr(entry, field, value)
