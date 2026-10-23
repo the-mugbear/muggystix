@@ -142,12 +142,6 @@ export const evidenceReferenceAt = (
   return { id: Number(m[2]), alt: m[1], end: at + m[0].length };
 };
 
-/** The target of an image that names one of the finding's images, else null. */
-export const evidenceIdOf = (target: string): number | null => {
-  const m = /^evidence:(\d{1,12})$/.exec(target.trim());
-  return m ? Number(m[1]) : null;
-};
-
 /** The attachment ids a section's Markdown PLACES, each once, in order.  A
  *  reference inside a fenced code block or an inline code span is printed as
  *  typed — the report makes no figure of it — so it is not one (the server's

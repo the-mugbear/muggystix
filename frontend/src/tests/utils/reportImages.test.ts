@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  captionAsAlt, codeSpans, evidenceIdOf, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
+  captionAsAlt, codeSpans, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
 } from '../../utils/reportImages';
 
 import { CODE_SPAN_CASES, REFERENCE_CASES } from './reportImageCases';
@@ -61,13 +61,6 @@ describe('referencedImageIds — what places an image', () => {
       '![x](evidence:abc)', '![x](evidence:1.png)', '<img src="evidence:1">', 'evidence:1', '', null, undefined,
     ]) {
       expect(referencedImageIds(text)).toEqual([]);
-    }
-  });
-
-  it('reads the id from a target and nothing else', () => {
-    expect(evidenceIdOf('evidence:57')).toBe(57);
-    for (const t of ['evidence:', 'evidence:5x', 'https://x/evidence:5', 'javascript:alert(1)', 'data:image/png;base64,AA', '../5']) {
-      expect(evidenceIdOf(t)).toBeNull();
     }
   });
 });
