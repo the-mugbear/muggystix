@@ -474,13 +474,13 @@ def promote_evidence(
     extra_hosts = [hid for hid in dict.fromkeys(more_host_ids) if hid is not None and hid != record.host_id]
     svc = FindingService(db)
     if vuln is not None:
-        # Made by this call, or the issue's existing one joined (read after
-        # the evidence lock, as the promotion's own lookup is).
-        created = svc.issue_finding(vuln, project_id) is None
         # The observation rates its own finding: the caller's severity is the
         # test's priority, which nobody chose as a severity (the linked-test
         # control shows no selector).  It is used only on the path below.
-        finding = promote_or_dismiss_vulnerability(
+        # ``created`` is the promotion's own answer: a lookup made before it
+        # missed a finding another transaction inserted and the promotion
+        # then joined (review 2026-10-23b, TRI-1).
+        finding, created = promote_or_dismiss_vulnerability(
             db, vuln=vuln, project_id=project_id, actor_id=actor_id, severity=None,
             status=status, scope="host", summary=f"Confirmed by test evidence #{record.id}{said}",
             on_join="confirm",

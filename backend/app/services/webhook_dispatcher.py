@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 # Known event keys.  Extend as new event sources are wired in; the config
 # UI offers exactly this set.  An empty config event list means "all".
 WEBHOOK_EVENTS = {
-    "note_mention": "Someone @mentioned a teammate on a host note",
+    "note_mention": "Someone @mentioned a teammate on a host note or a finding comment",
     "host_assigned": "A host was assigned to someone",
 }
 

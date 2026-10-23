@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from sqlalchemy.orm import Session, object_session, selectinload
 
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.db.models import Annotation, Host
 from app.db.models_vulnerability import Vulnerability
 from app.db.models_findings import Finding, FindingHost, FindingStatus, FindingStatusHistory
@@ -35,7 +35,6 @@ from app.services.host_follow_service import HostFollowService, NoteHasRepliesEr
 from app.services.host_serialization import _serialize_note, note_load_options
 from app.services.note_attachment_service import purge_note_files, store_image_attachment
 from app.services.notification_service import NotificationService
-from app.services.webhook_dispatcher import stage_dispatch
 from app.schemas.schemas import (
     Annotation as AnnotationSchema, AnnotationCreate, NoteAttachmentOut,
 )
@@ -326,7 +325,7 @@ def promote_vulnerability(
     resolve_project_assignee(db, project.id, body.owner_id)
     # The scope rules (host vs issue, accepted risk) live in the shared
     # service (v2.436.0), which an accepted agent proposal also calls.
-    finding = promote_or_dismiss_vulnerability(
+    finding, _created = promote_or_dismiss_vulnerability(
         db, vuln=vuln, project_id=project.id, actor_id=current_user.id,
         severity=body.severity, status=body.status, owner_id=body.owner_id,
         summary=body.summary, scope=body.scope,
@@ -413,12 +412,18 @@ def delete_finding(
     rows are untriaged observations again).  To say an issue does not apply,
     set a status instead — that keeps the record.  The deletion itself is
     written to the audit log, since the finding's own history goes with it."""
-    finding = _load(db, project, finding_id)
+    # The finding alone: its endpoints, history and evidence links are the
+    # database's cascade (``passive_deletes``), one statement however many
+    # endpoints a widespread issue has (review 2026-10-23b, TRI-4).
+    finding = db.query(Finding).filter(Finding.id == finding_id, Finding.project_id == project.id).first()
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
     require_delete(viewer, finding)
+    disable_statement_timeout(db)
     summary = {
         "project_id": project.id, "title": finding.title, "severity": finding.severity,
-        "status": finding.status, "source": finding.source,
-        "created_by_id": finding.created_by_id, "host_count": len(finding.hosts),
+        "status": finding.status, "source": finding.source, "created_by_id": finding.created_by_id,
+        "host_count": db.query(FindingHost.id).filter(FindingHost.finding_id == finding.id).count(),
     }
     note_ids = FindingService(db).delete_finding(
         finding=finding, actor_id=current_user.id, is_project_admin=viewer.is_project_admin,
@@ -695,41 +700,11 @@ _NOTIFY_WARNING = (
 def _notify_finding_comment(
     db: Session, note: Annotation, actor: User, project: Project, *, created: bool,
 ) -> dict:
-    """Best-effort notifications for a finding comment, after the comment
-    itself has committed (the host-note contract, audit H3): @mentioned
-    members first, then — for a NEW comment — everyone already in the
-    discussion.  A failure never loses the comment; it comes back as a
-    warning the client shows.
-
-    Returns the response fields to attach: ``mention_warning`` on failure,
-    otherwise who the @mentions notified and the ones that matched nobody
-    (v2.404.0, ``NotificationService.mention_outcome``)."""
-    try:
-        svc = NotificationService(db)
-        mentions = svc.process_note_mentions(note, actor, project) or []
-        outcome = svc.mention_outcome(note.body, project.id, mentions)
-        if created:
-            svc.notify_discussion_participants(
-                note, actor, project, exclude_user_ids={n.user_id for n in mentions},
-            )
-        if mentions:
-            stage_dispatch(
-                db,
-                project_id=project.id,
-                event="note_mention",
-                title=f"@{actor.username} mentioned {len(mentions)} user(s) on finding #{note.finding_id}",
-                body=(note.body or "")[:280],
-                context={"finding_id": note.finding_id, "note_id": note.id},
-            )
-        db.commit()
-        return outcome
-    except Exception:
-        logger.exception(
-            "Finding comment notifications failed",
-            extra={"note_id": note.id, "finding_id": note.finding_id, "author_id": actor.id},
-        )
-        db.rollback()
-        return {"mention_warning": _NOTIFY_WARNING}
+    """The comment's announcement (``NotificationService.announce_note``,
+    the host note's own): the response fields to attach."""
+    return NotificationService(db).announce_note(
+        note, actor, project, created=created, place=f"finding #{note.finding_id}", failed=_NOTIFY_WARNING,
+    )
 
 
 @router.get(

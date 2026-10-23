@@ -157,19 +157,23 @@ class Finding(Base):
     # thousands of rows nothing read.  A path that reads endpoints names the
     # load (``selectinload(Finding.hosts)``); ``tests/test_finding_loading.py``
     # pins that querying findings is one statement.
+    # ``passive_deletes`` on all three (review 2026-10-23b, TRI-4): their
+    # foreign keys are ON DELETE CASCADE, so deleting a finding leaves the
+    # children to the database instead of loading every endpoint, history
+    # line and evidence link to delete them one by one.
     hosts = relationship(
-        "FindingHost", back_populates="finding", cascade="all, delete-orphan",
+        "FindingHost", back_populates="finding", cascade="all, delete-orphan", passive_deletes=True,
     )
     status_history = relationship(
         "FindingStatusHistory", back_populates="finding",
-        cascade="all, delete-orphan",
+        cascade="all, delete-orphan", passive_deletes=True,
     )
     # Every scanner row evidencing this finding (see FindingVulnerability).
     # Plain lazy too (C2): nothing reads it through the relationship — the
     # readers query ``FindingVulnerability`` directly.
     vulnerabilities = relationship(
         "FindingVulnerability", back_populates="finding",
-        cascade="all, delete-orphan",
+        cascade="all, delete-orphan", passive_deletes=True,
     )
 
     __table_args__ = (
@@ -312,7 +316,7 @@ class FindingVulnerability(Base):
 
 class FindingStatusHistory(Base):
     """A finding's history: its status transitions (the status-transition
-    recorder, app.services.status_history_service), lines about its endpoints,
+    lines, ``FindingService._status_line``), lines about its endpoints,
     and — v2.519.0, revision ``b8e4d2f6a0c3`` — each edit of a field
     (``field`` set, with the value ``before_value`` / ``after_value``; written
     only by ``finding_actions.record_edit``).  Note status history, which
@@ -328,14 +332,27 @@ class FindingStatusHistory(Base):
     changed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     summary = Column(Text, nullable=True)
     # An edit's row: which field, and its value before and after (as shown —
-    # an owner's name, a severity's label).  Null on a status / endpoint row,
-    # except a removal's: with ``field`` null, ``before_value`` keeps the
-    # removed row (host, name, retest request) for its Undo to put back
-    # (``FindingService._record_endpoint_removed``); no reader shows it.
+    # an owner's name, a severity's label).  Null on a status / endpoint row.
     field = Column(String(40), nullable=True)
     before_value = Column(Text, nullable=True)
     after_value = Column(Text, nullable=True)
+    # An endpoint removal's row: which endpoint it removed and the retest
+    # request that stood on it, for an Undo to put back
+    # (``FindingService._record_endpoint_removed`` / ``_removed_retest_request``,
+    # the latest removal of that endpoint by one indexed lookup; revision
+    # ``d4a8c2e6f1b3``, review 2026-10-23b, TRI-5 — they were a JSON blob in
+    # ``before_value``, scanned in Python).  No reader shows them.  A host or
+    # name deleted since leaves nothing to restore: SET NULL.
+    removed_host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="SET NULL"), nullable=True)
+    removed_name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), nullable=True, index=True)
+    removed_retest_requested_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # Led by the host (the foreign-key index every FK into hosts_v2 has)
+        # and then the finding: the Undo's lookup.
+        Index("ix_finding_status_history_removed_host", "removed_host_id", "finding_id"),
+    )
 
     finding = relationship("Finding", back_populates="status_history")
     changed_by = relationship("User", foreign_keys=[changed_by_id])

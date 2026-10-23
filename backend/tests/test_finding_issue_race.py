@@ -105,9 +105,10 @@ def test_an_insert_the_index_refuses_joins_the_finding_that_won(db_session, test
             vuln=vuln, project_id=test_project.id, actor_id=test_user.id, host_ids=[vuln.host_id],
         )
     else:
-        joined = svc.dismiss_vulnerability_on_host(
+        joined, created = svc.dismiss_vulnerability_on_host(
             vuln=vuln, project_id=test_project.id, actor_id=test_user.id, summary="patched here",
         )
+        assert created is False
     db_session.commit()
 
     assert joined.id == winner.id and calls["n"] == 2

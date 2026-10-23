@@ -169,6 +169,50 @@ def _add(db: Session, project_id: int, kind: str, who: Attribution, **cols) -> A
     return proposal
 
 
+def _active_project_admins(db: Session, project_id: int, exclude: Optional[int]) -> set:
+    """The project's admin members who are active, less ``exclude`` (the
+    person whose run it is) — who is told about proposals no finding's author
+    or owner reviews."""
+    return {
+        uid for (uid,) in db.query(ProjectMembership.user_id)
+        .join(User, User.id == ProjectMembership.user_id)
+        .filter(
+            ProjectMembership.project_id == project_id,
+            ProjectMembership.role == ProjectRole.ADMIN.value,
+            User.is_active.is_(True),
+        )
+    } - {exclude}
+
+
+def _unread_proposal_notices(
+    db: Session, user_ids: Iterable[int], project_id: int, source_type: str, source_id: int,
+    actor_id: Optional[int],
+) -> Dict[int, Notification]:
+    """Each person's ONE unread proposal notification for (source_type,
+    source_id), added when they have none — read for every recipient in one
+    statement (review 2026-10-23b, TRI-8: three loops each read one per
+    person).  The caller sets the title and body."""
+    ids = set(user_ids)
+    held: Dict[int, Notification] = {}
+    for notification in (
+        db.query(Notification)
+        .filter(
+            Notification.user_id.in_(ids), Notification.type == "proposal",
+            Notification.source_type == source_type, Notification.source_id == source_id,
+            Notification.is_read.is_(False),
+        )
+        .order_by(Notification.id)
+    ) if ids else ():
+        held.setdefault(notification.user_id, notification)
+    for uid in sorted(ids - set(held)):
+        held[uid] = Notification(
+            user_id=uid, project_id=project_id, type="proposal",
+            source_type=source_type, source_id=source_id, actor_id=actor_id,
+        )
+        db.add(held[uid])
+    return held
+
+
 def _notify_finding_people(db: Session, finding_id: Optional[int], who: Attribution) -> None:
     """Tell a finding's author and owner that an AI proposed changes to it
     (decision 6): ONE notification per person per agent session (per finding
@@ -198,6 +242,7 @@ def _notify_finding_people(db: Session, finding_id: Optional[int], who: Attribut
     proposer = db.get(User, who.user_id) if who.user_id else None
     name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
     model = f" ({who.model})" if who.model else ""
+    notices = _unread_proposal_notices(db, recipients, finding.project_id, source_type, source_id, who.user_id)
     for uid in recipients:
         theirs = (Finding.created_by_id == uid) | (Finding.owner_id == uid)
         finding_ids = sorted({
@@ -226,21 +271,7 @@ def _notify_finding_people(db: Session, finding_id: Optional[int], who: Attribut
             if who.session is not None else
             f"{name} drafted report text{model} for review — accept or reject it."
         )
-        existing = (
-            db.query(Notification)
-            .filter(
-                Notification.user_id == uid, Notification.type == "proposal",
-                Notification.source_type == source_type, Notification.source_id == source_id,
-                Notification.is_read.is_(False),
-            )
-            .first()
-        )
-        if existing is None:
-            existing = Notification(
-                user_id=uid, project_id=finding.project_id, type="proposal",
-                source_type=source_type, source_id=source_id, actor_id=who.user_id,
-            )
-            db.add(existing)
+        existing = notices[uid]
         existing.title = title
         existing.body = body
         # A single finding opens that finding; several open the Proposals page.
@@ -266,15 +297,7 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
     session, kept current as the run proposes more.  Admins are the project's
     admin members who are active; the person whose agent it is is not told
     about their own run."""
-    recipients = {
-        uid for (uid,) in db.query(ProjectMembership.user_id)
-        .join(User, User.id == ProjectMembership.user_id)
-        .filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.role == ProjectRole.ADMIN.value,
-            User.is_active.is_(True),
-        )
-    } - {who.user_id}
+    recipients = _active_project_admins(db, project_id, who.user_id)
     if not recipients:
         return
     if who.session is not None:
@@ -310,22 +333,9 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
         f"{name}'s agent{model} proposed new findings or scanner-observation decisions. "
         "No finding's author or owner reviews these — accept or reject them."
     )
-    for uid in recipients:
-        existing = (
-            db.query(Notification)
-            .filter(
-                Notification.user_id == uid, Notification.type == "proposal",
-                Notification.source_type == source_type, Notification.source_id == source_id,
-                Notification.is_read.is_(False),
-            )
-            .first()
-        )
-        if existing is None:
-            existing = Notification(
-                user_id=uid, project_id=project_id, type="proposal",
-                source_type=source_type, source_id=source_id, actor_id=who.user_id,
-            )
-            db.add(existing)
+    for existing in _unread_proposal_notices(
+        db, recipients, project_id, source_type, source_id, who.user_id,
+    ).values():
         existing.title = title
         existing.body = body
     db.flush()
@@ -346,15 +356,7 @@ def _notify_scope_admins(db: Session, project_id: int, who: Attribution) -> None
     told about their own run.  An analyst may decide them too."""
     if who.session is None:
         return
-    recipients = {
-        uid for (uid,) in db.query(ProjectMembership.user_id)
-        .join(User, User.id == ProjectMembership.user_id)
-        .filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.role == ProjectRole.ADMIN.value,
-            User.is_active.is_(True),
-        )
-    } - {who.user_id}
+    recipients = _active_project_admins(db, project_id, who.user_id)
     if not recipients:
         return
     count = db.query(func.count(AgentProposal.id)).filter(
@@ -371,22 +373,9 @@ def _notify_scope_admins(db: Session, project_id: int, who: Attribution) -> None
         else f"AI proposed descriptions or sites for {count} subnets"
     )
     body = f"{name}'s agent{model} proposed scope details for review — accept or reject them, together if you wish."
-    for uid in recipients:
-        existing = (
-            db.query(Notification)
-            .filter(
-                Notification.user_id == uid, Notification.type == "proposal",
-                Notification.source_type == SCOPE_PROPOSAL_SOURCE, Notification.source_id == who.session.id,
-                Notification.is_read.is_(False),
-            )
-            .first()
-        )
-        if existing is None:
-            existing = Notification(
-                user_id=uid, project_id=project_id, type="proposal",
-                source_type=SCOPE_PROPOSAL_SOURCE, source_id=who.session.id, actor_id=who.user_id,
-            )
-            db.add(existing)
+    for existing in _unread_proposal_notices(
+        db, recipients, project_id, SCOPE_PROPOSAL_SOURCE, who.session.id, who.user_id,
+    ).values():
         existing.title = title
         existing.body = body
     db.flush()
@@ -814,18 +803,13 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
     if head is not None and head.kind == ProposalKind.SUBNET_DETAILS.value and head.subnet_id:
         db.query(models.Subnet.id).filter(models.Subnet.id == head.subnet_id).with_for_update().first()
     if head is not None and head.kind == ProposalKind.FINDING_TEXT.value and head.finding_id:
-        db.query(Finding.id).filter(
-            Finding.id == head.finding_id, Finding.project_id == project_id,
-        ).with_for_update(key_share=True).first()
+        FindingService(db).lock_finding_ids([head.finding_id], project_id=project_id)
     if head is not None and head.kind == ProposalKind.ENDPOINT_STATUS.value and head.finding_host_id:
         # The finding first, as every endpoint write takes it
         # (`FindingService.lock_finding`, review 2026-10-22, A-R1), then the
         # endpoint — FOR UPDATE: the lock `set_endpoint_status` takes, and the
         # one a DELETE of the row needs.
-        if head.finding_id:
-            db.query(Finding.id).filter(
-                Finding.id == head.finding_id, Finding.project_id == project_id,
-            ).with_for_update(key_share=True).first()
+        FindingService(db).lock_finding_ids([head.finding_id], project_id=project_id)
         db.query(FindingHost.id).filter(FindingHost.id == head.finding_host_id).with_for_update().first()
     return get_proposal(db, project_id, proposal_id, for_update=True)
 
@@ -929,7 +913,7 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
             FindingStatus.CONFIRMED.value if kind == ProposalKind.OBSERVATION_PROMOTE.value
             else FindingStatus.FALSE_POSITIVE.value
         )
-        finding = promote_or_dismiss_vulnerability(
+        finding, _created = promote_or_dismiss_vulnerability(
             db, vuln=vuln, project_id=project_id, actor_id=user.id,
             severity=payload.get("severity"), status=status,
             summary=_history_note(proposal, payload.get("summary")), scope=payload.get("scope"),

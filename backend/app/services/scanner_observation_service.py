@@ -671,7 +671,7 @@ def dismiss_issue(
     vulns = {v.id: v for v in db.query(Vulnerability).filter(Vulnerability.id.in_([by_host[h] for h in chosen]))}
     finding = None
     for host_id in chosen:
-        finding = promote_or_dismiss_vulnerability(
+        finding, _created = promote_or_dismiss_vulnerability(
             db, vuln=vulns[by_host[host_id]], project_id=project_id, actor_id=actor_id,
             status=fp, summary=reason, scope="host",
         )

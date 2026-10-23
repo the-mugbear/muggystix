@@ -388,6 +388,56 @@ class NotificationService:
             notifications.append(notification)
         return notifications
 
+    def announce_note(
+        self, note: Annotation, actor: User, project: Project, *,
+        created: bool, place: str, failed: str,
+    ) -> dict:
+        """Tell the people a note concerns — the ONE sequence for a host note
+        and a finding comment, posted or edited (review 2026-10-23b, TRI-7: it
+        was written three times).  Best-effort, after the note itself has
+        committed (audit H3): a failure never loses the note.
+
+        The @mentioned first; then, for a NEW note, everyone already in the
+        discussion and — on a host — the host's reviewers, each skipping those
+        already told; then the ``note_mention`` webhook when anyone was
+        mentioned ("@author mentioned N user(s) on ``place``"), staged in this
+        transaction so the rollback below discards it with the rest.  Commits.
+
+        Returns the fields the author's answer carries: who the mentions
+        reached and the ones that matched nobody (``mention_outcome``), or
+        ``mention_warning`` = ``failed`` when the telling failed."""
+        from app.services.webhook_dispatcher import stage_dispatch
+
+        # Read before anything below can roll back and expire them.
+        note_id, host_id, finding_id, body = note.id, note.host_id, note.finding_id, note.body
+        try:
+            mentions = self.process_note_mentions(note, actor, project) or []
+            outcome = self.mention_outcome(body, project.id, mentions)
+            if created:
+                told = {n.user_id for n in mentions}
+                told |= {n.user_id for n in self.notify_discussion_participants(
+                    note, actor, project, exclude_user_ids=told)}
+                if finding_id is None:
+                    self.notify_host_followers_of_note(note, actor, project, exclude_user_ids=told)
+            if mentions:
+                stage_dispatch(
+                    self.db, project_id=project.id, event="note_mention",
+                    title=f"@{actor.username} mentioned {len(mentions)} user(s) on {place}",
+                    body=(body or "")[:280],
+                    context=({"finding_id": finding_id} if finding_id is not None else {"host_id": host_id})
+                    | {"note_id": note_id},
+                )
+            self.db.commit()
+            return outcome
+        except Exception:
+            logger.exception(
+                "Note notifications failed",
+                extra={"note_id": note_id, "host_id": host_id, "finding_id": finding_id,
+                       "author_id": actor.id, "project_id": project.id, "new_note": created},
+            )
+            self.db.rollback()
+            return {"mention_warning": failed}
+
     def notify_followers_of_scan_update(
         self,
         scan_id: int,
@@ -489,17 +539,22 @@ class NotificationService:
             notifications.append(notification)
         return notifications
 
-    def _retest_recipients(self, finding, actor_id: Optional[int], members: Dict[int, set]) -> set:
+    def _retest_recipients(
+        self, finding, actor_id: Optional[int], members: Dict[int, set], owners: Dict[int, set],
+    ) -> set:
         """Who is told that hosts of ``finding`` await a retest: the
         finding's owner, or — "When there's no owner notify all project
         members" — every active member; never the person who asked.
-        ``members`` caches each project's active members for one action."""
+        ``members`` caches each project's active members for one action;
+        ``owners`` is, per project, the action's owners who can be told
+        (``current_members``, read once for the action — review 2026-10-23b,
+        TRI-6: it was one statement per finding, ~500 for a bulk apply)."""
         if finding.owner_id is not None and finding.owner_id == actor_id:
             # The owner asked for it themself: there is nobody to tell (the
             # walkthrough found a global-admin owner — no membership row —
             # read as "no owner", and the whole project was told).
             return set()
-        recipients = (self.current_members(finding.project_id, {finding.owner_id})
+        recipients = ({finding.owner_id} & owners.get(finding.project_id, set())
                       if finding.owner_id is not None else set())
         if not recipients:
             # No owner — or one who can no longer be told (left the project,
@@ -525,29 +580,40 @@ class NotificationService:
           and the text says how many findings and hosts.
 
         ``type: retest``.  The caller commits."""
+        pending = [(finding, rows) for finding, rows in pending if rows]
+        asked_of: Dict[int, set] = {}
+        for finding, _ in pending:
+            if finding.owner_id is not None:
+                asked_of.setdefault(finding.project_id, set()).add(finding.owner_id)
+        owners = {pid: self.current_members(pid, ids) for pid, ids in asked_of.items()}
         members: Dict[int, set] = {}
         by_recipient: Dict[tuple, list] = {}
         for finding, rows in pending:
-            if not rows:
-                continue
-            for uid in self._retest_recipients(finding, actor_id, members):
+            for uid in self._retest_recipients(finding, actor_id, members, owners):
                 by_recipient.setdefault((uid, finding.project_id), []).append((finding, rows))
         if not by_recipient:
             return []
         actor = self.db.get(User, actor_id) if actor_id else None
         asked = f" — asked by {display_name(actor)}" if actor is not None else ""
-        # Who is told to act: a member who can record a result (analyst or
-        # admin).  An auditor or viewer told because nobody owns the finding
-        # is told only that it waits (review 2026-10-23: "Anyone in the
-        # project may record the retest's result" was said to them too).
+        # Who is told to act: someone who can record a result — an analyst or
+        # admin of the project, or a global admin whatever their membership
+        # (review 2026-10-23b, TRI-10: a global admin who was a viewer member
+        # was not told, although they can).  An auditor or viewer told
+        # because nobody owns the finding is told only that it waits (review
+        # 2026-10-23: "Anyone in the project may record the retest's result"
+        # was said to them too).
+        recipient_ids = {uid for uid, _ in by_recipient}
+        global_admins = {
+            uid for (uid,) in self.db.query(User.id).filter(User.id.in_(recipient_ids), User.role == UserRole.ADMIN)
+        }
         writers = {
             (uid, pid) for uid, pid in self.db.query(ProjectMembership.user_id, ProjectMembership.project_id)
             .filter(
-                ProjectMembership.user_id.in_({uid for uid, _ in by_recipient}),
+                ProjectMembership.user_id.in_(recipient_ids),
                 ProjectMembership.project_id.in_({pid for _, pid in by_recipient}),
                 ProjectMembership.role.in_([ProjectRole.ADMIN.value, ProjectRole.ANALYST.value]),
             )
-        }
+        } | {(uid, pid) for uid, pid in by_recipient if uid in global_admins}
         out = []
         for (uid, project_id), items in sorted(by_recipient.items(), key=lambda kv: kv[0]):
             act = (" Any analyst or admin of the project may record the retest's result."
