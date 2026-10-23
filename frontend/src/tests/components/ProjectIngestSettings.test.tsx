@@ -52,11 +52,13 @@ describe('ProjectIngestSettings', () => {
     ));
   });
 
-  it('shows the setting read-only to a role that cannot change it', () => {
-    effective = true;
+  // Review 2026-10-23 — a write control is hidden from a role that cannot use
+  // it, not disabled (style guide §40): the setting is said as text.
+  it.each([[true, 'On'], [false, 'Off']])('says the setting to a role that cannot change it, with no switch (%s)', (on, said) => {
+    effective = on;
     render(<ProjectIngestSettings canEdit={false} />);
-    const toggle = screen.getByRole('switch', { name: 'Skip informational Nessus scanner observations' });
-    expect(toggle).toBeChecked();
-    expect(toggle).toBeDisabled();
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.getByText('Skip informational Nessus scanner observations')).toBeInTheDocument();
+    expect(screen.getByTestId('skip-informational-state')).toHaveTextContent(said);
   });
 });

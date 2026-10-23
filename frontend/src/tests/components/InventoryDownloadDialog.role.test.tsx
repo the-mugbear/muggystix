@@ -112,6 +112,23 @@ describe('InventoryDownloadDialog — whose report job it is', () => {
     },
   );
 
+  // Review 2026-10-23 — Retry / Cancel / Dismiss could be pressed again while
+  // the first press was on its way: the jobs' buttons wait for the answer.
+  it('a job action on its way holds the jobs’ buttons until it answers', async () => {
+    jobs(7);
+    let answer!: (v: unknown) => void;
+    (api.retryReportJob as ReturnType<typeof vi.fn>).mockReturnValue(new Promise((r) => { answer = r; }));
+    await open();
+    screen.getByRole('button', { name: 'Retry report job 1' }).click();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry report job 1' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Cancel report job 2' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Dismiss report job 3' })).toBeDisabled();
+    screen.getByRole('button', { name: 'Retry report job 1' }).click();
+    expect(api.retryReportJob).toHaveBeenCalledTimes(1);
+    answer({});
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Dismiss report job 3' })).toBeEnabled());
+  });
+
   // R34 — a refused Dismiss is said, and a refused Retry says the server's words.
   it('says a refusal instead of doing nothing', async () => {
     jobs(7);

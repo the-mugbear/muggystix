@@ -195,6 +195,9 @@ const InventoryDownloadBody: React.FC<InventoryDownloadDialogProps & {
       : download.isPending ? `download-${download.variables.job.id}`
         : null;
   const isBusy = busy !== null;
+  // A retry, cancel or dismiss on its way: the jobs' own buttons wait for it
+  // (a second press sent the request twice; review 2026-10-23).
+  const jobControlsBusy = isBusy || jobAction.isPending || dismiss.isPending;
 
   // The job started from this dialog, as the list currently knows it.
   const trackedJob = trackedJobId != null ? recentJobs.find((j) => j.id === trackedJobId) ?? null : null;
@@ -359,6 +362,7 @@ const InventoryDownloadBody: React.FC<InventoryDownloadDialogProps & {
                         variant="ghost"
                         className="h-6 shrink-0"
                         aria-label={`Retry report job ${job.id}`}
+                        disabled={jobControlsBusy}
                         onClick={() => jobAction.mutate({ action: 'retry', jobId: job.id })}
                       >
                         Retry
@@ -370,6 +374,7 @@ const InventoryDownloadBody: React.FC<InventoryDownloadDialogProps & {
                         variant="ghost"
                         className="h-6 shrink-0"
                         aria-label={`Cancel report job ${job.id}`}
+                        disabled={jobControlsBusy}
                         onClick={() => jobAction.mutate({ action: 'cancel', jobId: job.id })}
                       >
                         Cancel
@@ -392,6 +397,7 @@ const InventoryDownloadBody: React.FC<InventoryDownloadDialogProps & {
                         variant="ghost"
                         className="h-6 shrink-0"
                         aria-label={`Dismiss report job ${job.id}`}
+                        disabled={jobControlsBusy}
                         onClick={() => dismiss.mutate(job.id)}
                       >
                         ✕
