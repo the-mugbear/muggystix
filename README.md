@@ -40,7 +40,7 @@ The app opens on the **Operations** hub; everything else hangs off **Inventory**
 backend/app/
   api/v1/endpoints/   FastAPI route modules
   main.py, startup.py App entrypoint; first-boot seeding (default admin, default project), background loops
-  data/               parser_coverage.json (the "What BlueStick reads" page), tool_registry_seed.json
+  data/               parser_coverage.json (the "What BlueStick reads" page), tool_registry_seed.json, release_notes.json (Reference → Release notes)
   worker.py, report_worker.py   The two worker container entrypoints
   api/deps.py         Auth dependencies (get_current_user, require_project_role, agent access)
   core/               Settings + password/JWT primitives
@@ -324,3 +324,4 @@ Whatever an agent session is doing (assist, scanning, proposing or running tests
 - [Report templates](report-templates/README.md) — authoring a client report template
 - [Parse audit brief](documentation/PARSE_AUDIT_BRIEF.md) — how an on-site agent audits parse accuracy without samples leaving the client network
 - For SBOM, visit **Reference → Software Bill of Materials** in the running app — the live page reflects the deployed build's resolved dependency tree.
+- What changed in each version: **Reference → Release notes** in the running app (analysts and administrators; **About BlueStick** links to the running version's notes).

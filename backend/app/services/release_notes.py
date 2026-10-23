@@ -7,7 +7,13 @@ was made stays in the maintainers' changelog, which is not published.
 
 Every release has an entry: ``tests/test_release_notes.py`` fails when the
 version in ``platform_version.json`` has none or an empty one, and
-``scripts/bump-version.py`` adds the empty entry to fill.
+``scripts/bump-version.py`` adds the empty entry to fill — or renumbers it
+when the top entry is still empty, so two bumps in a row never leave a version
+that was never released (2.525.1).
+
+``check`` is the whole contract, and the gate runs it on the real file: what it
+accepts is served as it is written, so nothing is re-sorted or trimmed per
+request.
 """
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ from typing import Any, Dict, List
 
 NOTES_PATH = Path(__file__).resolve().parents[1] / "data" / "release_notes.json"
 
-#: The kinds a line may be, in the order a release shows them.
+#: The kinds a line may be, in the order a release lists them.
 KINDS = ("new", "changed", "fixed", "before_upgrading")
 
 #: One line is a line: a note longer than this is a paragraph for the changelog.
@@ -37,44 +43,65 @@ def _key(version: str) -> tuple:
     return tuple(int(part) for part in version.split("."))
 
 
-def check(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _check_entries(where: str, entries: Any) -> None:
+    if not isinstance(entries, list):
+        raise ReleaseNotesError(f"{where}: 'entries' must be a list")
+    last_kind = 0
+    for line, entry in enumerate(entries):
+        here = f"{where}, line {line}"
+        if not isinstance(entry, dict):
+            raise ReleaseNotesError(f"{here}: must be an object with 'kind' and 'text'")
+        if entry.get("kind") not in KINDS:
+            raise ReleaseNotesError(f"{here}: 'kind' must be one of {', '.join(KINDS)}")
+        kind = KINDS.index(entry["kind"])
+        if kind < last_kind:
+            raise ReleaseNotesError(f"{here}: lines run in kind order ({', '.join(KINDS)})")
+        last_kind = kind
+        text = entry.get("text")
+        if not isinstance(text, str) or not text or len(text) > MAX_TEXT:
+            raise ReleaseNotesError(f"{here}: 'text' must be 1–{MAX_TEXT} characters of text")
+        if text != text.strip():
+            raise ReleaseNotesError(f"{here}: 'text' has spaces at its start or end")
+
+
+def check(data: Any) -> List[Dict[str, Any]]:
     """The releases, or ReleaseNotesError naming what is wrong.
 
-    Each release names both versions and a date, every line has a known kind
-    and some text of at most ``MAX_TEXT`` characters, no version pair appears
-    twice, and the releases run newest first by both versions.  An empty
-    ``entries`` list is allowed here — the bump script writes one — and
-    refused for the CURRENT version by the test.
+    Each release names both versions and a date; its lines are in ``KINDS``
+    order, each a known kind with trimmed text of at most ``MAX_TEXT``
+    characters; no version pair appears twice; releases run newest first by
+    both versions and by date.  Only the TOP release may have no lines — the
+    one the bump script just added — and the test refuses that too when it is
+    the running version.
     """
-    releases = data.get("releases")
+    releases = data.get("releases") if isinstance(data, dict) else None
     if not isinstance(releases, list):
         raise ReleaseNotesError("'releases' must be a list")
     seen = set()
     for position, release in enumerate(releases):
         where = f"release {position}"
+        if not isinstance(release, dict):
+            raise ReleaseNotesError(f"{where}: must be an object")
         for field in ("backend", "frontend"):
-            if not _VERSION.match(str(release.get(field, ""))):
+            if not isinstance(release.get(field), str) or not _VERSION.match(release[field]):
                 raise ReleaseNotesError(f"{where}: '{field}' must be a version like 2.525.0")
-        if not _DATE.match(str(release.get("date", ""))):
+        if not isinstance(release.get("date"), str) or not _DATE.match(release["date"]):
             raise ReleaseNotesError(f"{where}: 'date' must be YYYY-MM-DD")
+        where = f"release {release['backend']} / {release['frontend']}"
         pair = (release["backend"], release["frontend"])
         if pair in seen:
-            raise ReleaseNotesError(f"{where}: {pair[0]} / {pair[1]} is listed twice")
+            raise ReleaseNotesError(f"{where} is listed twice")
         seen.add(pair)
-        entries = release.get("entries")
-        if not isinstance(entries, list):
-            raise ReleaseNotesError(f"{where}: 'entries' must be a list")
-        for line, entry in enumerate(entries):
-            if entry.get("kind") not in KINDS:
-                raise ReleaseNotesError(f"{where}, line {line}: 'kind' must be one of {', '.join(KINDS)}")
-            text = str(entry.get("text", "")).strip()
-            if not text or len(text) > MAX_TEXT:
-                raise ReleaseNotesError(f"{where}, line {line}: 'text' must be 1–{MAX_TEXT} characters")
-        if position and (
-            _key(release["backend"]) > _key(releases[position - 1]["backend"])
-            or _key(release["frontend"]) > _key(releases[position - 1]["frontend"])
-        ):
-            raise ReleaseNotesError(f"{where}: releases run newest first")
+        _check_entries(where, release.get("entries"))
+        if position and not release["entries"]:
+            raise ReleaseNotesError(f"{where}: has no lines — only the top release may be empty")
+        if position:
+            newer = releases[position - 1]
+            if (_key(release["backend"]) > _key(newer["backend"])
+                    or _key(release["frontend"]) > _key(newer["frontend"])):
+                raise ReleaseNotesError(f"{where}: releases run newest first")
+            if release["date"] > newer["date"]:
+                raise ReleaseNotesError(f"{where}: dated after the release above it")
     return releases
 
 
@@ -84,9 +111,6 @@ def _load(mtime: float) -> List[Dict[str, Any]]:
 
 
 def releases() -> List[Dict[str, Any]]:
-    """Every release, newest first, each line ordered by ``KINDS``."""
-    out = []
-    for release in _load(NOTES_PATH.stat().st_mtime):
-        entries = sorted(release["entries"], key=lambda e: KINDS.index(e["kind"]))
-        out.append({**release, "entries": [{"kind": e["kind"], "text": e["text"].strip()} for e in entries]})
-    return out
+    """Every release, newest first, as written (``check`` keeps the file in
+    order).  Read again only when the file changes."""
+    return _load(NOTES_PATH.stat().st_mtime)

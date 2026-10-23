@@ -19,7 +19,6 @@ import { Button } from './ui/button';
 import { formatTimestamp } from '../utils/relativeTime';
 import { useProject } from '../contexts/ProjectContext';
 import { canWriteInSomeProject } from '../utils/projectRole';
-import { releaseNotesPath } from '../utils/releaseNotes';
 import {
   Dialog,
   DialogContent,
@@ -226,7 +225,10 @@ const UserMenu: React.FC = () => {
               className="h-auto justify-start p-0"
               onClick={() => {
                 setAboutOpen(false);
-                navigate(releaseNotesPath(backendVersion, frontendVersion));
+                // The page opens on the release the SERVER runs, so the link
+                // and its "Running here" mark cannot disagree after a deploy
+                // of one side only.
+                navigate('/reference/release-notes');
               }}
             >
               What changed in this version

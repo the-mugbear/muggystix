@@ -55,12 +55,27 @@ _RELEASES_OPEN = '"releases": [\n'
 
 def _with_release(text: str, backend: str, frontend: str) -> str | None:
     """The notes with an empty entry for this version pair at the top, or None
-    when it already has one.  Inserted as text, so the file keeps its layout."""
+    when it already has one.  Written as text, so the file keeps its layout.
+
+    When the top entry has no lines yet, it is the release being prepared: it
+    is RENUMBERED to the new pair, never left below a second one — two bumps on
+    one branch (backend, then frontend) used to leave an empty entry for a
+    version that was never released (2.525.1)."""
     releases = json.loads(text)["releases"]
     if any((r["backend"], r["frontend"]) == (backend, frontend) for r in releases):
         return None
     if _RELEASES_OPEN not in text:
         raise SystemExit("Nothing changed — release_notes.json has no '\"releases\": [' line to add to")
+    if releases and releases[0]["entries"] == []:
+        head, top = text.split(_RELEASES_OPEN, 1)
+        block, rest = top.split('"entries"', 1)
+        top_was = releases[0]
+        for field, value in (("backend", backend), ("frontend", frontend), ("date", date.today().isoformat())):
+            old = f'"{field}": "{top_was[field]}"'
+            if old not in block:
+                raise SystemExit(f"Nothing changed — the empty top entry of release_notes.json has no {old} to renumber")
+            block = block.replace(old, f'"{field}": "{value}"', 1)
+        return head + _RELEASES_OPEN + block + '"entries"' + rest
     block = (
         f'    {{\n      "backend": "{backend}",\n      "frontend": "{frontend}",\n'
         f'      "date": "{date.today().isoformat()}",\n      "entries": []\n    }}'

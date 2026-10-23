@@ -1254,12 +1254,13 @@ def can_write_in_some_project(db: Session, user: User) -> bool:
     """Whether this ACCOUNT can write anywhere: a global admin, or analyst or
     admin on at least one project (any project — archived included).
 
-    The one answer for an account-level feature that only exists to serve a
-    project write.  Today that is the per-user LLM providers: a provider is
-    used for drafting, which needs project ANALYST (``report_drafts``), so an
-    account that is viewer / auditor everywhere has no use for one — and
-    registering or testing one makes the server issue an HTTP request to an
-    address the caller chose."""
+    The one answer for "analysts and above" on an account-level surface, which
+    has no project to ask a role of.  Its callers: the per-user LLM providers
+    (a provider is used for drafting, which needs project ANALYST
+    (``report_drafts``), and registering or testing one makes the server issue
+    an HTTP request to an address the caller chose) and the release notes
+    (``GET /references/release-notes``, owner 2026-10-23).  A change here
+    changes both."""
     if user.role == UserRole.ADMIN:
         return True
     return (

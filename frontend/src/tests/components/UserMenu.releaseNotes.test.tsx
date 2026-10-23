@@ -5,7 +5,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UserMenu from '../../components/UserMenu';
-import buildInfo from '../../buildInfo.json';
 
 const account = vi.hoisted(() => ({ role: 'member', projects: [{ my_role: 'analyst' }] as Array<{ my_role?: string }> }));
 const navigate = vi.hoisted(() => vi.fn());
@@ -39,12 +38,12 @@ const openAbout = async () => {
 };
 
 describe('About BlueStick — release notes', () => {
-  it('opens the notes at the version this build runs', async () => {
+  it('opens the notes, which open on the release the server runs', async () => {
     const user = await openAbout();
     await user.click(await screen.findByRole('button', { name: 'What changed in this version' }));
-    const backend = process.env.REACT_APP_BACKEND_VERSION || buildInfo.backendVersion || 'unknown';
-    const frontend = process.env.REACT_APP_VERSION || buildInfo.frontendVersion || '1.0.0';
-    expect(navigate).toHaveBeenCalledWith(`/reference/release-notes#release-${backend}-${frontend}`);
+    // No version in the link (5.420.1): the frontend's build may differ from
+    // the server's after a deploy of one side, and the page marks the server's.
+    expect(navigate).toHaveBeenCalledWith('/reference/release-notes');
   });
 
   it('is not offered to an account that is viewer or auditor everywhere', async () => {

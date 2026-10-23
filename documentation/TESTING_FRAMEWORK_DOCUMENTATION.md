@@ -237,6 +237,12 @@ Update these WITH the change, never around it:
 | `test_note_serialization_loads.py`, `test_host_detail_loads.py` | serialising notes / opening a host costs a fixed number of queries; `note_load_options()` loads everything `_serialize_note` reads |
 | `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | the agent guide's section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
 | `test_db_init_migration.py` | migration-step error handling; importing `app.main` / `app.worker` runs no migration; the backend's CMD and the worker's command run `python -m app.db.migrate` first, the report worker never |
+| `test_password_change_gate_coverage.py` | every signed-in route (included routers too) resolves `require_password_changed`; only `/auth/*` is exempt (2.524.0) |
+| `test_parsers_isolate_records_one_way.py` | no parser writes its own savepoint — a skipped record goes through `parser_utils.write_record` (2.524.0) |
+| `test_finding_source_note_is_read_only.py` | nothing writes `findings.evidence_annotation_id`, a read-only legacy path (2.524.0) |
+| `test_release_notes.py` | `app/data/release_notes.json` has its shape, newest first; **the running version has at least one line** — a version bump without its release notes fails the gate; the read is analysts and above (2.525.0) |
+| `test_migration_review_2026_10_10_schema.py` (its refusal-list cases) | `scripts/upgrade-refusals.sql` is the one list of rows a migration refuses, read by `deploy.sh`, `collect-logs.sh` and `migration-failure-report.sh` with no copy (2.524.0) |
+| `frontend/src/tests/navigation.test.ts` | every route `App.tsx` declares has a browser-tab title and is in the navigation manifest or listed as reached from a page (5.420.0) |
 | `uploadFormats.test.ts`, `uploadFormatContract.test.ts` | the advertised upload formats against `documentation/UPLOAD_FORMATS.md`, and the dropzone allowlist against the backend's |
 | `versionConsistency.test.ts` | every version fallback in `docker-compose.yml` against `platform_version.json` |
 | `themeAlphaTokens.test.ts` | a theme token that carries its own alpha (`--muted`, `--accent`, `--border`, `--sidebar-accent`) is not wrapped with `/ <alpha-value>` in `tailwind.config.ts` |

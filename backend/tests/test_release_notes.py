@@ -26,8 +26,8 @@ def _file():
 
 def test_the_notes_have_the_promised_shape():
     releases = release_notes.check(_file())
-    assert releases, "the notes start at 2.523.0"
-    assert (releases[-1]["backend"], releases[-1]["frontend"]) == ("2.523.0", "5.418.0")
+    assert releases, "the notes start at 2.448.0"
+    assert (releases[-1]["backend"], releases[-1]["frontend"]) == ("2.448.0", "5.327.0")
 
 
 def test_the_running_version_has_its_notes():
@@ -40,17 +40,31 @@ def test_the_running_version_has_its_notes():
     assert entry["entries"], f"the notes for {current[0]} / {current[1]} are empty: write this release's lines"
 
 
+def _release(backend="2.1.0", frontend="5.0.0", date="2026-01-01", entries=None):
+    return {"backend": backend, "frontend": frontend, "date": date,
+            "entries": [{"kind": "fixed", "text": "Something."}] if entries is None else entries}
+
+
 @pytest.mark.parametrize("bad, says", [
-    ({"releases": [{"backend": "2.1", "frontend": "5.0.0", "date": "2026-01-01", "entries": []}]}, "'backend'"),
-    ({"releases": [{"backend": "2.1.0", "frontend": "5.0.0", "date": "1 Jan", "entries": []}]}, "'date'"),
-    ({"releases": [{"backend": "2.1.0", "frontend": "5.0.0", "date": "2026-01-01",
-                    "entries": [{"kind": "misc", "text": "x"}]}]}, "'kind'"),
-    ({"releases": [{"backend": "2.1.0", "frontend": "5.0.0", "date": "2026-01-01",
-                    "entries": [{"kind": "new", "text": "x" * 301}]}]}, "'text'"),
-    ({"releases": [{"backend": "2.1.0", "frontend": "5.0.0", "date": "2026-01-01", "entries": []},
-                   {"backend": "2.2.0", "frontend": "5.0.0", "date": "2026-01-02", "entries": []}]}, "newest first"),
-    ({"releases": [{"backend": "2.1.0", "frontend": "5.0.0", "date": "2026-01-01", "entries": []},
-                   {"backend": "2.1.0", "frontend": "5.0.0", "date": "2026-01-01", "entries": []}]}, "twice"),
+    ({"releases": [_release(backend="2.1")]}, "'backend'"),
+    ({"releases": [_release(date="1 Jan")]}, "'date'"),
+    ({"releases": [_release(entries=[{"kind": "misc", "text": "x"}])]}, "'kind'"),
+    ({"releases": [_release(entries=[{"kind": "new", "text": "x" * 301}])]}, "'text'"),
+    ({"releases": [_release(), _release(backend="2.2.0", date="2025-12-31")]}, "newest first"),
+    ({"releases": [_release(), _release()]}, "twice"),
+    # 2.525.1 (review of the release notes): what the file must already be,
+    # so nothing is re-sorted or trimmed per request.
+    ({"releases": [_release(entries=[{"kind": "fixed", "text": "a"}, {"kind": "new", "text": "b"}])]},
+     "kind order"),
+    ({"releases": [_release(entries=[{"kind": "new", "text": " padded "}])]}, "spaces"),
+    ({"releases": [_release(entries=[{"kind": "new", "text": 42}])]}, "'text'"),
+    ({"releases": [_release(entries=["just a string"])]}, "an object"),
+    ({"releases": ["2.1.0"]}, "must be an object"),
+    ({"releases": [_release(date="2026-01-01"), _release(backend="2.0.0", date="2026-01-02")]}, "dated after"),
+    # Only the top release — the one being prepared — may be empty: an empty
+    # one below it is a version that was never released.
+    ({"releases": [_release(), _release(backend="2.0.0", entries=[])]}, "only the top release may be empty"),
+    ([], "'releases'"),
 ])
 def test_a_malformed_file_is_refused_naming_the_problem(bad, says):
     with pytest.raises(release_notes.ReleaseNotesError) as refused:
@@ -58,10 +72,8 @@ def test_a_malformed_file_is_refused_naming_the_problem(bad, says):
     assert says in str(refused.value)
 
 
-def test_a_release_lists_its_lines_by_kind():
-    for release in release_notes.releases():
-        kinds = [e["kind"] for e in release["entries"]]
-        assert kinds == sorted(kinds, key=release_notes.KINDS.index)
+def test_the_top_release_may_be_empty_while_it_is_written():
+    assert release_notes.check({"releases": [_release(backend="2.2.0", entries=[]), _release()]})
 
 
 # --- who reads them ---------------------------------------------------------

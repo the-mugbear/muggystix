@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.525.1",
+      "frontend": "5.420.1",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "changed", "text": "Release notes now go back to the start of October 2026, one entry for each version since."},
+        {"kind": "fixed", "text": "About BlueStick's \"What changed in this version\" opens on the version the server runs, even when the browser has an older build."}
+      ]
+    },
+    {
       "backend": "2.525.0",
       "frontend": "5.420.0",
       "date": "2026-10-23",
@@ -45,6 +54,1490 @@
         {"kind": "fixed", "text": "A worker restarted by a rebuild is no longer reported as stuck."},
         {"kind": "fixed", "text": "Large draft reports open several times faster."},
         {"kind": "before_upgrading", "text": "Back up first, and resume running agent sessions afterwards."}
+      ]
+    },
+    {
+      "backend": "2.522.0",
+      "frontend": "5.417.0",
+      "date": "2026-10-22",
+      "entries": [
+        {"kind": "new", "text": "Agents can propose a subnet's site and description; Proposals has a Scope details filter, and \"Accept all shown\" accepts them together."},
+        {"kind": "new", "text": "Project admins get one notification per agent session for its scope proposals."}
+      ]
+    },
+    {
+      "backend": "2.521.0",
+      "frontend": "5.416.0",
+      "date": "2026-10-22",
+      "entries": [
+        {"kind": "changed", "text": "Export on the Scope page writes the declared scope (networks, domains, or a CSV the scope upload reads back) instead of the hosts found in it."},
+        {"kind": "changed", "text": "Out-of-scope hosts are exported from Hosts: its out-of-scope filter, then Export targets."},
+        {"kind": "fixed", "text": "An export with nothing in it now says so, and why."}
+      ]
+    },
+    {
+      "backend": "2.520.1",
+      "frontend": "5.415.0",
+      "date": "2026-10-22",
+      "entries": [
+        {"kind": "changed", "text": "Agents read their key from a small curl config file in their working folder, so they no longer ask you to set an environment variable or restart them."}
+      ]
+    },
+    {
+      "backend": "2.520.0",
+      "frontend": "5.415.0",
+      "date": "2026-10-22",
+      "entries": [
+        {"kind": "new", "text": "\"Create briefing\" on Posture and Patterns makes the Posture briefing: the overview's argument as one light, printable handout."},
+        {"kind": "changed", "text": "The old systemic briefing and the per-site Briefing link on Segments are gone."}
+      ]
+    },
+    {
+      "backend": "2.519.1",
+      "frontend": "5.414.0",
+      "date": "2026-10-21",
+      "entries": [
+        {"kind": "new", "text": "Compare scans has a \"Find a scan\" box, so scans older than the newest 200 can be compared."},
+        {"kind": "changed", "text": "On Posture, the scanner observations and promoted findings bars share one design."},
+        {"kind": "changed", "text": "System settings names each worker replica and says when a worker's memory cannot be read."},
+        {"kind": "fixed", "text": "An AI draft or connection test against a provider that keeps trickling data now stops after a fixed time."},
+        {"kind": "fixed", "text": "A report's preview check is much faster on reports with many images."}
+      ]
+    },
+    {
+      "backend": "2.519.0",
+      "frontend": "5.413.0",
+      "date": "2026-10-21",
+      "entries": [
+        {"kind": "new", "text": "A finding's History records every edit of its title, severity, owner, score and report text, with \"Show before and after\"."},
+        {"kind": "new", "text": "Agents can replace their own pending proposal, and the Proposals page says which proposal replaced which."},
+        {"kind": "changed", "text": "An agent can record evidence about no single host, and reads long output and its guide in pieces."}
+      ]
+    },
+    {
+      "backend": "2.519.0",
+      "frontend": "5.412.3",
+      "date": "2026-10-21",
+      "entries": [
+        {"kind": "changed", "text": "Any project analyst can rename a finding and edit its report text; deleting it stays with its author or an admin."},
+        {"kind": "fixed", "text": "In Word reports, the summary tables' links to findings now go to the finding."},
+        {"kind": "fixed", "text": "A failed backup says why, and the diagnostics bundle is kept even when the folder it was run from cannot be written."},
+        {"kind": "before_upgrading", "text": "Deploy from the folder the running installation was started from (or one of the same name): deploy and backup now stop when BlueStick runs from another folder."}
+      ]
+    },
+    {
+      "backend": "2.518.0",
+      "frontend": "5.412.2",
+      "date": "2026-10-18",
+      "entries": [
+        {"kind": "new", "text": "Agents can read a scan's ports as the scan page's Ports tab lists them."}
+      ]
+    },
+    {
+      "backend": "2.517.0",
+      "frontend": "5.412.2",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "new", "text": "Global administrators are notified when the uploads disk runs low, the import queue backs up or a worker goes silent, at most once a day each."}
+      ]
+    },
+    {
+      "backend": "2.516.0",
+      "frontend": "5.412.1",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "changed", "text": "An import is stopped only when it stops making progress; a large file no longer fails just for taking a long time."},
+        {"kind": "before_upgrading", "text": "The INGESTION_JOB_TIMEOUT setting is now INGESTION_STALL_TIMEOUT (30 minutes without progress by default); the old name is still read for now, with a warning."}
+      ]
+    },
+    {
+      "backend": "2.515.0",
+      "frontend": "5.412.0",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "new", "text": "An agent session's page shows its first call, how long after the start it came, and how many notes it left."},
+        {"kind": "new", "text": "The status script says when the TLS certificate expires, and warns within 30 days."},
+        {"kind": "changed", "text": "The remediation contacts and teams lists say when they show only the first part of a longer list."},
+        {"kind": "fixed", "text": "NetExec, Nikto, RustScan, SMBMap and BloodHound imports skip a record the database refuses instead of failing the whole file."},
+        {"kind": "fixed", "text": "A deactivated account can no longer be added to a project, and an over-long username or name is refused with a clear message."}
+      ]
+    },
+    {
+      "backend": "2.514.0",
+      "frontend": "5.411.1",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "fixed", "text": "A link to a later page of a scan's current hosts opens that page."}
+      ]
+    },
+    {
+      "backend": "2.514.0",
+      "frontend": "5.411.0",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "changed", "text": "A scan's page lists exactly what each tab counts, 50 a page; the Ports tab shows ports as the scan saw them, and the tab and page stay in the address."},
+        {"kind": "fixed", "text": "The Hosts filters for certificate issues, weak TLS and weak authentication, and the Scans list, are faster on large projects."}
+      ]
+    },
+    {
+      "backend": "2.513.3",
+      "frontend": "5.410.1",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "fixed", "text": "Tool activity keeps its project filter in the address, so Back returns to it."}
+      ]
+    },
+    {
+      "backend": "2.513.2",
+      "frontend": "5.410.0",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "fixed", "text": "Accepting a host-status proposal while that host is being removed from the finding no longer fails with an error."},
+        {"kind": "fixed", "text": "Upload folders left behind by an interrupted upload are cleared automatically."}
+      ]
+    },
+    {
+      "backend": "2.513.1",
+      "frontend": "5.410.0",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "changed", "text": "Compare scans is laid out like Posture, with each scan's tool and type and a section per list."},
+        {"kind": "fixed", "text": "On Compare scans, New hosts and Dropped hosts open exactly those hosts, not every host the scan saw."}
+      ]
+    },
+    {
+      "backend": "2.513.0",
+      "frontend": "5.409.0",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "fixed", "text": "Setting up two-factor authentication now asks for your password."},
+        {"kind": "fixed", "text": "A webhook's test no longer reveals whether a private address answers."},
+        {"kind": "fixed", "text": "Nessus files with over-long titles or names import, and nmap no longer counts skipped down hosts as processed."},
+        {"kind": "fixed", "text": "A deeply nested query is refused with a message, and a query refused for a bad Hosts term is kept in your history."}
+      ]
+    },
+    {
+      "backend": "2.512.1",
+      "frontend": "5.408.3",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "changed", "text": "The Query page calls its language a pipe query language."}
+      ]
+    },
+    {
+      "backend": "2.512.0",
+      "frontend": "5.408.2",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "fixed", "text": "In a narrower window, a Query history entry's outcome sits under its query."}
+      ]
+    },
+    {
+      "backend": "2.512.0",
+      "frontend": "5.408.1",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "fixed", "text": "The Query history table no longer cuts off Remove, and a refusal's reason shows in full."}
+      ]
+    },
+    {
+      "backend": "2.512.0",
+      "frontend": "5.408.0",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "new", "text": "The Query page keeps your history, refused queries and your agent's included, with Save, Remove and Clear."},
+        {"kind": "new", "text": "Query suggestions offer an answer's columns after stats, the Hosts search terms, and the project's values for a column."},
+        {"kind": "changed", "text": "The Hosts page's recent queries keep one entry per query; running an older one moves it to the top."}
+      ]
+    },
+    {
+      "backend": "2.511.0",
+      "frontend": "5.407.1",
+      "date": "2026-10-17",
+      "entries": [
+        {"kind": "fixed", "text": "The hint under an empty Query answer shows its code as code."}
+      ]
+    },
+    {
+      "backend": "2.511.0",
+      "frontend": "5.407.0",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "new", "text": "On the Query page, where and fields after stats or top work on the answer, for example to keep only groups on more than 5 hosts."},
+        {"kind": "changed", "text": "An empty answer to an exact = comparison says how many rows would match ignoring case, and suggests like()."}
+      ]
+    },
+    {
+      "backend": "2.510.2",
+      "frontend": "5.406.3",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "fixed", "text": "Query orders addresses as addresses, and two search commands on findings must match the same host."},
+        {"kind": "fixed", "text": "Query errors point at the right column, top takes limit= anywhere, and Run re-runs the query shown."},
+        {"kind": "fixed", "text": "An observation row's Open goes to its inspector, and the Query CSV's name carries a timestamp."}
+      ]
+    },
+    {
+      "backend": "2.510.1",
+      "frontend": "5.406.2",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "fixed", "text": "A query that cannot run can no longer be saved."},
+        {"kind": "fixed", "text": "A cut values() list and a partial CSV download now say so."},
+        {"kind": "fixed", "text": "Compare scans is faster and lists its rows in address order."}
+      ]
+    },
+    {
+      "backend": "2.510.0",
+      "frontend": "5.406.1",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "fixed", "text": "The Query page and the guides name every dataset it can ask about."}
+      ]
+    },
+    {
+      "backend": "2.510.0",
+      "frontend": "5.406.0",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "new", "text": "Query can ask about findings, a finding's hosts, web interfaces and names, and each row has Open."},
+        {"kind": "new", "text": "Query answers download as CSV, a grouped answer can be drawn as a chart, and a builder writes a query from pickers."},
+        {"kind": "new", "text": "The Query editor suggests datasets, commands, columns and values as you type."}
+      ]
+    },
+    {
+      "backend": "2.509.1",
+      "frontend": "5.405.1",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "fixed", "text": "The Query page's header and its sort reference read correctly."}
+      ]
+    },
+    {
+      "backend": "2.509.0",
+      "frontend": "5.405.0",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "new", "text": "Inventory → Query: ask pipe-style questions about hosts, ports and scanner observations, group and count them, and open exactly the rows behind each count."},
+        {"kind": "new", "text": "Save a query for yourself or share it with the project."}
+      ]
+    },
+    {
+      "backend": "2.508.0",
+      "frontend": "5.404.1",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "fixed", "text": "Previous and Next in the Scanner observations inspector no longer fill the browser history; Back closes it."}
+      ]
+    },
+    {
+      "backend": "2.508.0",
+      "frontend": "5.404.0",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "new", "text": "Inventory → Scanner observations lists every observation, with an inspector showing its details, references and every host carrying it, with what the scanner printed on each."},
+        {"kind": "changed", "text": "The Findings page no longer has an observations view; old links open Scanner observations."}
+      ]
+    },
+    {
+      "backend": "2.507.1",
+      "frontend": "5.403.0",
+      "date": "2026-10-16",
+      "entries": [
+        {"kind": "new", "text": "An agent session's page lists everything it proposed, and the Findings page says how many proposed findings are waiting."},
+        {"kind": "fixed", "text": "Findings your agent proposed now appear under \"Mine\" on Proposals and in the top-bar count."}
+      ]
+    },
+    {
+      "backend": "2.507.0",
+      "frontend": "5.402.1",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "fixed", "text": "The report-text image picker points to the Project images panel."}
+      ]
+    },
+    {
+      "backend": "2.507.0",
+      "frontend": "5.402.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "new", "text": "The executive summary can show the report's own images, inserted or pasted, as the system description does."}
+      ]
+    },
+    {
+      "backend": "2.506.1",
+      "frontend": "5.401.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "fixed", "text": "The startup warning about the credential encryption key now gives advice that keeps stored credentials readable."},
+        {"kind": "before_upgrading", "text": "If CREDENTIAL_ENCRYPTION_KEY is unset, set it to your current SECRET_KEY value; any other value makes stored provider and scanner credentials unreadable."}
+      ]
+    },
+    {
+      "backend": "2.506.0",
+      "frontend": "5.401.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "new", "text": "Reference has a guide to changing report templates."}
+      ]
+    },
+    {
+      "backend": "2.506.0",
+      "frontend": "5.400.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "fixed", "text": "\"Memory near its limit\" in System settings judges each process's own memory, so one large import no longer leaves it red."},
+        {"kind": "fixed", "text": "A bulk \"Reported fixed\" sends each person one retest notification, not one per finding."},
+        {"kind": "fixed", "text": "\"Update project defaults…\" refuses when the project's value changed since you looked, instead of overwriting it."},
+        {"kind": "fixed", "text": "A pasted screenshot cancelled before it uploaded no longer comes back, and \"Import what the file holds\" is offered only while the file is kept."}
+      ]
+    },
+    {
+      "backend": "2.505.0",
+      "frontend": "5.399.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "changed", "text": "A retest request stands until its result is recorded or the finding is judged a false positive, and such hosts are on every retest list."},
+        {"kind": "changed", "text": "Choosing Remediated on a host awaiting a retest opens the retest dialog."},
+        {"kind": "fixed", "text": "Undo after removing a host from a finding restores its retest request."},
+        {"kind": "fixed", "text": "A note's evidence images print together under its text in reports."},
+        {"kind": "fixed", "text": "A cut-short JSON file containing an invalid byte keeps its complete records."},
+        {"kind": "fixed", "text": "Revise and Render again are hidden from roles that cannot use them."}
+      ]
+    },
+    {
+      "backend": "2.504.1",
+      "frontend": "5.398.1",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "fixed", "text": "A retest still asked for after a host was moved to Still present can be answered with \"Record retest…\"."},
+        {"kind": "fixed", "text": "A refused \"Update project defaults…\" re-reads the report, so the current values show."}
+      ]
+    },
+    {
+      "backend": "2.504.0",
+      "frontend": "5.398.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "changed", "text": "Moving a host from Retest pending to Still present keeps the retest request; Remediated then needs a recorded retest that found nothing."},
+        {"kind": "fixed", "text": "\"Update project defaults…\" no longer reverts a change someone else made to the draft."},
+        {"kind": "fixed", "text": "A finding judged a false positive no longer shows a verification gap or asks for a retest."},
+        {"kind": "fixed", "text": "Re-enrolling two-factor authentication quickly no longer refuses the first code."}
+      ]
+    },
+    {
+      "backend": "2.503.0",
+      "frontend": "5.397.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "changed", "text": "On Remediation deadlines, the \"All\" row's counts open their lists."},
+        {"kind": "fixed", "text": "A finding's affected systems print in address order, and Preview uses the template's own format."},
+        {"kind": "fixed", "text": "A project with more than 50 analysts and admins and no saved team can open its drafts."},
+        {"kind": "fixed", "text": "Wrong passwords from one network no longer lock everyone behind it out of password and two-factor changes."}
+      ]
+    },
+    {
+      "backend": "2.502.0",
+      "frontend": "5.396.0",
+      "date": "2026-10-15",
+      "entries": [
+        {"kind": "fixed", "text": "Saving a draft report from a stale page no longer reverts someone else's change."},
+        {"kind": "fixed", "text": "Testing or using an AI provider no longer reveals whether a host's port is open."},
+        {"kind": "fixed", "text": "masscan JSON with stray text keeps the records before it, and a host a DNS import created no longer reads \"Changed\"."},
+        {"kind": "fixed", "text": "Every link on a draft report asks before leaving unsaved changes."},
+        {"kind": "fixed", "text": "The bell says the true number of unread notifications."}
+      ]
+    },
+    {
+      "backend": "2.501.0",
+      "frontend": "5.395.0",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "new", "text": "Retests are per host: \"Reported fixed\" or a request by hand marks the host Retest pending and tells the finding's owner, or every member when it has none."},
+        {"kind": "new", "text": "\"Record retest…\" on a host's row records what was run and what it showed, and moves the host to Remediated or Still present."},
+        {"kind": "new", "text": "The Findings list's Hosts filter and the Operations lead show the hosts awaiting a retest."},
+        {"kind": "changed", "text": "The finding-level Retest status is gone (existing ones become Open, their hosts Retest pending); remediation states read \"Awaiting fix\" and \"Outstanding\"."},
+        {"kind": "fixed", "text": "\"Reported fixed\" with no date is dated today."}
+      ]
+    },
+    {
+      "backend": "2.500.0",
+      "frontend": "5.394.2",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "new", "text": "Paste a screenshot into the Project images panel to upload it."},
+        {"kind": "fixed", "text": "A pasted image is no longer lost when the clipboard holds it in an unusual way."}
+      ]
+    },
+    {
+      "backend": "2.500.0",
+      "frontend": "5.394.1",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "fixed", "text": "A one-field section of a draft says \"Customised for this report\" only once."}
+      ]
+    },
+    {
+      "backend": "2.500.0",
+      "frontend": "5.394.0",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "new", "text": "A draft report is a workspace: Details, Review and Preview & issue, one Save draft, and an action bar that stays in view."},
+        {"kind": "new", "text": "\"Update project defaults…\" lists a draft's customised details and makes the ticked ones the project's."},
+        {"kind": "new", "text": "A preview says whether it still matches the draft."},
+        {"kind": "changed", "text": "The Reports page lists drafts and issued reports; the project's report defaults and the templates have their own pages."}
+      ]
+    },
+    {
+      "backend": "2.499.0",
+      "frontend": "5.393.0",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "new", "text": "The executive summary is a project report default that every report prints unless it overrides it."},
+        {"kind": "new", "text": "Remediation deadlines gain Total and Remediated columns and a Defect metrics table with the mean days to remediate."},
+        {"kind": "new", "text": "Operations calls out your findings with hosts marked for retest."},
+        {"kind": "new", "text": "A screenshot pasted into the System description is uploaded and placed, and a code block can carry a numbered \"Listing\" caption."},
+        {"kind": "fixed", "text": "In Word, the summary of findings links go to the finding, and reports no longer name the scanner on every finding."}
+      ]
+    },
+    {
+      "backend": "2.498.3",
+      "frontend": "5.392.5",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "fixed", "text": "Issue and Preview wait while you are editing a project default from a draft."},
+        {"kind": "fixed", "text": "A revision or addendum keeps a system diagram deleted after the original was issued."},
+        {"kind": "fixed", "text": "Two first saves of report defaults at the same time no longer fail."}
+      ]
+    },
+    {
+      "backend": "2.498.2",
+      "frontend": "5.392.4",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "changed", "text": "The issued reports list marks the newest \"Latest\" and a revised one \"Superseded\", and a draft's line says what it overrides."},
+        {"kind": "changed", "text": "The Table button writes an empty caption line, and an auditor's checklist shows no fix links they cannot use."}
+      ]
+    },
+    {
+      "backend": "2.498.2",
+      "frontend": "5.392.3",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "changed", "text": "Only tables written in report text get numbered captions; the template's own tables do not."}
+      ]
+    },
+    {
+      "backend": "2.498.1",
+      "frontend": "5.392.2",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "fixed", "text": "The Word report's table of contents is filled even when the file opens in Protected View."},
+        {"kind": "fixed", "text": "The team and distribution tables no longer break e-mail addresses mid-word."}
+      ]
+    },
+    {
+      "backend": "2.498.1",
+      "frontend": "5.392.1",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "changed", "text": "Table captions print under their tables, in HTML and Word."},
+        {"kind": "fixed", "text": "Word fills the report's table of contents when the file is opened."}
+      ]
+    },
+    {
+      "backend": "2.498.0",
+      "frontend": "5.392.0",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "changed", "text": "Each draft detail shows one action, with the others in a \"⋯\" menu; the template's notes are in an info tip."}
+      ]
+    },
+    {
+      "backend": "2.498.0",
+      "frontend": "5.391.1",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "fixed", "text": "\"Set for the project\" puts the caret in its field and cannot save an empty value."}
+      ]
+    },
+    {
+      "backend": "2.498.0",
+      "frontend": "5.391.0",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "new", "text": "An overridden draft detail can be made the project's default, and a followed one set for the project in place."},
+        {"kind": "new", "text": "\"Continue a draft?\" tells drafts apart (who started each, when, what it overrides) and can discard them."},
+        {"kind": "changed", "text": "A followed detail shows as text, with where it comes from."}
+      ]
+    },
+    {
+      "backend": "2.497.0",
+      "frontend": "5.390.0",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "new", "text": "One \"Before issuing\" checklist at the top of a draft, every line leading to its fix."},
+        {"kind": "new", "text": "\"New report\" offers to continue a draft in progress, and the HTML preview opens in a browser tab."},
+        {"kind": "changed", "text": "Every detail of a draft follows the project's report defaults unless the draft overrides it, and says where it comes from."}
+      ]
+    },
+    {
+      "backend": "2.496.0",
+      "frontend": "5.389.1",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "fixed", "text": "The author is on the report's title page, the project details table is no longer squeezed, and a finding with no evidence prints no Evidence section."},
+        {"kind": "fixed", "text": "The Reports list and a report's page update when rendering finishes, and System description images open full size."}
+      ]
+    },
+    {
+      "backend": "2.496.0",
+      "frontend": "5.389.0",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "new", "text": "System settings' worker health also shows the host's memory and load, each process's memory against its limit, and the database's size and connections."}
+      ]
+    },
+    {
+      "backend": "2.495.2",
+      "frontend": "5.388.2",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "changed", "text": "Uploaded scans, evidence images and reports can be read only by the application, not by other accounts on the host."},
+        {"kind": "fixed", "text": "The database turns TLS on at every start, so a renewed certificate is picked up by restarting the database."}
+      ]
+    },
+    {
+      "backend": "2.495.1",
+      "frontend": "5.388.2",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "changed", "text": "Deploy checks file ownership and permissions before it writes, explains each problem and offers to fix what it can; no folder is made world-writable any more."}
+      ]
+    },
+    {
+      "backend": "2.495.0",
+      "frontend": "5.388.2",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "fixed", "text": "The Executive brief prints the author and a written disclaimer, and the Issue dialog names the template and formats used."}
+      ]
+    },
+    {
+      "backend": "2.495.0",
+      "frontend": "5.388.1",
+      "date": "2026-10-14",
+      "entries": [
+        {"kind": "fixed", "text": "The report defaults say whether the system description, other targets and disclaimer are written."}
+      ]
+    },
+    {
+      "backend": "2.495.0",
+      "frontend": "5.388.0",
+      "date": "2026-10-13",
+      "entries": [
+        {"kind": "new", "text": "A table in report text can carry a numbered caption with a \"Table:\" line."},
+        {"kind": "new", "text": "Findings have an Evidence text section, and the report prints an image's note text before the image."},
+        {"kind": "new", "text": "Upload images on the Reports page and place them in the System description."},
+        {"kind": "new", "text": "A report names its author and can carry its own disclaimer, from the report, the project's defaults or the installation's."},
+        {"kind": "new", "text": "Reorder the assessment team and distribution list; downloads show progress and cannot be started twice."},
+        {"kind": "fixed", "text": "Word reports no longer print the word CLASSIFICATION in every header and footer."}
+      ]
+    },
+    {
+      "backend": "2.494.0",
+      "frontend": "5.387.0",
+      "date": "2026-10-12",
+      "entries": [
+        {"kind": "new", "text": "On Remediation deadlines, a contact's Document is offered with every project shown, and asks which project."},
+        {"kind": "new", "text": "The contact document lists the most urgent first, can be narrowed like the reminder, and warns about findings with no recommendation."},
+        {"kind": "new", "text": "Assigning offers the contacts already in use, and a bulk edit previews the new due dates."},
+        {"kind": "changed", "text": "The bell opens a panel of unread notifications where you are."},
+        {"kind": "fixed", "text": "The Projects count on Remediation deadlines is the rows listed."}
+      ]
+    },
+    {
+      "backend": "2.493.0",
+      "frontend": "5.386.2",
+      "date": "2026-10-12",
+      "entries": [
+        {"kind": "fixed", "text": "A rename or report-text save made while a host change was on its way no longer reverts on the page."}
+      ]
+    },
+    {
+      "backend": "2.493.0",
+      "frontend": "5.386.1",
+      "date": "2026-10-12",
+      "entries": [
+        {"kind": "changed", "text": "The Admin guide explains the report writing guidance."}
+      ]
+    },
+    {
+      "backend": "2.493.0",
+      "frontend": "5.386.0",
+      "date": "2026-10-12",
+      "entries": [
+        {"kind": "new", "text": "Each Findings row says what it still needs before the report (missing report text, an image without a caption, proposals to decide), with a Needs filter."},
+        {"kind": "new", "text": "A draft report lists findings with uncaptioned images, and the Issue dialog counts them."},
+        {"kind": "changed", "text": "Operations' findings that need you include your findings with an uncaptioned report image."}
+      ]
+    },
+    {
+      "backend": "2.492.0",
+      "frontend": "5.385.1",
+      "date": "2026-10-11",
+      "entries": [
+        {"kind": "new", "text": "An agent can keep its own cut-short upload after asking you."},
+        {"kind": "changed", "text": "Every format that can tell it was cut short (nmap, masscan, Nessus, OpenVAS, BloodHound, NetExec, RDAP, JSON lines) now fails and offers to import what it holds."}
+      ]
+    },
+    {
+      "backend": "2.491.0",
+      "frontend": "5.385.0",
+      "date": "2026-10-11",
+      "entries": [
+        {"kind": "new", "text": "An import says how many hosts it renamed, with a link to them; the scan page marks them and Hosts can filter by \"Renamed by\"."},
+        {"kind": "new", "text": "A JSON file that was cut short fails with a clear message and offers \"Import what the file holds\"."}
+      ]
+    },
+    {
+      "backend": "2.490.2",
+      "frontend": "5.384.0",
+      "date": "2026-10-11",
+      "entries": [
+        {"kind": "fixed", "text": "A DNS import counts the existing hosts it addresses on Scans, the scan's page and Hosts."}
+      ]
+    },
+    {
+      "backend": "2.490.1",
+      "frontend": "5.384.0",
+      "date": "2026-10-11",
+      "entries": [
+        {"kind": "fixed", "text": "Deleting a user ends their agent sessions; the sessions and their work stay listed."}
+      ]
+    },
+    {
+      "backend": "2.490.0",
+      "frontend": "5.384.0",
+      "date": "2026-10-11",
+      "entries": [
+        {"kind": "changed", "text": "Setting a host's review status needs the analyst role."},
+        {"kind": "fixed", "text": "Deactivating an account ends its browser and agent sessions, a two-factor code works only once, and repeated wrong passwords are throttled."},
+        {"kind": "fixed", "text": "Only accounts that can write in a project can set up AI providers, and viewers can no longer read remediation details in agent call logs."},
+        {"kind": "fixed", "text": "Hosts: bulk actions wait while a new filter loads, and a filter value that names nothing is refused instead of listing every host."},
+        {"kind": "fixed", "text": "Finding comments past the 100th appear, with \"Show earlier comments\", and downloads with non-Latin names work."},
+        {"kind": "before_upgrading", "text": "Back up first. The upgrade stops, changing nothing, if the scope lists one network twice with different descriptions or sites."}
+      ]
+    },
+    {
+      "backend": "2.489.0",
+      "frontend": "5.383.0",
+      "date": "2026-10-11",
+      "entries": [
+        {"kind": "new", "text": "Ingestion results' Failed figure says how many are dismissed, with a link to them."},
+        {"kind": "changed", "text": "Scans' time column is \"Uploaded\", with the run time on a second line where it differs."},
+        {"kind": "changed", "text": "An agent's note notifies the people it mentions, as a person's does."},
+        {"kind": "changed", "text": "Scope's subnet list pages 50 at a time, and ticks carry across the pages of a search."},
+        {"kind": "fixed", "text": "Switching between Imported scans and Ingestion results no longer flickers."},
+        {"kind": "before_upgrading", "text": "Back up first."}
+      ]
+    },
+    {
+      "backend": "2.488.0",
+      "frontend": "5.382.1",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "The Scope page says \"outside the scope\"."}
+      ]
+    },
+    {
+      "backend": "2.488.0",
+      "frontend": "5.382.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "A project has exactly one scope, and it has no name: Segments no longer prints one under each network."},
+        {"kind": "before_upgrading", "text": "Back up first. The upgrade merges a project's extra scopes and stops, changing nothing, if two of them hold the same network or domain."}
+      ]
+    },
+    {
+      "backend": "2.487.2",
+      "frontend": "5.381.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "Segments, the audit log and Ingestion results use the shared pager, which states the page number."}
+      ]
+    },
+    {
+      "backend": "2.487.1",
+      "frontend": "5.380.1",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "A finding made by dismissing a scanner observation says so in its history."}
+      ]
+    },
+    {
+      "backend": "2.487.0",
+      "frontend": "5.380.1",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "A late answer no longer puts an older version of a finding back on the page."},
+        {"kind": "fixed", "text": "The Scope page's export covers every host its table lists."}
+      ]
+    },
+    {
+      "backend": "2.486.0",
+      "frontend": "5.380.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "Ingestion results is now a view on the Scans page; old links still land there."}
+      ]
+    },
+    {
+      "backend": "2.486.0",
+      "frontend": "5.379.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "Mark a scanner observation as a false positive from the Scanner observations list."},
+        {"kind": "changed", "text": "Scanner rows are called scanner observations everywhere, and the bell counts \"notifications\"."},
+        {"kind": "fixed", "text": "Old notifications about test plans no longer count in the bell."},
+        {"kind": "fixed", "text": "The Scope page lists every subnet and domain of the project."},
+        {"kind": "fixed", "text": "Remediation deadlines is offered only to project admins, and a host's or finding's browser tab names it."}
+      ]
+    },
+    {
+      "backend": "2.485.0",
+      "frontend": "5.378.1",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "Patterns gives a subnet whose only condition is SMB signing or deprecated TLS its own question, not \"Mixed weaknesses\"."},
+        {"kind": "fixed", "text": "An agent client whose key was refused is told why and what to do, instead of seeing a web server error."}
+      ]
+    },
+    {
+      "backend": "2.484.0",
+      "frontend": "5.378.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "On Scanner observations, Details shows what the scanner wrote (description, remediation, CVSS) above the hosts."},
+        {"kind": "changed", "text": "The Scanner observations list pages 50 at a time, and ticks carry across pages."}
+      ]
+    },
+    {
+      "backend": "2.483.0",
+      "frontend": "5.377.2",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "Delete on a note or comment image is offered only to its uploader or a project admin."}
+      ]
+    },
+    {
+      "backend": "2.483.0",
+      "frontend": "5.377.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "Agent activity's \"Load older sessions\" has no 1,000-session stop, and a failed load keeps the rows shown."}
+      ]
+    },
+    {
+      "backend": "2.483.0",
+      "frontend": "5.376.1",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "The state bar beside a finding's Affected hosts appears only when its hosts are in more than one state, and its parts look clickable."}
+      ]
+    },
+    {
+      "backend": "2.483.0",
+      "frontend": "5.376.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "Scanner integrations are shown as a table, and Default credentials keeps vendor, search and page in the address."},
+        {"kind": "fixed", "text": "An AI provider's API key is no longer kept in the page after saving."},
+        {"kind": "fixed", "text": "In the report defaults and start-the-clock forms, editing one field no longer freezes the others."},
+        {"kind": "fixed", "text": "Hosts no longer re-reads its filter options each time you return to the tab."}
+      ]
+    },
+    {
+      "backend": "2.482.0",
+      "frontend": "5.375.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "An agent can see which scanners are configured, and asks you before requesting one scanner's credentials; each request is recorded."},
+        {"kind": "changed", "text": "Scanner integrations belong to the installation: every signed-in user sees the list, never its secrets, and global admins manage them."},
+        {"kind": "fixed", "text": "The pasted session prompt no longer contains scanner credentials."},
+        {"kind": "before_upgrading", "text": "Back up first. Every scanner integration becomes visible to all users and usable from any project's agent session on request; review Scanner Integrations afterwards."}
+      ]
+    },
+    {
+      "backend": "2.481.0",
+      "frontend": "5.374.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "A finished host review can carry an optional note."},
+        {"kind": "changed", "text": "Marking a host Reviewed is one click, and \"Reviewed, next unreviewed\" moves on; review conclusions are gone."},
+        {"kind": "changed", "text": "Posture's \"Still needs evidence\" measure and the Hosts query word conclusion: are gone."},
+        {"kind": "fixed", "text": "A bulk Reviewed now counts for \"Changed since review\" as a single one does."},
+        {"kind": "before_upgrading", "text": "A saved Hosts view using conclusion: shows an unknown-field error until it is edited."}
+      ]
+    },
+    {
+      "backend": "2.480.0",
+      "frontend": "5.373.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "A host's Tests section opens by itself when there are tests to do."},
+        {"kind": "changed", "text": "Start Agent Session no longer asks for a purpose, and the Feedback page has no Source filter."},
+        {"kind": "fixed", "text": "The top bar's agent badge says it counts the sessions in this project."}
+      ]
+    },
+    {
+      "backend": "2.479.1",
+      "frontend": "5.372.2",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "In Project settings, editing one field no longer freezes the others, so a teammate's saved change is not overwritten."}
+      ]
+    },
+    {
+      "backend": "2.479.1",
+      "frontend": "5.372.1",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "Scope's \"N unscanned\" stays on one line."}
+      ]
+    },
+    {
+      "backend": "2.479.1",
+      "frontend": "5.372.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "An open test links its tool to the Tool reference, whose filter is now in the address."},
+        {"kind": "fixed", "text": "Every Tool reference category starts open."}
+      ]
+    },
+    {
+      "backend": "2.479.1",
+      "frontend": "5.371.2",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "The systemic briefing's \"nothing to show\" lines print in grey."}
+      ]
+    },
+    {
+      "backend": "2.479.0",
+      "frontend": "5.371.1",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "Scope's \"N unscanned\" column no longer wraps."}
+      ]
+    },
+    {
+      "backend": "2.479.0",
+      "frontend": "5.371.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "Scanner observations has an \"Exploit reported\" filter and a \"Most hosts first\" order."},
+        {"kind": "new", "text": "Each host under an observation says where testing of it stands, and \"Ask agent\" can propose tests on the ticked hosts."}
+      ]
+    },
+    {
+      "backend": "2.478.0",
+      "frontend": "5.370.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "The Hosts query takes gap: (for example gap:vuln_assessment) to list hosts still missing a kind of evidence, and each Hosts row names what is left to collect."},
+        {"kind": "new", "text": "Evidence's project-wide gaps open in Hosts, and each Scope subnet says how many of its hosts no vulnerability scan covered."},
+        {"kind": "new", "text": "The Scope export has a Web URLs format."}
+      ]
+    },
+    {
+      "backend": "2.477.1",
+      "frontend": "5.369.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "Host notes and finding comments show as Markdown."},
+        {"kind": "new", "text": "On Evidence, \"Collect with your agent\" hands a gap's in-scope hosts to your agent session."},
+        {"kind": "fixed", "text": "The inspector's Seen column no longer cuts \"not revalidated\"."}
+      ]
+    },
+    {
+      "backend": "2.477.1",
+      "frontend": "5.368.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "A project with one finding on two names of the same host can be deleted."}
+      ]
+    },
+    {
+      "backend": "2.477.0",
+      "frontend": "5.368.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "Agent sessions get a shorter prompt and guide, and agents connected over MCP receive the same safety rules as pasted ones."}
+      ]
+    },
+    {
+      "backend": "2.476.0",
+      "frontend": "5.367.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "changed", "text": "The diagnostics bundle says which frontend build is served and which agent routes are in use."}
+      ]
+    },
+    {
+      "backend": "2.476.0",
+      "frontend": "5.366.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "An image's \"include in report\" tick no longer hides a later change by someone else."}
+      ]
+    },
+    {
+      "backend": "2.476.0",
+      "frontend": "5.365.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "new", "text": "Oversight shows \"Reported fixed, not retested\" and \"Remediated, record still open\", each opening its list."},
+        {"kind": "new", "text": "Remediation timeline notes can be edited, and Operations refreshes its counts once a minute."},
+        {"kind": "new", "text": "Upload format choosers offer the formats matching the file's extension first."},
+        {"kind": "changed", "text": "New project members default to Viewer."},
+        {"kind": "fixed", "text": "A scan delete no longer removes a port carrying an observation a finding refers to, and Findings keeps its rows when a refresh fails."},
+        {"kind": "before_upgrading", "text": "Every container is recreated on the next start."}
+      ]
+    },
+    {
+      "backend": "2.475.0",
+      "frontend": "5.364.0",
+      "date": "2026-10-10",
+      "entries": [
+        {"kind": "fixed", "text": "Informational observations stay shown on a host once you show them, and an issue-wide false positive reads \"False positive\" at once."}
+      ]
+    },
+    {
+      "backend": "2.475.0",
+      "frontend": "5.361.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "fixed", "text": "Ingestion results' search and Oversight's custom dates follow Back and links."}
+      ]
+    },
+    {
+      "backend": "2.475.0",
+      "frontend": "5.360.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "changed", "text": "Segments, Oversight's project table, the audit log and the SBOM reference keep their filters and page in the address."},
+        {"kind": "fixed", "text": "A failed load on LLM providers, Scanner integrations, Users, Active sessions, Scope and Webhooks is said in place, with Retry, instead of showing an empty list."}
+      ]
+    },
+    {
+      "backend": "2.475.0",
+      "frontend": "5.359.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "changed", "text": "The remediation CSV download is one request, much faster on long lists."}
+      ]
+    },
+    {
+      "backend": "2.474.1",
+      "frontend": "5.358.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "fixed", "text": "Scope's subnet search follows Back and links."},
+        {"kind": "fixed", "text": "Scanner observations no longer repeat or skip rows across pages."}
+      ]
+    },
+    {
+      "backend": "2.474.0",
+      "frontend": "5.357.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "new", "text": "The Findings Owner filter lists the people who own a listed finding, with how many each."}
+      ]
+    },
+    {
+      "backend": "2.473.0",
+      "frontend": "5.356.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "new", "text": "The Findings Owner filter offers every project member by name."}
+      ]
+    },
+    {
+      "backend": "2.473.0",
+      "frontend": "5.355.1",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "fixed", "text": "A Scans link naming a tool in another letter case shows that tool in its select."}
+      ]
+    },
+    {
+      "backend": "2.473.0",
+      "frontend": "5.355.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "changed", "text": "The Scans upload banner always shows each job's current message."},
+        {"kind": "before_upgrading", "text": "A script that reads the Hosts list's test counts through the API must use their new names (see the API guide)."}
+      ]
+    },
+    {
+      "backend": "2.472.0",
+      "frontend": "5.354.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "fixed", "text": "Back, Forward and same-page links change the filters on Names, Scans, Feedback, Findings, Scanner observations and Tool activity."},
+        {"kind": "fixed", "text": "A link to a later page of Findings keeps its page."}
+      ]
+    },
+    {
+      "backend": "2.472.0",
+      "frontend": "5.353.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "changed", "text": "A bulk action or CSV download started in one project finishes there, even if you switch project meanwhile."}
+      ]
+    },
+    {
+      "backend": "2.472.0",
+      "frontend": "5.352.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "fixed", "text": "Passwords and one-time codes are cleared from the page once used, and password fields are empty when a dialog reopens."},
+        {"kind": "fixed", "text": "When the remediation setting cannot be read, the pages say so with Retry instead of \"not turned on\"."},
+        {"kind": "fixed", "text": "A host's findings that could not be loaded say so with Retry, and a host with more than 100 says how many."},
+        {"kind": "fixed", "text": "A report preview or contact document whose status cannot be re-read says \"Status may be stale\"."}
+      ]
+    },
+    {
+      "backend": "2.472.0",
+      "frontend": "5.351.1",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "changed", "text": "Portfolio says \"Tests assigned\" instead of \"Open tasks\"."},
+        {"kind": "fixed", "text": "Project admins can set and clear the project's default Hosts view."},
+        {"kind": "fixed", "text": "Member management asks the same confirmations on every screen and refuses to remove a project's only admin."},
+        {"kind": "fixed", "text": "Changing your password signs this browser out, and says so."},
+        {"kind": "fixed", "text": "An agent session's API calls past the first 100 can be reached with Show more."},
+        {"kind": "fixed", "text": "A generated export keeps the format that made it, and Scans queue actions cannot be sent twice."}
+      ]
+    },
+    {
+      "backend": "2.472.0",
+      "frontend": "5.351.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "changed", "text": "A sign-in session lasts 8 hours from your last key press or click, not from sign-in, and the expiry notice offers \"Stay signed in\"."},
+        {"kind": "changed", "text": "Every page loads and refreshes data the same way: a change refreshes what it changed, and a failed load is said, with Retry."},
+        {"kind": "fixed", "text": "Findings that fail to load no longer read \"0 findings\"."},
+        {"kind": "fixed", "text": "Saving in Project settings no longer blanks the page."}
+      ]
+    },
+    {
+      "backend": "2.471.0",
+      "frontend": "5.350.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "changed", "text": "Hosts refuses a partial subnet such as 10.0.5, and an unknown state, with a message; use ip: for part of an address."}
+      ]
+    },
+    {
+      "backend": "2.470.0",
+      "frontend": "5.350.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "new", "text": "Agents can read the report writing guidance before proposing a new finding's text."}
+      ]
+    },
+    {
+      "backend": "2.469.0",
+      "frontend": "5.350.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "new", "text": "System settings → Report writing sets how AI drafts each section of a finding's report text."},
+        {"kind": "changed", "text": "The audit log has its own page under Administration, and System settings is three tabs."}
+      ]
+    },
+    {
+      "backend": "2.468.0",
+      "frontend": "5.349.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "new", "text": "A remediation due date can be set by hand with a reason, and a deferral needs a review date and a reason, with an alert when it is due."},
+        {"kind": "new", "text": "Search the remediation list by finding, host address or name, with counts for deferrals to review and hand-set due dates."},
+        {"kind": "new", "text": "Start the remediation clock from an issued report, after a preview of what it would assign."},
+        {"kind": "new", "text": "Preview a deadline policy change before saving; one contact's follow-up covers all their projects, with Remind for coming deadlines."},
+        {"kind": "fixed", "text": "Remediation alerts name the findings and hosts they are about."},
+        {"kind": "before_upgrading", "text": "Scripts that set a remediation record to deferred must now send a review date and a note."}
+      ]
+    },
+    {
+      "backend": "2.467.1",
+      "frontend": "5.348.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "new", "text": "Long reference pages have a \"Jump to…\" picker, and their sections can be linked."},
+        {"kind": "new", "text": "A notice warns 10 minutes and 1 minute before your session ends."},
+        {"kind": "changed", "text": "Deleting a subnet on Scope is in the row's menu, and the project selector shows full names."}
+      ]
+    },
+    {
+      "backend": "2.467.0",
+      "frontend": "5.347.0",
+      "date": "2026-10-09",
+      "entries": [
+        {"kind": "new", "text": "The project selector filters by year when your projects span more than one."},
+        {"kind": "new", "text": "\"Add finding\" on a host page writes a finding directly."},
+        {"kind": "changed", "text": "Proposed report text that names a BlueStick record, such as \"Finding #277\", is refused, and a draft report lists written text that does."},
+        {"kind": "fixed", "text": "A contact's document no longer reads as failed while it is still rendering."},
+        {"kind": "fixed", "text": "The project menu scrolls with any number of projects."}
+      ]
+    },
+    {
+      "backend": "2.466.0",
+      "frontend": "5.345.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "The finding page handles hundreds of hosts: a jump bar, a bounded host list grouped by network, and a state bar."},
+        {"kind": "changed", "text": "Deleting a scan by hand removes everything only that scan brought, keeps what another scan also reported, and warns about hosts with work on them."},
+        {"kind": "changed", "text": "A scan cannot be deleted by hand while an import is running in the project."},
+        {"kind": "changed", "text": "Remediation says \"Reported fixed\", and counts where that disagrees with the assessment."},
+        {"kind": "fixed", "text": "Deleting the first of two scans no longer removes what the second also reported."},
+        {"kind": "fixed", "text": "The Hosts filter keeps \"No recorded open ports\" beside a port condition."}
+      ]
+    },
+    {
+      "backend": "2.465.1",
+      "frontend": "5.344.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "fixed", "text": "\"No open ports\" no longer makes the other port filters on Hosts vanish."},
+        {"kind": "fixed", "text": "Deleting an unfinished import's scan by hand removes the ports it created."}
+      ]
+    },
+    {
+      "backend": "2.465.0",
+      "frontend": "5.344.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "changed", "text": "With remediation tracking on, only project admins can remove a host or finding that carries a remediation record."},
+        {"kind": "fixed", "text": "A password change or reset ends that user's agent keys and sessions."},
+        {"kind": "fixed", "text": "Sign-in lockout applies per address, so wrong passwords from elsewhere cannot lock the owner out."},
+        {"kind": "fixed", "text": "In the Hosts query, NOT os:windows and the like include hosts with no value, and an unusable filter value is refused."},
+        {"kind": "fixed", "text": "Bulk promotion links the test results that showed the issue, and retrying a failed upload no longer imports it twice."},
+        {"kind": "fixed", "text": "A Nessus re-import follows a plugin's new severity, and an issued report can always be rendered again."}
+      ]
+    },
+    {
+      "backend": "2.464.0",
+      "frontend": "5.343.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "changed", "text": "A filtered Hosts list says out of how many, for example \"157 of 420 hosts\"."},
+        {"kind": "fixed", "text": "Evidence counts the imports needing attention as Scans does, with a link."},
+        {"kind": "fixed", "text": "Start Agent Session with a live session leads with \"Copy task\", and the Agent Sessions address opens the session list."},
+        {"kind": "fixed", "text": "Tooltips inside dialogs are no longer cut off."}
+      ]
+    },
+    {
+      "backend": "2.463.0",
+      "frontend": "5.342.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "Remediation → By contact → Document makes one contact's open findings into a Word or HTML document in the penetration test report's format."},
+        {"kind": "changed", "text": "\"Export hosts\" is now \"Download inventory\" (CSV and JSON); the HTML host report, the agent package and the Markdown bundle are gone."}
+      ]
+    },
+    {
+      "backend": "2.462.0",
+      "frontend": "5.341.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "The remediation pages show overdue and due soon by severity, how late, and what nobody is chasing, each opening its rows."},
+        {"kind": "new", "text": "A daily remediation trend per project, with fixes closed on time or late per month."},
+        {"kind": "new", "text": "A team can own a fix, with a By team view and filter, plus Copy summary and a CSV download."},
+        {"kind": "changed", "text": "One Deadline column says the state and how far off it is."}
+      ]
+    },
+    {
+      "backend": "2.461.0",
+      "frontend": "5.340.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "Remediation tracking is switched on for the whole installation in System settings; while it is off, nothing about remediation shows."},
+        {"kind": "new", "text": "Deadlines by severity, counted from the day a finding on a host is assigned, with overdue, due soon and deferred states."},
+        {"kind": "new", "text": "Follow-up by contact (a message to copy, recorded on each host's timeline), Remediation deadlines across projects, and in-app alerts."},
+        {"kind": "before_upgrading", "text": "Remediation tracking is off after this upgrade; a global admin turns it on in System settings. The per-project Oversight switch is removed."}
+      ]
+    },
+    {
+      "backend": "2.460.0",
+      "frontend": "5.339.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "An upload that would leave less than 1 GB free is refused, and the worker warns when the disk runs low."},
+        {"kind": "new", "text": "Remediation has rows per page and host or finding narrowing; Hosts keeps its page in the address and remembers rows per page."},
+        {"kind": "changed", "text": "Deploy and the status script list the settings you can tune, with their values and where each comes from."},
+        {"kind": "fixed", "text": "Oversized requests are refused before sign-in is checked, and AI provider addresses may not carry a query string or credentials."},
+        {"kind": "fixed", "text": "A server error during a deploy no longer signs everyone out, and unsaved finding report text asks before it is discarded."}
+      ]
+    },
+    {
+      "backend": "2.459.1",
+      "frontend": "5.338.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "changed", "text": "Pages explain themselves once: shorter leads, with section details on the (i) tips."},
+        {"kind": "changed", "text": "Proposals shows its kinds as chips with counts."},
+        {"kind": "fixed", "text": "Engagement dates on All projects were a day early west of Greenwich."},
+        {"kind": "fixed", "text": "Disposition history no longer prints \"Confirmed → Confirmed\"."}
+      ]
+    },
+    {
+      "backend": "2.459.0",
+      "frontend": "5.337.1",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "Oversight's remediation section shows the longest open, the average time to close and what is not yet notified."},
+        {"kind": "new", "text": "Each project in Oversight's remediation table opens its Remediation page."}
+      ]
+    },
+    {
+      "backend": "2.458.0",
+      "frontend": "5.336.0",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "Oversight shows open, closed and deferred remediation counts for the projects that opt in from Project settings."},
+        {"kind": "fixed", "text": "A remediation closed date can no longer be stored on an open or deferred row."}
+      ]
+    },
+    {
+      "backend": "2.457.0",
+      "frontend": "5.335.2",
+      "date": "2026-10-08",
+      "entries": [
+        {"kind": "new", "text": "Remediation tracking: record a contact, the date notified and a status for each finding on each host, with a timeline per host."},
+        {"kind": "new", "text": "The Remediation page lists them, with filters, bulk edit and notes."},
+        {"kind": "new", "text": "Agents can read and fill in remediation records from your spreadsheet, after a dry run."}
+      ]
+    },
+    {
+      "backend": "2.456.0",
+      "frontend": "5.334.5",
+      "date": "2026-10-07",
+      "entries": [
+        {"kind": "changed", "text": "In reports, a finding on more than 12 systems lists their addresses four across, under a count."},
+        {"kind": "changed", "text": "Agents get shorter answers when proposing report text, and can narrow a host's scanner rows to one issue."},
+        {"kind": "fixed", "text": "Every AI draft on a finding page sits beside the current text, even for an empty section."},
+        {"kind": "fixed", "text": "The Operations queue and the Hosts filters are faster on large projects."}
+      ]
+    },
+    {
+      "backend": "2.455.0",
+      "frontend": "5.334.4",
+      "date": "2026-10-03",
+      "entries": [
+        {"kind": "changed", "text": "An AI draft declines a section it lacks the information for and says what is missing, instead of putting that in the report text."}
+      ]
+    },
+    {
+      "backend": "2.454.0",
+      "frontend": "5.334.3",
+      "date": "2026-10-03",
+      "entries": [
+        {"kind": "fixed", "text": "In a draft review, the Changes view reads as blocks, \"Accept and edit\" keeps both texts in view, and drafts from one model are told apart."}
+      ]
+    },
+    {
+      "backend": "2.454.0",
+      "frontend": "5.334.0",
+      "date": "2026-10-03",
+      "entries": [
+        {"kind": "new", "text": "A report-text draft is reviewed inside its section, beside the current text or as marked changes; several drafts are tabs."},
+        {"kind": "new", "text": "A host-status proposal is decided on its row, and the Proposals section at the top leads to each."},
+        {"kind": "changed", "text": "\"Accept and edit\" can start from the draft or the current text, and a section changed since the draft says so."}
+      ]
+    },
+    {
+      "backend": "2.453.5",
+      "frontend": "5.333.2",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "fixed", "text": "An agent's count of scanner observations matches Posture, informational excluded."}
+      ]
+    },
+    {
+      "backend": "2.453.4",
+      "frontend": "5.333.2",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "Agents' answers about failed imports, scanner observations by severity and the default Hosts view match the pages."},
+        {"kind": "fixed", "text": "A Hosts link with its own query no longer shows the \"Project default view applied\" banner."}
+      ]
+    },
+    {
+      "backend": "2.453.3",
+      "frontend": "5.333.1",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "Agents' scan lists give a total, and an unknown filter value is refused instead of reading as \"nothing found\"."}
+      ]
+    },
+    {
+      "backend": "2.453.2",
+      "frontend": "5.333.1",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "Agents can see whether a host's scanner rows are judged, and hand you the screenshots they capture to attach."}
+      ]
+    },
+    {
+      "backend": "2.453.1",
+      "frontend": "5.333.1",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "fixed", "text": "A failed report issue can no longer delete the images of an issue that succeeded."},
+        {"kind": "fixed", "text": "Web target lists include only web services, and IPv6 web targets are proper URLs."}
+      ]
+    },
+    {
+      "backend": "2.453.0",
+      "frontend": "5.333.0",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "The Operations lead says what needs you, what you hold and what can be picked up, without one total; the Findings tab has \"Needs a decision\" and \"Needs report text\" chips."}
+      ]
+    },
+    {
+      "backend": "2.452.2",
+      "frontend": "5.332.2",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "fixed", "text": "A new project's Operations page no longer says its scope is registered before a subnet is added."},
+        {"kind": "fixed", "text": "A finding made from a test result is owned by the person who made it."}
+      ]
+    },
+    {
+      "backend": "2.452.1",
+      "frontend": "5.332.1",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "The \"Project default view applied\" banner on Hosts draws the eye once when it appears."},
+        {"kind": "changed", "text": "Technologies observed is removed from Scope; use the technology filter on Hosts."}
+      ]
+    },
+    {
+      "backend": "2.452.1",
+      "frontend": "5.332.0",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "The sidebar hub with Agent Sessions, Proposals and Tool Activity is called Agents, and a finding's test evidence comes before its report text."},
+        {"kind": "fixed", "text": "Two reviewers accepting different drafts of one section no longer deadlock, and a host's saved state is not painted over by an older one."},
+        {"kind": "fixed", "text": "\"Accept / Reject all shown\" over more than 200 proposals does the first 200 and says so."},
+        {"kind": "fixed", "text": "An image example written in code no longer hides the real image from the report."},
+        {"kind": "fixed", "text": "Posture's headline names active critical findings ahead of a widespread weakness."}
+      ]
+    },
+    {
+      "backend": "2.452.0",
+      "frontend": "5.331.2",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "fixed", "text": "A test opened from a list is opened and marked on its host page, even with the Tests section collapsed."}
+      ]
+    },
+    {
+      "backend": "2.452.0",
+      "frontend": "5.331.1",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "Operations tabs show 10 rows a page."}
+      ]
+    },
+    {
+      "backend": "2.452.0",
+      "frontend": "5.331.0",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "Operations shows one full list at a time, in tabs (Findings, Hosts, Tests, Changed since review, Pick up), each paged, with the tab in the address."},
+        {"kind": "changed", "text": "The Tests tab lists tests assigned to you, on hosts you review and free to claim, with a chip for each."},
+        {"kind": "changed", "text": "\"Back to my work\" returns to the tab a host was opened from, and j / k / Enter move through the rows."}
+      ]
+    },
+    {
+      "backend": "2.451.0",
+      "frontend": "5.330.0",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "new", "text": "The Hosts query follow:revisit lists the hosts whose review by you needs another look."},
+        {"kind": "changed", "text": "Operations is your own page: Changed since review lists only your reviews, and the sessions line counts your agent sessions."},
+        {"kind": "changed", "text": "Posture now shows \"Where the team has been\" and \"Scanner observations and scope\", moved from Operations; the Operations measures strip is gone."}
+      ]
+    },
+    {
+      "backend": "2.450.1",
+      "frontend": "5.329.1",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "A reason for closing a finding is asked for but no longer required."},
+        {"kind": "changed", "text": "\"Watching\" is no longer offered in the Hosts team review filter."}
+      ]
+    },
+    {
+      "backend": "2.450.0",
+      "frontend": "5.329.0",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "new", "text": "The Hosts query takes follow:mine (hosts you have in review) and has:changed_since_review."},
+        {"kind": "changed", "text": "Operations is redesigned: a lead whose numbers are links, four measures, My work with only what needs you, Changed since review, and Untouched with a reason."},
+        {"kind": "fixed", "text": "My work's total matches its groups, and an agent session's state says live, key expired or ended."}
+      ]
+    },
+    {
+      "backend": "2.449.2",
+      "frontend": "5.328.2",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "changed", "text": "Reports and data exports are offered from project auditor up, and \"Delete scan…\" to project admins only."},
+        {"kind": "changed", "text": "\"Insert image\" writes an empty reference, so the image's own caption prints."},
+        {"kind": "fixed", "text": "Ticked rows show as selected, and select-all shows a dash for a partial selection."},
+        {"kind": "fixed", "text": "A tab reloads when another tab signs in as someone else or signs out."}
+      ]
+    },
+    {
+      "backend": "2.449.1",
+      "frontend": "5.328.1",
+      "date": "2026-10-02",
+      "entries": [
+        {"kind": "fixed", "text": "An upgrade no longer hangs when several processes start together."},
+        {"kind": "fixed", "text": "A failed import cleaned up late no longer deletes what a later import observed."},
+        {"kind": "fixed", "text": "Rollback completes after a deploy that changed the database, and backups are checked to their end."},
+        {"kind": "fixed", "text": "Client reports never load a math library from the internet, and text with $ signs prints as written."},
+        {"kind": "fixed", "text": "Single-letter shortcuts on Proposals no longer fire while a menu has focus."},
+        {"kind": "before_upgrading", "text": "If an upgrade fails, the log says whether nothing was changed (roll back) or the database was left partway (restore)."}
+      ]
+    },
+    {
+      "backend": "2.449.0",
+      "frontend": "5.328.0",
+      "date": "2026-10-01",
+      "entries": [
+        {"kind": "new", "text": "A finding's images can be captioned and placed in its report text with \"Insert image\"; ticked images not placed still print under Evidence."},
+        {"kind": "new", "text": "An issued report keeps its own copies of its images."},
+        {"kind": "changed", "text": "An agent session has one id, and old session links keep working."},
+        {"kind": "before_upgrading", "text": "Back up first: this upgrade folds the old assist sessions into agent sessions."}
+      ]
+    },
+    {
+      "backend": "2.448.0",
+      "frontend": "5.327.0",
+      "date": "2026-10-01",
+      "entries": [
+        {"kind": "new", "text": "Addenda show a finding whose severity changed, and the penetration test report prints how each finding was confirmed by test results."},
+        {"kind": "new", "text": "Set the state of many hosts on a finding at once, and review proposals from the keyboard."},
+        {"kind": "new", "text": "Evidence, the host inspector and the scan page say whether a vulnerability scan authenticated, with a vulnscan: filter on Hosts."},
+        {"kind": "changed", "text": "Write controls follow your project role: viewers and auditors no longer see upload, edit or triage actions."},
+        {"kind": "fixed", "text": "An interrupted or cancelled import leaves nothing behind, for every format including Nessus."},
+        {"kind": "before_upgrading", "text": "Back up first and read the upgrade notes: this upgrade recreates every container and stops if a project has two scanner findings for one issue."}
       ]
     }
   ]

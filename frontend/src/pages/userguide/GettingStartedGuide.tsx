@@ -67,7 +67,8 @@ const sections: GuideSection[] = [
           members, tags — and <strong>Scanner Integrations</strong>), <strong>Administration</strong>{' '}
           (global administrators only: <strong>All projects</strong>, <strong>System</strong>, <strong>Audit log</strong> and{' '}
           <strong>Agent Feedback</strong>) and <strong>Reference</strong> (this guide, MCP setup, the
-          tool reference, What BlueStick reads, default credentials, the API documentation).{' '}
+          tool reference, What BlueStick reads, default credentials, the release notes — what changed
+          in each version, for analysts and administrators — and the API documentation).{' '}
           <strong>Profile</strong> and <strong>LLM Providers</strong> are about you, not the project:
           open them from the user menu or the command palette.
         </Para>

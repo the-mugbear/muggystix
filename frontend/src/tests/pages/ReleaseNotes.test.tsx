@@ -3,10 +3,11 @@ import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import ReleaseNotes from '../../pages/ReleaseNotes';
+import ReleaseNotes, { releaseAnchor } from '../../pages/ReleaseNotes';
 import * as api from '../../services/api';
-import { releaseAnchor, releaseNotesPath } from '../../utils/releaseNotes';
 
+// The page reads the address's hash: the real router, not setupTests' fixed location.
+vi.mock('react-router-dom', async () => vi.importActual('react-router-dom'));
 vi.mock('../../services/api', () => ({ getReleaseNotes: vi.fn() }));
 const mocked = vi.mocked(api);
 
@@ -62,7 +63,30 @@ describe('ReleaseNotes', () => {
     expect(screen.queryByText('No release has notes yet.')).not.toBeInTheDocument();
   });
 
-  it('the About link opens the page at the running release', () => {
-    expect(releaseNotesPath('2.525.0', '5.420.0')).toBe('/reference/release-notes#release-2.525.0-5.420.0');
+  it('opens on the release the SERVER runs when the address names none (5.420.1)', async () => {
+    // The server runs the older pair: the frontend's own build is not asked.
+    mocked.getReleaseNotes.mockResolvedValue({
+      ...NOTES, kinds: [...NOTES.kinds], current: { backend: '2.524.0', frontend: '5.419.0' },
+    });
+    const scrolled: string[] = [];
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(function (this: HTMLElement) {
+      scrolled.push(this.id);
+    });
+    renderPage();
+    await screen.findByText('Release notes in Reference.');
+    expect(scrolled).toEqual([releaseAnchor('2.524.0', '5.419.0')]);
+    spy.mockRestore();
+  });
+
+  it('opens on the release the address names', async () => {
+    mocked.getReleaseNotes.mockResolvedValue({ ...NOTES, kinds: [...NOTES.kinds] });
+    const scrolled: string[] = [];
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(function (this: HTMLElement) {
+      scrolled.push(this.id);
+    });
+    renderPage(`/reference/release-notes#${releaseAnchor('2.524.0', '5.419.0')}`);
+    await screen.findByText('Release notes in Reference.');
+    expect(scrolled).toEqual([releaseAnchor('2.524.0', '5.419.0')]);
+    spy.mockRestore();
   });
 });

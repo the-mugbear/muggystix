@@ -189,6 +189,24 @@ def test_the_bump_script_starts_the_releases_notes(tmp_path):
     assert path.read_text() == before
 
 
+def test_two_bumps_in_a_row_prepare_one_release(tmp_path):
+    """2.525.1 (review of the release notes, finding 1): a backend bump then a
+    frontend bump on one branch left an empty entry for 2.6.0 / 5.4.1 — a
+    version never released — below the one being written, and the gate only
+    looks at the running version.  The empty top entry is renumbered."""
+    from app.services import release_notes
+
+    script = _bump_script()
+    root = _tree(tmp_path)
+    path = root / "backend" / "app" / "data" / "release_notes.json"
+    assert script.main(["--root", str(root), "--backend", "minor"]) == 0
+    assert script.main(["--root", str(root), "--frontend", "minor"]) == 0
+    releases = release_notes.check(json.loads(path.read_text()))
+    assert [(r["backend"], r["frontend"], r["entries"]) for r in releases] == [
+        ("2.6.0", "5.5.0", []), ("2.5.9", "5.4.1", [{"kind": "fixed", "text": "Something."}]),
+    ]
+
+
 def test_the_bump_script_changes_every_place_and_nothing_else(tmp_path):
     script = _bump_script()
     root = _tree(tmp_path)
