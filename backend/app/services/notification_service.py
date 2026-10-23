@@ -347,6 +347,9 @@ class NotificationService:
                 self.db.query(HostFollow.user_id)
                 .filter(
                     HostFollow.host_id == note.host_id,
+                    # A former member's kept mark (user deleted, owner
+                    # 2026-10-22) has nobody to tell.
+                    HostFollow.user_id.isnot(None),
                     HostFollow.status.in_(
                         [FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value]
                     ),
@@ -413,6 +416,7 @@ class NotificationService:
             HostScanHistory.scan_id == scan_id,
             HostScanHistory.host_created.is_(False),
             HostFollow.status.in_([FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value]),
+            HostFollow.user_id.isnot(None),  # a former member's kept mark tells nobody
         ]
         if actor_id is not None:
             conditions.append(HostFollow.user_id != actor_id)

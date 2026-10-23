@@ -70,6 +70,7 @@ import type {
 } from '../services/api';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { storedReviewConclusionLabel } from '../utils/reviewConclusion';
+import { reviewerName } from '../utils/people';
 import { ReviewNote } from './host-inspector/ReviewNote';
 import { buildSameVulnQuery, buildExploitOnPortsQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
@@ -1657,8 +1658,8 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               <div className="flex flex-wrap items-center gap-xs">
                 <p className="text-caption text-muted-foreground">Also reviewing</p>
                 <div className="flex flex-wrap gap-xs">
-                  {otherFollowers.map((f) => {
-                    const label = f.full_name || f.username;
+                  {otherFollowers.map((f, index) => {
+                    const label = reviewerName(f.full_name, f.username);
                     const statusLabel =
                       f.status === 'in_review'
                         ? 'In Review'
@@ -1672,7 +1673,8 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
                           ? 'info'
                           : 'success';
                     return (
-                      <Badge key={f.user_id} variant={variant}>
+                      // A former member has no id, and two of them can mark one host.
+                      <Badge key={f.user_id ?? `former-${index}`} variant={variant}>
                         {label} · {statusLabel}
                       </Badge>
                     );

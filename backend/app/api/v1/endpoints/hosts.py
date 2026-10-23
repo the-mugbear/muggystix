@@ -553,7 +553,10 @@ def get_hosts_v2(
                 HostFollow.host_id, HostFollow.user_id, HostFollow.status,
                 User.username, User.full_name,
             )
-            .join(User, HostFollow.user_id == User.id)
+            # OUTER: a mark whose reviewer's account was deleted is kept with
+            # ``user_id`` NULL (owner, 2026-10-22) and still counts — the row
+            # names its reviewer ``None`` and the page says "a former member".
+            .outerjoin(User, HostFollow.user_id == User.id)
             .filter(
                 HostFollow.host_id.in_(host_ids),
                 HostFollow.status.in_([
@@ -570,7 +573,7 @@ def get_hosts_v2(
                 team_status_map[hid] = FollowStatus.IN_REVIEW.value
             # Teammate display lists exclude the caller (own state = control).
             if uid != current_user.id:
-                entry = {"user_id": uid, "name": full_name or username}
+                entry = {"user_id": uid, "name": (full_name or username) if uid is not None else None}
                 if status == FollowStatus.REVIEWED.value:
                     reviewed_map.setdefault(hid, []).append(entry)
                 else:

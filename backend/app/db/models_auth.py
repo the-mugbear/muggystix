@@ -98,11 +98,14 @@ class User(Base):
     # an assigned_by_id FK to users (v2.71.0), so the path is ambiguous
     # without it.  Assignment cascade is intentionally NOT mirrored here:
     # deleting the assigner shouldn't delete the assignee's follow row.
+    # No ORM delete cascade either (owner, 2026-10-22): a deleted user's review
+    # marks are KEPT with ``user_id`` NULL by the database's SET NULL, so the
+    # ORM must neither delete nor load them when the user is deleted.
     host_follows = relationship(
         "HostFollow",
         foreign_keys="HostFollow.user_id",
         back_populates="user",
-        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     # v2.86.2 — host_notes no longer orphan-cascades.  Notes are shared
     # project annotations; preserving them as "by deleted user" matches

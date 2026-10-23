@@ -352,9 +352,13 @@ class HostReviewer(BaseModel):
     """Another user (not the caller) who has this host In Review.  Drives the
     Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only by
     design — the caller's own status is shown by the row's Follow control, so
-    including the caller produced a duplicate badge."""
-    user_id: int
-    name: str
+    including the caller produced a duplicate badge.
+
+    ``user_id`` and ``name`` are null for a mark whose reviewer's account was
+    deleted (owner, 2026-10-22: the mark is kept, attributed to no one); the
+    page reads it as "a former member"."""
+    user_id: Optional[int] = None
+    name: Optional[str] = None
 
 
 class HostTagInfo(BaseModel):

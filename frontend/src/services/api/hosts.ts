@@ -197,12 +197,14 @@ export interface Host {
   // Hosts-list "In review · <name>" indicator (v4.9.1).  Teammates-only: the
   // caller's own status is on the Follow control, so including the caller
   // duplicated the badge.
-  other_reviewers?: { user_id: number; name: string }[];
+  // A reviewer whose account was deleted is null on both fields: the mark is
+  // kept, attributed to no one (`utils/people.reviewerName` → "a former member").
+  other_reviewers?: { user_id: number | null; name: string | null }[];
   // Teammates (not the caller) who have COMPLETED review of this host, plus
   // the team-wide review state (most-advanced across all users).  Review is
   // team-shared, so the row surfaces who reviewed a host the filter classifies
   // as "Reviewed" — not just who is currently in review.
-  reviewed_by?: { user_id: number; name: string }[];
+  reviewed_by?: { user_id: number | null; name: string | null }[];
   team_review_status?: 'reviewed' | 'in_review' | null;
   // Host discovery timestamps + attention inputs surfaced for the redesigned
   // Hosts table (Host column "new"/last-seen/stale; Attention column
@@ -535,8 +537,9 @@ export const clearProjectDefaultView = async (projectId: number): Promise<void> 
 // --- Host followers (who else is reviewing this host) ---
 
 export interface HostFollowerEntry {
-  user_id: number;
-  username: string;
+  /** Null (with `username`) for a mark whose reviewer's account was deleted. */
+  user_id: number | null;
+  username: string | null;
   full_name: string | null;
   status: 'watching' | 'in_review' | 'reviewed';
   since: string;

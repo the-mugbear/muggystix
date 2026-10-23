@@ -20,3 +20,14 @@ export function personInitials(fullName?: string | null, username?: string | nul
 export function personName(fullName?: string | null, username?: string | null): string {
   return (fullName ?? '').trim() || (username ?? '').trim() || '—';
 }
+
+/** Who a host review mark names when its reviewer's account was deleted: the
+ *  mark is kept, attributed to no one (owner, 2026-10-22), and the server
+ *  sends the reviewer as null. */
+export const FORMER_MEMBER = 'a former member';
+
+/** A review mark's reviewer: full name, else username, else "a former member"
+ *  (no account behind the mark any more). */
+export function reviewerName(fullName?: string | null, username?: string | null): string {
+  return (fullName ?? '').trim() || (username ?? '').trim() || FORMER_MEMBER;
+}

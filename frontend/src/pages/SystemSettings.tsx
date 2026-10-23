@@ -365,7 +365,7 @@ const SystemSettings: React.FC = () => {
   const handleDeleteUser = async (user: User) => {
     const ok = await confirm({
       title: 'Delete user',
-      body: 'This action cannot be undone. The user will lose access and all per-project memberships will be removed.',
+      body: 'This action cannot be undone. The user will lose access and all per-project memberships will be removed. Their host reviews are kept and shown as by a former member; hosts assigned to them become unassigned.',
       resourceName: user.username,
       severity: 'danger',
       confirmLabel: 'Delete user',
