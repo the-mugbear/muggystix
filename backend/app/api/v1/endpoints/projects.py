@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.exc import IntegrityError
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import disable_statement_timeout, get_db
+from app.db.models import Site
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User, UserRole
 from app.api.deps import (
@@ -61,14 +62,8 @@ def _iso(value) -> Optional[str]:
 
 _STATUS_HELP = (
     "Project status: active (the assessment is under way), completed, archived "
-    "(hidden from project selection). 'in_progress' is accepted as the old name for active."
+    "(hidden from project selection)."
 )
-
-
-def _normalise_status(value: Optional[str]) -> Optional[str]:
-    # v2.399.0 — 'in_progress' was a second name for 'active' (every reader
-    # treated the two alike); an older client may still send it.
-    return "active" if value == "in_progress" else value
 
 
 class ProjectCreate(BaseModel):
@@ -78,11 +73,6 @@ class ProjectCreate(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
 
-    @field_validator("status")
-    @classmethod
-    def _status(cls, value):
-        return _normalise_status(value)
-
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -90,11 +80,6 @@ class ProjectUpdate(BaseModel):
     status: Optional[str] = Field(None, description=_STATUS_HELP)
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
-
-    @field_validator("status")
-    @classmethod
-    def _status(cls, value):
-        return _normalise_status(value)
 
 
 class ProjectIngestSettingsUpdate(BaseModel):
@@ -503,6 +488,10 @@ def update_project_ingest_settings(
             status_code=403,
             detail="Only project analysts or admins can change ingest settings",
         )
+    # An archived project takes no writes but its own unarchive, here as on
+    # every project route (``get_current_project``) and the agents' gate.
+    if project.is_archived:
+        raise HTTPException(status_code=410, detail="Project is archived")
     if "skip_informational_findings" in data.model_fields_set:
         project.skip_informational_findings = data.skip_informational_findings
     db.commit()
@@ -707,6 +696,13 @@ def add_member(
         role=data.role,
     )
     db.add(membership)
+    try:
+        db.flush()
+    except IntegrityError:
+        # Added by a concurrent request between the check above and here
+        # (``uq_project_user``): the same answer as the check, not a 500.
+        db.rollback()
+        raise HTTPException(status_code=400, detail="User is already a member of this project")
     _audit(db, request, current_user, "project_member_added", project_id=project_id,
            resource_type="project_membership", details={
                "project_name": project.name, "user_id": user.id, "username": user.username,
@@ -808,13 +804,23 @@ def remove_member(
     if not membership:
         raise HTTPException(status_code=404, detail="User is not a member of this project")
 
-    # Prevent removing the last admin
+    # Prevent removing the last admin — counted under a lock on the project's
+    # admin rows (in id order), so two removals of its two admins at once
+    # cannot both see the other still there.  The second waits, and then no
+    # longer sees the row the first deleted.  (Demoting the only admin is
+    # allowed on purpose: the page asks the person to confirm it.)
     if membership.role == "admin":
-        admin_count = db.query(func.count(ProjectMembership.id)).filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.role == "admin",
-        ).scalar()
-        if admin_count <= 1:
+        admin_ids = (
+            db.query(ProjectMembership.id)
+            .filter(
+                ProjectMembership.project_id == project_id,
+                ProjectMembership.role == "admin",
+            )
+            .order_by(ProjectMembership.id)
+            .with_for_update()
+            .all()
+        )
+        if len(admin_ids) <= 1:
             raise HTTPException(status_code=400, detail="Cannot remove the last project admin")
 
     removed_username = db.query(User.username).filter(User.id == user_id).scalar()
@@ -824,6 +830,11 @@ def remove_member(
                "old_role": membership.role, "new_role": None,
            })
     db.delete(membership)
+    # A site's owner must be a member (``sites.update_site``): one who left
+    # no longer owns the project's sites.
+    db.query(Site).filter(Site.project_id == project_id, Site.owner_id == user_id).update(
+        {Site.owner_id: None}, synchronize_session=False,
+    )
     # Their agents leave with them: a session renews on the operator being
     # active alone, so it outlived the removal (review 2026-10-22).
     end_sessions_of_operator(

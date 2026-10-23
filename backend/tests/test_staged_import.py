@@ -191,7 +191,13 @@ def test_starting_a_job_uses_one_pooled_connection_not_two(client, db_session, t
     real = session_module.SessionLocal
 
     def _counting(*args, **kwargs):
-        opened.append(1)
+        # The upload's door (``deps.large_upload_refusal``) reads the caller's
+        # session and role on a session of its own that it closes BEFORE the
+        # route takes the request's connection — never two held at once, which
+        # is what this test is about (review 2026-10-23b, PLT-2).
+        import sys
+        if sys._getframe(1).f_code.co_name != "large_upload_refusal":
+            opened.append(1)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(session_module, "SessionLocal", _counting)

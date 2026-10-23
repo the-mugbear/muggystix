@@ -52,8 +52,9 @@ class User(Base):
     full_name = Column(String(FULL_NAME_MAX))
     role = Column(String(20), nullable=False, default=UserRole.MEMBER)
 
-    # Account status
-    is_active = Column(Boolean, default=True)
+    # Account status — never NULL (``9c4e2b7d1a3f``): a NULL read as a
+    # disabled account to every reader.
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     last_login = Column(DateTime(timezone=True))
 
     # Activity tracking
@@ -256,7 +257,7 @@ class APIKey(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True))
     last_used = Column(DateTime(timezone=True))
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
 
     # Relationships
     agent = relationship("Agent", foreign_keys=[agent_id])

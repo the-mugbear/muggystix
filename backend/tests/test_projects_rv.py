@@ -66,17 +66,20 @@ def test_a_project_created_archived_is_archived(client, db_session):
     assert "rv3-archived-proj" not in names
 
 
-def test_in_progress_is_the_old_name_for_active(client, db_session):
-    """v2.399.0 — 'in_progress' duplicated 'active' (every reader treated them
-    alike) and was merged into it; an older client sending it gets 'active'."""
-    r = client.post("/api/v1/projects/", json={"name": "status-alias", "status": "in_progress"})
+def test_in_progress_is_no_longer_a_project_status(client, db_session):
+    """v2.399.0 merged 'in_progress' into 'active' and kept the old name as an
+    alias with no end date; ``ck_projects_status`` forbids it in the table, and
+    the alias went with review 2026-10-23b (PLT-8): it is refused like any
+    other unknown status."""
+    assert client.post(
+        "/api/v1/projects/", json={"name": "status-alias", "status": "in_progress"},
+    ).status_code == 400
+    r = client.post("/api/v1/projects/", json={"name": "status-alias", "status": "active"})
     assert r.status_code == 201, r.text
-    assert r.json()["status"] == "active"
     pid = r.json()["id"]
     r = client.put(f"/api/v1/projects/{pid}", json={"status": "completed"})
     assert r.status_code == 200 and r.json()["status"] == "completed"
-    r = client.put(f"/api/v1/projects/{pid}", json={"status": "in_progress"})
-    assert r.status_code == 200 and r.json()["status"] == "active"
+    assert client.put(f"/api/v1/projects/{pid}", json={"status": "in_progress"}).status_code == 400
     assert client.put(f"/api/v1/projects/{pid}", json={"status": "paused"}).status_code == 400
 
 

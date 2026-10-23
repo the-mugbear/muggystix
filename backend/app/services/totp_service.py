@@ -134,7 +134,7 @@ def code_time_step(secret_b32: str, code: str, *, now: Optional[float] = None) -
 
 def accept_code(db: Session, user: User, code: str, *, now: Optional[float] = None) -> bool:
     """True when ``code`` is a valid authenticator code for ``user`` that has
-    not been accepted before; it is then spent.  COMMITS.
+    not been accepted before; it is then spent.  COMMITS when it spends one.
 
     A TOTP code is valid for its 30-second step and the neighbours on either
     side, so without a memory the same six digits were accepted again and
@@ -160,7 +160,11 @@ def accept_code(db: Session, user: User, code: str, *, now: Optional[float] = No
         )
         .update({User.totp_last_step: step}, synchronize_session=False)
     )
-    db.commit()
+    # Nothing to commit when nothing was spent — and a commit then would end
+    # the sign-in's attempt lock (``security.lock_account_attempts``) before
+    # the caller has recorded the wrong code.
+    if spent == 1:
+        db.commit()
     return spent == 1
 
 

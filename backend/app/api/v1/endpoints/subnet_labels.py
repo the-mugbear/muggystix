@@ -108,6 +108,39 @@ def _subnet_or_404(db: Session, project_id: int, subnet_id: int) -> Subnet:
     return subnet
 
 
+def _labels_all_or_404(db: Session, project_id: int, label_ids) -> set[int]:
+    """The distinct ``label_ids``, every one a label of the calling project —
+    or a 404 for the whole request.  One statement, whatever the list's
+    length: the per-id ``_label_or_404`` loop was a round trip per id."""
+    wanted = set(label_ids)
+    if not wanted:
+        return wanted
+    found = db.query(func.count(SubnetLabel.id)).filter(
+        SubnetLabel.id.in_(wanted), SubnetLabel.project_id == project_id,
+    ).scalar()
+    if found != len(wanted):
+        raise HTTPException(status_code=404, detail="Subnet label not found")
+    return wanted
+
+
+def _subnets_all_or_404(db: Session, project_id: int, subnet_ids) -> set[int]:
+    """The distinct ``subnet_ids``, every one a subnet of the calling project
+    (through its scope, as ``_subnet_or_404``) — or a 404 for the whole
+    request, in one statement."""
+    wanted = set(subnet_ids)
+    if not wanted:
+        return wanted
+    found = (
+        db.query(func.count(Subnet.id))
+        .join(Scope, Scope.id == Subnet.scope_id)
+        .filter(Subnet.id.in_(wanted), Scope.project_id == project_id)
+        .scalar()
+    )
+    if found != len(wanted):
+        raise HTTPException(status_code=404, detail="Subnet not found")
+    return wanted
+
+
 def _counts_for_labels(db: Session, project_id: int) -> dict[int, _Counts]:
     """Return per-label ``subnet_count`` + distinct ``host_count`` for the project.
 
@@ -291,14 +324,11 @@ def replace_subnet_labels(
     """Idempotent: PUT the desired ``label_ids`` set; any labels not
     listed are detached, any in the list not yet attached are attached.
 
-    Every label_id is project-scoped via ``_label_or_404`` so a guessed
+    Every label_id is project-scoped (``_labels_all_or_404``) so a guessed
     ID from another project 404s instead of leaking attachment."""
     _subnet_or_404(db, project.id, subnet_id)
 
-    target_ids: set[int] = set()
-    for lid in payload.label_ids:
-        _label_or_404(db, project.id, lid)
-        target_ids.add(lid)
+    target_ids = _labels_all_or_404(db, project.id, payload.label_ids)
 
     existing = (
         db.query(SubnetLabelAssignment)
@@ -356,10 +386,7 @@ def bulk_apply_subnet_label(
 
     # Validate every subnet belongs to the project up front so a bad ID
     # doesn't half-apply the bulk operation.
-    valid_subnet_ids: set[int] = set()
-    for sid in payload.subnet_ids:
-        _subnet_or_404(db, project.id, sid)
-        valid_subnet_ids.add(sid)
+    valid_subnet_ids = _subnets_all_or_404(db, project.id, payload.subnet_ids)
 
     already = {
         row[0]

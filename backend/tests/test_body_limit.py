@@ -94,7 +94,11 @@ def test_a_refused_upload_is_a_401_and_its_body_is_never_read():
 
     def refusal(path, headers):
         asked.append((path, headers.get("authorization")))
-        return None if headers.get("authorization") == "Bearer good" else "Not authenticated"
+        if headers.get("authorization") == "Bearer good":
+            return None
+        if headers.get("authorization") == "Bearer viewer":
+            return 403, "Insufficient project role. Required: analyst"
+        return 401, "Not authenticated"
 
     app, seen = _gated_app(refusal)
 
@@ -109,19 +113,29 @@ def test_a_refused_upload_is_a_401_and_its_body_is_never_read():
                              headers={"Authorization": "Bearer good"})
     assert r.status_code == 200 and seen["read"] is True
     assert [p for p, _ in asked] == ["/api/v1/agent/uploads", "/api/v1/projects/1/upload/"]
+    # A caller the route would refuse for its role is answered as the route
+    # would answer — before a byte of the body is read (review 2026-10-23b, PLT-2).
+    seen["read"] = False
+    r = TestClient(app).post("/api/v1/projects/1/upload/", content=body(),
+                             headers={"Authorization": "Bearer viewer"})
+    assert r.status_code == 403 and r.json() == {"detail": "Insufficient project role. Required: analyst"}
+    assert seen["read"] is False
 
 
 def test_the_page_upload_needs_a_token_that_verifies(db_session, test_user):
     from app.api.deps import TWO_FACTOR_CHALLENGE_PURPOSE, large_upload_refusal
-    from app.core.security import create_access_token
+    from app.core.security import create_access_token, create_session, verify_token
 
     path = "/api/v1/projects/1/upload/"
     good = create_access_token({"sub": str(test_user.id)})
+    create_session(db_session, test_user, verify_token(good)["jti"])
     challenge = create_access_token({"sub": str(test_user.id), "purpose": TWO_FACTOR_CHALLENGE_PURPOSE})
-    assert large_upload_refusal(path, {}) == "Not authenticated"
-    assert large_upload_refusal(path, {"authorization": "Basic abc"}) == "Not authenticated"
-    assert large_upload_refusal(path, {"authorization": "Bearer not-a-jwt"}) == "Invalid token"
-    assert large_upload_refusal(path, {"authorization": f"Bearer {challenge}"}) == "Invalid token payload"
+    assert large_upload_refusal(path, {}) == (401, "Not authenticated")
+    assert large_upload_refusal(path, {"authorization": "Basic abc"}) == (401, "Not authenticated")
+    assert large_upload_refusal(path, {"authorization": "Bearer not-a-jwt"}) == (401, "Invalid token")
+    assert large_upload_refusal(path, {"authorization": f"Bearer {challenge}"}) == (
+        401, "Two-factor authentication not completed",
+    )
     assert large_upload_refusal(path, {"authorization": f"Bearer {good}"}) is None
 
 
@@ -132,8 +146,9 @@ def test_the_agent_upload_needs_a_key_that_exists(client, db_session, test_proje
     assert started.status_code == 201, started.text
     key = started.json()["api_key"]
     path = "/api/v1/agent/uploads"
-    assert large_upload_refusal(path, {}).startswith("Missing agent API key")
-    assert large_upload_refusal(path, {"x-api-key": "nm_agent_made_up"}) == "Invalid agent API key"
+    status, detail = large_upload_refusal(path, {})
+    assert status == 401 and detail.startswith("Missing agent API key")
+    assert large_upload_refusal(path, {"x-api-key": "nm_agent_made_up"}) == (401, "Invalid agent API key")
     assert large_upload_refusal(path, {"x-api-key": key}) is None
     assert large_upload_refusal(path, {"authorization": f"Bearer {key}"}) is None
 

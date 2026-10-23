@@ -57,9 +57,12 @@ def list_sites(
     sites = (
         db.query(Site).filter(Site.project_id == project.id).order_by(Site.criticality_tier, Site.name).all()
     )
+    # This project's sites only: grouping every project's subnets gave the
+    # same answer (site ids are unique) at the installation's cost.
     counts = dict(
         db.query(Subnet.site_id, func.count(Subnet.id))
-        .filter(Subnet.site_id.isnot(None))
+        .join(Site, Site.id == Subnet.site_id)
+        .filter(Site.project_id == project.id)
         .group_by(Subnet.site_id)
         .all()
     )

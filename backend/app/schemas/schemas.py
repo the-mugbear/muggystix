@@ -1038,8 +1038,9 @@ class SubnetLabel(BaseModel):
 class SubnetLabelBulkAssign(BaseModel):
     """Payload for ``PUT /projects/{project_id}/scopes/subnets/{subnet_id}/labels`` —
     replaces the subnet's full label set with ``label_ids`` (any not
-    listed are detached; any missing are attached)."""
-    label_ids: List[int] = Field(default_factory=list)
+    listed are detached; any missing are attached).  A subnet carries a
+    handful of labels; the cap keeps one request to a bounded statement."""
+    label_ids: List[int] = Field(default_factory=list, max_length=200)
 
 
 class SubnetLabelBulkAssignMany(BaseModel):

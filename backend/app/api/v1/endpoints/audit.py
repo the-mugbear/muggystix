@@ -4,15 +4,16 @@ Audit Logging API Endpoints
 Endpoints for audit trail logging and retrieval.
 """
 
+import json
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, Depends, Request, Query, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.db.session import get_db
 from app.db.models_auth import User, UserRole
-from app.api.deps import get_current_user, require_role
+from app.api.deps import get_client_info, get_current_user, require_role
 from app.core.security import log_audit_event
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -20,11 +21,25 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # --- Schemas ---
 
+#: The most a client-reported event's ``details`` may hold, serialized.  Audit
+#: rows are kept for ever by default (``AUDIT_LOG_RETENTION_DAYS=0``) and any
+#: signed-in member may report one.
+CLIENT_DETAILS_MAX_BYTES = 4096
+
+
 class AuditLogRequest(BaseModel):
     action: str
-    resource_type: Optional[str] = None
-    resource_id: Optional[str] = None
+    # The columns' own widths: longer text was a 500 from the database.
+    resource_type: Optional[str] = Field(None, max_length=50)
+    resource_id: Optional[str] = Field(None, max_length=50)
     details: Optional[Dict[str, Any]] = None
+
+    @field_validator("details")
+    @classmethod
+    def _bounded(cls, value):
+        if value is not None and len(json.dumps(value, default=str).encode()) > CLIENT_DETAILS_MAX_BYTES:
+            raise ValueError(f"details may hold at most {CLIENT_DETAILS_MAX_BYTES} bytes")
+        return value
 
 
 class AuditLogResponse(BaseModel):
@@ -99,14 +114,6 @@ def _user_names(db: Session, user_ids) -> Dict[int, tuple]:
     return {uid: (username, full_name) for uid, username, full_name in rows}
 
 
-def get_client_info(request: Request) -> Dict[str, Optional[str]]:
-    """Extract client information from request"""
-    return {
-        "ip_address": request.client.host if request.client else None,
-        "user_agent": request.headers.get("user-agent")
-    }
-
-
 # Actions a client is permitted to self-report via /audit/log.  Deliberately
 # narrow + non-privileged: the authoritative security events (login_success,
 # password_changed, user_*, role_*, …) are written backend-side at the
@@ -161,8 +168,11 @@ def create_audit_log(
         resource_type=audit_data.resource_type,
         resource_id=audit_data.resource_id,
         # Mark the row as client-reported so it's never mistaken for a
-        # backend-authoritative event during audit review.
-        details={**(audit_data.details or {}), "source": "client"},
+        # backend-authoritative event during audit review.  The client's own
+        # keys stay under ``client``: at the top level a ``username`` was
+        # copied into the typed ``audit_logs.username`` the sign-in limiter
+        # reads (``models_auth``'s ``before_insert`` listener).
+        details={"source": "client", "client": audit_data.details or {}},
         **client_info
     )
 
@@ -202,7 +212,9 @@ def get_audit_logs(
         query = query.filter(AuditLog.user_id == user_id)
 
     # Order by most recent first
-    query = query.order_by(AuditLog.timestamp.desc())
+    # ``id`` breaks ties: rows of one instant otherwise repeat or go missing
+    # across ``skip`` pages.
+    query = query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
 
     total = query.count()
 

@@ -744,8 +744,13 @@ async def oauth_is_not_used(rest: str = ''):
 
 
 @app.get('/.well-known/networkmapper.json')
-async def well_known_identity():
+def well_known_identity():
     """Instance identity document — unauthenticated, intentionally public.
+
+    A plain ``def`` (FastAPI runs it in the thread pool): ``get_instance_id``
+    queries the database while its cache is empty — after a failed seed, and
+    on every call while the database is down — and that wait must not block
+    the event loop.
 
     Agents call this once at the start of a session to verify that the URL
     they're being asked to curl belongs to the same entity that generated

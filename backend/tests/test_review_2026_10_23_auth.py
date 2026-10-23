@@ -216,8 +216,10 @@ def test_the_project_routes_answer_as_their_old_checks_did(real_auth, db_session
 
     assert ok(real_auth.get(base, headers=headers)) == _old_is_member(role, is_global_admin)
     assert ok(real_auth.get(f"{base}/members", headers=headers)) == _old_is_member(role, is_global_admin)
-    assert ok(real_auth.patch(f"{base}/ingest-settings", headers=headers,
-                              json={"skip_informational_findings": True})) == _old_can_ingest(role, is_global_admin)
+    # The role is asked as before; one who passes is then told the project is
+    # archived, which takes no ingest settings (review 2026-10-23b, PLT-8).
+    ingest = real_auth.patch(f"{base}/ingest-settings", headers=headers, json={"skip_informational_findings": True})
+    assert ingest.status_code == (410 if _old_can_ingest(role, is_global_admin) else 403), ingest.text
     # An archived project stays reachable to the people who manage it.
     assert ok(real_auth.put(base, headers=headers, json={"description": "d"})) == _old_can_manage(role, is_global_admin)
     if ok(real_auth.get(base, headers=headers)):
