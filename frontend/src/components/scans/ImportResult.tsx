@@ -15,7 +15,8 @@ import ScanContribution from './ScanContribution';
  * Built from the per-scan summary the inventory already computes (host and
  * port history, conflict history, the ingestion job's quality trio), so it
  * is the same wherever the scan is shown: the upload banner the moment the
- * job completes, the scan row, the scan page, and the Ingestion Results row.
+ * job completes, the scan row, the scan page, and an upload row of the
+ * import history.
  */
 
 export interface ImportResultPart {
@@ -94,7 +95,7 @@ export function importResultParts(scan: Scan): ImportResultPart[] {
       key: 'skipped',
       text: `${plural(skipped, 'record')} skipped`,
       to: importResultsPath({ job_id: scan.import_job_id }),
-      title: scan.import_warnings || 'Input records the parser could not use. Opens Ingestion Results for the reasons.',
+      title: scan.import_warnings || 'Input records the parser could not use. Opens the upload in the import history for the reasons.',
       tone: 'warning',
     });
   }
@@ -147,7 +148,7 @@ export function formatChainParts(scan: Scan): Array<{ key: string; lead: string;
 const ImportResult: React.FC<{
   scan: Scan;
   showContribution?: boolean;
-  /** Off where the surrounding row already prints the chain (Ingestion Results). */
+  /** Off where the surrounding row already prints the chain (an upload row). */
   showFormatChain?: boolean;
   className?: string;
 }> = ({

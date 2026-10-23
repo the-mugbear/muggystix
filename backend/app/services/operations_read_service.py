@@ -1272,7 +1272,8 @@ class OperationsBlockers(BaseModel):
 def blocked_import_condition():
     """An import that needs someone: it FAILED, or it finished PARTIAL, and
     nobody has dismissed it.  ONE definition — the Operations blockers count
-    it, `GET /ingestion-results?status=needs_attention` lists it,
+    it, `GET /scans/history?status=needs_attention` (the Scans page's import
+    history) and `GET /ingestion-results?status=needs_attention` list it,
     and `POST /upload/jobs/{id}/dismiss` is what clears it.  The count on the
     "Inspect import errors" button and the list it opens cannot disagree.
 

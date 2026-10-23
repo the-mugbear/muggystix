@@ -62,7 +62,7 @@ describe('ScanBatchRow', () => {
     expect(screen.getByText(/312 files imported/)).toBeInTheDocument();
     expect(screen.getByText('+850')).toBeInTheDocument();
     expect(screen.getByText('4 processing')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '1 failed' })).toHaveAttribute('href', '/scans?view=results&status=needs_attention');
+    expect(screen.getByRole('link', { name: '1 failed' })).toHaveAttribute('href', '/scans?status=needs_attention');
     expect(getScans).not.toHaveBeenCalled();
   });
 
@@ -111,7 +111,7 @@ describe('ScanBatchRow', () => {
     expect(contributed).toHaveTextContent('Nothing imported');
     // Ingestion Results lists expired uploads in their own view, not under Failed.
     expect(within(contributed).getByRole('link', { name: '31 expired before import' }))
-      .toHaveAttribute('href', '/scans?view=results&status=expired');
+      .toHaveAttribute('href', '/scans?status=expired');
     expect(contributed).not.toHaveTextContent(/0 files/);
     expect(screen.queryByText(/reached the import/)).not.toBeInTheDocument();
   });
@@ -119,7 +119,7 @@ describe('ScanBatchRow', () => {
   it('a batch\'s dismissed failures open the dismissed-failures view, not every failed import', () => {
     const { container } = renderRow({}, vi.fn(), { ...batch, failed_files: 0, dismissed_failed_files: 2 });
     expect(within(cells(container)[3]).getByRole('link', { name: '2 failed (dismissed)' }))
-      .toHaveAttribute('href', '/scans?view=results&status=failed_dismissed');
+      .toHaveAttribute('href', '/scans?status=failed_dismissed');
   });
 
   it('shows at most four tool chips, then "+N more" with the full list on hover', () => {
@@ -232,7 +232,7 @@ describe('ScanBatchRow', () => {
     const { container } = renderRow({}, vi.fn(), { ...batch, created_at: '2026-09-11T10:00:00Z', superseded_files: 1 });
     // The batch row says how many failed but were imported later.
     expect(screen.getByRole('link', { name: '1 failed, imported later (superseded)' }))
-      .toHaveAttribute('href', '/scans?view=results&status=superseded');
+      .toHaveAttribute('href', '/scans?status=superseded');
     fireEvent.click(screen.getByRole('button', { name: /show the files of/i }));
     await screen.findByText('smbmap-samba.txt');
     expect(getBatchUnimportedJobs).toHaveBeenCalledWith(1, 7, expect.any(AbortSignal));
@@ -242,7 +242,7 @@ describe('ScanBatchRow', () => {
     const smb = rows[0].querySelectorAll('td');
     expect(smb[3]).toHaveTextContent('Superseded — imported by job #484');
     expect(within(smb[3] as HTMLElement).getByRole('link', { name: 'imported by job #484' }))
-      .toHaveAttribute('href', '/scans?view=results&job_id=484');
+      .toHaveAttribute('href', '/scans?job_id=484');
     // The parser's cause, not the generic sentence.
     expect(smb[3]).toHaveTextContent('SMBMap parser found 0 hosts');
     expect(smb[3]).not.toHaveTextContent(/format may not be supported/);

@@ -162,7 +162,7 @@ describe('Layout shell', () => {
     unmount();
     renderAt('/hosts');
     const strip = screen.getByRole('navigation', { name: 'Inventory sections' });
-    // Ingestion Results is the Scans page's "Import results" view (5.380.0),
+    // Ingestion Results is part of the Scans page's import history (5.418.0),
     // not a tab of its own; Scanner observations is (5.404.0), and Query (5.405.0).
     expect(within(strip).getAllByRole('link').map((a) => a.textContent)).toEqual(
       ['Hosts', 'Names', 'Scanner observations', 'Query', 'Scans', 'Scope'],

@@ -669,7 +669,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "but dropped rows "
             "— check it before reporting that something is ABSENT: if `has_issues` "
             "is false, an empty result elsewhere is a real absence. Counts as the "
-            "Ingestion Results page states them: failed, expired (a staged upload "
+            "Scans page's import history states them: failed, expired (a staged upload "
             "nobody started), discarded, partial, degraded, queued / processing, and "
             "needs_attention (failed or partial, not dismissed, not replaced by a "
             "later import — the answer to 'how many imports need attention'; each "

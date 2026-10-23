@@ -142,7 +142,7 @@ describe('Evidence — domain × segment matrix', () => {
     });
     await renderPage();
     const link = screen.getByRole('link', { name: /2 imports need attention/ });
-    expect(link).toHaveAttribute('href', '/scans?view=results&status=needs_attention');
+    expect(link).toHaveAttribute('href', '/scans?status=needs_attention');
     expect(screen.getByText(/14 failed or partial imports dismissed/)).toBeInTheDocument();
     expect(screen.queryByText(/16/)).toBeNull();
   });

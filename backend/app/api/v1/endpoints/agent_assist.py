@@ -108,8 +108,9 @@ router = APIRouter()
 # screenshots) declare none: the UI serves both to a viewer.
 #: The whole-project dossier and the bulk inventory are exports (AUDITOR).
 _EXPORT_READ = [Depends(agent_read_floor(ProjectRole.AUDITOR))]
-#: Ingestion Results is an analyst page (``/ingestion-results``, and every
-#: ``/parse-errors`` route).
+#: The uploads that were not imported are an analyst's read
+#: (``/ingestion-results``, every ``/parse-errors`` route, and the upload rows
+#: and status filters of the Scans page's import history, ``/scans/history``).
 _INGESTION_RESULTS_READ = [Depends(agent_read_floor(ProjectRole.ANALYST))]
 
 
@@ -2626,7 +2627,8 @@ class AssistIngestionIssue(BaseModel):
         "them, and only after they say to import it POST "
         "/agent/uploads/{job_id}/keep-truncated with {\"operator_agreed\": true}; "
         "for anyone else's upload a person chooses 'Import what the file holds' on "
-        "Ingestion results. Null for a row that did not fail, or failed without a "
+        "the upload's row in the Scans page's import history. Null for a row that "
+        "did not fail, or failed without a "
         "parse error."
     ))
     #: Rows the parser dropped while still reporting success.  Non-zero means
@@ -2643,7 +2645,7 @@ class AssistIngestionIssues(AgentPage):
     queued: int = 0
     processing: int = 0
     failed: int = Field(0, description=(
-        "Imports that went wrong — the Ingestion Results page's Failed count. "
+        "Imports that went wrong — the Failed count of the Scans page's import history. "
         "Staged uploads that expired or were discarded are counted apart."
     ))
     expired: int = Field(0, description=(
@@ -2737,7 +2739,7 @@ def list_assist_ingestion_issues(
     conclusion from what is present.
     """
     pid = request.state.agent_project_id
-    # The Ingestion Results page's own service: its views, its counts, and
+    # The import history's uploads' own service: its views, its counts, and
     # the list paged in SQL (review 2026-10-10, R1b — this route was a second
     # implementation that loaded every failed job).
     counts = ingestion_results_service.job_counts(db, pid)

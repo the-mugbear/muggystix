@@ -10,12 +10,16 @@ import {
   getScansSummary,
   getScanBatches,
   getImportHistory,
+  getIngestionResults,
 } from '../services/api';
 import type {
   Scan,
   IngestionJob,
+  IngestionResultItem,
   ScanBatchSummary,
   ImportHistoryEntry,
+  ImportHistoryPage,
+  ImportHistoryStatus,
   ScanInventorySummary,
 } from '../services/api';
 import { TableSkeleton } from '../components/PageSkeleton';
@@ -31,7 +35,7 @@ import PostureLead from '../components/posture/PostureLead';
 import PostureSection from '../components/posture/PostureSection';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { formatDate, formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
-import ScansViewTabs from '../components/scans/ScansViewTabs';
+import UploadStatusFilter, { IMPORT_HISTORY_STATUSES } from '../components/scans/UploadStatusFilter';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import DeleteScanDialog from '../components/scans/DeleteScanDialog';
 import { IngestionQueue, QUEUE_READS, useIngestionQueue } from '../components/scans/IngestionQueue';
@@ -57,10 +61,14 @@ interface HistoryPage {
   entries: ImportHistoryEntry[];
   scans: Scan[];
   batches: ScanBatchSummary[];
+  /** The uploads that were not imported (or that a status filter lists). */
+  uploads: IngestionResultItem[];
   /** One kind of row could not be loaded: the page is missing entries. */
   partial: boolean;
   total: number | null;
   hasMore: boolean;
+  /** The status filter's counts (analysts and above; null otherwise). */
+  statusCounts: ImportHistoryPage['status_counts'];
 }
 
 /** What lists or counts the imported files. */
@@ -91,8 +99,26 @@ const DATE_RANGE_PRESETS: ReadonlyArray<{ label: string; days: number | null }> 
  * controls show and what the lists are asked for.  A value the address cannot
  * mean is the default.
  */
+/** What choosing a status filter changes in the address. */
+const statusChanges = (status: ImportHistoryStatus | null): Record<string, string | null> => (
+  { status, job_id: null, error_id: null, batch_files: null }
+);
+
+/** A positive whole number from the address, else null. */
+const idParam = (raw: string | null): number | null => (raw && /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null);
+
 function useScansAddress() {
   const [urlParams, setUrlParams] = useSearchParams();
+  // The uploads' filters (5.418.0; they were the Ingestion results view's):
+  // a status view, or one upload by its id or its parse error's.  Read only
+  // for analysts and above, who may read uploads — for anyone else the
+  // address names the history, whatever it says (hidden, not refused).
+  const { canWrite: readsUploads } = useProjectRole();
+  const rawStatus = urlParams.get('status') as ImportHistoryStatus | null;
+  const statusFilter: ImportHistoryStatus | null = readsUploads && rawStatus && IMPORT_HISTORY_STATUSES.includes(rawStatus)
+    ? rawStatus : null;
+  const focusJobId = readsUploads ? idParam(urlParams.get('job_id')) : null;
+  const focusErrorId = readsUploads ? idParam(urlParams.get('error_id')) : null;
   const toolFilter = urlParams.get('tool') || '';
   const dateRangeDays: number | null = (() => {
     const raw = urlParams.get('days');
@@ -105,7 +131,9 @@ function useScansAddress() {
     return raw && SCANS_SORT_COLUMNS.includes(raw) ? raw : 'created_at';
   })();
   const sortOrder: ScansSortOrder = urlParams.get('sort_order') === 'asc' ? 'asc' : 'desc';
-  const showBatchFiles = urlParams.get('batch_files') === 'show';
+  // The all-files view lists imported files; a status view lists uploads.
+  const showBatchFiles = urlParams.get('batch_files') === 'show'
+    && statusFilter === null && focusJobId === null && focusErrorId === null;
   // Who uploaded the file (an agent's uploads are its operator's).
   const uploaderFilter: number | null = (() => {
     const parsed = parseInt(urlParams.get('uploaded_by') || '', 10);
@@ -165,6 +193,28 @@ function useScansAddress() {
     setUrlFilters({ sort_by: column === 'created_at' ? null : column, sort_order: null });
   };
   return {
+    readsUploads,
+    statusFilter,
+    focusJobId,
+    focusErrorId,
+    /** The list is the uploads one view names, flat, instead of the grouped
+     *  history. */
+    uploadView: statusFilter !== null || focusJobId !== null || focusErrorId !== null,
+    // One write: a status replaces a link's one upload, and the uploads are
+    // listed one row each, so the all-files switch is let go too.
+    setStatusFilter: (status: ImportHistoryStatus | null) => setUrlFilters(statusChanges(status)),
+    /** The address that same write makes — for a link elsewhere on the page
+     *  (the queue strip's failed line) that must open exactly the list the
+     *  chip opens. */
+    statusHref: (status: ImportHistoryStatus) => {
+      const next = new URLSearchParams(urlParams);
+      Object.entries(statusChanges(status)).forEach(([name, value]) => {
+        if (value === null) next.delete(name);
+        else next.set(name, value);
+      });
+      return `/scans?${next.toString()}`;
+    },
+    showWholeHistory: () => setUrlFilters({ status: null, job_id: null, error_id: null }),
     toolFilter,
     setToolFilter: (tool: string) => setUrlFilters({ tool: tool || null }),
     dateRangeDays,
@@ -225,7 +275,13 @@ export default function Scans() {
   const banner = useUploadBanner(projectId, refreshQueue, refreshInventory);
 
   const address = useScansAddress();
-  const { showBatchFiles, sortBy, sortOrder, listFilters, hasActiveFilters } = address;
+  const { showBatchFiles, sortBy, sortOrder, listFilters, hasActiveFilters, uploadView } = address;
+  // What narrows the list to uploads, in the request and in the list's key.
+  const uploadFilters = useMemo(() => ({
+    status: address.statusFilter ?? undefined,
+    jobId: address.focusJobId ?? undefined,
+    errorId: address.focusErrorId ?? undefined,
+  }), [address.statusFilter, address.focusJobId, address.focusErrorId]);
   // The project's effective "skip informational Nessus observations" (its own
   // choice, else the deployment default), sent with each upload; changed in
   // Project settings → Imports.
@@ -256,24 +312,31 @@ export default function Scans() {
           ...listFilters, sortBy, sortOrder, unbatched: false, signal,
         });
         return {
-          flat: true, items: files, entries: [], scans: files, batches: [], partial: false, total: null,
-          hasMore: files.length === limit,
+          flat: true, items: files, entries: [], scans: files, batches: [], uploads: [], partial: false, total: null,
+          hasMore: files.length === limit, statusCounts: null,
         };
       }
+      // The ORDER of every kind at once — batches, single files and (for an
+      // analyst) the uploads that were not imported, or under a status filter
+      // the uploads it names — paged on the server; the rows by id.
       const page = await getImportHistory(projectId, {
-        ...listFilters, ...(offset > 0 ? { skip: offset } : {}), limit, signal,
+        ...listFilters, ...uploadFilters, ...(offset > 0 ? { skip: offset } : {}), limit, signal,
       });
-      const rows = await hydrateHistoryRows(projectId, page.items, listFilters, { getScans, getScanBatches });
+      const rows = await hydrateHistoryRows(
+        projectId, page.items, listFilters, { getScans, getScanBatches, getIngestionResults },
+      );
       return {
         flat: false, items: page.items, entries: page.items, scans: rows.scans, batches: rows.batches,
+        uploads: rows.uploads,
         partial: rows.partial,
         total: typeof page.total === 'number' ? page.total : null,
         hasMore: page.has_more,
+        statusCounts: page.status_counts ?? null,
       };
     },
     showBatchFiles
       ? [projectId, { ...listFilters, sortBy, sortOrder, unbatched: false }]
-      : [projectId, listFilters],
+      : [projectId, listFilters, uploadFilters],
     {
       pageSize: showBatchFiles ? SCAN_LIMIT : HISTORY_PAGE,
       keepPrevious: 'loading',
@@ -289,8 +352,12 @@ export default function Scans() {
   const history = useMemo(() => historyPages?.flatMap((page) => page.entries) ?? [], [historyPages]);
   const scans = useMemo(() => historyPages?.flatMap((page) => page.scans) ?? [], [historyPages]);
   const batches = useMemo(() => historyPages?.flatMap((page) => page.batches) ?? [], [historyPages]);
+  const uploads = useMemo(() => historyPages?.flatMap((page) => page.uploads) ?? [], [historyPages]);
   const historyPartial = !!historyPages?.some((page) => page.partial);
   const historyTotal = historyPages?.[0]?.total ?? null;
+  // The status filter's counts, from the first page (the server states them
+  // on every page, under the same filters).
+  const statusCounts = historyPages?.[0]?.statusCounts ?? null;
   // Which way the rows ON SCREEN are listed: while the other view loads, they
   // are still the previous view's.
   const listedFlat = historyPages?.[0]?.flat ?? showBatchFiles;
@@ -330,7 +397,9 @@ export default function Scans() {
   const inventorySummary = summaryFailed ? null : summaryQuery.data ?? null;
 
   // The import history's rows, in the server's order.
-  const historyRows = useMemo(() => orderHistoryRows(history, scans, batches), [history, scans, batches]);
+  const historyRows = useMemo(
+    () => orderHistoryRows(history, scans, batches, uploads), [history, scans, batches, uploads],
+  );
   const tableRows = useMemo(
     () => (listedFlat
       ? scans.map((scan) => ({ kind: 'scan' as const, key: `scan-${scan.id}`, scan }))
@@ -370,10 +439,24 @@ export default function Scans() {
     return Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   }, [inventorySummary, scans]);
 
-  // The queue box and the lead read the project-wide figure (one definition,
-  // server-side); the recent-jobs count is only the fallback when the summary
-  // did not carry it.
-  const needAttention = inventorySummary?.imports_need_attention ?? queue.queueCounts.failed;
+  // The status filter's counts.  Grouped, they ride on the history's own
+  // answer; in the all-files view (which lists files, not uploads) one more
+  // read of the history's first entry carries them, so the queue strip's
+  // failed line is there whichever way the history is listed.  Analysts only:
+  // the server sends nobody else counts.
+  const flatViewCounts = useQuery({
+    queryKey: ['getImportHistory', projectId, listFilters, { limit: 1 }],
+    queryFn: ({ signal }) => getImportHistory(projectId, { ...listFilters, limit: 1, signal }),
+    enabled: showBatchFiles && address.readsUploads,
+  });
+  const historyStatusCounts = showBatchFiles ? flatViewCounts.data?.status_counts ?? null : statusCounts;
+  // The queue strip's one line about failures (owner decision 2026-10-22: a
+  // failed upload is a row of the history, not of the queue): the history's
+  // own Failed count under its filters, opening that exact list — the address
+  // the Failed chip writes.
+  const queueFailed = address.readsUploads && historyStatusCounts?.failed != null
+    ? { count: historyStatusCounts.failed, href: address.statusHref('failed') }
+    : null;
 
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);
   const handleDeleteClick = (scan: Scan) => {
@@ -382,29 +465,26 @@ export default function Scans() {
   };
 
   // The newest upload among what is loaded (the first page is newest first).
+  // (Upload rows are not imports: an upload that failed is not "the last import".)
   const lastImportAt = [
-    ...history.map((h) => h.at),
+    ...history.filter((h) => h.kind !== 'upload').map((h) => h.at),
     ...scans.map((sc) => sc.created_at),
     ...batches.map((b) => b.last_uploaded),
   ].filter((v): v is string => !!v).sort((x, y) => new Date(x).getTime() - new Date(y).getTime()).pop() ?? null;
 
   if (loading) {
-    // The title and the view switch stay where they are while the list is
-    // read: a whole-page skeleton here took away the tab the reader had just
-    // pressed and put it back a moment later (the two views are separate
-    // components, so every switch mounts this one afresh).
+    // The title stays where it is while the list is read.
     return (
       <div className="p-md md:p-lg">
         <div className="mb-md flex min-h-10 flex-wrap items-start justify-between gap-sm">
           <h1 className="text-page-title font-semibold">Scans</h1>
         </div>
-        <ScansViewTabs />
         <TableSkeleton rows={8} columns={6} />
       </div>
     );
   }
 
-  const nothingLoaded = scans.length === 0 && batches.length === 0;
+  const nothingLoaded = scans.length === 0 && batches.length === 0 && uploads.length === 0;
   return (
     <div className="p-md md:p-lg">
       <div className="mb-md flex flex-wrap items-start justify-between gap-sm">
@@ -422,22 +502,17 @@ export default function Scans() {
           )}
         </div>
       </div>
-      {/* Imported scans | Import results (the "Ingestion Results" page is this
-          page's second view). */}
-      <ScansViewTabs />
-
       {/* One sentence: counts from the filter-aware /scans/summary (every
           matching file, not the loaded page). */}
       <ScansLead
         files={inventorySummary?.total_files ?? inventorySummary?.total_scans ?? scans.length}
         filesUnknown={summaryFailed}
         filtered={hasActiveFilters}
-        failed={queue.queueCounts.failed}
+        readsUploads={address.readsUploads}
         needAttention={inventorySummary?.imports_need_attention}
         notImported={inventorySummary?.imports_not_imported}
         byReason={inventorySummary?.imports_not_imported_by_reason}
         superseded={inventorySummary?.imports_superseded}
-        queueUnknown={queue.recentJobsError && queue.recentJobs.length === 0}
         lastImportAt={lastImportAt}
       />
 
@@ -446,7 +521,7 @@ export default function Scans() {
       <IngestionQueue
         projectId={projectId}
         queue={queue}
-        needAttention={needAttention}
+        failed={queueFailed}
         canWrite={canWrite}
         onRefresh={refreshQueue}
         onReview={openReview}
@@ -464,7 +539,7 @@ export default function Scans() {
           </AlertDescription>
         </Alert>
       )}
-      {historyError && nothingLoaded ? null : !hasActiveFilters && nothingLoaded ? (
+      {historyError && nothingLoaded ? null : !hasActiveFilters && !uploadView && nothingLoaded ? (
         <div className="py-xl text-center">
           <Upload className="mx-auto mb-sm size-16 text-muted-foreground" aria-hidden />
           <p className="text-subheading text-muted-foreground">No scans uploaded yet</p>
@@ -489,18 +564,46 @@ export default function Scans() {
                     mistaken for the whole one. */}
                 {showBatchFiles
                   ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
-                  : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'} · `
-                    + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
-                    + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
-                {historyList.hasMore ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
+                  : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'}`
+                    + (uploadView ? '' : ` · ${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
+                      + `${scans.length} single file${scans.length === 1 ? '' : 's'}`
+                      + (uploads.length > 0 ? `, ${uploads.length} not imported` : ''))}
+                {historyList.hasMore ? ' · more below' : hasActiveFilters || uploadView ? ' (filtered)' : ''}
               </>
             )}
             fallbackTotal={scans.length}
           />
+          {/* The status filter: analysts and above, who may open what it
+              counts (the server sends no counts to anyone else). */}
+          {statusCounts && !showBatchFiles && (
+            <UploadStatusFilter
+              counts={statusCounts}
+              active={address.statusFilter}
+              onChange={address.setStatusFilter}
+              shownUploads={uploads}
+              canWrite={canWrite}
+              busy={historyList.loadingMore}
+            />
+          )}
+          {(address.focusJobId !== null || address.focusErrorId !== null) && (
+            <p className="mb-xxs text-caption text-muted-foreground" data-testid="one-upload">
+              {address.focusJobId !== null
+                ? `Upload #${address.focusJobId}`
+                : `The upload that recorded parse error #${address.focusErrorId}`}
+              {' · '}
+              <button type="button" className="text-info hover:underline" onClick={address.showWholeHistory}>
+                Show the whole history
+              </button>
+            </p>
+          )}
           <p className="mb-xxs text-caption text-muted-foreground">
             {showBatchFiles
               ? 'Every imported file, batched or not. Click a column heading to sort.'
-              : 'Newest upload first. Files dropped together are one batch row; expand it for its files.'}
+              : uploadView
+                ? 'One row per upload, newest upload first.'
+                : address.readsUploads
+                  ? 'Newest upload first. Files dropped together are one batch row; expand it for its files. An upload that was not imported is a row of its own.'
+                  : 'Newest upload first. Files dropped together are one batch row; expand it for its files.'}
           </p>
           {historyPartial && !showBatchFiles && (
             <p role="alert" className="mb-xxs text-caption text-warning">
@@ -508,7 +611,16 @@ export default function Scans() {
               Refresh to try again.
             </p>
           )}
-          {tableRows.length === 0 ? (
+          {tableRows.length === 0 && uploadView ? (
+            <div className="flex flex-col items-start gap-xs border-l-4 border-border py-xs pl-md">
+              <p className="flex items-center gap-xs text-subheading font-semibold">
+                <AlertCircle className="size-4 text-muted-foreground" aria-hidden /> No uploads match
+              </p>
+              <Button variant="outline" size="sm" onClick={address.showWholeHistory}>
+                Show the whole history
+              </Button>
+            </div>
+          ) : tableRows.length === 0 ? (
             // Filter-aware empty state — the filters remain visible so the
             // reader can clear or refine without navigating away.
             <div className="flex flex-col items-start gap-xs border-l-4 border-border py-xs pl-md">
@@ -538,6 +650,8 @@ export default function Scans() {
               filters={listFilters}
               onViewScan={handleViewScan}
               onDelete={isProjectAdmin ? handleDeleteClick : undefined}
+              expandUploads={address.focusJobId !== null || address.focusErrorId !== null}
+              uploadLinks={address.readsUploads}
             />
           )}
 
@@ -707,7 +821,9 @@ const HistoryFilterBar: React.FC<{
           </SelectContent>
         </Select>
       )}
-      {/* One history, two ways to read it. */}
+      {/* One history, two ways to read it (a status filter lists uploads,
+          one row each, so neither applies to it). */}
+      {!address.uploadView && (
       <div
         className="inline-flex overflow-hidden rounded-control border border-border"
         role="group"
@@ -731,6 +847,7 @@ const HistoryFilterBar: React.FC<{
           </button>
         ))}
       </div>
+      )}
     </ListFilterBar>
   );
 };
@@ -742,7 +859,7 @@ const HistoryFilterBar: React.FC<{
  *
  * The failure figures come from the summary, over the whole project
  * (`imports_need_attention`: failed or partial, not dismissed — the count
- * Ingestion Results' needs-attention view lists; `imports_not_imported`:
+ * the history's "Needs attention" filter lists; `imports_not_imported`:
  * failures already dismissed, discards and expiries included).  The lead used
  * to count only the 25 most recent jobs, so it said "nothing failed" beside a
  * batch whose 31 files had all expired.  `failed` (the recent queue) is the
@@ -761,9 +878,9 @@ const NOT_IMPORTED_REASON: Array<[string, string, string]> = [
   ['dismissed', 'dismissed failure', 'dismissed failures'],
 ];
 
-/** Where each reason is listed on Ingestion Results (expired and discarded
- *  uploads are out of its Failed view; the dismissed failures have their own
- *  view — the link used to open every failed import). */
+/** Which status filter of the history lists each reason (expired and
+ *  discarded uploads are out of its Failed filter; the dismissed failures
+ *  have their own — the link used to open every failed import). */
 const NOT_IMPORTED_VIEW: Record<string, string> = { expired: 'expired', discarded: 'discarded', dismissed: 'failed_dismissed' };
 
 const notImportedReasons = (byReason?: Record<string, number>): Array<{ key: string; text: string }> =>
@@ -779,18 +896,38 @@ const ScansLead: React.FC<{
   /** The summary could not be read: `files` is not the count. */
   filesUnknown?: boolean;
   filtered: boolean;
-  failed: number;
+  /** The project's imports needing someone (the summary's); absent when the
+   *  summary did not carry it — then the lead says nothing about failures
+   *  (5.418.0: the recent queue no longer lists failures to fall back on). */
   needAttention?: number;
   notImported?: number;
   byReason?: Record<string, number>;
   superseded?: number;
-  queueUnknown: boolean;
   lastImportAt: string | null;
-}> = ({ files, filesUnknown = false, filtered, failed, needAttention, notImported = 0, byReason, superseded = 0, queueUnknown, lastImportAt }) => {
+  /** Analysts and above read the uploads that were not imported; for anyone
+   *  else the lead says nothing about them — every figure here opens a list
+   *  of uploads they cannot open (5.418.0). */
+  readsUploads?: boolean;
+}> = ({
+  files, filesUnknown = false, filtered, needAttention, notImported = 0, byReason, superseded = 0,
+  lastImportAt, readsUploads = true,
+}) => {
   if (files === 0 && !filtered && !filesUnknown) return null;
   const last = lastImportAt ? formatRelativeTime(lastImportAt, { style: 'long' }) : null;
+  if (!readsUploads) {
+    return (
+      <PostureLead className="mb-md" tone="neutral">
+        <span className="tabular-nums">
+          {filesUnknown
+            ? `The imported files${filtered ? ' matching these filters' : ''} could not be counted`
+            : `${files.toLocaleString()} file${files === 1 ? '' : 's'} imported${filtered ? ' (matching these filters)' : ''}`}
+        </span>
+        {last && <><span className="text-muted-foreground"> · </span>last import {last}</>}
+      </PostureLead>
+    );
+  }
   const projectWide = needAttention != null;
-  const attention = projectWide ? needAttention : failed;
+  const attention = needAttention ?? 0;
   const reasons = notImportedReasons(byReason);
   const sep = <span className="text-muted-foreground"> · </span>;
   return (
@@ -800,15 +937,13 @@ const ScansLead: React.FC<{
           ? `The imported files${filtered ? ' matching these filters' : ''} could not be counted`
           : `${files.toLocaleString()} file${files === 1 ? '' : 's'} imported${filtered ? ' (matching these filters)' : ''}`}
       </span>
-      {!projectWide && queueUnknown ? (
-        <>{sep}the ingestion queue could not be checked</>
-      ) : (
+      {projectWide && (
         <>
           {attention > 0 && (
             <>
               {sep}
               <Link to={importResultsPath({ status: 'needs_attention' })} className="text-warning underline-offset-2 hover:underline">
-                {attention.toLocaleString()} {projectWide ? 'failed or partial' : 'failed'} import{attention === 1 ? '' : 's'}{' '}
+                {attention.toLocaleString()} failed or partial import{attention === 1 ? '' : 's'}{' '}
                 need{attention === 1 ? 's' : ''} attention
               </Link>
             </>
@@ -816,14 +951,19 @@ const ScansLead: React.FC<{
           {notImported > 0 && (
             <>
               {sep}
-              {/* One reason: its own Ingestion Results view; several: each
-                  reason links to its view, the total to every upload. */}
-              <Link
-                to={importResultsPath(reasons.length === 1 ? { status: NOT_IMPORTED_VIEW[reasons[0].key] } : undefined)}
-                className="underline-offset-2 hover:underline"
-              >
-                {notImported.toLocaleString()} never imported
-              </Link>
+              {/* One reason: its own status filter of the history; several:
+                  each reason links to its filter, and the total is no link
+                  (no one filter lists exactly them; it opened every upload). */}
+              {reasons.length === 1 ? (
+                <Link
+                  to={importResultsPath({ status: NOT_IMPORTED_VIEW[reasons[0].key] })}
+                  className="underline-offset-2 hover:underline"
+                >
+                  {notImported.toLocaleString()} never imported
+                </Link>
+              ) : (
+                <>{notImported.toLocaleString()} never imported</>
+              )}
               {reasons.length === 1 && ` (${reasons[0].text})`}
               {reasons.length > 1 && (
                 <>
@@ -858,7 +998,7 @@ const ScansLead: React.FC<{
       <InfoTip
         label="About these figures"
         className="align-middle"
-        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — Ingestion Results’ needs-attention list — except those whose same file a later upload imported (“re-imported later”, superseded). “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
+        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — the history’s “Needs attention” filter — except those whose same file a later upload imported (“re-imported later”, superseded). “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
       />
     </PostureLead>
   );

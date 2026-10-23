@@ -967,7 +967,8 @@ _READ_FLOORS = {role: _AgentRouteDeclaration(read_floor=role) for role in _ROLE_
 def agent_read_floor(role: ProjectRole) -> _AgentRouteDeclaration:
     """Declare the least project role whose agent may read this route — the
     role the equivalent page or export requires of a person, both ways: a bulk
-    export or the Reports page is AUDITOR, Ingestion Results is ANALYST, and a
+    export or the Reports page is AUDITOR, the uploads that were not imported
+    (the import history's upload rows, ``/ingestion-results``) are ANALYST, and a
     file the UI serves to a viewer declares nothing.  Without it a viewer's
     agent would have data egress the viewer's own session is refused."""
     return _READ_FLOORS[role]
@@ -1191,6 +1192,21 @@ def is_project_admin(db: Session, project_id: int, user: User) -> bool:
         ProjectMembership.user_id == user.id,
     ).first()
     return membership is not None and check_permissions(membership.role, ProjectRole.ADMIN)
+
+
+def has_project_role(db: Session, project_id: int, user: User, required: ProjectRole) -> bool:
+    """Whether ``user`` reaches ``required`` on ``project_id`` — the rule
+    ``require_project_role`` enforces, asked by a route that serves everyone
+    and adds a part only some roles may read (the import history's
+    unsuccessful uploads: every member reads the history, analysts and above
+    its failures).  A global admin always does."""
+    if user.role == UserRole.ADMIN:
+        return True
+    membership = db.query(ProjectMembership).filter(
+        ProjectMembership.project_id == project_id,
+        ProjectMembership.user_id == user.id,
+    ).first()
+    return membership is not None and check_permissions(membership.role, ProjectRole(required).value)
 
 
 def require_project_role(required_role: "ProjectRole | str"):

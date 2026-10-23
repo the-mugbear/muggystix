@@ -408,9 +408,9 @@ def s05_blockers(c: Ctx, sc):
     job("s05-clean.xml", "completed", tool_name="nmap", scan_id=sc.id, message="Processed successfully")
     job("s05-already-dismissed.xml", "failed", error_message="old failure", dismissed_at=ago(days=2))
 
-    c.note("s05", "Operations: the Blocked strip, Ingestion Results",
+    c.note("s05", "Operations: the Blocked strip, the Scans import history's Needs attention",
            "/operations — 'Blocked': '2 imports failed · 1 finished partial'. The dismissed failure is NOT listed.",
-           "'Inspect import errors' → /parse-errors?status=needs_attention shows exactly 3 rows; the partial "
+           "'Inspect import errors' → /scans?status=needs_attention shows exactly 3 rows; the partial "
            "one carries a 'partial' badge and the parser's warning; 'Dismiss the 3 shown' clears the strip.")
 
 

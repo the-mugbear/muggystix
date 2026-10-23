@@ -72,10 +72,15 @@ const sections: GuideSection[] = [
         <Para>
           A file whose content does not match its extension is refused on upload, and so is a file
           identical to one already in the project (import it again on purpose from the review, or{' '}
-          <em>Re-process</em> on Ingestion Results). If a file fails to parse, check{' '}
-          <strong>Inventory → Scans → Ingestion results</strong> (analysts and above) for the error, the
-          format chain (detected → chosen → final) and, while the file is retained — 7 days by
-          default — <em>Review the format and retry</em>.
+          <em>Re-process</em> on the upload — a scan row&rsquo;s menu, <em>Upload details</em>). If a file
+          fails to parse, it is a row of its own in the <strong>Inventory → Scans</strong> import history
+          (analysts and above; the <em>Needs attention</em> filter lists every import that still needs
+          someone): open it for the error, the format chain (detected → chosen → final), the lines the
+          parser did not read, <em>Dismiss</em> and, while the file is retained — 7 days by
+          default — <em>Review the format and retry</em>. The <strong>ingestion queue</strong> above the
+          history lists only uploads still on their way (queued, being imported, or waiting for a format
+          review); when uploads have failed it says how many in one line that opens the history&rsquo;s
+          <em> Failed</em> filter.
         </Para>
       </div>
     ),

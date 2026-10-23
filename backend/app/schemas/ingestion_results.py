@@ -1,5 +1,6 @@
-"""The Ingestion Results page's rows (moved from ``endpoints/parse_errors``
-so ``ingestion_results_service`` can build them for the page and the agents'
+"""The upload rows of the Scans page's import history — the Ingestion Results
+page's rows until 2.524.0 (moved from ``endpoints/parse_errors`` so
+``ingestion_results_service`` can build them for the page and the agents'
 read alike — review 2026-10-10, R1b)."""
 from datetime import datetime
 from typing import Optional

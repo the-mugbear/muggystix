@@ -224,8 +224,8 @@ export const NAV_PAGES: NavPage[] = [
   },
   {
     id: 'scans', path: '/scans', label: 'Scans', requiredRole: 'viewer', hub: 'inventory',
-    // Its "Import results" view is what the Ingestion Results page was
-    // (5.380.0): the palette finds it by those words.
+    // Its import history holds what the Ingestion Results page (and later
+    // view) listed (5.418.0): the palette finds it by those words.
     palette: { Icon: ScanLinesIcon, order: 2, keywords: ['errors', 'parse', 'import', 'upload', 'ingestion', 'import results', 'failed import'] },
   },
   {

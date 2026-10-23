@@ -157,7 +157,8 @@ describe('navigation manifest', () => {
 
   it('App.tsx sends the old paths to their new homes', () => {
     const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8');
-    // Both of Ingestion Results' old paths open the Scans page's results view.
+    // Both of Ingestion Results' old paths open the Scans page's import
+    // history with the equivalent filter (5.418.0: one history).
     expect(src).toMatch(/path="\/parse-errors" element={<RedirectToImportResults \/>}/);
     expect(src).toMatch(/path="\/ingestion-results" element={<RedirectToImportResults \/>}/);
     // …with the old address's query and hash, through the one function that
@@ -231,9 +232,10 @@ describe('navigation manifest', () => {
   // Review 2026-10-01 — a page stays reachable for every role the server lets
   // READ it (style guide §40).  Scope's GETs are open to every member, so its
   // route and nav entry are `viewer` and the page hides its write controls;
-  // The import results' GETs need analyst: since 5.380.0 they are a VIEW of
-  // the Scans page (every member's), and the view decides — its tabs and the
-  // view itself are for analysts and above (`ScansViewTabs.test.tsx`).
+  // The import results' GETs need analyst: since 5.418.0 the uploads that
+  // were not imported are rows of the Scans page's one import history (every
+  // member's), and the server gives them only to analysts and above
+  // (`Scans.uploads.test.tsx`; backend `test_one_import_history.py`).
   it('Scope and Scans are every member\'s pages; Ingestion Results is no page of its own', () => {
     const manifest = Object.fromEntries(NAV_PAGES.map((p) => [p.path, p.requiredRole]));
     const appRoles = appRouteRoles();

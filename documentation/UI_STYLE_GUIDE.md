@@ -674,7 +674,7 @@ page from `hooks/useUrlPage` (`{ pageSize, page: useUrlPage() }`): `?page=`,
 1-based and left out for the first page, replaced (not pushed) when the
 reader pages.  New deps — a filter, a tab — start from page 1, and a link to
 a tab or a filter never carries `page`.  Remediation, Remediation deadlines,
-the Operations tabs, Names, Segments, Ingestion Results, the audit log,
+the Operations tabs, Names, Segments, the audit log,
 Hosts, Findings, the Scope editor's subnets and Scanner observations do.  A page the address names past the end steps back to the last page
 that exists — the hook's doing, on every one of them; a page writes no clamp
 of its own, and never reads `?page=` by hand (Findings did, until the review of 2026-10-10:
@@ -709,11 +709,33 @@ listed → no footer (never "1–0 of 0").  Findings and Hosts keep
 `ui/data-table`'s `DataTablePagination`.  A new paged list never writes its
 own buttons.
 
-**A link to Ingestion results is built by `utils/importResultsPath(params?)`**
-(`/scans?view=results&status=…`): the view parameter is written in one place.
-`/parse-errors` and `/ingestion-results` are redirects for bookmarks and old
-notification links only — no page or component names them
-(`tests/utils/importResultsPath.test.tsx`).
+**The Scans page has ONE import history** (frontend 5.418.0; owner decision
+2026-10-22, G15).  The uploads that were not imported — failed, expired,
+discarded — are rows of it, in the server's one order (`GET /scans/history`
+interleaves them with the batches and single files; never two lists merged in
+the browser), and what the Ingestion results view listed is its status filter
+(`?status=needs_attention`, `failed`, …) or one upload (`?job_id=`,
+`?error_id=`, opened on arrival).  A completed import is its scan row, never
+also an upload row.  The counts of the status filter are the server's and each
+opens exactly its list; Failed is followed by how many of it are dismissed
+(that part opens its own list).  The time column is the upload time on every
+row (the scan's own time is its labelled second line).  Upload rows and the
+status filter are an analyst's: below analyst they are not there at all, and
+the lead says nothing a reader could not open.  **The ingestion queue strip
+above the history lists only what is still moving** — queued, processing,
+staged (awaiting a format review), with Cancel, Review and Discard.  A failed
+upload is never a queue row (owner decision 2026-10-22): its Retry, Dismiss
+and "Import what the file holds" are on its history row, and the strip says
+how many failed in ONE line, "N uploads failed — review them below", whose
+figure is the history's own Failed count under its current filters and whose
+link is the address the Failed chip writes — so it opens exactly that list.
+Analysts only, like the count; the strip's header gives no failure figure of
+its own.  **A link to an import's result
+is built by `utils/importResultsPath(params?)`** (`/scans?status=…`).
+`/parse-errors`, `/ingestion-results` and the old `/scans?view=results` are
+redirects for bookmarks and old notification links only, landing on the same
+filter with the query kept — no page or component names them
+(`tests/utils/importResultsPath.test.ts`).
 
 **A time column shows one time and its heading names it.**  The Scans
 history is ordered by upload, so its column is "Uploaded" on every row; a
@@ -812,9 +834,9 @@ Portfolio members sheet and the administrators' memberships dialog.
   member reads the project's details and tags) and Scanner Integrations
   (every member reads them, global admins change them).  A page leaves the
   nav, and its route refuses, only when the server refuses that role the
-  read as well (Ingestion results — a view of the Scans page since 5.380.0,
-  shown with its tabs only to analysts and above: its GETs need analyst;
-  Reports — `/reports`
+  read as well (the uploads that were not imported — rows and a status filter
+  of the Scans page's import history since 5.418.0, present only for analysts
+  and above: their reads need analyst; Reports — `/reports`
   and `/reports/:id` — every client-report route needs auditor).  Never hide a
   readable page because its writes are out of reach.  Proposals and Agent
   Sessions are every member's pages: the server gives any member those reads

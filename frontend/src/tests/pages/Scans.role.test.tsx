@@ -2,8 +2,13 @@
  * Review 2026-10-01 R32 / R34 — Scans had no role check at all: a project
  * viewer or auditor saw Upload, Retry, Cancel, Discard, Dismiss and Delete,
  * and learned from the 403.  And "Dismiss" on a failed job failed silently.
+ *
+ * Since 5.418.0 (owner decision 2026-10-22) a failed upload is not a row of
+ * the queue strip: it is a row of the import history, for analysts and above,
+ * with its Retry and Dismiss (`UploadHistoryRow.test.tsx` covers them, the
+ * refused Dismiss included).  The strip lists only what is still moving.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -42,6 +47,10 @@ const job = (id: number, status: string, filename: string) => ({
   id, original_filename: filename, status, file_size: 10, tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
   scan_id: null, parse_error_id: null, error_message: status === 'failed' ? 'bad file' : null, batch_id: null,
 });
+const historyAnswer = (statusCounts: Record<string, number> | null) => ({
+  items: [{ kind: 'scan', id: 9, at: '2026-09-19T11:00:00Z' }], total: 1, batch_total: 0, scan_total: 1, has_more: false,
+  status_counts: statusCounts,
+});
 
 const renderPage = () => render(
   <MemoryRouter initialEntries={['/scans']}><TooltipProvider><Scans /></TooltipProvider></MemoryRouter>,
@@ -53,50 +62,59 @@ beforeEach(() => {
   role.value = 'viewer';
   api.getRecentIngestionJobs.mockResolvedValue([job(1, 'failed', 'broken.xml'), job(2, 'queued', 'waiting.xml')]);
   api.getStagedIngestionJobs.mockResolvedValue([job(3, 'staged', 'staged.xml')]);
-  api.getScansSummary.mockResolvedValue({ total_scans: 1, total_hosts: 3, up_hosts: 3, open_services: 4, tool_counts: { NMAP: 1 } });
-  api.getScanInventoryMarker.mockResolvedValue({ count: 1, latest_id: 9 });
-  api.getImportHistory.mockResolvedValue({
-    items: [{ kind: 'scan', id: 9, at: '2026-09-19T11:00:00Z' }], total: 1, batch_total: 0, scan_total: 1, has_more: false,
+  api.getScansSummary.mockResolvedValue({
+    total_scans: 1, total_hosts: 3, up_hosts: 3, open_services: 4, tool_counts: { NMAP: 1 },
+    imports_need_attention: 2, imports_not_imported: 0,
   });
+  api.getScanInventoryMarker.mockResolvedValue({ count: 1, latest_id: 9 });
+  // What the server answers a viewer or an auditor: no status counts.
+  api.getImportHistory.mockResolvedValue(historyAnswer(null));
   api.getScans.mockResolvedValue([scan(9, 'newest.xml')]);
   api.getScanBatches.mockResolvedValue([]);
 });
 
 describe('Scans — a project viewer reads the import history', () => {
-  it('shows the history and the queue without any write control', async () => {
+  it('shows the history and the queue without any write control, and nothing about failures', async () => {
     renderPage();
     await screen.findByText('newest.xml');
-    await screen.findByText('broken.xml');
+    await screen.findByText('waiting.xml');
     await screen.findByText('staged.xml');
 
     expect(screen.queryByRole('button', { name: /Upload scans/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Review \d+ waiting/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Discard/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Retry failed ingestion/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Dismiss failed ingestion/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Cancel ingestion/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Review format and import/ })).toBeNull();
     // Reading stays: comparing scans changes nothing.
     expect(screen.getByRole('button', { name: /Compare scans/ })).toBeInTheDocument();
+    // A failed upload is no queue row, and the strip says nothing of failures
+    // to someone who cannot open them.
+    const queue = screen.getByTestId('ingestion-queue');
+    expect(within(queue).queryByText('broken.xml')).toBeNull();
+    expect(within(queue).queryByTestId('queue-failed-line')).toBeNull();
+    expect(queue).not.toHaveTextContent(/failed/);
   });
 
   it('an auditor is a reader here too', async () => {
     role.value = 'auditor';
     renderPage();
-    await screen.findByText('broken.xml');
+    await screen.findByText('waiting.xml');
     expect(screen.queryByRole('button', { name: /Upload scans/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Retry failed ingestion/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Cancel ingestion/ })).toBeNull();
+    expect(screen.queryByTestId('queue-failed-line')).toBeNull();
   });
 
-  it('an analyst gets the controls', async () => {
+  it('an analyst gets the controls, and the one line about failed uploads', async () => {
     role.value = 'analyst';
+    api.getImportHistory.mockResolvedValue(historyAnswer({ needs_attention: 2, failed: 1, failed_dismissed: 0 }));
     renderPage();
-    await screen.findByText('broken.xml');
+    await screen.findByText('waiting.xml');
     expect(screen.getByRole('button', { name: /Upload scans/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Retry failed ingestion for broken.xml/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Dismiss failed ingestion for broken.xml/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Cancel ingestion for waiting.xml/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Discard staged upload staged.xml/ })).toBeInTheDocument();
+    expect(await screen.findByTestId('queue-failed-line')).toHaveTextContent('1 upload failed — review it below');
+    expect(screen.queryByRole('button', { name: /Retry failed ingestion/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Dismiss failed ingestion/ })).toBeNull();
   });
 
   // 5.328.2 — deleting a scan is the project ADMIN's on the server
@@ -115,16 +133,6 @@ describe('Scans — a project viewer reads the import history', () => {
   );
 });
 
-describe('Scans — a failed Dismiss is said (R34)', () => {
-  it('toasts the server’s reason instead of doing nothing', async () => {
-    role.value = 'analyst';
-    api.dismissIngestionJob.mockRejectedValue({ response: { status: 403, data: { detail: 'Only the uploader may dismiss it.' } } });
-    renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /Dismiss failed ingestion for broken.xml/ }));
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Only the uploader may dismiss it.'));
-  });
-});
-
 // The queue's actions had no busy state: the control stayed live while its
 // request was in flight, so a double click sent it twice.
 describe('Scans — a queue action is sent once', () => {
@@ -137,63 +145,53 @@ describe('Scans — a queue action is sent once', () => {
 
   beforeEach(() => {
     role.value = 'analyst';
-    api.getRecentIngestionJobs.mockResolvedValue([
-      job(1, 'failed', 'broken.xml'), job(4, 'failed', 'other.xml'), job(2, 'queued', 'waiting.xml'),
-    ]);
+    api.getRecentIngestionJobs.mockResolvedValue([job(2, 'queued', 'waiting.xml')]);
+    api.getStagedIngestionJobs.mockResolvedValue([job(3, 'staged', 'staged.xml'), job(4, 'staged', 'other.xml')]);
   });
 
-  it.each([
-    ['Retry', /Retry failed ingestion for broken.xml/, 'retryIngestionJob', 1],
-    ['Dismiss', /Dismiss failed ingestion for broken.xml/, 'dismissIngestionJob', 1],
-    ['Discard', /Discard staged upload staged.xml/, 'discardIngestionJob', 3],
-  ] as const)('%s: a second click while the first is being answered sends nothing', async (_what, name, fn, id) => {
+  it('Discard: a second click while the first is being answered sends nothing', async () => {
     const answer = held();
-    api[fn].mockReturnValue(answer.promise);
+    api.discardIngestionJob.mockReturnValue(answer.promise);
     renderPage();
-    await screen.findByText('broken.xml');
     await screen.findByText('staged.xml');
 
-    fireEvent.click(button(name));
-    await waitFor(() => expect(button(name)).toBeDisabled());
-    fireEvent.click(button(name));
-    expect(api[fn]).toHaveBeenCalledTimes(1);
-    expect(api[fn]).toHaveBeenCalledWith(1, id);
+    fireEvent.click(button(/Discard staged upload staged.xml/));
+    await waitFor(() => expect(button(/Discard staged upload staged.xml/)).toBeDisabled());
+    fireEvent.click(button(/Discard staged upload staged.xml/));
+    expect(api.discardIngestionJob).toHaveBeenCalledTimes(1);
+    expect(api.discardIngestionJob).toHaveBeenCalledWith(1, 3);
     // Only this job's controls: the rest of the queue is still the reader's.
-    expect(button(/Retry failed ingestion for other.xml/)).toBeEnabled();
+    expect(button(/Discard staged upload other.xml/)).toBeEnabled();
     expect(button(/Cancel ingestion for waiting.xml/)).toBeEnabled();
 
     answer.release({});
-    await waitFor(() => expect(button(name)).toBeEnabled());
+    await waitFor(() => expect(button(/Discard staged upload staged.xml/)).toBeEnabled());
   });
 
-  it('both actions of a failed job wait for the one in flight, and two jobs can be in flight at once', async () => {
+  it('two jobs can be in flight at once, and a row stays busy until the queue is read again', async () => {
     const first = held();
     const second = held();
-    api.retryIngestionJob.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    api.discardIngestionJob.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     renderPage();
-    await screen.findByText('broken.xml');
+    await screen.findByText('staged.xml');
 
-    fireEvent.click(button(/Retry failed ingestion for broken.xml/));
-    await waitFor(() => expect(button(/Retry failed ingestion for broken.xml/)).toBeDisabled());
-    expect(button(/Dismiss failed ingestion for broken.xml/)).toBeDisabled();
-
-    // A second job is retried while the first is unanswered: the first stays busy.
-    fireEvent.click(button(/Retry failed ingestion for other.xml/));
-    await waitFor(() => expect(button(/Retry failed ingestion for other.xml/)).toBeDisabled());
-    expect(button(/Retry failed ingestion for broken.xml/)).toBeDisabled();
-    fireEvent.click(button(/Retry failed ingestion for broken.xml/));
-    expect(api.retryIngestionJob).toHaveBeenCalledTimes(2);
+    fireEvent.click(button(/Discard staged upload staged.xml/));
+    await waitFor(() => expect(button(/Discard staged upload staged.xml/)).toBeDisabled());
+    fireEvent.click(button(/Discard staged upload other.xml/));
+    await waitFor(() => expect(button(/Discard staged upload other.xml/)).toBeDisabled());
+    expect(button(/Discard staged upload staged.xml/)).toBeDisabled();
+    expect(api.discardIngestionJob).toHaveBeenCalledTimes(2);
 
     // The answer alone does not free the row: the queue is read again first,
     // because until then the row still shows the job as it was.
     const queue = held();
-    api.getRecentIngestionJobs.mockReturnValueOnce(queue.promise);
+    api.getStagedIngestionJobs.mockReturnValueOnce(queue.promise);
     first.release({});
-    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('Re-queued for parsing'));
-    expect(button(/Retry failed ingestion for broken.xml/)).toBeDisabled();
-    queue.release([job(4, 'failed', 'other.xml'), job(1, 'queued', 'broken.xml')]);
-    expect(await screen.findByRole('button', { name: /Cancel ingestion for broken.xml/ })).toBeEnabled();
-    expect(button(/Retry failed ingestion for other.xml/)).toBeDisabled();
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('Staged upload discarded'));
+    expect(button(/Discard staged upload staged.xml/)).toBeDisabled();
+    queue.release([job(4, 'staged', 'other.xml')]);
+    await waitFor(() => expect(screen.queryByText('staged.xml')).toBeNull());
+    expect(button(/Discard staged upload other.xml/)).toBeDisabled();
     second.release({});
   });
 
@@ -207,7 +205,7 @@ describe('Scans — a queue action is sent once', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel job' }));
     await waitFor(() => expect(button(/Cancel ingestion for waiting.xml/)).toBeDisabled());
     expect(api.cancelIngestionJob).toHaveBeenCalledTimes(1);
-    expect(button(/Retry failed ingestion for broken.xml/)).toBeEnabled();
+    expect(button(/Discard staged upload staged.xml/)).toBeEnabled();
     answer.release({});
     await waitFor(() => expect(button(/Cancel ingestion for waiting.xml/)).toBeEnabled());
   });
@@ -218,15 +216,15 @@ describe('Scans — a queue action is sent once', () => {
     renderPage();
     await screen.findByText('staged.xml');
 
-    fireEvent.click(button(/^Discard 1 staged$/));
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard 1' }));
-    await waitFor(() => expect(button(/^Discard 1 staged$/)).toBeDisabled());
+    fireEvent.click(button(/^Discard 2 staged$/));
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard 2' }));
+    await waitFor(() => expect(button(/^Discard 2 staged$/)).toBeDisabled());
     expect(api.discardStagedJobs).toHaveBeenCalledTimes(1);
-    expect(api.discardStagedJobs).toHaveBeenCalledWith(1, [3]);
+    expect(api.discardStagedJobs).toHaveBeenCalledWith(1, [3, 4]);
     expect(button(/Discard staged upload staged.xml/)).toBeDisabled();
-    expect(button(/Retry failed ingestion for broken.xml/)).toBeEnabled();
+    expect(button(/Cancel ingestion for waiting.xml/)).toBeEnabled();
 
-    answer.release({ discarded: 1 });
-    await waitFor(() => expect(button(/^Discard 1 staged$/)).toBeEnabled());
+    answer.release({ discarded: 2 });
+    await waitFor(() => expect(button(/^Discard 2 staged$/)).toBeEnabled());
   });
 });

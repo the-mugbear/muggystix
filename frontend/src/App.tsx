@@ -91,8 +91,9 @@ const RouteSkeleton: React.FC = () => {
 // auth.  Suspense fallback uses ListPageSkeleton — it matches the
 // shape of most pages closely enough that the swap is invisible for
 // the common case.
-// One page, two views: the imported scans and the import results (which was
-// the Ingestion Results page until 5.380.0).
+// One page, one import history (5.418.0): the uploads that were not imported
+// are its rows too (they were the Ingestion results view, and a page before
+// 5.380.0); ScansHub only redirects the old `?view=results` address.
 const Scans = lazy(() => import('./pages/ScansHub'));
 const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
@@ -150,7 +151,7 @@ const ReportDetail = lazy(() => import('./pages/ReportDetail'));
 const ReportDefaults = lazy(() => import('./pages/ReportDefaults'));
 const ReportTemplates = lazy(() => import('./pages/ReportTemplates'));
 
-/** `/parse-errors?status=failed` → `/scans?view=results&status=failed`. */
+/** `/parse-errors?status=failed` → `/scans?status=failed`. */
 function RedirectToImportResults() {
   const { search, hash } = useLocation();
   return <Navigate to={`${importResultsPath(new URLSearchParams(search))}${hash}`} replace />;
@@ -549,9 +550,9 @@ function App() {
                       />
                       {/* Legacy path → new Patterns page (Phase 3 IA). */}
                       <Route path="/insights/systemic" element={<Navigate to="/posture/patterns" replace />} />
-                      {/* 5.380.0 — Ingestion Results is the Scans page's "Import
-                          results" view.  Both of its old paths land there, and
-                          links and bookmarks keep their filters (?status=…,
+                      {/* 5.418.0 — Ingestion Results is part of the Scans page's
+                          one import history.  Both of its old paths land there,
+                          and links and bookmarks keep their filters (?status=…,
                           ?job_id=…).  No in-app link uses them any more
                           (utils/importResultsPath builds the real address);
                           they stay for bookmarks and old notification links. */}

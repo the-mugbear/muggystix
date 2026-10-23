@@ -420,7 +420,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
         <TableRow>
           <TableCell colSpan={colSpan} className="bg-muted/30 p-sm">
             <p className="text-caption text-muted-foreground">
-              The files of this batch that did not import could not be listed — see Ingestion Results.
+              The files of this batch that did not import could not be listed — the history&rsquo;s Failed filter lists them.
             </p>
           </TableCell>
         </TableRow>
@@ -478,7 +478,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
                       <Link
                         to={importResultsPath({ job_id: job.id })}
                         className={ROW_LINK_CLASS}
-                        aria-label={`Open ${job.original_filename} in Ingestion Results`}
+                        aria-label={`Open the upload ${job.original_filename} in the import history`}
                       >
                         Details
                       </Link>
