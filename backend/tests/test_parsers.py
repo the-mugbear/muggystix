@@ -15,7 +15,7 @@ class TestGnmapParser:
         """Test parser initialization."""
         parser = GnmapParser(db_session)
         assert parser.db == db_session
-        assert hasattr(parser, 'correlation_service')
+        assert hasattr(parser, 'dedup_service')
     
     def test_udp_open_filtered_is_kept(self, db_session):
         """v2.416.0 — a UDP port that did not answer closed is `open|filtered`;

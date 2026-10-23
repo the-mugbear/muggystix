@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import announce_scan, without_nul, write_record
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.services.subnet_correlation import SubnetCorrelationService
 import logging
 import time
 import re
@@ -15,7 +14,6 @@ class GnmapParser:
     def __init__(self, db: Session):
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
-        self.correlation_service = SubnetCorrelationService(db)
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -106,21 +104,7 @@ class GnmapParser:
                     # row for the rest of the file.
                     self.dedup_service.release_committed_history()
 
-        # Commit parsed host data before correlation so it survives
-        # even if correlation fails.
         self.db.commit()
-
-        # Correlate hosts to subnets
-        try:
-            logger.info(f"Starting subnet correlation for scan {scan_id}")
-            hosts_correlated = self.correlation_service.batch_correlate_scan_hosts_to_subnets(scan_id)
-            logger.info(f"Correlated {hosts_correlated} hosts to subnets")
-        except Exception as e:
-            logger.error(f"Error in subnet correlation: {e}")
-            try:
-                self.db.rollback()
-            except Exception:
-                pass
 
         # Publish ingestion quality (mirrors NmapXMLParser). Without this a
         # .gnmap where most Host: lines failed to parse or dedup reported as a

@@ -56,7 +56,6 @@ from app.parsers.parser_utils import (
     ProgressBeat,
     ProjectHostsByAddress,
     announce_scan,
-    correlate_scan,
     ScanClock,
     ScanHostObservations,
     parse_rfc3339,
@@ -200,11 +199,6 @@ class HttpxParser:
         clock.apply(scan)
 
         self.db.commit()
-
-        try:
-            correlate_scan(self.db, scan.id)
-        except Exception as exc:
-            logger.warning("httpx scan %s correlation failed: %s", scan.id, exc)
 
         elapsed = time.time() - start
         logger.info(

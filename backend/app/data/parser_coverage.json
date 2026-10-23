@@ -613,7 +613,7 @@
             "HostScanHistory.host_created"
           ],
           "shown": "Host inspector header; Hosts list › Host column; Scan page hosts tables · Filter: ip:, subnet:/cidr:, state: · Also: subnet/scope correlation, site grouping; Host inventory CSV",
-          "note": "Bulk SQL path (not the dedup service): Host.state forced to 'up'. Only hosts with at least one open port are created. Masscan emits no hostnames."
+          "note": "Written through the dedup service's set-based form: the address in its one spelling (an IPv6 address written two ways is one host; a record whose address is not an IP address is skipped and counted, and the import is marked partial), Host.state 'up' (a host held in another state records the conflict). Only hosts with at least one open port are created. Masscan emits no hostnames."
         },
         {
           "what": "Open ports (number, protocol, state)",
@@ -739,7 +739,7 @@
       ],
       "unverified": [
         "masscan --ping / ICMP list rows (`open icmp 0 <ip> …`) would be stored as a port 0/icmp row by the bulk path (no port-0 guard); I did not confirm masscan's exact ICMP list line.",
-        "IPv6 addresses are stored as written (the bulk path does not normalise them), so two spellings of one address could make two hosts; no IPv6 masscan fixture.",
+        "No real IPv6 masscan capture: the IPv6 handling is checked against hand-written list lines only.",
         "Whether masscan XML ever writes an `args` attribute; the fixture (masscan 1.0-BETA) does not."
       ]
     },

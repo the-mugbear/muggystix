@@ -314,12 +314,23 @@ Notes:
 - **gnmap** parses grepable `Host:`/`Ports:`/`Status:` lines; incrementally
   fills `Scan` metadata (tool, version, command line, start/end) from header
   comments; detects masscan-vs-nmap origin.
-- **masscan** is the **only** parser that bypasses the dedup service — it
-  writes **raw bulk SQL** to `hosts_v2`/`ports_v2` (`ON CONFLICT` upserts) for
-  throughput on tens-of-thousands-of-host scans. Accepts `.xml` / `.json` /
-  list. Service name (greppable only) merges via an empty-or-longer-wins CASE.
-  `Port.reason` (`syn-ack`, from XML / JSON) follows the dedup service's rule
-  in the same SQL: a scan that gives none keeps the stored reason while the
+- **masscan** writes through the dedup service's **set-based form**
+  (`HostDeduplicationService.upsert_hosts_bulk` / `upsert_ports_bulk`: `ON
+  CONFLICT` upserts, a few statements per 500 hosts) for throughput on
+  tens-of-thousands-of-host scans — the same rules as `find_or_create_host` /
+  `find_or_create_port`, held to them by
+  `tests/test_review_2026_10_23b_ingestion.py` (review 2026-10-23b, ING-7: it
+  was a second copy in the parser and had drifted). Accepts `.xml` / `.json` /
+  list. Every address goes through `HostDeduplicationService.host_address`: an
+  IPv6 address written two ways is one host, a row stored in another spelling
+  is still found, and a record whose address is not an IP address is counted
+  as skipped and marks the import partial (ING-1: it was inserted as written,
+  so one bad token failed the whole import). A host held in another state
+  than `up` records the conflict, as the dedup service does. Service name
+  (greppable only) follows `should_replace_service` (empty-or-longer-wins
+  over an unconfident name; the whole service block moves with it), within
+  a file too. `Port.reason` (`syn-ack`, from XML / JSON) follows the dedup
+  service's rule: a scan that gives none keeps the stored reason while the
   state is unchanged and clears one that described another state; a
   `--banners` record's `reason="response"` is the banner arriving, not the
   port's reason. Banners (`masscan-<kind>` script rows) are written after
@@ -331,8 +342,9 @@ Notes:
   (`<nmaprun scanner="masscan">`), so an XML root that names ANOTHER scanner is
   refused — an nmap file can never be imported as masscan (open ports only) —
   while a root naming none is still read. List lines that are not records
-  (fewer than four fields, a non-numeric port) are counted as skipped and the
-  import is marked partial.
+  (fewer than four fields, a non-numeric port, an address that is not one)
+  and JSON / XML records whose address is not one are counted as skipped and
+  the import is marked partial.
 - **naabu** / **rustscan** funnel through the shared `persist_host_observation`
   helper. naabu accepts `.json`/`.jsonl`/text and **fails closed**; rustscan is
   text-only and also **fails closed** — and warns when the file holds an nmap
@@ -356,8 +368,11 @@ issue.
   worker restart stops it at the next batch (a restart re-queues the job), and
   a truncated export or one with no processable host fails the job. In each
   case the batches already committed are removed with the scan. A report item
-  the parser cannot read is counted in the import's warnings and marks it
-  partial.
+  the parser cannot read, a host that could not be written and a finding that
+  could not be written are each counted as skipped and named in the import's
+  warnings, and mark it partial — so it is listed under Needs attention like
+  any partial import (review 2026-10-23b, ING-2: only the warning text said
+  so).
 - **Host:** `ip_address`, `hostname` (`host-fqdn`→`netbios-name`),
   `os_name` (`operating-system`), `state=up`. Also writes `HostAttribute` rows
   (hostname / netbios_name / os_name with per-field confidence).
@@ -695,13 +710,15 @@ class MyToolParser:
             scan_type="port_scan", project_id=self._project_id,
         )
         # ... read file_path, build hosts/ports/findings, persist ...
-        correlate_scan(self.db, scan.id)   # map new hosts to scopes/subnets
         return scan
 ```
 
 - **Constructor** takes the DB session; **`parse_file(file_path, filename,
   **kwargs)`** returns the `Scan` (read `project_id` from `kwargs`).
-- **The orchestrator** commits, tags `project_id`, backfills `command_line`.
+- **The orchestrator** commits, tags `project_id`, backfills `command_line`,
+  then correlates the scan's hosts to the scope subnets
+  (`ingestion_service.correlate_imported_hosts`, best effort, once for every
+  format — a parser never correlates; review 2026-10-23b, ING-5).
   Many parsers also commit themselves (in batches for memory, or before a pass
   that needs committed rows, as rdap's `correlate_hosts`); `grep db.commit
   app/parsers` for the current set. A committing parser writes part of a scan
@@ -723,6 +740,13 @@ class MyToolParser:
   skipped record — in every parser. `retry_races=True` writes the record once
   more after an `IntegrityError` or a deadlock (40P01), for a `write` that
   may run twice (nmap; a lost race with another import of the project).
+  The services an import writes through use the same helper: the Nessus
+  path's host attributes, informational ports and each retried finding, and
+  the dedup service's name observations (review 2026-10-23b, ING-8); a Nessus
+  batch that is retried finding by finding holds `record_savepoint`. The
+  only other savepoints there are the dedup service's two concurrent-insert
+  ones in `find_or_create_host` / `find_or_create_port`
+  (`test_parsers_isolate_records_one_way.py` refuses any other).
   Since 2.515.0 NetExec (per host), Nikto (per finding), RustScan, SMBMap and
   BloodHound (per host) do too: one record the database refuses is skipped
   and counted, the import completes partial, and only a file whose every
@@ -842,7 +866,8 @@ class MyToolParser:
   next poll).
   **Ports carry the scan that created them.** Every code path that INSERTS a
   port stamps `ports_v2.created_scan_id` (`HostDeduplicationService._create_new_port`,
-  masscan's batch INSERT — its `DO UPDATE` never touches the stamp —, and
+  the set-based `upsert_ports_bulk` masscan writes through — its `DO UPDATE`
+  never touches the stamp —, and
   `VulnerabilityService._get_or_create_port` for Nessus); **a new insert site
   must do the same**, or a failed import leaves its ports behind. The cleanup
   deletes the ports stamped with the attempt's scan — and, beside them, those
@@ -951,9 +976,8 @@ class MyToolParser:
   map misses is looked up once (another spelling, `HostDeduplicationService
   .host_address`; or a host another import added since), and a new host is
   stored under `normalize_ip`'s spelling (review 2026-10-22, B1-2).
-  `resolve_port_cached` memoizes ports per file.
-- `correlate_scan(db, scan_id)` — map newly-seen hosts to scopes/subnets
-  (call once at the end).
+  `resolve_port_cached` memoizes ports per file, keyed on `(host, port,
+  protocol)`.
 
 `app/parsers/streaming_json.py` → `iter_json_records(file_path, *, array_keys=(),
 tool_label="JSON")` streams `.json` arrays, single objects, and `.jsonl` /
@@ -996,9 +1020,10 @@ reads the column.
    httpx/whatweb pattern (`source="yourtool"`, dedup on `(scan_id, url,
    source)`).
 3. **`DNSRecord`** — for resolvers; copy dnsx/amass.
-4. **Raw bulk SQL** — only if you genuinely have masscan-scale throughput
-   needs; this gives up the dedup service's conflict-resolution and concurrency
-   handling, so justify it.
+4. **The dedup service's set-based form** (`upsert_hosts_bulk` /
+   `upsert_ports_bulk`) — only if you genuinely have masscan-scale throughput
+   needs and your observation carries no more than a state and a service
+   name. Never a second copy of the rules in a parser.
 
 ### Wire up detection + registration (the detector + ONE registry + the docs)
 

@@ -239,7 +239,8 @@ Update these WITH the change, never around it:
 | `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | the agent guide's section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
 | `test_db_init_migration.py` | migration-step error handling; importing `app.main` / `app.worker` runs no migration; the backend's CMD and the worker's command run `python -m app.db.migrate` first, the report worker never |
 | `test_password_change_gate_coverage.py` | every signed-in route (included routers too) resolves `require_password_changed`; only `/auth/*` is exempt (2.524.0) |
-| `test_parsers_isolate_records_one_way.py` | no parser writes its own savepoint — a skipped record goes through `parser_utils.write_record` (2.524.0) |
+| `test_parsers_isolate_records_one_way.py` | no parser writes its own savepoint — a skipped record goes through `parser_utils.write_record` (2.524.0); nor do the vulnerability and dedup services an import writes through, bar the dedup service's two concurrent-insert savepoints |
+| `test_review_2026_10_23b_ingestion.py` | the dedup service's set-based form (masscan) writes what the per-row form writes; masscan's addresses on the one address rule; every import format's hosts correlated by the dispatcher |
 | `test_finding_source_note_is_read_only.py` | nothing writes `findings.evidence_annotation_id`, a read-only legacy path (2.524.0) |
 | `test_release_notes.py` | `app/data/release_notes.json` has its shape, newest first; **the running version has at least one line** — a version bump without its release notes fails the gate; the read is analysts and above (2.525.0) |
 | `test_migration_review_2026_10_10_schema.py` (its refusal-list cases) | `scripts/upgrade-refusals.sql` is the one list of rows a migration refuses, read by `deploy.sh`, `collect-logs.sh` and `migration-failure-report.sh` with no copy (2.524.0) |

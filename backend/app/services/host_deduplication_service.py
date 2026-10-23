@@ -7,9 +7,9 @@ Implements conflict resolution and audit tracking for data changes.
 
 import json
 import logging
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Iterable, List, Optional, Tuple, Any
 from sqlalchemy.orm import Session, noload
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 
 from app.db.models import Host, Port, Script, HostScript, HostScanHistory, PortScanHistory
@@ -73,11 +73,11 @@ def should_replace_service(
     version and TLS tunnel (review 2026-09-23 C6c).  A name with no confidence
     behind it now only fills a blank or improves another unconfident name.
 
-    The masscan bulk-SQL path (``masscan_parser._upsert_ports_chunk``) carries
-    only a service name (no confidence), so it mirrors the reduced form of this
-    rule — empty, or longer than an unconfident name — in a CASE expression.
-    Keep the two in lockstep; ``test_masscan_service_merge`` pins masscan's SQL
-    to this rule.
+    The set-based form (``HostDeduplicationService.upsert_ports_bulk``) takes
+    only a service name (no confidence), so it states this rule for a new
+    confidence of 0 — empty, or longer than an unconfident name — in SQL
+    (``_REPLACES_SERVICE``); ``tests/test_review_2026_10_23b_ingestion.py``
+    holds it to this function over every case.
     """
     existing_c, new_c = existing_conf or 0, new_conf or 0
     return (
@@ -85,6 +85,20 @@ def should_replace_service(
         or new_c > existing_c
         or (new_c == existing_c and bool(new_name) and len(new_name) > len(existing_name or ""))
     )
+
+
+def port_history_service_info(port_data: Dict[str, Any]) -> Optional[str]:
+    """``port_scan_history.service_info``: what the observation said of the
+    service, as JSON, or NULL when it said nothing."""
+    service_info = {
+        'service_name': port_data.get('service_name'),
+        'service_product': port_data.get('service_product'),
+        'service_version': port_data.get('service_version'),
+        'service_extrainfo': port_data.get('service_extrainfo'),
+        'service_method': port_data.get('service_method'),
+        'service_conf': port_data.get('service_conf'),
+    }
+    return json.dumps(service_info) if any(service_info.values()) else None
 
 
 class HostDeduplicationService:
@@ -277,6 +291,7 @@ class HostDeduplicationService:
         if not pairs:
             return
         from app.db.models import DNS_OBS_SCANNER
+        from app.parsers.parser_utils import write_record
         from app.services.dns_name_service import record_observation
         is_v6 = ':' in ip_address
         for name, kind in pairs:
@@ -287,20 +302,20 @@ class HostDeduplicationService:
                 record_type = 'AAAA' if is_v6 else 'A'
             else:
                 record_type = DNS_OBS_SCANNER
-            # SAVEPOINT so a bad name can't poison the host's transaction; the
-            # journal lets the cache forget what the rollback discarded.
+            # One record (``write_record``) so a bad name can't poison the
+            # host's transaction; the journal lets the cache forget what the
+            # rollback discarded.
             journal: List[Tuple[str, object]] = []
-            sp = self.db.begin_nested()
-            try:
-                record_observation(
+            outcome = write_record(
+                self.db,
+                lambda name=name, record_type=record_type, journal=journal: record_observation(
                     self.db, project_id=project_id, name=name, record_type=record_type,
                     value=ip_address, scan_id=scan_id, cache=self._name_cache, journal=journal,
-                )
-                sp.commit()
-            except Exception as exc:  # noqa: BLE001 — never let a name break host ingest
-                sp.rollback()
-                self._name_cache.forget(journal)
-                logger.warning("name observation %r for %s skipped: %s", name, ip_address, exc)
+                ),
+                on_rollback=lambda journal=journal: self._name_cache.forget(journal),
+            )
+            if outcome.error is not None:
+                logger.warning("name observation %r for %s skipped: %s", name, ip_address, outcome.error)
 
     def _find_or_create_host_inner(
         self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int,
@@ -894,7 +909,7 @@ class HostDeduplicationService:
             port.is_active = port_state_is_active(new_state)
         
         # Update service info if new scan has better information — the single
-        # canonical rule (mirrored by masscan's bulk SQL); see should_replace_service.
+        # canonical rule (``upsert_ports_bulk`` states it in SQL); see should_replace_service.
         new_service_name = port_data.get('service_name')
         new_service_conf = port_data.get('service_conf', 0)
 
@@ -1000,14 +1015,7 @@ class HostDeduplicationService:
                 PortScanHistory.scan_id == scan_id
             ).first()
 
-        service_info = {
-            'service_name': port_data.get('service_name'),
-            'service_product': port_data.get('service_product'),
-            'service_version': port_data.get('service_version'),
-            'service_extrainfo': port_data.get('service_extrainfo'),
-            'service_method': port_data.get('service_method'),
-            'service_conf': port_data.get('service_conf')
-        }
+        service_info = port_history_service_info(port_data)
 
         # v2.333.0 — typed copy of the name inside service_info (what /scans
         # counts as "service identified"), kept in lockstep with the JSON.
@@ -1016,7 +1024,7 @@ class HostDeduplicationService:
         if existing_history:
             # Update existing history entry
             existing_history.state_at_scan = port_data.get('state')
-            existing_history.service_info = json.dumps(service_info) if any(service_info.values()) else None
+            existing_history.service_info = service_info
             existing_history.service_name = service_name
             # Never downgrade created→re-observed (same rule as host_created).
             if is_new:
@@ -1027,12 +1035,263 @@ class HostDeduplicationService:
                 port_id=port_id,
                 scan_id=scan_id,
                 state_at_scan=port_data.get('state'),
-                service_info=json.dumps(service_info) if any(service_info.values()) else None,
+                service_info=service_info,
                 service_name=service_name,
                 port_created=is_new,  # dedup create/update decision — ground truth
             )
             self.db.add(history)
             self._pending_port_history[key] = history
+
+    # ------------------------------------------------------------------
+    # The set-based form of the same rules (review 2026-10-23b, ING-7)
+    #
+    # masscan writes tens of thousands of hosts per file, a few statements
+    # per 500 hosts instead of several per host.  These are the rules of
+    # ``find_or_create_host`` / ``find_or_create_port`` for an observation
+    # that says a host is up and a port is in a state, with at most a service
+    # NAME (no confidence, product or version): the address in its one
+    # spelling, the state change recorded as a conflict, the reason and
+    # service merges of ``_update_existing_port``, the created/updated
+    # decision in the history rows.  They lived as a second copy in
+    # masscan_parser and had drifted (no conflict row, no address check).
+    # ``tests/test_review_2026_10_23b_ingestion.py`` holds the bulk form to
+    # the per-row one.  PostgreSQL only (``ON CONFLICT``, ``xmax``).
+    # ------------------------------------------------------------------
+
+    def upsert_hosts_bulk(
+        self, project_id: int, scan_id: int, addresses: Dict[str, Iterable[str]], *, state: str = 'up',
+    ) -> Dict[str, int]:
+        """Find or create one host per address and record that ``scan_id``
+        saw it in ``state``; returns ``{address: host_id}``.
+
+        ``addresses`` maps each address, already in ``host_address``'s
+        canonical spelling, to the other spellings the file wrote it in — so
+        a row stored in one of those before addresses were normalised is
+        found, as ``address_is`` finds it."""
+        if project_id is None:
+            raise ValueError("upsert_hosts_bulk needs the project the hosts belong to")
+        if not addresses:
+            return {}
+        from app.parsers.parser_utils import normalize_ip
+
+        wanted = set(addresses)
+        spellings = wanted.union(*(set(v) for v in addresses.values()))
+        found: Dict[str, Host] = {}
+        for row in (
+            self.db.query(Host.id, Host.ip_address, Host.state, Host.last_updated_scan_id)
+            .filter(Host.project_id == project_id, Host.ip_address.in_(spellings))
+        ):
+            address = normalize_ip(row.ip_address)
+            # The canonical row first, as ``address_is`` orders it.
+            if address in wanted and (address not in found or row.ip_address == address):
+                found[address] = row
+
+        # ``_update_existing_host``'s state rule: a held 'unknown' is a blank
+        # being filled in; any other different state is a disagreement.
+        self._record_state_conflicts_bulk([
+            (row.id, row.state, row.last_updated_scan_id) for row in found.values()
+            if row.state and row.state != 'unknown' and row.state != state
+        ], state, scan_id)
+        host_ids = {address: row.id for address, row in found.items()}
+        if host_ids:
+            self.db.execute(
+                text(
+                    "UPDATE hosts_v2 SET last_seen = NOW(), last_updated_scan_id = :scan_id, state = :state "
+                    "WHERE id = ANY(:ids)"
+                ),
+                {"scan_id": scan_id, "state": state, "ids": list(host_ids.values())},
+            )
+
+        created: set = set()
+        new = [address for address in addresses if address not in host_ids]
+        if new:
+            params: Dict[str, Any] = {"scan_id": scan_id, "project_id": project_id, "state": state}
+            values = []
+            for idx, address in enumerate(new):
+                params[f"ip_{idx}"] = address
+                values.append(f"(:ip_{idx}, :state, :scan_id, :project_id)")
+            # (xmax = 0) is true only for a row this INSERT created; a row the
+            # DO UPDATE branch touched (a concurrent writer inserted it after
+            # the SELECT) carries the updating transaction's xid.  That is the
+            # created-vs-updated decision ``host_created`` records.  DO UPDATE
+            # returns every row, so each new address comes back with its id.
+            result = self.db.execute(text(
+                "INSERT INTO hosts_v2 (ip_address, state, last_updated_scan_id, project_id) "
+                "VALUES " + ", ".join(values) + " "
+                "ON CONFLICT (project_id, ip_address) DO UPDATE SET "
+                "last_seen = NOW(), last_updated_scan_id = :scan_id, state = :state "
+                "RETURNING id, ip_address, (xmax = 0) AS inserted"
+            ), params)
+            for row in result:
+                host_ids[row.ip_address] = row.id
+                if row.inserted:
+                    created.add(row.ip_address)
+
+        params = {"scan_id": scan_id, "state": state}
+        values = []
+        for idx, (address, host_id) in enumerate(host_ids.items()):
+            params[f"hid_{idx}"] = host_id
+            values.append(f"(:hid_{idx}, :scan_id, :state, {'true' if address in created else 'false'})")
+        if values:
+            self.db.execute(text(
+                "INSERT INTO host_scan_history (host_id, scan_id, state_at_scan, host_created) "
+                "VALUES " + ", ".join(values) + " "
+                "ON CONFLICT (host_id, scan_id) DO NOTHING"
+            ), params)
+        self.db.flush()
+        return host_ids
+
+    def _record_state_conflicts_bulk(
+        self, conflicts: List[Tuple[int, str, Optional[int]]], new_state: str, scan_id: int,
+    ) -> None:
+        """``_record_conflict`` for many hosts' ``state`` at once:
+        ``(host_id, held state, the scan that set it)``.  Idempotent on the
+        same disagreement, as there: a repeat refreshes its scan and time."""
+        if not conflicts:
+            return
+        from sqlalchemy import insert, update
+        from app.db.models_confidence import ConflictHistory
+
+        by_previous: Dict[str, List[Tuple[int, Optional[int]]]] = {}
+        for host_id, previous, prior_scan in conflicts:
+            by_previous.setdefault(previous, []).append((host_id, prior_scan))
+        for previous, hosts in by_previous.items():
+            same = (
+                ConflictHistory.host_id.in_([host_id for host_id, _ in hosts]),
+                ConflictHistory.port_id.is_(None),
+                ConflictHistory.field_name == 'state',
+                ConflictHistory.previous_value == previous,
+                ConflictHistory.new_value == new_state,
+            )
+            known = {
+                host_id for (host_id,) in self.db.query(ConflictHistory.host_id).filter(*same).distinct()
+            }
+            if known:
+                self.db.execute(
+                    update(ConflictHistory).where(*same, ConflictHistory.host_id.in_(known))
+                    .values(new_scan_id=scan_id, resolved_at=func.now())
+                )
+            fresh = [
+                {"host_id": host_id, "port_id": None, "field_name": 'state', "previous_value": previous,
+                 "new_value": new_state, "previous_scan_id": prior_scan, "new_scan_id": scan_id}
+                for host_id, prior_scan in hosts if host_id not in known
+            ]
+            if fresh:
+                self.db.execute(insert(ConflictHistory), fresh)
+
+    # Each port row binds 7 parameters; PostgreSQL caps a statement at
+    # 65 535, so a 500-host batch of a wide-port scan (-p0-65535) overflows
+    # one INSERT.  5 000 rows × 7 = 35 000, comfortably bounded.
+    PORT_UPSERT_CHUNK = 5000
+
+    # ``should_replace_service`` for a new name with no confidence: take it
+    # when nothing is held, or when it is longer than a name that is itself
+    # unconfident — never over an identification with confidence.  The whole
+    # service block moves with the name, as in ``_update_existing_port``.
+    _REPLACES_SERVICE = (
+        "(COALESCE(ports_v2.service_name, '') = '' "
+        "OR (NULLIF(EXCLUDED.service_name, '') IS NOT NULL "
+        "AND COALESCE(ports_v2.service_conf, 0) = 0 "
+        "AND length(EXCLUDED.service_name) > length(ports_v2.service_name)))"
+    )
+
+    def upsert_ports_bulk(self, scan_id: int, rows: List[Tuple[int, Dict[str, Any]]]) -> None:
+        """Find or create each ``(host_id, port_data)`` port and record that
+        ``scan_id`` saw it; one row per port (the caller merges a file's
+        repeats).  ``port_data``: ``port_number``, ``protocol``, ``state``,
+        and optionally ``reason`` and ``service_name`` — no confidence,
+        product or version (``find_or_create_port`` takes those)."""
+        for row in rows:
+            extra = set(row[1]) - {'port_number', 'protocol', 'state', 'reason', 'service_name'}
+            if extra:
+                raise ValueError(f"upsert_ports_bulk takes no {sorted(extra)}; use find_or_create_port")
+        for start in range(0, len(rows), self.PORT_UPSERT_CHUNK):
+            self._upsert_ports_chunk(scan_id, rows[start:start + self.PORT_UPSERT_CHUNK])
+
+    def _upsert_ports_chunk(self, scan_id: int, rows: List[Tuple[int, Dict[str, Any]]]) -> None:
+        if not rows:
+            return
+        params: Dict[str, Any] = {"scan_id": scan_id}
+        values = []
+        for idx, (host_id, port_data) in enumerate(rows):
+            state = port_data.get('state')
+            params.update({
+                f"hid_{idx}": host_id,
+                f"pn_{idx}": port_data['port_number'],
+                f"proto_{idx}": port_data.get('protocol', 'tcp'),
+                f"st_{idx}": state,
+                f"rsn_{idx}": port_data.get('reason') or None,
+                f"svc_{idx}": port_data.get('service_name'),
+                f"act_{idx}": port_state_is_active(state),
+            })
+            values.append(
+                f"(:hid_{idx}, :pn_{idx}, :proto_{idx}, :st_{idx}, :rsn_{idx}, :svc_{idx}, "
+                f":scan_id, :scan_id, :act_{idx})"
+            )
+        replaces = self._REPLACES_SERVICE
+
+        def service(column: str, replaced_by: str) -> str:
+            return f"{column} = CASE WHEN {replaces} THEN {replaced_by} ELSE ports_v2.{column} END"
+
+        result = self.db.execute(text(
+            "INSERT INTO ports_v2 "
+            # created_scan_id is written by the INSERT only (the DO UPDATE
+            # leaves it): which import created the row, for the cleanup of a
+            # failed one.
+            "(host_id, port_number, protocol, state, reason, service_name, "
+            "last_updated_scan_id, created_scan_id, is_active) "
+            "VALUES " + ", ".join(values) + " "
+            "ON CONFLICT (host_id, port_number, protocol) DO UPDATE SET "
+            "state = EXCLUDED.state, is_active = EXCLUDED.is_active, last_seen = NOW(), "
+            # The reason belongs to the observation that set the state: none
+            # given keeps the stored one while the state is unchanged; a
+            # changed state drops a reason that described the old one.
+            "reason = CASE "
+            "WHEN EXCLUDED.reason IS NOT NULL THEN EXCLUDED.reason "
+            "WHEN ports_v2.state IS DISTINCT FROM EXCLUDED.state THEN NULL "
+            "ELSE ports_v2.reason END, "
+            "last_updated_scan_id = EXCLUDED.last_updated_scan_id, "
+            + ", ".join([
+                service("service_name", "EXCLUDED.service_name"),
+                service("service_product", "NULL"),
+                service("service_version", "NULL"),
+                service("service_extrainfo", "NULL"),
+                service("service_method", "NULL"),
+                service("service_tunnel", "NULL"),
+                service("service_conf", "0"),
+            ]) + " "
+            # (xmax = 0): this INSERT created the row — port_created.
+            "RETURNING id, host_id, port_number, protocol, (xmax = 0) AS inserted"
+        ), params)
+        stored = list(result)
+        reported = {
+            (host_id, pd['port_number'], pd.get('protocol', 'tcp')): pd for host_id, pd in rows
+        }
+        if not stored:
+            return
+        params = {"scan_id": scan_id}
+        values = []
+        for idx, row in enumerate(stored):
+            pd = reported[(row.host_id, row.port_number, row.protocol)]
+            # What THIS scan reported (the merge above may have kept an older,
+            # longer name).
+            params.update({
+                f"pid_{idx}": row.id,
+                f"st_{idx}": pd.get('state'),
+                f"svc_{idx}": pd.get('service_name') or None,
+                f"info_{idx}": port_history_service_info(pd),
+            })
+            values.append(
+                f"(:pid_{idx}, :scan_id, :st_{idx}, :svc_{idx}, :info_{idx}, "
+                f"{'true' if row.inserted else 'false'})"
+            )
+        self.db.execute(text(
+            "INSERT INTO port_scan_history "
+            "(port_id, scan_id, state_at_scan, service_name, service_info, port_created) "
+            "VALUES " + ", ".join(values) + " "
+            "ON CONFLICT (port_id, scan_id) DO NOTHING"
+        ), params)
+        self.db.flush()
 
     # NOTE (code review): the former ``update_scan_statistics`` was removed
     # here — it had no callers anywhere in the app, so Scan.new_hosts /

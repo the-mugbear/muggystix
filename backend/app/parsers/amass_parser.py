@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models import DNS_OBS_DISCOVERED
 from app.parsers.parser_utils import (
-    ProgressBeat, correlate_scan, ensure_scan, extract_first_ip, persist_host_observation,
+    ProgressBeat, ensure_scan, extract_first_ip, persist_host_observation,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import ObservationCache, record_observation
@@ -139,7 +139,6 @@ class AmassParser:
                 f"file is empty or not amass/subfinder output."
             )
 
-        correlate_scan(self.db, scan.id)
         return scan
 
     def _record_bare_name(

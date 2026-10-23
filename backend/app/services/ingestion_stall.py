@@ -58,8 +58,9 @@ def stall_message(window_s: int) -> str:
 class StallWatchdog:
     """Watches one import attempt.  ``progressed()`` on every heartbeat;
     ``stalled`` once the window passed with none; ``fail_and_exit`` (fail the
-    job, end the process) once the grace passed too.  The clock and the
-    actions are arguments so a test can drive it."""
+    job, end the process) once the grace passed too.  ``suspended()`` holds
+    both off for a step that is not a parse (the partial-scan cleanup).  The
+    clock and the actions are arguments so a test can drive it."""
 
     def __init__(self, window_s: float, *, fail_and_exit: Callable[[], None],
                  grace_s: float = STALL_GRACE_S, poll_s: float = POLL_S,
@@ -72,6 +73,7 @@ class StallWatchdog:
         self._lock = threading.Lock()
         self._last = clock()
         self._stalled_at: Optional[float] = None
+        self._suspended = 0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -84,12 +86,35 @@ class StallWatchdog:
         with self._lock:
             self._last = self._clock()
 
+    @contextmanager
+    def suspended(self) -> Iterator[None]:
+        """No stall verdict while inside: the cleanup of a partial scan is one
+        long step with no heartbeat, and it is not a stalled PARSE (review
+        2026-10-23b, ING-3 — feeding ``progressed()`` around it was not
+        enough: a mark already set runs out its grace whatever happens).  On
+        leaving, the window starts again; a mark set before stays (the parse
+        it marked is stopped all the same) and its grace starts again too, so
+        what follows the cleanup — failing the job — still has it."""
+        with self._lock:
+            self._suspended += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._suspended -= 1
+                now = self._clock()
+                self._last = now
+                if self._stalled_at is not None:
+                    self._stalled_at = now
+
     def check(self) -> bool:
         """One look; True when the watchdog is done (it acted, or was stopped)."""
         if self._stop.is_set():
             return True
         now = self._clock()
         with self._lock:
+            if self._suspended:
+                return False
             idle = now - self._last
             if self._stalled_at is None:
                 if idle > self.window_s:

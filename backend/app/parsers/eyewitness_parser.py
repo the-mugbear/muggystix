@@ -42,7 +42,6 @@ from app.parsers.parser_utils import (
     ProgressBeat,
     ProjectHostsByAddress,
     announce_scan,
-    correlate_scan,
     ScanHostObservations,
     normalize_ip,
     record_hosts_in_scan,
@@ -316,7 +315,6 @@ class EyewitnessParser:
 
         _refuse_if_all_skipped(written, skipped, filename)
         self.db.commit()
-        self._finalize(scan)
         logger.info(
             "EyeWitness bundle %s: %d web_interfaces written (%d skipped), %d screenshots extracted",
             filename, written, skipped, extracted_png_count,
@@ -337,7 +335,6 @@ class EyewitnessParser:
         )
         _refuse_if_all_skipped(written, skipped, filename)
         self.db.commit()
-        self._finalize(scan)
         self.last_parse_stats = _eyewitness_parse_stats(skipped)
         return scan
 
@@ -355,7 +352,6 @@ class EyewitnessParser:
         written, skipped = self._load_and_write_csv(Path(file_path), scan, screenshot_dir_rel=None)
         _refuse_if_all_skipped(written, skipped, filename)
         self.db.commit()
-        self._finalize(scan)
         logger.info("EyeWitness CSV %s: %d rows written, %d skipped", filename, written, skipped)
         self.last_parse_stats = _eyewitness_parse_stats(skipped)
         return scan
@@ -381,12 +377,6 @@ class EyewitnessParser:
         return ProgressBeat(
             "records", before=lambda: record_hosts_in_scan(self.db, scan_id, self._observed),
         )
-
-    def _finalize(self, scan: models.Scan) -> None:
-        try:
-            correlate_scan(self.db, scan.id)
-        except Exception as exc:
-            logger.warning("EyeWitness scan %s correlation failed: %s", scan.id, exc)
 
     def _load_and_write_csv(
         self, path: Path, scan: models.Scan, screenshot_dir_rel: Optional[str],

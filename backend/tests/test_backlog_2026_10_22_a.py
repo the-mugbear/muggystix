@@ -322,7 +322,7 @@ def _nessus(db, project_id, tmp_path, report_hosts):
         + "".join(report_hosts) + "</Report></NessusClientData_v2>"
     )
     result = NessusIntegrationService(db).process_nessus_file(str(path), project_id=project_id)
-    assert result["success"], result
+    assert result["scan_id"], result
     return result
 
 

@@ -23,7 +23,6 @@ from app.db.models_vulnerability import (
 )
 from app.services import scan_sightings
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.services.subnet_correlation import SubnetCorrelationService
 
 
 IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -568,10 +567,6 @@ def _persist_host_observation_inner(
         port_map[(persisted.port_number, persisted.protocol)] = persisted
 
     return host, port_map
-
-
-def correlate_scan(db: Session, scan_id: int) -> None:
-    SubnetCorrelationService(db).batch_correlate_scan_hosts_to_subnets(scan_id)
 
 
 class HostObservation(NamedTuple):
@@ -1159,17 +1154,17 @@ def resolve_port_cached(
     db: Session,
     host: Optional[models.Host],
     port: Optional[int],
-    port_cache: Dict[Tuple[int, int], Any],
+    port_cache: Dict[Tuple[int, int, str], Any],
     *,
     protocol: str = "tcp",
 ) -> Optional[models.Port]:
     """Look up a ``Port`` by ``(host_id, port_number, protocol)``, memoized in
-    ``port_cache`` (``(host_id, port) -> Port|None``).  Misses are cached too —
-    the web parsers never create Port rows, so an absent port stays absent for
-    the file."""
+    ``port_cache`` under that same key.  Misses are cached too — the web
+    parsers never create Port rows, so an absent port stays absent for the
+    file."""
     if not (host and port):
         return None
-    key = (host.id, port)
+    key = (host.id, port, protocol)
     if key in port_cache:
         return port_cache[key]
     port_row = (

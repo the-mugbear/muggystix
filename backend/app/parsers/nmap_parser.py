@@ -21,7 +21,6 @@ from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySour
 from app.services import smb_signing as smb_signing_states
 from app.services.cert_fields import _classify_tls_version, parse_cert_not_after
 from app.services.misconfig_checks import port_row, record_misconfig
-from app.services.subnet_correlation import SubnetCorrelationService
 import logging
 import time
 
@@ -32,7 +31,6 @@ class NmapXMLParser:
     def __init__(self, db: Session):
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
-        self.correlation_service = SubnetCorrelationService(db)
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -225,21 +223,7 @@ class NmapXMLParser:
             "partial": truncated,
         }
 
-        # Commit parsed host data before attempting correlation so it
-        # survives even if correlation fails.
         self.db.commit()
-
-        # Correlate hosts to subnets
-        try:
-            logger.info(f"Starting subnet correlation for scan {scan_id}")
-            hosts_correlated = self.correlation_service.batch_correlate_scan_hosts_to_subnets(scan_id)
-            logger.info(f"Correlated {hosts_correlated} hosts to subnets")
-        except Exception as e:  # pragma: no cover - defensive
-            logger.error(f"Error in subnet correlation: {e}")
-            try:
-                self.db.rollback()
-            except Exception:
-                pass
 
         logger.info(f"Parsed {hosts_processed} host records from {filename}")
         return scan

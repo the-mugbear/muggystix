@@ -339,7 +339,7 @@ def test_nessus_says_how_many_report_items_it_could_not_read(db_session, test_pr
     path = _write(tmp_path, "batch.nessus", NESSUS_XML)
     result = NessusIntegrationService(db_session).process_nessus_file(str(path), project_id=test_project.id)
 
-    assert result["success"] and result["partial"] is True
+    assert result["scan_id"] and result["partial"] is True
     assert result["report_items_unreadable"] == 1
     assert any("1 report item(s) could not be read" in w for w in result["warnings"])
 

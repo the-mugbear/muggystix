@@ -574,6 +574,9 @@ def _reprocess_into(
     shutil.copy2(src, dst)
     options = dict(job.options or {})
     options["reprocess_of_job_id"] = job.id
+    # The duplicate guard is bypassed on purpose — for this job's later
+    # starts and retries too, which would otherwise find the original.
+    options["allow_duplicate"] = True
     options.pop("format_override", None)
     # One attempt's instruction (queue_job); a re-process is a new import.
     from app.services.ingestion_service import KEEP_TRUNCATED_OPTION

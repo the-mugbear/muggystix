@@ -79,6 +79,18 @@ def test_ingestion_results_expose_the_parse_error_id(
     )
 
 
+def test_deleting_a_parse_error_unlinks_its_jobs(client, db_session, test_project, failed_job_with_parse_error):
+    """The FK's SET NULL unlinks the job (review 2026-10-23b, ING-10: the
+    route did it again by hand); the answer still counts them."""
+    job, parse_error = failed_job_with_parse_error
+    resp = client.delete(f"/api/v1/projects/{test_project.id}/parse-errors/{parse_error.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["jobs_updated"] == 1
+    db_session.expire_all()
+    assert db_session.get(models.IngestionJob, job.id).parse_error_id is None
+    assert db_session.get(models.ParseError, parse_error.id) is None
+
+
 def test_the_two_ids_are_not_interchangeable(
     client, test_project, failed_job_with_parse_error
 ):

@@ -470,7 +470,7 @@ def test_a_name_seen_in_two_nessus_batches_is_recorded_for_both_addresses(
         ("10.40.1.1", "lb.example.test"), ("10.40.1.2", "lb.example.test"), ("10.40.1.3", "lb.example.test"),
     ])
     result = NessusIntegrationService(db_session).process_nessus_file(str(path), project_id=pid)
-    assert result["success"], result
+    assert result["scan_id"], result
 
     values = sorted(
         row[0] for row in db_session.query(models.DNSRecord.value)
@@ -635,6 +635,46 @@ def test_an_import_cancelled_after_its_last_heartbeat_keeps_its_upload_identity(
     duplicate = IngestionService._find_duplicate(db_session, pid, sha)
     assert duplicate is not None and duplicate.scan_id == scan.id
     db_session.rollback()
+
+
+def test_a_late_cancel_does_not_write_over_an_attempt_that_took_the_job_since(
+    db_session, test_project, tmp_path,
+):
+    """review 2026-10-23b, ING-9: the cancelled-but-written branch read the
+    status with no lock and wrote the row by id.  Retried and claimed by a
+    peer that failed in turn (its own scan still named, for the cleanup), the
+    row read ``failed`` with no scan again — and this attempt cleared the
+    peer's ``in_progress_scan_id``, leaving the peer's scan to nobody."""
+    from app.db import session as _session_module
+
+    pid = test_project.id
+    path = nmap_file(tmp_path, 2, name="late-cancel-race.xml", net="10.78")
+    peer_scan = models.Scan(project_id=pid, filename="peer.xml", tool_name="nmap", scan_type="nmap_xml")
+    db_session.add(peer_scan)
+    db_session.commit()
+    peer_scan_id = peer_scan.id
+    svc = IngestionService()
+    job_id = queue_file(db_session, pid, path)
+    parse = svc._process_job
+    peer_token = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def parse_cancel_and_lose_the_row(db, job):
+        result = parse(db, job)
+        assert cancel_from_the_api(job_id) is True
+        with _session_module.SessionLocal() as other:
+            other.query(models.IngestionJob).filter_by(id=job_id).update({
+                "status": "failed", "started_at": peer_token, "in_progress_scan_id": peer_scan_id,
+                "message": "the peer's failure",
+            })
+            other.commit()
+        return result
+
+    svc._process_job = parse_cancel_and_lose_the_row  # type: ignore[method-assign]
+    run_next(db_session, svc)
+
+    job = job_row(db_session, job_id)
+    assert job.in_progress_scan_id == peer_scan_id
+    assert job.scan_id is None and job.message == "the peer's failure"
 
 
 def test_a_failure_does_not_delete_the_scan_of_an_attempt_that_took_the_job_since(

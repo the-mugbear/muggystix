@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
-    ProgressBeat, correlate_scan, ensure_scan, extract_first_ip, persist_host_observation,
+    ProgressBeat, ensure_scan, extract_first_ip, persist_host_observation,
 )
 from app.parsers.streaming_json import iter_document
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -115,7 +115,6 @@ class BloodHoundParser:
                 "computers file needs resolved addresses (e.g. an `ipv4` property)."
             )
 
-        correlate_scan(self.db, scan.id)
         warnings = []
         if no_address:
             warnings.append(

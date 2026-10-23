@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
-    ProgressBeat, beat_while_reading, correlate_scan, ensure_scan, extract_first_ip,
+    ProgressBeat, beat_while_reading, ensure_scan, extract_first_ip,
     normalize_ip, persist_host_observation,
 )
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -128,7 +128,6 @@ class RustScanParser:
             ) is None:
                 skipped += 1
 
-        correlate_scan(self.db, scan.id)
         port_count = sum(len(p) for p in hosts.values())
         self.last_parse_stats = {
             "skipped": skipped,

@@ -121,12 +121,12 @@ def test_a_nessus_reimport_follows_the_plugins_new_severity(db_session, test_pro
                          solution="<solution>Disable them.</solution>")),
         project_id=pid,
     )
-    assert first["success"], first
+    assert first["scan_id"], first
     second = NessusIntegrationService(db_session).process_nessus_file(
         str(_nessus_file(tmp_path, "b.nessus", severity=4, plugin_name="SSH Weak Algorithms Supported")),
         project_id=pid,
     )
-    assert second["success"], second
+    assert second["scan_id"], second
 
     db_session.expire_all()
     rows = db_session.query(Vulnerability).filter(Vulnerability.plugin_id == "90317").all()

@@ -118,3 +118,49 @@ def test_nessus_path_no_warning_when_hint_matches(db_session, fake_nessus_job):
         )
 
     assert result["parser_warnings"] is None
+
+
+def test_nessus_losses_make_the_job_partial_and_skipped(db_session, fake_nessus_job):
+    """review 2026-10-23b, ING-2: the service's failure counts were read only
+    as warning text — the job completed partial=False, skipped_count=0 and
+    never reached Needs attention, Blocked or the agents' ingestion issues."""
+    fake_result = {
+        "partial": True,
+        "scan_id": 12345,
+        "message": "Nessus scan processed",
+        "host_processing_failures": 2,
+        "vuln_write_failures": 3,
+        "report_items_unreadable": 1,
+        "warnings": ["2 host(s) failed to process and were skipped."],
+    }
+    with patch.object(NessusIntegrationService, "process_nessus_file", return_value=fake_result):
+        result = ingestion_service._execute_parser(
+            db=db_session, job=fake_nessus_job,
+            parser_class=NessusIntegrationService, description="Nessus vulnerability scan",
+        )
+    assert result["partial"] is True
+    assert result["skipped_count"] == 6
+    assert "2 host(s) failed" in result["parser_warnings"]
+
+
+def test_a_nessus_import_that_lost_an_item_ends_partial_on_the_job_row(
+    db_session, test_project, tmp_path, monkeypatch,
+):
+    from app.parsers.nessus_parser import NessusParser
+    from tests.ingestion_job_harness import run_file
+    from tests.test_nessus_skip_informational import NESSUS_XML
+
+    real = NessusParser._parse_vulnerability
+
+    def unreadable(self, report_item):
+        if report_item.get("pluginID") == "90317":
+            raise ValueError("malformed report item")
+        return real(self, report_item)
+
+    monkeypatch.setattr(NessusParser, "_parse_vulnerability", unreadable)
+    path = tmp_path / "lost.nessus"
+    path.write_text(NESSUS_XML)
+    job = run_file(db_session, test_project.id, path)
+    assert job.status == "completed", (job.status, job.error_message)
+    assert job.partial is True
+    assert job.skipped_count == 1

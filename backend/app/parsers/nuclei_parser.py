@@ -37,7 +37,6 @@ from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.parser_utils import (
     ProgressBeat,
     ScanClock,
-    correlate_scan,
     ensure_scan,
     map_text_severity,
     normalize_ip,
@@ -216,10 +215,6 @@ class NucleiParser:
 
         clock.apply(scan)
         self.db.commit()
-        try:
-            correlate_scan(self.db, scan.id)
-        except Exception as exc:  # noqa: BLE001 — host data is already committed
-            logger.warning("nuclei scan %s correlation failed: %s", scan.id, exc)
 
         skipped = len(no_address) + len(failed)
         warnings = []

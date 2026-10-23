@@ -573,7 +573,7 @@ def retry_ingestion_job(
     from app.services.ingestion_service import DuplicateUploadError
     try:
         result = ingestion_service.requeue_job(
-            job_id, keep_truncated=bool(body and body.keep_truncated),
+            db, job_id, keep_truncated=bool(body and body.keep_truncated),
         )
     except DuplicateUploadError as exc:
         # Another job imported this exact file while this one sat failed.
@@ -586,8 +586,6 @@ def retry_ingestion_job(
     if result != "requeued":
         # not_failed / not_found — lost a race with the reaper or another retry.
         raise HTTPException(status_code=409, detail="Job could not be retried in its current state")
-    # requeue_job committed status='queued' in its own session; report that
-    # directly rather than re-reading the request session's stale cached row.
     return {"job_id": job_id, "status": "queued", "message": "Job re-queued"}
 
 

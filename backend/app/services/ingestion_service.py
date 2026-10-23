@@ -16,7 +16,7 @@ import shutil
 import threading
 import time
 import zlib
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +118,22 @@ def carry_upload_identity(db: Session, job: IngestionJob) -> None:
         scan.uploaded_by_id = job.submitted_by_id
     scan.batch_id = job.batch_id
     scan.content_sha256 = job.content_sha256
+
+
+def correlate_imported_hosts(db: Session, scan_id: Optional[int]) -> None:
+    """Correlate the hosts a finished import recorded to the project's scope
+    subnets.  Best effort: the import's data is already committed, so a
+    failure is logged and rolled back, never the import's failure.  A scan
+    with no hosts costs one query."""
+    if not isinstance(scan_id, int):
+        return
+    from app.services.subnet_correlation import SubnetCorrelationService
+
+    try:
+        SubnetCorrelationService(db).batch_correlate_scan_hosts_to_subnets(scan_id)
+    except Exception as exc:  # noqa: BLE001 — the host data is committed
+        logger.warning("Scan %s: subnet correlation failed: %s", scan_id, exc)
+        db.rollback()
 
 # v2.328.0 — every lifecycle write (claim / heartbeat / complete / fail /
 # cancel / retry / reap) goes through the shared transition layer so the
@@ -1280,8 +1296,11 @@ class IngestionService:
             last = last.replace(tzinfo=timezone.utc)
         return last < self._orphan_cutoff()
 
-    def requeue_job(self, job_id: int, *, keep_truncated: bool = False) -> str:
-        """Re-queue a FAILED job whose uploaded file is still on disk.
+    def requeue_job(self, db: Session, job_id: int, *, keep_truncated: bool = False) -> str:
+        """Re-queue a FAILED job whose uploaded file is still on disk, on the
+        caller's session (the request's: a second pooled connection per
+        request is the pool hazard ``enqueue_job`` describes, and it ran
+        without the API statement timeout — review 2026-10-23b, ING-6).
 
         ``keep_truncated``: the operator's "import what the file holds" for
         this attempt (``KEEP_TRUNCATED_OPTION``); a plain retry clears it.
@@ -1301,19 +1320,17 @@ class IngestionService:
         """
         from app.services.staged_import_service import queue_job
 
-        with _session_module.SessionLocal() as db:
-            try:
-                job = queue_job(db, job_id, allowed_from=("failed",), keep_truncated=keep_truncated)
-            except JobNotTransitionable as exc:
-                # ``status`` is either the actual state or the precondition's
-                # reason code.
-                return "file_missing" if exc.status == "file_missing" else "not_failed"
-            except LookupError:
-                return "not_found"
-            logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, job.retry_count)
-            # Wake the worker immediately (same pg_notify hint as the upload
-            # path) — on THIS session, not a third connection.
-            self.enqueue_job(job_id, db=db)
+        try:
+            job = queue_job(db, job_id, allowed_from=("failed",), keep_truncated=keep_truncated)
+        except JobNotTransitionable as exc:
+            # ``status`` is either the actual state or the precondition's
+            # reason code.
+            return "file_missing" if exc.status == "file_missing" else "not_failed"
+        except LookupError:
+            return "not_found"
+        logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, job.retry_count)
+        # Wake the worker immediately (same pg_notify hint as the upload path).
+        self.enqueue_job(job_id, db=db)
         return "requeued"
 
     def update_heartbeat(
@@ -1702,32 +1719,33 @@ class IngestionService:
         was_paused = getattr(_import_lock, "paused", False)
         _import_lock.paused = True
         # The cleanup of a large scan is one long step with no heartbeat
-        # (review 2026-10-23, R-ING1).  It is not a stalled PARSE: the
-        # watchdog's window starts again when it begins and when it ends, and
-        # its statements are not held to the stall window — a big DELETE
+        # (review 2026-10-23, R-ING1; 2026-10-23b, ING-3).  It is not a
+        # stalled PARSE: the watchdog gives no verdict while it runs, and its
+        # statements are not held to the stall window — a big DELETE
         # cancelled at the window left the scan behind and, at the claim,
-        # failed the job.  Its lock waits stay bounded where they were
-        # (``lock_timeout_s``), and the watchdog still ends a cleanup that
-        # outlasts a whole window plus its grace.
+        # failed the job.  What a working DELETE is not, a lock WAIT can be:
+        # each wait stays bounded — by ``lock_timeout_s`` where the caller
+        # gives one, else by the stall window.
         watchdog = getattr(_active_job, "watchdog", None)
-        if watchdog is not None:
-            watchdog.progressed()
         try:
-            db.rollback()
-            if _on_postgres(db):
-                # After the transaction's begin, where the stall listener set
-                # its timeout; SET LOCAL ends with this transaction.
-                db.execute(text("SET LOCAL statement_timeout = 0"))
-            removed = delete_partial_scan(db, scan_id, lock_timeout_s=lock_timeout_s)
-            db.commit()
+            with watchdog.suspended() if watchdog is not None else nullcontext():
+                db.rollback()
+                if _on_postgres(db):
+                    # After the transaction's begin, where the stall listener
+                    # set its timeout; SET LOCAL ends with this transaction.
+                    db.execute(text("SET LOCAL statement_timeout = 0"))
+                    if not lock_timeout_s and settings.INGESTION_STALL_TIMEOUT > 0:
+                        db.execute(text(
+                            f"SET LOCAL lock_timeout = '{int(settings.INGESTION_STALL_TIMEOUT)}s'"
+                        ))
+                removed = delete_partial_scan(db, scan_id, lock_timeout_s=lock_timeout_s)
+                db.commit()
         except Exception:  # noqa: BLE001
             db.rollback()
             logger.warning("Could not delete partial scan %s (%s)", scan_id, why, exc_info=True)
             return False
         finally:
             _import_lock.paused = was_paused
-            if watchdog is not None:
-                watchdog.progressed()
         logger.info(
             "Deleted partial scan %s (%s): %d host(s), %d port(s), %d scanner observation(s) "
             "that only it had created; %d row(s) a later scan had re-observed were kept and "
@@ -1980,10 +1998,13 @@ class IngestionService:
                     # before it saw the cancel: the scan exists and its data is
                     # in the inventory.  Say so on the cancelled job instead of
                     # leaving the scan unlinked.  Only when nothing newer owns
-                    # the job (a re-claimed attempt is 'processing' again).
-                    db.refresh(job)
+                    # the job: read under the row lock and fenced on this
+                    # attempt's claim (review 2026-10-23b, ING-9 — read
+                    # unlocked, a retry and a peer's claim in between had this
+                    # attempt clear the new attempt's ``in_progress_scan_id``).
                     _scan_id = result.get("scan_id")
-                    if job.status == "failed" and job.scan_id is None and _scan_id:
+                    job = _transitions.lock_failed_attempt(db, job_id, claimed_at)
+                    if job is not None and job.scan_id is None and _scan_id:
                         job.scan_id = _scan_id
                         # Kept and linked, so no longer a leftover to delete
                         # if the operator re-queues the job (R1).
@@ -2436,12 +2457,20 @@ class IngestionService:
             scan_id = result.get("scan_id")
             message = result.get("message")
             tool_name = "Nessus"
-            # v2.91.3 — surface partial-ingest warnings (per-finding
-            # write failures, per-host processing failures) into the
-            # standard parser_warnings channel so they reach
-            # IngestionJob.warnings and the upload UI's warning panel.
-            # Hard truncation lands in the if-not-success branch above;
-            # this branch handles soft warnings on a successful import.
+            # The hosts, findings and report items the service could not
+            # write are records lost: skipped AND partial, as every other
+            # parser publishes them in ``last_parse_stats`` (review
+            # 2026-10-23b, ING-2 — read only as warning text, the job looked
+            # complete and never reached Needs attention or Blocked).
+            parse_stats = {
+                "partial": bool(result.get("partial")),
+                "skipped": sum(
+                    int(result.get(key) or 0)
+                    for key in ("host_processing_failures", "vuln_write_failures", "report_items_unreadable")
+                ),
+            }
+            # v2.91.3 — the same losses, in words, reach IngestionJob.warnings
+            # and the upload UI's warning panel.
             nessus_warnings = result.get("warnings") or []
             for w in nessus_warnings:
                 if w:
@@ -2508,6 +2537,11 @@ class IngestionService:
                     f"{rejected_json_lines} line{'s' if rejected_json_lines != 1 else ''} of the file "
                     "were not valid JSON and were skipped (a truncated or corrupted record)"
                 )
+
+        # After an import, its hosts are correlated to the project's scope —
+        # here, once, for every format (review 2026-10-23b, ING-5: each
+        # parser did it with its own try / except, and a new one could forget).
+        correlate_imported_hosts(db, scan_id)
 
         # The file ended early and the import went on with what came before
         # (the operator asked for that) — whichever format, whichever branch.
