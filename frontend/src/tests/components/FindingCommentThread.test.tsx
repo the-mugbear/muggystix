@@ -19,6 +19,7 @@ vi.mock('../../components/host-inspector/NoteAttachments', () => ({ default: () 
 
 import * as api from '../../services/api';
 import { readsOnScreen } from '../helpers/readsOnScreen';
+import { installBlobUrls } from '../helpers/blobUrls';
 import FindingCommentThread from '../../components/FindingCommentThread';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
@@ -43,6 +44,10 @@ const pasteImage = (name: string) => {
 beforeEach(() => {
   vi.clearAllMocks();
   mocked.getFindingNotes.mockResolvedValue(page([]));
+  // A pasted screenshot shows its preview (the one composer of both threads,
+  // review 2026-10-23 R-FC1); jsdom makes no object URLs.
+  installBlobUrls();
+  URL.revokeObjectURL = vi.fn();
 });
 
 describe('FindingCommentThread — H1: unavailable is not empty', () => {
@@ -128,7 +133,7 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
     expect(await screen.findByText(/Comment saved · 1 attachment failed/)).toBeInTheDocument();
     expect(screen.getByText('shot.png')).toBeInTheDocument();
     expect(screen.getByLabelText('New comment')).toHaveValue(''); // the comment itself did post
-    const retry = screen.getByRole('button', { name: 'Retry shot.png' });
+    const retry = screen.getByRole('button', { name: 'Retry uploading pasted image 1' });
 
     mocked.uploadFindingNoteAttachment.mockResolvedValueOnce({ id: 1 });
     fireEvent.click(retry);
@@ -149,7 +154,7 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
     fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
     await screen.findByText(/attachment failed/);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove shot.png' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove pasted image 1' }));
     expect(screen.queryByText('shot.png')).toBeNull();
     expect(mocked.createFindingNote).toHaveBeenCalledTimes(1);
   });
@@ -174,8 +179,8 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
     await screen.findByText(/2 attachments? failed/);
 
     // Retry A (deferred), then remove A while it is still uploading.
-    fireEvent.click(screen.getByRole('button', { name: 'Retry A.png' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove A.png' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry uploading pasted image 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove pasted image 1' }));
     expect(screen.queryByText('A.png')).toBeNull();
     expect(screen.getByText('B.png')).toBeInTheDocument();
 
@@ -183,6 +188,79 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
     // A's completion must not touch B.
     await waitFor(() => expect(api.uploadFindingNoteAttachment).toHaveBeenCalledTimes(3));
     expect(screen.getByText('B.png')).toBeInTheDocument();
+  });
+});
+
+// Review 2026-10-23, H-FC2 — a post's answer set the queue from what it held
+// when the post was SENT: a screenshot pasted while the post ran was wiped,
+// and a failed one retried meanwhile came back.  The composer is now disabled
+// while a post runs, and the answer changes only the images that post sent.
+describe('FindingCommentThread — a post changes only what it sent', () => {
+  const deferred = () => {
+    let resolve!: (v: unknown) => void;
+    const promise = new Promise((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+
+  it('a screenshot pasted while a post runs is still waiting when the post answers', async () => {
+    mocked.createFindingNote.mockResolvedValue(note(42, 'with a shot'));
+    const upload = deferred();
+    mocked.uploadFindingNoteAttachment.mockImplementationOnce(() => upload.promise);
+    renderThread();
+    await screen.findByText(/No comments yet/);
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: 'with a shot' } });
+    pasteImage('first.png');
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await waitFor(() => expect(mocked.uploadFindingNoteAttachment).toHaveBeenCalledTimes(1));
+
+    // While it runs, the composer and the image's Remove are disabled …
+    expect(screen.getByLabelText('New comment')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Remove pasted image 1' })).toBeDisabled();
+    // … and an image that reaches the queue anyway is not the post's.
+    pasteImage('second.png');
+    expect(screen.getByText('second.png')).toBeInTheDocument();
+
+    upload.resolve({ id: 1 });
+    await waitFor(() => expect(screen.queryByText('first.png')).toBeNull());
+    expect(screen.getByText('second.png')).toBeInTheDocument();
+    expect(screen.getByLabelText('New comment')).toBeEnabled();
+    expect(mocked.uploadFindingNoteAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it('an earlier failure retried while a post runs is not brought back by the post', async () => {
+    mocked.createFindingNote
+      .mockResolvedValueOnce(note(41, 'first'))
+      .mockResolvedValueOnce(note(42, 'second'));
+    const retried = deferred();
+    const second = deferred();
+    mocked.uploadFindingNoteAttachment
+      .mockRejectedValueOnce(new Error('413'))
+      .mockImplementationOnce(() => retried.promise)
+      .mockImplementationOnce(() => second.promise);
+    renderThread();
+    await screen.findByText(/No comments yet/);
+
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: 'first' } });
+    pasteImage('a.png');
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await screen.findByText(/Comment saved · 1 attachment failed/);
+
+    // A's retry is on its way when the next comment is posted with B.
+    fireEvent.click(screen.getByRole('button', { name: 'Retry uploading pasted image 1' }));
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: 'second' } });
+    pasteImage('b.png');
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await waitFor(() => expect(mocked.uploadFindingNoteAttachment).toHaveBeenCalledTimes(3));
+
+    // A lands on its comment and leaves the queue …
+    retried.resolve({ id: 7 });
+    await waitFor(() => expect(screen.queryByText('a.png')).toBeNull());
+    // … and the post's answer does not put it back.
+    second.resolve({ id: 8 });
+    await waitFor(() => expect(screen.queryByText('b.png')).toBeNull());
+    expect(screen.queryByText('a.png')).toBeNull();
+    expect(mocked.uploadFindingNoteAttachment.mock.calls[1].slice(0, 3)).toEqual([1, 7, 41]);
+    expect(mocked.uploadFindingNoteAttachment.mock.calls[2].slice(0, 3)).toEqual([1, 7, 42]);
   });
 });
 
@@ -278,7 +356,7 @@ describe('FindingCommentThread — a screenshot is one of the finding’s images
     expect(reread).not.toHaveBeenCalled();
 
     mocked.uploadFindingNoteAttachment.mockResolvedValueOnce({ id: 1 });
-    fireEvent.click(screen.getByRole('button', { name: 'Retry shot.png' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry uploading pasted image 1' }));
     await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
   });
 

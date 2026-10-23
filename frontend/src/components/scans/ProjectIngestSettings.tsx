@@ -64,21 +64,33 @@ export const ProjectIngestSettings: React.FC<{ canEdit: boolean }> = ({ canEdit 
       <PostureSection title="Imports" description="How uploads into this project are read. A change applies to files uploaded after it.">
         <div className="flex min-w-0 items-start justify-between gap-md">
           <div className="min-w-0">
-            <Label htmlFor="skip-informational" className="text-metadata font-semibold">
-              Skip informational Nessus scanner observations
-            </Label>
+            {canEdit ? (
+              <Label htmlFor="skip-informational" className="text-metadata font-semibold">
+                Skip informational Nessus scanner observations
+              </Label>
+            ) : (
+              <p className="text-metadata font-semibold">Skip informational Nessus scanner observations</p>
+            )}
             <p className="text-caption text-muted-foreground">
               Severity-0 plugins are not stored as scanner observations; the open ports they report are still
               recorded. Each file keeps the setting it was uploaded under.
             </p>
           </div>
-          <Switch
-            id="skip-informational"
-            checked={effective}
-            onCheckedChange={(v) => change(v === true)}
-            disabled={!canEdit || saving}
-            aria-label="Skip informational Nessus scanner observations"
-          />
+          {/* A write control is hidden from a role that cannot use it, not
+              disabled (style guide §40): the setting is said instead. */}
+          {canEdit ? (
+            <Switch
+              id="skip-informational"
+              checked={effective}
+              onCheckedChange={(v) => change(v === true)}
+              disabled={saving}
+              aria-label="Skip informational Nessus scanner observations"
+            />
+          ) : (
+            <p className="shrink-0 text-metadata" data-testid="skip-informational-state">
+              {effective ? 'On' : 'Off'}
+            </p>
+          )}
         </div>
       </PostureSection>
     </div>

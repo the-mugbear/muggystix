@@ -1,5 +1,5 @@
 import React from 'react';
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -28,6 +28,7 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../components/FindingHistoryButton', () => ({ FindingHistoryButton: () => null }));
 
 import { readsOnScreen } from '../helpers/readsOnScreen';
+import { invalidateReads } from '../../lib/query';
 import HostFindingsCard from '../../components/HostFindingsCard';
 
 const HOST = 5;
@@ -318,6 +319,40 @@ describe('HostFindingsCard', () => {
       await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
       await waitFor(() => expect(toast.error).toHaveBeenCalled());
       expect(hostRead).not.toHaveBeenCalled();
+    });
+  });
+
+  // Review 2026-10-23, H-FC3 — an answer replaced its row whatever the row
+  // held, and the picker stayed live while it was on its way: two quick picks,
+  // or a re-read that landed first, left the row on the OLDER finding.
+  describe('an answer goes on its row only over a lower revision', () => {
+    const ReReadList = () => {
+      const queryClient = useQueryClient();
+      return <button type="button" onClick={() => { void invalidateReads(queryClient, 'listFindings'); }}>re-read</button>;
+    };
+
+    it('the picker waits for its answer, and an older answer never replaces a newer read', async () => {
+      const user = userEvent.setup();
+      const own = finding({ status: 'open', revision: 3 });
+      api.listFindings.mockResolvedValueOnce({ items: [own] })
+        // Someone renamed it meanwhile: the list's re-read holds revision 5.
+        .mockResolvedValue({ items: [{ ...own, title: 'Weak TLS on the VPN', status: 'confirmed', revision: 5 }] });
+      let answer!: (v: unknown) => void;
+      api.setFindingStatus.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+      render(<MemoryRouter><ReReadList /><HostFindingsCard hostId={HOST} /></MemoryRouter>);
+
+      await user.click(await screen.findByLabelText('Status for Weak TLS'));
+      await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
+      await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledTimes(1));
+      expect(screen.getByLabelText('Status for Weak TLS')).toBeDisabled();
+
+      await user.click(screen.getByRole('button', { name: 're-read' }));
+      expect(await screen.findByText('Weak TLS on the VPN')).toBeInTheDocument();
+      // The status change's answer, as the finding stood at revision 4.
+      await act(async () => { answer({ ...own, status: 'confirmed', revision: 4 }); });
+      expect(screen.getByText('Weak TLS on the VPN')).toBeInTheDocument();
+      expect(screen.queryByText('Weak TLS')).toBeNull();
+      expect(screen.getByLabelText('Status for Weak TLS on the VPN')).toBeEnabled();
     });
   });
 

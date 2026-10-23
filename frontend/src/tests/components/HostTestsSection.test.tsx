@@ -126,7 +126,9 @@ describe('HostTestsSection — the list', () => {
   it('opens to why, what is expected and who proposed it', async () => {
     api.listHostTests.mockResolvedValue(page([test({
       rationale: '🤖 **Agent-generated** (claude)\n\nThe portal sets **no** frame header.',
-      references: ['https://owasp.org/x', 'javascript:alert(1)'],
+      // Review 2026-10-23, R-FC3: a reference is a link only by `safeHttpHref`
+      // (a hand-rolled /^https?:\/\// test linked "https:// broken").
+      references: ['https://owasp.org/x', 'javascript:alert(1)', 'https:// broken'],
     })]));
     renderSection();
     await screen.findByText('Check response headers');
@@ -139,6 +141,7 @@ describe('HostTestsSection — the list', () => {
     expect(screen.getByText(/Proposed by claude-code · claude-opus-5-5 for Alice Analyst/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'owasp.org' })).toHaveAttribute('href', 'https://owasp.org/x');
     expect(screen.queryByText(/javascript:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/broken/)).not.toBeInTheDocument();
     expect(screen.getByText(/No result recorded yet/)).toBeInTheDocument();
   });
 

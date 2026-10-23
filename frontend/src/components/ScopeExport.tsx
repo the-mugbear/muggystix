@@ -1,4 +1,3 @@
-import { useMutation } from '@tanstack/react-query';
 import { FolderTree } from 'lucide-react';
 import { getScopeExport, type ScopeExportFormat } from '../services/api';
 import { useProjectId } from '../hooks/useProjectId';
@@ -34,13 +33,7 @@ const FILE: Record<ScopeExportFormat, string> = {
  *  download, and the rule that the text keeps the format it was made in —
  *  is `GeneratedTextDialog`. */
 export default function ScopeExport({ open, onClose }: ScopeExportProps) {
-  // Asked for by the button, not by opening the dialog: an action, so its
-  // answer, busy state and failure are the mutation's.
   const projectId = useProjectId();
-  const generate = useMutation({
-    mutationFn: (format: ScopeExportFormat) => getScopeExport(projectId, format),
-    onError: (err) => console.error('Error exporting the scope:', err),
-  });
 
   return (
     <GeneratedTextDialog
@@ -51,7 +44,8 @@ export default function ScopeExport({ open, onClose }: ScopeExportProps) {
       formats={EXPORT_FORMATS}
       defaultFormat="cidrs"
       formatFieldId="scope-export-format"
-      generate={generate}
+      generateFn={(format: ScopeExportFormat) => getScopeExport(projectId, format)}
+      onGenerateError={(err) => console.error('Error exporting the scope:', err)}
       generateLabel="Generate list"
       errorFallback="Failed to export the scope"
       textOf={(text) => text}

@@ -2,8 +2,8 @@
  * GeneratedTextDialog — the one export dialog (plan B2a): pick a format, ask
  * for the text, read it, copy it, save it.  `ScopeExport` and `ToolReadyOutput`
  * (and `OutOfScopeExport`, removed in 5.416.0) were copies of it; each is now what differs —
- * its request (a mutation of its own, so the API call stays in a
- * `mutationFn`), its formats, its words and its file name.
+ * its request (`generateFn`, run inside this dialog's mutation), its formats,
+ * its words and its file name.
  *
  * Two rules live here, once:
  *
@@ -13,14 +13,16 @@
  *     moved since (`heading` and `filename` are given that format, not the
  *     picker's).
  *   - **An opening starts with no output and no failure, and with the format
- *     chosen last time** — kept on purpose, so this dialog is NOT keyed by its
- *     opening (`useOpeningKey`): the effect below resets only what was
- *     generated.
+ *     chosen last time** — kept on purpose.  So the format is held OUTSIDE
+ *     the body, and the body (the request, its answer, "Copied") is keyed by
+ *     its opening (`useOpeningKey`; review 2026-10-23, R-FC2 — it was an
+ *     effect on `open` resetting the caller's mutation).
  */
-import React, { useEffect, useState } from 'react';
-import type { UseMutationResult } from '@tanstack/react-query';
+import React, { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { Copy, Download, Loader2 } from 'lucide-react';
 
+import { useOpeningKey } from '../hooks/useOpeningKey';
 import { queryErrorText } from '../lib/query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
@@ -74,8 +76,11 @@ export interface GeneratedTextDialogProps<F extends string, R> {
   defaultFormat: F;
   /** The picker's element id (its label points at it). */
   formatFieldId: string;
-  /** The caller's own mutation; its variable is the format asked for. */
-  generate: Pick<UseMutationResult<R, Error, F>, 'data' | 'variables' | 'isPending' | 'error' | 'mutate' | 'reset'>;
+  /** Ask for the text in a format (the caller's request; it runs as this
+   *  dialog's mutation, whose variable is the format asked for). */
+  generateFn: (format: F) => Promise<R>;
+  /** The request failed (beyond saying so in the dialog). */
+  onGenerateError?: (error: Error) => void;
   generateLabel: string;
   /** Said when the request failed and the server gave no reason. */
   errorFallback: string;
@@ -117,13 +122,31 @@ export function countEntries(text: string, format: string): number {
   return text.split('\n').filter((line) => line.trim()).length - (format === 'csv' ? 1 : 0);
 }
 
-export default function GeneratedTextDialog<F extends string, R>({
-  open, onClose, icon, title, children, formats, defaultFormat, formatFieldId, generate, generateLabel,
-  errorFallback, textOf, heading, filename, copyLabel, downloadLabel, options, notice, previewChars, footnote, empty,
-}: GeneratedTextDialogProps<F, R>) {
+export default function GeneratedTextDialog<F extends string, R>(props: GeneratedTextDialogProps<F, R>) {
   // Kept between openings (see above).
-  const [selectedFormat, setSelectedFormat] = useState<F>(defaultFormat);
+  const [selectedFormat, setSelectedFormat] = useState<F>(props.defaultFormat);
+  return (
+    <GeneratedTextBody<F, R>
+      key={useOpeningKey(props.open)}
+      {...props}
+      selectedFormat={selectedFormat}
+      onSelectFormat={setSelectedFormat}
+    />
+  );
+}
+
+function GeneratedTextBody<F extends string, R>({
+  open, onClose, icon, title, children, formats, formatFieldId, generateFn, onGenerateError, generateLabel,
+  errorFallback, textOf, heading, filename, copyLabel, downloadLabel, options, notice, previewChars, footnote, empty,
+  selectedFormat, onSelectFormat: setSelectedFormat,
+}: GeneratedTextDialogProps<F, R> & { selectedFormat: F; onSelectFormat: (format: F) => void }) {
   const [copied, setCopied] = useState(false);
+  // Asked for by the button, not by opening the dialog: an action, so its
+  // answer, busy state and failure are the mutation's — this opening's.
+  const generate = useMutation<R, Error, F>({
+    mutationFn: generateFn,
+    onError: (err) => onGenerateError?.(err),
+  });
 
   const result = generate.data;
   const text = result === undefined ? '' : textOf(result);
@@ -135,15 +158,6 @@ export default function GeneratedTextDialog<F extends string, R>({
   const loading = generate.isPending;
   const error = queryErrorText(generate.error, errorFallback);
   const preview = previewChars != null && text.length > previewChars ? text.slice(0, previewChars) : text;
-
-  // Each opening starts empty: only what was generated is reset.
-  const { reset } = generate;
-  useEffect(() => {
-    if (open) {
-      reset();
-      setCopied(false);
-    }
-  }, [open, reset]);
 
   const copy = async () => {
     // copyText (utils/clipboard) adds an execCommand fallback for non-secure

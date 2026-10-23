@@ -22,16 +22,17 @@ import NoteAttachments, {
 } from './host-inspector/NoteAttachments';
 import { DiscussionText } from './MentionText';
 import MentionTextarea from './MentionTextarea';
+import NoteComposer from './host-inspector/NoteComposer';
 import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
 import { useListQuery } from '../hooks/useListQuery';
+import { usePendingAttachments } from '../hooks/usePendingAttachments';
 import { useProjectId } from '../hooks/useProjectId';
 import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { announceMentionOutcome } from '../utils/mentions';
-import { imagesFromClipboard } from '../utils/clipboardImages';
 import { safeFallback } from '../utils/uiStyles';
 import MessageBubble, { wasEdited } from './MessageBubble';
 
@@ -85,19 +86,6 @@ export function useFindingCommentCount(findingId: number): number | null {
   return thread.responses ? thread.total : null;
 }
 
-/** A file waiting to be attached. `error` is set when its upload against
- *  `noteId` failed — the file is KEPT so it can be retried or removed; a
- *  clipboard-only screenshot has no other copy (UX review C3). */
-interface PendingFile {
-  /** Stable identity — retry/remove reconcile by id, never by array index,
-   *  so a Remove during an in-flight retry can't drop a different file. */
-  id: string;
-  file: File;
-  error?: string;
-  /** The saved comment this file belongs to once the comment itself posted. */
-  noteId?: number;
-}
-
 const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
   findingId, canManage, isProjectAdmin = false, reportMarking,
 }) => {
@@ -108,10 +96,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
   // v5.256.0 — a comment is its author's: only they edit or delete it.
   const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
   const [body, setBody] = useState('');
-  const [pending, setPending] = useState<PendingFile[]>([]);
   const [replyTo, setReplyTo] = useState<Annotation | null>(null);
-  const nextPendingId = useRef(0);
-  const newPendingId = () => `pf-${++nextPendingId.current}`;
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const queryClient = useQueryClient();
@@ -161,91 +146,37 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
     setTimeout(() => composerRef.current?.focus(), 0);
   };
 
-  // Paste a screenshot straight into the composer — collected as pending files
-  // and attached to the comment once it's created on submit.
-  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const images = imagesFromClipboard(e.clipboardData);
-    if (images.length) {
-      e.preventDefault();
-      setPending((p) => [...p, ...images.map((file) => ({ id: newPendingId(), file }))]);
-    }
-  };
-
-  // Upload one file against an already-saved comment; on failure keep it in
-  // the queue with the reason. Never creates a second comment.
-  const upload = useMutation({
-    mutationFn: (v: { noteId: number; file: File }) => uploadFindingNoteAttachment(projectId, findingId, v.noteId, v.file),
-  });
-  const attachOne = async (entry: PendingFile, noteId: number): Promise<PendingFile | null> => {
-    try {
-      await upload.mutateAsync({ noteId, file: entry.file });
-      return null;
-    } catch (err) {
-      return { ...entry, noteId, error: formatApiError(err, `Could not attach ${entry.file.name || 'screenshot'}.`) };
-    }
-  };
-
-  const retry = useMutation({
-    mutationFn: (entry: PendingFile & { noteId: number }) => attachOne(entry, entry.noteId),
-    onSuccess: (failed, entry) => {
-      // Reconcile by id: if the entry was removed while the upload ran, the
-      // rest of the queue is left untouched.
-      setPending((p) => (failed ? p.map((e) => (e.id === entry.id ? failed : e)) : p.filter((e) => e.id !== entry.id)));
-      if (failed) {
-        toast.error(failed.error ?? 'Could not attach file.');
-        return undefined;
-      }
-      // Still "retrying" until the thread shows the image.
-      return threadChanged({ images: true });
-    },
-  });
-  const retrying = retry.isPending ? retry.variables.id : null;
-  const retryFailed = (id: string) => {
-    const entry = pending.find((e) => e.id === id);
-    if (!entry || entry.noteId == null || retrying !== null) return;
-    retry.mutate({ ...entry, noteId: entry.noteId });
-  };
-
-  // A comment and its files are one action: the comment is created, then each
-  // file is attached to it in turn.
-  const post = useMutation({
-    mutationFn: async (v: { text: string; parentId: number | null; fresh: PendingFile[]; leftovers: PendingFile[] }) => {
-      const note = await createFindingNote(projectId, findingId, v.text, v.parentId);
-      const failed: PendingFile[] = [];
-      for (const entry of v.fresh) {
-        const f = await attachOne(entry, note.id);
-        if (f) failed.push(f);
-      }
-      return { note, failed };
-    },
-    onSuccess: ({ note, failed }, v) => {
+  // A comment and its screenshots are one action: the comment is created,
+  // then each screenshot waiting for it is attached in turn; one that fails
+  // stays, bound to the saved comment, with Retry and Remove — the one rule
+  // both threads follow (`usePendingAttachments`).  Files left over from an
+  // earlier comment's failed uploads belong to THAT comment and are not
+  // re-homed onto a new one.
+  const attachments = usePendingAttachments<Annotation, unknown, number | null>({
+    createNoteFn: (text, parentId) => createFindingNote(projectId, findingId, text, parentId),
+    uploadFn: (noteId, file) => uploadFindingNoteAttachment(projectId, findingId, noteId, file),
+    onPosted: ({ note, uploaded, failed }) => {
       if (note.mention_warning) toast.warning(note.mention_warning);
       else announceMentionOutcome(toast, note);
-      // The comment itself posted: clear the text and reply target. Keep
-      // only the files that did not make it, tied to the saved comment.
+      // The comment itself posted: clear the text and reply target.
       setBody('');
       setReplyTo(null);
-      setPending([...v.leftovers, ...failed]);
       if (failed.length) {
         toast.error(`Comment saved · ${failed.length} attachment${failed.length === 1 ? '' : 's'} failed — retry or remove below.`);
       }
       // Busy until the thread shows the comment.
-      return threadChanged({ images: v.fresh.length > failed.length });
+      return threadChanged({ images: uploaded.length > 0 });
     },
-    onError: (err) => toast.error(formatApiError(err, 'Could not post comment.')),
+    onPostError: (err) => toast.error(formatApiError(err, 'Could not post comment.')),
+    // Still "retrying" until the thread shows the image.
+    onAttached: () => threadChanged({ images: true }),
   });
-  const submitting = post.isPending;
+  const submitting = attachments.posting;
 
   const submit = () => {
     if (submitting) return;
-    if (!body.trim() && pending.length === 0) return;
-    // Files left over from an earlier comment's failed uploads belong to THAT
-    // comment; they stay in the queue with their Retry/Remove and are not
-    // re-homed onto a new one.
-    const fresh = pending.filter((e) => e.noteId == null);
-    const leftovers = pending.filter((e) => e.noteId != null);
-    if (!body.trim() && fresh.length === 0) return;
-    post.mutate({ text: body, parentId: replyTo?.id ?? null, fresh, leftovers });
+    if (!body.trim() && attachments.freshCount === 0) return;
+    attachments.post(body, replyTo?.id ?? null);
   };
 
   const edit = useMutation({
@@ -421,8 +352,6 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
   const conversation = [...(notes ?? [])].sort(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.id - b.id,
   );
-  const failedCount = pending.filter((e) => e.error).length;
-  const freshCount = pending.length - failedCount;
 
   return (
     <section className="mb-md min-w-0" aria-label="Comments and evidence">
@@ -480,88 +409,47 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
         )}
 
         {canManage && (
-          <div className="space-y-xs border-t border-border pt-md">
-            {replyTo && (
-              <div className="flex items-center gap-xs text-caption text-muted-foreground">
-                <CornerDownRight className="size-3" aria-hidden />
-                Replying to {safeFallback(replyTo.author_name, 'a comment')}
-                <button
-                  type="button"
-                  onClick={() => setReplyTo(null)}
-                  className="inline-flex items-center hover:text-foreground"
-                  aria-label="Cancel reply"
-                >
-                  <X className="size-3" aria-hidden />
-                </button>
-              </div>
-            )}
-            <MentionTextarea
-              ref={composerRef}
-              rows={3}
+          <div className="border-t border-border pt-md">
+            <NoteComposer
+              id={`finding-${findingId}-comment`}
+              label="New comment"
               placeholder="Add a comment — repro steps, rationale, or paste a screenshot…"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              onPaste={onPaste}
-              aria-label="New comment"
+              hint={(
+                <>
+                  <strong>@username</strong> notifies a teammate · everyone who has commented here, the
+                  finding&apos;s author and its owner hear about new comments
+                </>
+              )}
+              noun="Comment"
+              collapsible={false}
+              textareaRef={composerRef}
+              header={replyTo && (
+                <div className="flex items-center gap-xs text-caption text-muted-foreground">
+                  <CornerDownRight className="size-3" aria-hidden />
+                  Replying to {safeFallback(replyTo.author_name, 'a comment')}
+                  <button
+                    type="button"
+                    onClick={() => setReplyTo(null)}
+                    className="inline-flex items-center hover:text-foreground disabled:opacity-50"
+                    aria-label="Cancel reply"
+                    disabled={submitting}
+                  >
+                    <X className="size-3" aria-hidden />
+                  </button>
+                </div>
+              )}
+              body={body}
+              onBodyChange={setBody}
+              submitting={submitting}
+              onSubmit={submit}
+              submitDisabled={!body.trim() && attachments.freshCount === 0}
+              submitLabel={<><Send className="size-4" aria-hidden /> {replyTo ? 'Reply' : 'Comment'}</>}
+              onPaste={attachments.onPaste}
+              images={attachments.pending}
+              failedAttachmentCount={attachments.failedCount}
+              onRemoveImage={attachments.remove}
+              onRetryImage={attachments.retry}
             />
-            <p className="text-caption text-muted-foreground">
-              <strong>@username</strong> notifies a teammate · everyone who has commented here, the
-              finding&apos;s author and its owner hear about new comments
-            </p>
-            {failedCount > 0 && (
-              <p className="text-caption text-destructive" role="status">
-                Comment saved · {failedCount} attachment{failedCount === 1 ? '' : 's'} failed — retry or remove.
-              </p>
-            )}
-            {pending.length > 0 && (
-              <div className="flex flex-wrap gap-xs">
-                {pending.map((entry, i) => {
-                  const name = entry.file.name || 'screenshot.png';
-                  return (
-                    <span
-                      key={`${name}-${i}`}
-                      className={
-                        'inline-flex max-w-full items-center gap-xxs rounded-control border px-xs py-0.5 text-caption ' +
-                        (entry.error ? 'border-destructive/40 bg-destructive/10' : 'border-border bg-muted')
-                      }
-                      title={entry.error ?? undefined}
-                    >
-                      <span className="truncate">{name}</span>
-                      {entry.error && <span className="shrink-0 text-destructive">failed</span>}
-                      {entry.error && entry.noteId != null && (
-                        <button
-                          type="button"
-                          onClick={() => void retryFailed(entry.id)}
-                          aria-label={`Retry ${name}`}
-                          disabled={retrying !== null}
-                          className="shrink-0 hover:text-foreground disabled:opacity-50"
-                        >
-                          {retrying === entry.id ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <RefreshCw className="size-3" aria-hidden />}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setPending((p) => p.filter((e) => e.id !== entry.id))}
-                        aria-label={`Remove ${name}`}
-                        className="shrink-0 hover:text-foreground"
-                      >
-                        <X className="size-3" aria-hidden />
-                      </button>
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                disabled={submitting || (!body.trim() && freshCount === 0)}
-                onClick={() => void submit()}
-              >
-                {submitting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Send className="size-4" aria-hidden />}
-                {replyTo ? 'Reply' : 'Comment'}
-              </Button>
-            </div>
           </div>
         )}
       </div>

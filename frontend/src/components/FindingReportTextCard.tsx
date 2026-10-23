@@ -130,7 +130,14 @@ const FindingReportTextCard: React.FC<Props> = ({
   const projectId = useProjectId();
   const text = finding.report_text;
   const draftsFor = (field: string) => drafts.get(field) ?? [];
-  const [draft, setDraft] = useState<Draft | null>(() => ((startEditing || nothingWritten(text)) && canEdit ? toDraft(text) : null));
+  // The editor holds the draft AND the text it opened on: what is saved, and
+  // what counts as unsaved, is the difference from that snapshot — never from
+  // the live cached finding, which another write may refresh with a
+  // colleague's newer text meanwhile (that would read as the reader's edit and
+  // be written back over theirs; review 2026-10-23, H-FC1).
+  const [base, setBase] = useState<Draft | null>(() => ((startEditing || nothingWritten(text)) && canEdit ? toDraft(text) : null));
+  const [draft, setDraft] = useState<Draft | null>(base);
+  const openEditor = () => { const opened = toDraft(text); setBase(opened); setDraft(opened); };
   // Opened by itself because nothing is written (not by the reader): when the
   // proposals arrive and some section has drafts waiting, the drafts are the
   // next thing to do — close the untouched editor so they show.
@@ -140,12 +147,12 @@ const FindingReportTextCard: React.FC<Props> = ({
     autoOpened.current = false;
     setDraft((d) => {
       if (!d) return d;
-      const untouched = JSON.stringify(d) === JSON.stringify(toDraft(text));
+      const untouched = JSON.stringify(d) === JSON.stringify(base);
       return untouched ? null : d;
     });
-  }, [drafts, text]);
+  }, [drafts, base]);
   // Unsaved text asks before a reload, a tab close or Cancel drops it.
-  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(toDraft(text));
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(base);
   const { confirmLeave, confirmEl } = useDiscardGuard(
     () => dirty,
     'The report text you changed has not been saved. Discard it?',
@@ -231,8 +238,8 @@ const FindingReportTextCard: React.FC<Props> = ({
     && draft !== null && draft.cvss_vector === (text?.cvss_vector ?? '');
 
   const save = () => {
-    if (!draft) return;
-    const before = toDraft(text);
+    if (!draft || !base) return;
+    const before = base;
     const payload: FindingReportTextUpdate = {};
     for (const f of REPORT_TEXT_FIELDS) {
       if (draft[f.key] !== before[f.key]) payload[f.key] = draft[f.key].trim() || null;
@@ -292,7 +299,7 @@ const FindingReportTextCard: React.FC<Props> = ({
               </Button>
             )}
             {canEdit && !draft && (
-              <Button variant="ghost" size="sm" onClick={() => { setDraft(toDraft(text)); setError(null); }}>
+              <Button variant="ghost" size="sm" onClick={() => { openEditor(); setError(null); }}>
                 <Pencil className="size-4" aria-hidden /> Edit
               </Button>
             )}
@@ -395,7 +402,7 @@ const FindingReportTextCard: React.FC<Props> = ({
                       <button
                         type="button"
                         className="text-info hover:underline"
-                        onClick={() => { setDraft(toDraft(text)); setError(null); setFocusField(f.key); }}
+                        onClick={() => { openEditor(); setError(null); setFocusField(f.key); }}
                       >
                         Not written yet. Write it
                       </button>

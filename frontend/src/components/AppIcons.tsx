@@ -34,15 +34,6 @@ const Base: React.FC<React.PropsWithChildren<IconProps>> = ({
   </svg>
 );
 
-export const GridIcon = (props: IconProps) => (
-  <Base {...props}>
-    <rect x="3" y="3" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <rect x="14" y="3" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <rect x="3" y="14" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <rect x="14" y="14" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-  </Base>
-);
-
 export const ScanLinesIcon = (props: IconProps) => (
   <Base {...props}>
     <path d="M5 18a7 7 0 0 1 14 0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -77,20 +68,6 @@ export const ScopeIcon = (props: IconProps) => (
   </Base>
 );
 
-export const ShieldBadgeIcon = (props: IconProps) => (
-  <Base {...props}>
-    <path d="M12 3l7 3v5c0 4.6-2.7 7.8-7 10-4.3-2.2-7-5.4-7-10V6l7-3Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-    <path d="m9.5 12 1.7 1.7 3.5-3.7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-  </Base>
-);
-
-export const KeyholeIcon = (props: IconProps) => (
-  <Base {...props}>
-    <circle cx="9" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <path d="M12 12h8m-2 0v-2m-2 2v-2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-  </Base>
-);
-
 export const AlertHexIcon = (props: IconProps) => (
   <Base {...props}>
     <path d="m8 4 8 0 4 8-4 8H8l-4-8 4-8Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
@@ -114,14 +91,6 @@ export const PaletteSwatchIcon = (props: IconProps) => (
     <circle cx="11" cy="8" r="1" fill="currentColor" />
     <circle cx="15" cy="9" r="1" fill="currentColor" />
     <circle cx="16" cy="13" r="1" fill="currentColor" />
-  </Base>
-);
-
-export const TerminalWindowIcon = (props: IconProps) => (
-  <Base {...props}>
-    <rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    <path d="m7 11 2 2-2 2M12 15h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M3 8h18" fill="none" stroke="currentColor" strokeWidth="1.6" />
   </Base>
 );
 

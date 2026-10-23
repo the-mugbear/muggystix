@@ -16,8 +16,10 @@ import { useState } from 'react';
  * opening too.  The key does not change when the subject is cleared: the body
  * stays as it was while it closes.
  *
- * Not for a dialog that keeps something across openings on purpose (the
- * export dialogs keep the chosen format, the report draft its instructions).
+ * A dialog that keeps something across openings on purpose holds THAT outside
+ * the keyed body and passes it in (the export dialogs' chosen format,
+ * `GeneratedTextDialog`; the report draft's audience and instructions,
+ * `AiDraftReportDialog`) — never an effect on `open` resetting the rest.
  */
 export function useOpeningKey(subject: unknown): number {
   const [seen, setSeen] = useState({ key: 0, subject });
