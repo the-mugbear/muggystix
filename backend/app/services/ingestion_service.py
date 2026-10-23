@@ -2385,7 +2385,6 @@ class IngestionService:
         options = job.options or {}
         storage_path = job.storage_path
         filename = job.original_filename
-        job_id = job.id
 
         # The job's own project (NOT NULL since e3b7a1c9d5f0) when the options
         # do not name one — the rule the two other readers of a job use.

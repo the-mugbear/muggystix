@@ -201,7 +201,7 @@ the complete records when asked (`CUT_IS_DETECTABLE` in
 | Masscan JSON | Its own record-by-record reader: the text left after the last complete record is the beginning of a JSON value, or the file opened `[` and never closed it. The old closing line `{finished: 1}` is a complete file. | Every complete record. |
 | BloodHound JSON | Its loader asks the shared rule (`streaming_json.iter_document`) at any size. | Every closed object of the array. |
 | NetExec JSON | When the object does not load, the shared rule over its top-level members. | Every complete member (a host, or a share of the one host a spider_plus file is about). A file whose hosts sit under ONE wrapping key holds no complete member. |
-| RDAP JSON / NDJSON | An array of responses: the JSON rule. NDJSON: the JSON-lines rule. A single response cut short holds nothing complete. | Every complete response; still written in ONE transaction, after the whole file was read. |
+| RDAP JSON / NDJSON | An array of responses: the JSON rule. NDJSON: the JSON-lines rule. A single response cut short holds nothing complete. | Every complete response; still written in ONE transaction. NDJSON is streamed into the writes (review 2026-10-23), so a cut last line is found after the rows before it were written — uncommitted, and rolled back with the rest when the import fails. |
 
 **Formats in which a cut cannot be told** — read exactly as before, nothing is
 asked (`A_CUT_CANNOT_BE_TOLD` in the same test, with these reasons):
@@ -434,7 +434,10 @@ issue.
 
 **NetExec (NXC)** (`.json` or console text; auto-detected; read with
 `read_tool_text`, so a UTF-16 capture from PowerShell's `>` and NUL bytes are
-handled, v2.420.0): host (`hostname`, `os_name`, `domain`, `smb_signing`) +
+handled, v2.420.0; read WHOLE — its JSON is one object and console lines are
+grouped by host across the file — so a file over 100 MB, `NETEXEC_MAX_BYTES`,
+is refused before it is read, terminally, asking for the capture to be split;
+review 2026-10-23): host (`hostname`, `os_name`, `domain`, `smb_signing`) +
 port (`445`/SMB etc.) + a `NetexecResult` row (`auth_success`, `username`,
 `domain_name`, `shares`, `local_admin`, `smbv1`, `writable_share`, truncated
 `raw_output`) + per-field `HostConfidence`/`PortConfidence` and

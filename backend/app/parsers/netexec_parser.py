@@ -5,6 +5,7 @@ Parses netexec console output and log files to extract host enumeration data
 with confidence scoring based on the reliability of different enumeration methods.
 """
 
+import os
 import re
 import json
 from typing import Dict, List, Optional, Any, Tuple
@@ -33,6 +34,11 @@ RAW_OUTPUT_LIMIT = NETEXEC_RAW_OUTPUT_LIMIT
 # Hosts between progress reports (each report is also where a cancel stops
 # the parse, and it commits the work so far).
 _PROGRESS_EVERY_HOSTS = 250
+#: The largest NetExec file imported (review 2026-10-23, R-ING2): it is read
+#: whole and grouped by host, and in memory takes many times its size — 100 MB
+#: keeps a capture well inside the 4 GB worker.  Real captures are a few MB
+#: (a 10 000-host sweep included).
+NETEXEC_MAX_BYTES = 100 * 1024 * 1024
 
 # Real nxc output rarely starts at the protocol token: a terminal capture
 # (`tee`, `script`) carries ANSI colour codes around it and the `--log` file
@@ -396,6 +402,7 @@ class NetexecParser:
         announce_scan(self.db, scan)
 
         try:
+            self._refuse_if_too_large(file_path, filename)
             # v2.420.0 — UTF-16 (a PowerShell redirect) decoded, stray NUL
             # bytes removed: PostgreSQL text cannot hold NUL, and one NUL in a
             # stored line failed the whole file (production, 2026-09-26).
@@ -469,6 +476,32 @@ class NetexecParser:
         except Exception as e:
             logger.error(f"Error parsing netexec file {filename}: {e}")
             raise
+
+    @staticmethod
+    def _refuse_if_too_large(file_path: str, filename: str) -> None:
+        """NetExec is read whole (review 2026-10-23, R-ING2): its JSON is one
+        object, and a console capture is grouped by host across the file —
+        the host is written once, from its most detailed line, and the
+        uninterpreted lines are shaped once every host name is known — so the
+        lines cannot be written as they are read.  Held in memory with what
+        is parsed from it, a file takes many times its size; above
+        ``NETEXEC_MAX_BYTES`` it is refused, terminally (no other format is
+        tried over it), before anything is read, instead of running the
+        worker out of memory on every retry."""
+        size = os.path.getsize(file_path)
+        if size <= NETEXEC_MAX_BYTES:
+            return
+        from app.services.ingestion_service import ParseFailure
+
+        limit_mb = NETEXEC_MAX_BYTES // (1024 * 1024)
+        raise ParseFailure(
+            "NetExec file too large",
+            user_message=(
+                f"{filename} is {size / (1024 * 1024):.0f} MB; a NetExec capture is imported "
+                f"up to {limit_mb} MB, because it is read whole. Split the capture "
+                "(by target range or protocol) and upload the parts."
+            ),
+        )
 
     def _is_json_content(self, content: str) -> bool:
         """Check if content is JSON format.  A console capture can start with

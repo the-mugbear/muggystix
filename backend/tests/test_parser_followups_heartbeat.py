@@ -191,5 +191,7 @@ def test_rdap_writes_its_blocks_in_one_transaction(db_session, test_project, tmp
     with active_job(db_session, pid) as (_job_id, svc):
         with on_heartbeat(svc, 99, lambda: None) as beats:
             RdapParser(db_session).parse_file(str(path), "rdap.ndjson", project_id=pid)
-    assert beats == ["6 records read"]
+    # NDJSON is read into the write loop since 2026-10-23 (R-ING2): one beat
+    # before the first row, and none between rows.
+    assert beats == ["reading records"]
     assert db_session.query(NetworkAttribution).filter_by(project_id=pid).count() == 6
