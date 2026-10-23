@@ -30,9 +30,8 @@ from app.schemas.schemas import (
 )
 from app.services import report_images
 from app.services.notification_service import NotificationService
-from app.services.webhook_dispatcher import stage_dispatch
 from app.services.host_follow_service import (
-    HostFollowService, VALID_NOTE_TYPES, NoteHasRepliesError,
+    HostFollowService, VALID_NOTE_TYPES, NoteHasRepliesError, NOTE_UPDATE_NOTIFY_FAILED,
 )
 # CR4-2 — serializer moved to the service layer (was defined here and
 # imported back by host_serialization, a service -> router dependency).
@@ -353,55 +352,20 @@ def update_host_note(
     # Best-effort notifications in a SEPARATE transaction — the note write
     # already committed, so a notification failure can't lose the edit
     # (audit H3 contract).
-    mention_warning: Optional[str] = None
-    mention_notifs = []
+    # An @mention added by the edit tells that user; nobody else is told.
     outcome: dict = {}
-    try:
-        notification_service = NotificationService(db)
-        if body_changed and payload.body:
-            mention_notifs = notification_service.process_note_mentions(edited_note, current_user, project) or []
-            outcome = notification_service.mention_outcome(edited_note.body, project.id, mention_notifs)
-        # v2.302.0 — staged inside this transaction (see the create path).
-        host_label = host.hostname or host.ip_address
-        if mention_notifs:
-            stage_dispatch(
-                db,
-                project_id=project.id,
-                event="note_mention",
-                title=f"@{current_user.username} mentioned {len(mention_notifs)} user(s) on {host_label}",
-                body=(payload.body or "")[:280],
-                context={"host_id": host_id, "note_id": note_id},
-            )
-        db.commit()
-    except Exception:
-        logger.exception(
-            "Note update notification processing failed",
-            extra={
-                "note_id": note_id,
-                "host_id": host_id,
-                "actor_id": current_user.id,
-                "project_id": project.id,
-            },
+    if body_changed and payload.body:
+        outcome = NotificationService(db).announce_note(
+            edited_note, current_user, project, created=False,
+            place=host.hostname or host.ip_address, failed=NOTE_UPDATE_NOTIFY_FAILED,
         )
-        mention_warning = (
-            "Note updated, but notifications could not be delivered. "
-            "Tagged users may not have been alerted."
-        )
-        outcome = {}
-        db.rollback()
-
-    # The webhook is staged above, inside the transaction — the rollback in
-    # the except branch discards it along with the notifications.
 
     # Response: the edited reply when the body changed (what the client
     # edited); otherwise the thread root (where the metadata lives).
     response_note = edited_note if body_changed else root
     db.refresh(response_note)
     db.refresh(response_note, attribute_names=["author"])
-    serialized = _serialize_note(response_note)
-    if mention_warning:
-        return serialized.model_copy(update={"mention_warning": mention_warning})
-    return serialized.model_copy(update=outcome)
+    return _serialize_note(response_note).model_copy(update=outcome)
 
 
 @router.delete(

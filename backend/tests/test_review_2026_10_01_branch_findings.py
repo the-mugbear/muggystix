@@ -255,7 +255,7 @@ def test_the_promote_click_and_a_result_promotion_take_their_locks_in_one_order(
     def click():
         a = two_sessions.a
         try:
-            finding = promote_or_dismiss_vulnerability(
+            finding, _created = promote_or_dismiss_vulnerability(
                 a, vuln=a.get(Vulnerability, vuln_id), project_id=project.id, actor_id=user.id, scope="host",
             )
             outcome["finding"] = finding.id
@@ -310,7 +310,7 @@ def test_a_bulk_promotion_never_restatuses_a_finding_made_while_it_ran(
         vulns.append(v)
     db_session.commit()
     key = vulns[0].issue_key
-    dismissed = FindingService(db_session).dismiss_vulnerability_on_host(
+    dismissed, _created = FindingService(db_session).dismiss_vulnerability_on_host(
         vuln=vulns[0], project_id=test_project.id, actor_id=test_user.id, summary="patched here",
     )
     db_session.commit()

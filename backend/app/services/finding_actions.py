@@ -10,7 +10,7 @@ inside the route handlers, where a service could not reach it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -245,8 +245,13 @@ def promote_or_dismiss_vulnerability(
     summary: Optional[str] = None,
     scope: Optional[str] = None,
     on_join: str = "set",
-) -> Finding:
+) -> Tuple[Finding, bool]:
     """Promote a scanner observation to a finding, or dismiss it.
+
+    Returns ``(finding, created)`` — the service's own answer: ``created`` is
+    False when the call joined the issue's finding, including the winner of
+    a concurrent insert.  A caller never re-derives it from a lookup made
+    before the call (review 2026-10-23b, TRI-1).
 
     v2.360.0 — a false-positive dismissal is about THIS host unless the caller
     says the whole issue.  v2.366.0 — a PROMOTION may be too (``scope:
@@ -284,7 +289,7 @@ def promote_or_dismiss_vulnerability(
     on_this_host = scope == "host"
     # The evidence lock that must precede the finding, and the linking of the
     # test results that showed the issue, are the service's own steps.
-    finding, _created = svc.promote_vulnerability(
+    finding, created = svc.promote_vulnerability(
         vuln=vuln, project_id=project_id, actor_id=actor_id,
         severity=severity, status=status, owner_id=owner_id, summary=summary,
         host_ids=([vuln.host_id] if vuln.host_id else []) if on_this_host else None,
@@ -294,4 +299,4 @@ def promote_or_dismiss_vulnerability(
         svc.reopen_false_positive_endpoints(
             finding=finding, host_id=vuln.host_id, actor_id=actor_id, note="promoted on this host",
         )
-    return finding
+    return finding, created

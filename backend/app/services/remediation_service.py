@@ -894,14 +894,21 @@ def _lock_for_write(db, finding_host_ids: Sequence[int]) -> list[Remediation]:
     order — which also serialises two callers creating the same row's first
     record — then the records in the same order.  Writers that locked
     different things, or the same things in request order, could each hold
-    what the other wanted."""
+    what the other wanted.
+
+    The findings are locked by ``FindingService.lock_finding_ids``, which
+    also re-reads their columns onto the findings the caller loaded:
+    ``apply`` decides "no defect" on ``fh.finding.status``, and a
+    false-positive judgement committed while it waited must count (review
+    2026-10-23b, TRI-3).  A caller that locked a superset first
+    (``assign_from_report``) re-locks here only what it already holds."""
+    from app.services.finding_service import FindingService
+
     ids = sorted(set(finding_host_ids))
     if not ids:
         return []
-    finding_ids = sorted({fid for (fid,) in db.query(FindingHost.finding_id).filter(FindingHost.id.in_(ids))})
-    if finding_ids:
-        (db.query(Finding.id).filter(Finding.id.in_(finding_ids))
-         .order_by(Finding.id).with_for_update(key_share=True).all())
+    FindingService(db).lock_finding_ids(
+        [fid for (fid,) in db.query(FindingHost.finding_id).filter(FindingHost.id.in_(ids))])
     # The rows themselves, re-read under the lock (``populate_existing``): a
     # caller that loaded them before (``apply``'s targets) then plans from
     # their state NOW — a retest result committed in between was planned over
@@ -1558,7 +1565,15 @@ def assign_from_report(db, project_id: int, body, who) -> dict:
     note = NoteIn(body=(f"Assigned from the report \"{report.title}\", "
                         f"issued on {policy.today(report.issued_at).isoformat()}.")[:NOTE_MAX_CHARS])
     assigned = 0
-    to_assign.sort()                    # one batch after another keeps the writers' lock order
+    to_assign.sort()
+    if not body.dry_run:
+        # Every lock of the whole set first, in the writers' one order (its
+        # findings, then the rows, then the records): batch by batch, a later
+        # batch's lower finding id was locked after an earlier batch's higher
+        # one, and an id-ordered writer deadlocked against it (review
+        # 2026-10-23b, TRI-2).  Each batch's ``apply`` then re-locks what this
+        # transaction already holds.
+        _lock_for_write(db, to_assign)
     for start in range(0, len(to_assign), APPLY_MAX_TARGETS):
         batch = ApplyBody(dry_run=body.dry_run, rows=[
             ApplyRow(finding_host_id=fh_id, notified_on=on, notes=[note])

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -11,8 +10,6 @@ from app.db import models
 from app.db.models import (
     HostFollow, FollowStatus, Annotation,
 )
-
-logger = logging.getLogger(__name__)
 
 # Sentinel so thread-meta updates can distinguish "field omitted" from
 # "field explicitly set to None" (e.g. clearing an assignee or due date).
@@ -35,6 +32,11 @@ NOTE_NOTIFY_FAILED = (
     "Note saved, but mention notifications could not be delivered. "
     "Tagged users may not have been alerted; contact an admin if "
     "this persists."
+)
+#: … and when an edit was saved and telling whom it now mentions failed.
+NOTE_UPDATE_NOTIFY_FAILED = (
+    "Note updated, but notifications could not be delivered. "
+    "Tagged users may not have been alerted."
 )
 
 
@@ -271,55 +273,14 @@ class HostFollowService:
         host.
         """
         from app.services.notification_service import NotificationService
-        from app.services.webhook_dispatcher import stage_dispatch
 
         note = self.create_note(
             host.id, author.id, body,
             parent_id=parent_id, actor_type=actor_type, agent_session_id=agent_session_id,
         )
-        # Read before anything below can roll back and expire them.
-        note_id, host_id, project_id, author_id = note.id, host.id, project.id, author.id
-        try:
-            notifications = NotificationService(self.db)
-            mentions = notifications.process_note_mentions(note, author, project) or []
-            fields = notifications.mention_outcome(note.body, project_id, mentions)
-            told = {n.user_id for n in mentions}
-            told |= {
-                n.user_id for n in notifications.notify_discussion_participants(
-                    note, author, project, exclude_user_ids=told,
-                )
-            }
-            notifications.notify_host_followers_of_note(
-                note, author, project, exclude_user_ids=told,
-            )
-            # Staged INSIDE this transaction: the outbox row and the
-            # notifications are atomic, the POST is fired after the commit, and
-            # the rollback below discards the intent along with the rest.
-            if mentions:
-                stage_dispatch(
-                    self.db,
-                    project_id=project_id,
-                    event="note_mention",
-                    title=(
-                        f"@{author.username} mentioned {len(mentions)} user(s) on "
-                        f"{host.hostname or host.ip_address}"
-                    ),
-                    body=(body or "")[:280],
-                    context={"host_id": host_id, "note_id": note_id},
-                )
-            self.db.commit()
-        except Exception:
-            logger.exception(
-                "Mention processing failed",
-                extra={
-                    "note_id": note_id,
-                    "host_id": host_id,
-                    "author_id": author_id,
-                    "project_id": project_id,
-                },
-            )
-            fields = {"mention_warning": NOTE_NOTIFY_FAILED}
-            self.db.rollback()
+        fields = NotificationService(self.db).announce_note(
+            note, author, project, created=True, place=host.hostname or host.ip_address, failed=NOTE_NOTIFY_FAILED,
+        )
         return note, fields
 
     def _root_note(self, note: Annotation) -> Annotation:
