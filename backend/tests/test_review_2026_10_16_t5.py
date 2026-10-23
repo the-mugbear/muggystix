@@ -251,10 +251,11 @@ def test_the_scan_ports_are_what_the_scan_recorded_and_as_many_as_it_says(client
     whole = ports(limit=100)
     summary = client.get(f"/api/v1/projects/{test_project.id}/scans/", params={"ids": str(scan.id)}).json()[0]
     assert whole["total"] == summary["total_ports"] == 6
-    # Address order (as the host snapshots), then port.
+    # Address order as an address (as the host snapshots: .9 before .10 —
+    # review 2026-10-23b, INV-7; this read text order before), then port.
     assert [(r["ip_address"], r["port_number"]) for r in whole["items"]] == [
-        ("10.80.0.10", 22), ("10.80.0.10", 80), ("10.80.0.10", 445),
         ("10.80.0.9", 22), ("10.80.0.9", 80), ("10.80.0.9", 445),
+        ("10.80.0.10", 22), ("10.80.0.10", 80), ("10.80.0.10", 445),
     ]
     assert {r["state_at_scan"] for r in whole["items"]} == {"open"}
     ssh = whole["items"][0]

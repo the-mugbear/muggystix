@@ -239,7 +239,7 @@ def test_conflict_history_breaks_ties_by_id(db_session, test_project):
         db_session.flush()
         ids.append(row.id)
     db_session.commit()
-    listed = host_conflict_history(db_session, host, host_limit=3)
+    listed = host_conflict_history(db_session, host, limit=3)
     # Newest first; in one instant the latest row first — the cap keeps the
     # same rows on every read.
     assert [c["id"] for c in listed] == sorted(ids, reverse=True)[:3]

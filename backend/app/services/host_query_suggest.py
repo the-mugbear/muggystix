@@ -31,8 +31,8 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_auth import User
-from app.db.models_project import ProjectMembership
 from app.db.models_vulnerability import Vulnerability
+from app.services import host_query_predicates as P
 from app.services.host_query_common import escape_like
 from app.services.host_query_dsl import FIELD_BUILDERS
 
@@ -294,8 +294,10 @@ def _scan(ctx: _Ctx) -> List[Suggestion]:
 
 
 def _user(ctx: _Ctx) -> List[Suggestion]:
-    """``assigned:`` — the fixed words, then the project's members by
-    username (the value assigned: resolves), with how many hosts each holds."""
+    """``assigned:`` — the fixed words, then everyone ``assigned:`` resolves
+    (``P.project_assignees``: members, active global admins, current holders
+    — the one definition, so every name offered is accepted and every name
+    accepted is offered), by username, with how many hosts each holds."""
     fixed = [
         Suggestion("me", label="assigned to you"),
         Suggestion("any", label="assigned to anyone"),
@@ -310,15 +312,12 @@ def _user(ctx: _Ctx) -> List[Suggestion]:
         .group_by(models.HostFollow.user_id)
         .subquery()
     )
+    assignees = P.project_assignees(ctx.db, ctx.project_id).subquery()
     rows = (
         ctx.db.query(User.username, User.full_name, func.coalesce(held.c.n, 0))
-        .join(ProjectMembership, ProjectMembership.user_id == User.id)
+        .join(assignees, list(assignees.c)[0] == User.id)
         .outerjoin(held, held.c.user_id == User.id)
-        .filter(
-            ProjectMembership.project_id == ctx.project_id,
-            User.is_active.is_(True),
-            or_(ctx.contains(User.username), ctx.contains(User.full_name)),
-        )
+        .filter(or_(ctx.contains(User.username), ctx.contains(User.full_name)))
         .order_by(func.coalesce(held.c.n, 0).desc(), User.username)
         .limit(ctx.limit).all()
     )

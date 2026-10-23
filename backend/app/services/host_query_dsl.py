@@ -48,7 +48,6 @@ from sqlalchemy.sql.elements import (
 from sqlalchemy.sql.functions import FunctionElement
 from sqlalchemy.sql.selectable import Exists
 
-from app.db.models import FollowStatus
 from app.db.models_auth import User
 from app.services import host_query_predicates as P
 from app.services.misconfig_checks import CHECKS, KINDS
@@ -429,7 +428,7 @@ _HAS_KEYWORDS = {
 # ``revisit`` — a finished review of the CALLER'S that is not done (Operations'
 # "Changed since review" list, v2.451.0); the others are team-level (see
 # ``follow_predicate``).
-_FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any", "mine", "revisit"}
+_FOLLOW_VALUES = set(P.FOLLOW_FILTER_VALUES)
 
 
 def _b_subnet(ctx: BuildCtx, values: List[str]) -> ColumnElement:

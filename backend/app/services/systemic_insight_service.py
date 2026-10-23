@@ -152,15 +152,15 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     total_subnets = len(subnet_hosts)
     total_sites = len({s for s in host_site.values() if s is not None})
 
-    # --- per-host ip (for the example_ips evidence on each condition) -----
-    host_ip: Dict[int, Optional[str]] = {}
-    for hid, ip in (
-        db.query(models.Host.id, models.Host.ip_address)
-        .filter(models.Host.project_id == project_id)
-        .all()
-    ):
-        if hid in in_scope:
-            host_ip[hid] = ip
+    # --- example_ips: each row names its five lowest host ids; only those
+    # addresses are read, once, at the end (review 2026-10-23b, INV-8: every
+    # host's address was loaded, and a Python set's order chose the five, so
+    # two reads could name different hosts) ---------------------------------
+    example_rows: List[Tuple[Dict[str, Any], List[int]]] = []
+
+    def examples(row: Dict[str, Any], hosts: Set[int]) -> Dict[str, Any]:
+        example_rows.append((row, sorted(hosts)[:5]))
+        return row
 
     # --- condition → set(host_ids), restricted to the in-scope estate -----
     # The per-condition judgments (EOL regex, SMB posture, cleartext ports,
@@ -202,7 +202,7 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         host_fraction = len(hosts) / total_hosts if total_hosts else 0.0
         systemic_score = round(weight * len(hosts) * (1 + len(subnets) + len(sites)), 1)
         fam = family_for_condition(key)
-        row = {
+        row = examples({
             "key": key, "label": label, "vector": vector,
             "severity_weight": weight, "recommended_action": action,
             "affected_hosts": len(hosts),
@@ -210,10 +210,10 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
             "subnet_spread": len(subnets),
             "site_spread": len(sites),
             "systemic_score": systemic_score,
-            "example_ips": [host_ip.get(h) for h in list(hosts)[:5]],
+            "example_ips": [],
             "family": fam.key if fam else None,
             "family_label": fam.label if fam else None,
-        }
+        }, hosts)
         # Spread classification (isolated / recurring / estate_wide). estate_wide
         # is the old blind spot: a meaningful host fraction AND spanning most
         # sites (or, in a single-site estate, just clearing the host floor), on
@@ -322,17 +322,17 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         vuln_fam = family_for_vuln()
         # A monoculture only reaches this list after clearing the estate-wide
         # gates above, so its classification is always estate_wide.
-        blind_spots.append({
+        blind_spots.append(examples({
             "key": f"vuln:{plugin_id}", "label": f"Shared vulnerability: {title}"[:160],
             "vector": "A single exposure replicated estate-wide — one root cause, many hosts.",
             "severity_weight": 8, "recommended_action": "Remediate the shared root cause once across all affected hosts.",
             "affected_hosts": len(hosts), "host_fraction": round(host_fraction, 3),
             "subnet_spread": len(subnets), "site_spread": len(sites),
             "systemic_score": round(8 * len(hosts) * (1 + len(subnets) + len(sites)), 1),
-            "example_ips": [host_ip.get(h) for h in list(hosts)[:5]],
+            "example_ips": [],
             "is_blind_spot": True, "classification": "estate_wide", "severity": sev_label,
             "family": vuln_fam.key, "family_label": vuln_fam.label,
-        })
+        }, hosts))
 
     # --- technology monoculture: one versioned technology estate-wide --------
     # Analogous to the vuln monoculture, over the web-fingerprint technologies
@@ -391,20 +391,28 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
         spans_estate = total_sites <= 1 or len(sites) >= max(2, round(_BLINDSPOT_SITE_FRACTION * total_sites))
         if not spans_estate:
             continue
-        blind_spots.append({
+        blind_spots.append(examples({
             "key": f"tech:{tech_name}", "label": f"Technology monoculture: {tech_name}"[:180],
             "vector": "One technology/version concentrated across the estate — a single flaw exposes many hosts.",
             "severity_weight": 5, "recommended_action": "Diversify, or standardise on a patched version of the concentrated technology.",
             "affected_hosts": len(hosts), "host_fraction": round(host_fraction, 3),
             "subnet_spread": len(subnets), "site_spread": len(sites),
             "systemic_score": round(5 * len(hosts) * (1 + len(subnets) + len(sites)), 1),
-            "example_ips": [host_ip.get(h) for h in list(hosts)[:5]],
+            "example_ips": [],
             "is_blind_spot": True, "classification": "estate_wide",
             "family": tech_fam.key, "family_label": tech_fam.label,
-        })
+        }, hosts))
 
     conditions_out.sort(key=lambda r: -r["systemic_score"])
     blind_spots.sort(key=lambda r: -r["systemic_score"])
+
+    # The examples' addresses: one statement for every row's few ids.
+    wanted = {h for _row, ids in example_rows for h in ids}
+    ip_of: Dict[int, Optional[str]] = dict(
+        db.query(models.Host.id, models.Host.ip_address).filter(models.Host.id.in_(wanted)).all()
+    ) if wanted else {}
+    for row, ids in example_rows:
+        row["example_ips"] = [ip_of.get(h) for h in ids]
 
     # --- segment outliers: density vs estate median ----------------------
     densities = []

@@ -12,6 +12,7 @@ from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import Query, Session, aliased
 
 from app.db import models
+from app.services.host_query_predicates import state_stated_condition
 
 
 def hosts_changed_since_prior_scan(db: Session, host_ids: Union[Iterable[int], Query]) -> set:
@@ -69,8 +70,7 @@ def changed_since_prior_scan_query(db: Session, host_ids: Union[Iterable[int], Q
         # dedup reads it): a host a DNS import CREATED is recorded 'unknown',
         # and the next scan that saw it up read as "Changed" (review
         # 2026-10-14, H8; a gnmap Ports-only line is 'unknown' too).
-        .filter(history.host_id.in_(host_ids), history.state_at_scan.isnot(None),
-                history.state_at_scan != "unknown")
+        .filter(history.host_id.in_(host_ids), state_stated_condition(history.state_at_scan))
         .cte("ranked_history")
     )
     latest, prior = aliased(ranked), aliased(ranked)

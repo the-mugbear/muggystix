@@ -37,6 +37,7 @@ from app.db import models
 from app.db.models import FollowStatus, HostFollow, Annotation as AnnotationModel
 from app.db.models_auth import User
 from app.services import smb_signing as smb_signing_states
+from app.services.engagement_metrics_service import REVIEW_STATES
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 from app.services.host_test_queries import planned_host_ids, tested_host_ids
@@ -861,6 +862,14 @@ def label_predicate_by_name(names: Sequence[str], project_id: int) -> ColumnElem
 # Follow / assignment / scan predicates
 # ---------------------------------------------------------------------------
 
+#: Every value a review-status filter takes, on both doors (the DSL's
+#: ``follow:``, the discrete ``follow_status=``): the review states the pages
+#: offer (``engagement_metrics_service.REVIEW_STATES``) and the derived ones.
+FOLLOW_FILTER_VALUES = (
+    "none", "in_review_any", *(s.value for s in REVIEW_STATES), "mine", "revisit",
+)
+
+
 def follow_predicate(status: str, current_user: User) -> ColumnElement:
     """Review-status predicate — review is a SHARED, host-level state.
 
@@ -879,10 +888,15 @@ def follow_predicate(status: str, current_user: User) -> ColumnElement:
         is the ``assigned`` filter.
       * ``revisit`` → a finished review of the CALLER'S that is not done
         (v2.451.0, ``my_review_followup_predicate``).  These two are the only
-        per-user values.  Any
-    other value (the retired ``watching`` follow state) falls through to the
-    caller's own row so a legacy saved view / DSL query still resolves.
+        per-user values.
+
+    ``FOLLOW_FILTER_VALUES`` is every value; anything else — the retired
+    ``watching`` included, which nothing writes — is a ``ValueError`` here and
+    refused as unknown by both doors (review 2026-10-23b, INV-9: it fell
+    through to a per-caller branch only ``follow:watching`` could reach).
     """
+    if status not in FOLLOW_FILTER_VALUES:
+        raise ValueError(f"unknown follow status {status!r}")
     review_states = (FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value)
     if status == "none":
         return ~_host_has(HostFollow.host_id, HostFollow.status.in_(review_states))
@@ -902,12 +916,7 @@ def follow_predicate(status: str, current_user: User) -> ColumnElement:
         # A finished review of the CALLER'S that is not done — exactly
         # Operations' "Changed since review" list.
         return my_review_followup_predicate(current_user)
-    # Legacy per-user fallback (e.g. the retired 'watching' state).
-    return _host_has(
-        HostFollow.host_id,
-        HostFollow.user_id == current_user.id,
-        HostFollow.status == status,
-    )
+    raise AssertionError(status)  # FOLLOW_FILTER_VALUES and the branches above are one list
 
 
 # --- changed since review ---------------------------------------------------
@@ -1092,6 +1101,17 @@ def assigned_predicate(
         HostFollow.user_id == assignee_id,
         HostFollow.assigned_at.isnot(None),
     )
+
+
+def state_stated_condition(state_column) -> ColumnElement:
+    """A ``host_scan_history.state_at_scan`` that SAYS something about the
+    host's liveness — THE one reading, shared by the change detector
+    (``host_change_service``), scan compare's "state changed" and each
+    compared scan's ``up_hosts`` (``scan_diff_service``).  NULL says nothing
+    (a DNS import addresses hosts without saying they are up) and neither
+    does ``unknown`` (a host a DNS import created; a gnmap Ports-only line),
+    so a scan that recorded no state never reads as a state change."""
+    return and_(state_column.isnot(None), state_column != "unknown")
 
 
 def renamed_in_scan_condition(history=models.HostScanHistory) -> ColumnElement:

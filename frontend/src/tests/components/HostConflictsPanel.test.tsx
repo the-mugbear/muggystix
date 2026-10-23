@@ -85,14 +85,29 @@ describe('HostConflictsPanel', () => {
     expect(within(names).getByText('ca-01.lab.local')).toBeInTheDocument();
   });
 
-  it('names the port for a port-level disagreement and keeps it out of the counted list', () => {
+  // Review 2026-10-23b, INV-1: a port conflict is the host's — counted and
+  // listed, so the pane opens exactly what its count says.
+  it('names the port for a port-level disagreement and counts it', () => {
     renderPanel(
       [entry(), entry({ id: 2, object_type: 'port', object_id: 55, field_name: 'service_name', current_value: null })],
       [],
-      1,
+      2,
     );
     expect(within(screen.getByRole('group', { name: 'Host conflicts' })).getAllByRole('listitem')).toHaveLength(1);
     expect(within(screen.getByRole('group', { name: 'Port conflicts' })).getByRole('heading', { name: /443\/tcp · service name/ })).toBeInTheDocument();
+    expect(screen.queryByText(/not part of the count/)).toBeNull();
+    expect(screen.queryByText(/not listed/)).toBeNull();
+  });
+
+  it('lists a port-only conflict under a count of one', () => {
+    renderPanel([entry({ object_type: 'port', object_id: 55, field_name: 'service_name', current_value: null })], [], 1);
+    expect(screen.getByRole('group', { name: 'Port conflicts' })).toBeInTheDocument();
+    expect(screen.queryByText(/could not be listed|not listed/)).toBeNull();
+  });
+
+  it('says how many the cap left out, counting port rows as listed', () => {
+    renderPanel([entry(), entry({ id: 2, object_type: 'port', object_id: 55, field_name: 'service_name' })], [], 5);
+    expect(screen.getByText('3 older disagreements not listed.')).toBeInTheDocument();
   });
 
   it('admits when the count exceeds what could be listed', () => {

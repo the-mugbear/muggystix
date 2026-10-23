@@ -28,6 +28,7 @@ from app.db import models
 from app.schemas.pagination import Paginated
 from app.services.host_query_common import escape_like
 from app.services.scan_diff_service import ScanNotInProject
+from app.services.scope_targets_service import ip_order_by
 
 
 def _service_name_at_scan(service_info: Optional[str]) -> Optional[str]:
@@ -141,7 +142,9 @@ def scan_host_snapshots(
 
     total = base.with_entities(func.count(models.HostScanHistory.id)).scalar() or 0
     rows = (
-        base.order_by(models.Host.ip_address)
+        # By address as an address (10.0.0.2 before 10.0.0.10), as every
+        # other address list (review 2026-10-23b, INV-7).
+        base.order_by(*ip_order_by(db))
         .offset(skip)
         .limit(limit)
         .all()
@@ -283,7 +286,7 @@ def scan_port_observations(
             models.PortScanHistory.state_at_scan, models.PortScanHistory.service_name,
             models.PortScanHistory.service_info,
         )
-        .order_by(models.Host.ip_address, models.Port.port_number, models.Port.protocol, models.Port.id)
+        .order_by(*ip_order_by(db), models.Port.port_number, models.Port.protocol, models.Port.id)
         .offset(skip)
         .limit(limit)
         .all()

@@ -184,8 +184,9 @@ export interface Host {
   netexec_result_count?: number;
   /** v5.276.0 — distinct paths content discovery found (detail only). */
   web_path_count?: number;
-  // Count of recorded host-field data conflicts (scans disagreed on a value;
-  // ConflictHistory rows) — drives the Hosts-list "conflict" data-quality badge.
+  // Count of recorded data conflicts on the host's fields and its ports'
+  // (scans disagreed on a value; ConflictHistory rows) — drives the Hosts-list
+  // "conflict" data-quality badge; the inspector's pane lists the same rows.
   conflict_count?: number;
   // Foundation 6d — count of ACTIVE findings (open/confirmed)
   // affecting this host; drives the Hosts-list finding badge.
@@ -482,9 +483,10 @@ export interface ConflictHistoryEntry {
 }
 
 export interface HostConflictsResponse {
-  // Canonical host-level conflict count — the SAME number the Hosts-list badge
-  // shows.  Use this for the "N conflicts" count; `confidence` is per-field
-  // confidence records (host + port), not a conflict count.
+  // Canonical conflict count, the host's and its ports' — the SAME number the
+  // Hosts-list badge and the assessment's "Conflicts" show; `conflict_history`
+  // lists those rows under a cap.  `confidence` is per-field confidence
+  // records (host + port), not a conflict count.
   conflict_count: number;
   confidence: HostConflict[];
   conflict_history: ConflictHistoryEntry[];

@@ -146,9 +146,11 @@ export function hostFiltersFromUrl(
   // v4.51.0 — followFilter + onlyWithNotes live inside `filters`; blobs saved
   // before that stored them as top-level keys, and both shapes are honoured.
   const followParam = urlParams.get('follow_status') ?? urlParams.get('follow');
-  if (followParam && ['watching', 'in_review', 'reviewed', 'none'].includes(followParam)) {
+  // The retired 'watching' is not a filter any more: the server refuses it
+  // (422), so an old link or a remembered blob holding it reads as no filter.
+  if (followParam && ['in_review', 'reviewed', 'none'].includes(followParam)) {
     filters.followFilter = followParam as 'none' | FollowStatus;
-  } else if (saved?.followFilter && saved.followFilter !== 'all') {
+  } else if (saved?.followFilter && saved.followFilter !== 'all' && saved.followFilter !== 'watching') {
     filters.followFilter = saved.followFilter;
   }
 

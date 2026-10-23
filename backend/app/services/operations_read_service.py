@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, desc, distinct, false, func, not_, or_
+from sqlalchemy import and_, case, desc, distinct, exists, func, not_, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -412,8 +412,8 @@ def compute_investigation_queue(
     between scans.  Every row carries its reasons, its evidence (which tools
     saw it, when) and a next action; the tier is named, never scored.
     """
-    from app.db.models_confidence import ConflictHistory
     from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+    from app.services.host_detail_service import conflicts_per_host
     from app.services.ports_of_interest import ports_by_number
 
     # v2.374.4 — this ran ~1.4 s on a 42k-host project and was the whole of the
@@ -473,13 +473,9 @@ def compute_investigation_queue(
         .group_by(Vulnerability.host_id)
         .subquery("vuln_sig")
     )
-    conflict_sig = (
-        db.query(ConflictHistory.host_id.label("hid"), func.count(ConflictHistory.id).label("n_conf"))
-        .join(models.Host, models.Host.id == ConflictHistory.host_id)
-        .filter(models.Host.project_id == project.id)
-        .group_by(ConflictHistory.host_id)
-        .subquery("conflict_sig")
-    )
+    # Tier 5 is the hosts the inspector's conflict count is not zero for —
+    # the same subquery, host and port rows (review 2026-10-23b, INV-1).
+    conflict_sig = conflicts_per_host(db, project_id=project.id)
 
     poi = ports_by_number()
     high_value_open = and_(
@@ -826,26 +822,21 @@ def compute_my_tasks(
     if group is not None and group not in MY_TASK_GROUPS:
         raise ValueError(f"unknown task group {group!r}")
     paged = offset is not None or group is not None
-    # Materialize the caller's In Review host_ids once — used both in the
-    # SQL filter and for Python-side reason tagging.
-    in_review_host_ids = {
-        hid
-        for (hid,) in (
-            db.query(HostFollow.host_id)
-            .join(models.Host, HostFollow.host_id == models.Host.id)
-            .filter(
-                HostFollow.user_id == current_user.id,
-                models.Host.project_id == project.id,
-                HostFollow.status == FollowStatus.IN_REVIEW,
-            )
-            .all()
-        )
-    }
-
     assigned_cond = HostTest.assigned_to_id == current_user.id
+    # The test's host is one the caller has In Review: a correlated EXISTS on
+    # the test row (``uq_host_follow_user`` is host-then-user), never the set
+    # materialised in Python and bound back as a literal ``IN`` — one person
+    # can hold up to BULK_SELECT_CAP hosts In Review, and the light call that
+    # reads this polls once a minute (review 2026-10-23b, INV-5).  The test's
+    # project is the host's, so the project needs no second join here.
     in_review_cond = (
-        HostTest.host_id.in_(in_review_host_ids) if in_review_host_ids
-        else false()
+        exists()
+        .where(
+            HostFollow.host_id == HostTest.host_id,
+            HostFollow.user_id == current_user.id,
+            HostFollow.status == FollowStatus.IN_REVIEW,
+        )
+        .correlate(HostTest)
     )
     triage_cond = and_(
         HostTest.assigned_to_id.is_(None),
@@ -858,8 +849,7 @@ def compute_my_tasks(
     )
 
     # Rank in SQL so the LIMIT keeps the TRUE top rows.  CASE order matches
-    # the reason precedence (assigned → in_review → triage); `in_review_cond`
-    # is already a false() literal when the caller has no In Review hosts.
+    # the reason precedence (assigned → in_review → triage).
     reason_rank_case = case(
         (assigned_cond, 0),
         (in_review_cond, 1),
@@ -886,7 +876,7 @@ def compute_my_tasks(
     elif paged:
         # One list, each test once, in the stated order — a page of it.
         page_q = (
-            db.query(HostTest, models.Host.ip_address, models.Host.hostname)
+            db.query(HostTest, models.Host.ip_address, models.Host.hostname, in_review_cond.label("in_review"))
             .join(models.Host, HostTest.host_id == models.Host.id)
             .filter(*base_filters, mine_or_claimable)
         )
@@ -904,6 +894,7 @@ def compute_my_tasks(
             db.query(
                 HostTest.id.label("tid"),
                 reason_rank_case.label("reason_rank"),
+                in_review_cond.label("in_review"),
                 func.row_number().over(
                     partition_by=reason_rank_case, order_by=in_group_order,
                 ).label("rn"),
@@ -913,7 +904,7 @@ def compute_my_tasks(
         )
         # Host columns, not the entity (an address and a name are all a row shows).
         ordered = (
-            db.query(HostTest, models.Host.ip_address, models.Host.hostname)
+            db.query(HostTest, models.Host.ip_address, models.Host.hostname, ranked.c.in_review)
             .join(ranked, ranked.c.tid == HostTest.id)
             .join(models.Host, HostTest.host_id == models.Host.id)
             .filter(ranked.c.rn <= limit)
@@ -921,11 +912,11 @@ def compute_my_tasks(
             .all()
         )
 
-    def reasons_for(entry) -> List[str]:
+    def reasons_for(entry, in_review: bool) -> List[str]:
         out: List[str] = []
         if entry.assigned_to_id == current_user.id:
             out.append("assigned")
-        if entry.host_id in in_review_host_ids:
+        if in_review:
             out.append("in_review")
         if entry.assigned_to_id is None and entry.priority in ("critical", "high"):
             out.append("triage")
@@ -942,10 +933,10 @@ def compute_my_tasks(
             status=entry.status,
             rationale=entry.rationale,
             updated_at=entry.updated_at,
-            reasons=reasons_for(entry),
+            reasons=reasons_for(entry, bool(in_review)),
             assigned_to_id=entry.assigned_to_id,
         )
-        for entry, host_ip, host_hostname in ordered
+        for entry, host_ip, host_hostname, in_review in ordered
     ]
 
     # Deduped union total + per-bucket counts in ONE query via conditional
@@ -1289,18 +1280,26 @@ def blocked_import_condition():
 
 def compute_blockers(db: Session, project: Project, limit: int = 3) -> OperationsBlockers:
     Job = models.IngestionJob
+    # Only the rows shown cross into Python (their warnings can be long, and
+    # this is on the once-a-minute light call): both counts are windows over
+    # EVERY blocked job, computed before the LIMIT, so each row carries both
+    # whatever kinds the shown rows are (review 2026-10-23b, INV-6).  The id
+    # breaks a tie between jobs created in one instant.
+    is_failed = Job.status == "failed"
     job_rows = (
         db.query(
             Job.id, Job.original_filename, Job.status, Job.error_message, Job.message,
             Job.parser_warnings, Job.created_at,
-            func.count().over(partition_by=Job.status).label("n"),
+            func.count(case((is_failed, 1))).over().label("n_failed"),
+            func.count().over().label("n_blocked"),
         )
         .filter(Job.project_id == project.id, blocked_import_condition())
-        .order_by(Job.created_at.desc())
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(max(limit, 1))
         .all()
     )
-    failed = next((int(r.n) for r in job_rows if r.status == "failed"), 0)
-    partial = next((int(r.n) for r in job_rows if r.status != "failed"), 0)
+    failed = int(job_rows[0].n_failed) if job_rows else 0
+    partial = int(job_rows[0].n_blocked) - failed if job_rows else 0
 
     return OperationsBlockers(
         failed_import_count=failed,
