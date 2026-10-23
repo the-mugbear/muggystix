@@ -287,6 +287,20 @@ def endpoint_key(fh: FindingHost) -> str:
     return f"{fh.host_id}:{fh.name_id if fh.name_id is not None else ''}"
 
 
+def reported_entries(db: Session, report_id: int) -> dict:
+    """What an issued report told the client: its snapshot's ``reported``
+    map (finding id → entry), less the findings it listed as withdrawn.
+
+    The one reader of a single report's ``reported`` (review 2026-10-23b,
+    REP-4): the key is taken in the database, so the rest of the snapshot —
+    the whole frozen dataset — is never fetched to read it.  A report with no
+    snapshot answers ``{}``."""
+    row = db.query(Report.snapshot["reported"]).filter(Report.id == report_id).first()
+    entries = row[0] if row is not None and isinstance(row[0], dict) else {}
+    return {fid: entry for fid, entry in entries.items()
+            if isinstance(entry, dict) and not entry.get("withdrawn")}
+
+
 def told_by_report(db: Session, report: Report) -> set[tuple[int, str]]:
     """What an issued report told the client about, from its frozen snapshot:
     ``(finding id, endpoint key)`` pairs, the key as ``endpoint_key`` builds it.
@@ -297,19 +311,13 @@ def told_by_report(db: Session, report: Report) -> set[tuple[int, str]]:
     baseline gone, everything the addendum's snapshot holds.)  Only the
     ``reported`` map is read, never the dataset.
     """
-    def reported(report_id: int) -> dict:
-        row = db.query(Report.snapshot["reported"]).filter(Report.id == report_id).first()
-        entries = row[0] if row is not None and isinstance(row[0], dict) else {}
-        return {fid: entry for fid, entry in entries.items()
-                if isinstance(entry, dict) and not entry.get("withdrawn")}
-
     def pairs(entries: dict) -> set[tuple[int, str]]:
         return {(int(fid), key) for fid, entry in entries.items() if str(fid).isdigit()
                 for key in (entry.get("endpoints") or {})}
 
-    told = pairs(reported(report.id))
+    told = pairs(reported_entries(db, report.id))
     if report.kind == ReportKind.ADDENDUM and report.baseline_report_id is not None:
-        told -= pairs(reported(report.baseline_report_id))
+        told -= pairs(reported_entries(db, report.baseline_report_id))
     return told
 
 
@@ -1346,9 +1354,13 @@ class ClientReportService:
     # ------------------------------------------------------------------
     def build(
         self, report: Report, *, number: Optional[int] = None,
-        issued_at: Optional[datetime] = None,
+        issued_at: Optional[datetime] = None, issuing: bool = False,
     ) -> Tuple[dict, dict, dict]:
-        """``(dataset, reported, summary)`` from the live findings."""
+        """``(dataset, reported, summary)`` from the live findings.
+
+        ``issuing``: a template that cannot fill this dataset raises
+        ``quarto_render.RenderError`` (``issue`` refuses with it) instead of
+        leaving the summary's printing counts out."""
         project = self.db.get(Project, report.project_id)
         findings = self._included(report.project_id)
         ports = self._ports(findings)
@@ -1377,14 +1389,14 @@ class ClientReportService:
         baseline_reported: Dict[str, dict] = {}
         if report.kind == ReportKind.ADDENDUM:
             baseline = report.baseline
-            if baseline is None or baseline.status == ReportStatus.DRAFT or not baseline.snapshot:
+            # Issuing numbers a report and writes its snapshot in one
+            # transaction, so a number says it has one — without loading the
+            # deferred snapshot, the whole frozen dataset (REP-4).
+            if baseline is None or baseline.status == ReportStatus.DRAFT or baseline.number is None:
                 raise ReportStateError("An addendum needs an issued report to compare against.")
             # What the client HAS: the baseline's live entries (a finding it
             # already listed as withdrawn is not "reported").
-            baseline_reported = {
-                fid: entry for fid, entry in ((baseline.snapshot or {}).get("reported") or {}).items()
-                if not entry.get("withdrawn")
-            }
+            baseline_reported = reported_entries(self.db, baseline.id)
 
         # References: assigned once per project, kept by every document.
         ledger = self._ledger(report.project_id)
@@ -1569,7 +1581,9 @@ class ClientReportService:
 
         # What THIS report prints of that (S2): marks each image, and takes
         # out the test results of findings the report does not show in detail.
-        printing = self._mark_printed(template if template is not None else report.template, dataset)
+        printing = self._mark_printed(
+            template if template is not None else report.template, dataset, strict=issuing,
+        )
         if printing is not None:
             agent_records = sum(1 for i in items for c in i["confirmations"] if c.get("by_agent"))
 
@@ -1697,7 +1711,7 @@ class ClientReportService:
         return dataset, reported, summary
 
     @staticmethod
-    def _mark_printed(template, dataset: dict) -> Optional[dict]:
+    def _mark_printed(template, dataset: dict, *, strict: bool = False) -> Optional[dict]:
         """Say, in the dataset, what this report's template PRINTS of each
         finding's evidence (review 2026-10-01 S2) → the counts for the
         summary, or None when it cannot be measured (no such template, or it
@@ -1732,6 +1746,8 @@ class ClientReportService:
         try:
             parts = report_template_service.printed_parts(template, dataset)
         except quarto_render.RenderError:
+            if strict:
+                raise
             return None
         figures = set(parts["figures"])
         shown = set(parts["findings"])
@@ -1955,11 +1971,16 @@ class ClientReportService:
                 .first()
             )
             if latest is None or latest.id != baseline.id:
+                # An addendum's baseline is fixed when it is created (that is
+                # when it carries the baseline's details), so the way on is a
+                # new addendum — never a re-pointed one (REP-3).
                 raise ReportStateError(
                     f"Report {baseline.number} is no longer the current issue"
                     + (f" (report {latest.number} was issued since)" if latest is not None else "")
-                    + ". Compare this addendum against the current issue before issuing it, or it "
-                    "would list again what the client already has."
+                    + ". Start a new addendum to "
+                    + (f"report {latest.number}" if latest is not None else "the current issue")
+                    + " (this draft can be discarded): issued as it is, this one would list again "
+                    "what the client already has."
                 )
 
         if callable(fingerprint):
@@ -1969,7 +1990,6 @@ class ClientReportService:
             self.db.query(func.max(Report.number)).filter(Report.project_id == project_id).scalar() or 0
         ) + 1
         now = datetime.now(timezone.utc)
-        dataset, reported, summary = self.build(report, number=number, issued_at=now)
         # The template must be able to fill THIS dataset before the number is
         # taken (review 2026-10-22, A-R2): the issue render runs the same
         # Jinja fill on the frozen template and dataset, so a fill that fails
@@ -1977,17 +1997,19 @@ class ClientReportService:
         # the same two inputs — a number burnt on a report that can never
         # have files, with a revision the only way out.  ``template_problems``
         # checks against sample data, which an operator's template can pass.
-        # (``_mark_printed`` answers None for a draft's summary; here it is a
-        # refusal.)  Quarto's own failures still only show at render.
-        template = self._template(report.template)
-        if template is not None:
-            try:
-                report_template_service.printed_parts(template, dataset)
-            except quarto_render.RenderError as exc:
-                raise ReportStateError(
-                    f"The template '{report.template}' cannot be filled with this report's data, so the "
-                    f"report was not issued: {exc}"
-                ) from exc
+        # The build's own fill (``_mark_printed``, which answers None for a
+        # draft's summary) is the check: ``issuing`` makes its failure a
+        # refusal, so the report is filled once (review 2026-10-23b, REP-5).
+        # Marking only clears what the template did not read, so the frozen
+        # dataset fills as this one did.  Quarto's own failures still only
+        # show at render.
+        try:
+            dataset, reported, summary = self.build(report, number=number, issued_at=now, issuing=True)
+        except quarto_render.RenderError as exc:
+            raise ReportStateError(
+                f"The template '{report.template}' cannot be filled with this report's data, so the "
+                f"report was not issued: {exc}"
+            ) from exc
         # The report's own copies of its images, before anything is marked
         # issued: a missing file refuses the issue.  If the transaction does
         # not commit AFTER this method returns, the copies stay until the next

@@ -32,9 +32,10 @@ from app.services.host_serialization import (
     _serialize_follow, _serialize_note, note_load_options, vulnerability_sort_key,
 )
 from app.services.host_query import build_filtered_host_query as _build_filtered_host_query
+from app.services.host_detail_service import active_finding_counts
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
-from app.db.models_findings import Finding, FindingHost, INACTIVE_ENDPOINT_STATES
+from app.db.models_findings import Finding, FindingHost
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 from app.services.csv_utils import safe_csv_row as _safe_csv_row
@@ -45,10 +46,6 @@ import logging
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
-
-# Endpoint states that are not live work on that host — the ONE definition
-# lives beside the model (v2.365.0) so the site / subnet summaries share it.
-_INACTIVE_ENDPOINT_STATES = INACTIVE_ENDPOINT_STATES
 
 
 def _id_chunks(ids, size: int = 1000):
@@ -116,6 +113,9 @@ class ReportGenerator:
             )
             .with_entities(models.Host.id)
             .distinct()
+            # The distinct is on the id alone, so ordering by it is free — and
+            # two downloads of one filter list hosts in one order (REP-8).
+            .order_by(models.Host.id)
         )
 
     def iter_inventory_csv(self, filters: Dict[str, Any], chunk_size: int = None):
@@ -124,7 +124,9 @@ class ReportGenerator:
 
         Header first, then rows in id-ordered chunks.
         ``_host_locations`` is one project-wide query built up front (cached);
-        each chunk re-loads only its own hosts' ports/vulns/tags/scan history.
+        each chunk re-loads only its own hosts' ports, tags and scan history
+        (printed column by column); its scanner observations and notes are
+        only counted, in grouped queries (``_inventory_row_counts``).
         """
         chunk_size = chunk_size or settings.REPORT_STREAM_CHUNK
         # Header row.
@@ -142,8 +144,6 @@ class ReportGenerator:
                     selectinload(models.Host.ports),
                     selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
                     selectinload(models.Host.last_updated_scan),
-                    selectinload(models.Host.notes),
-                    selectinload(models.Host.vulnerabilities),
                     selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
                 )
                 .all()
@@ -155,17 +155,35 @@ class ReportGenerator:
             # Release the chunk's ORM objects so peak memory stays ~chunk_size.
             self.db.expunge_all()
     
-    @staticmethod
-    def _host_vuln_counts(host: models.Host) -> Dict[str, int]:
-        """Per-severity vulnerability counts from the host's loaded
-        ``vulnerabilities`` relationship (no extra query — already
-        selectin-loaded by ``iter_inventory_csv``)."""
-        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-        for v in (host.vulnerabilities or []):
-            sev = enum_value(v.severity)
-            if sev in counts:
-                counts[sev] += 1
-        return counts
+    def _inventory_row_counts(self, host_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """``host_id -> {"vulns": {severity: n}, "vuln_total": n, "notes": n}``
+        in two grouped queries — the CSV prints only these counts, so the
+        scanner rows (with their descriptions) and the note bodies are never
+        built as objects (review 2026-10-23b, REP-6).  ``vuln_total`` is every
+        row, of any severity: what "Untriaged Vulns" subtracts from."""
+        out: Dict[int, Dict[str, Any]] = {}
+
+        def _slot(hid: int) -> Dict[str, Any]:
+            return out.setdefault(hid, {"vulns": {}, "vuln_total": 0, "notes": 0})
+
+        for chunk in _id_chunks(host_ids):
+            for host_id, severity, count in (
+                self.db.query(Vulnerability.host_id, Vulnerability.severity, func.count(Vulnerability.id))
+                .filter(Vulnerability.host_id.in_(chunk))
+                .group_by(Vulnerability.host_id, Vulnerability.severity)
+                .all()
+            ):
+                d = _slot(host_id)
+                d["vulns"][enum_value(severity)] = count
+                d["vuln_total"] += count
+            for host_id, count in (
+                self.db.query(models.Annotation.host_id, func.count(models.Annotation.id))
+                .filter(models.Annotation.host_id.in_(chunk))
+                .group_by(models.Annotation.host_id)
+                .all()
+            ):
+                _slot(host_id)["notes"] = count
+        return out
 
     @staticmethod
     def _host_tags(host: models.Host) -> str:
@@ -261,23 +279,13 @@ class ReportGenerator:
             return out.setdefault(hid, {"active": 0, "critical": 0, "exec": 0, "promoted_vuln_ids": set()})
 
         for chunk in _id_chunks(host_ids):
-            for host_id, severity, source, vuln_id, host_status in (
-                self.db.query(
-                    FindingHost.host_id, Finding.severity, Finding.source,
-                    Finding.vuln_id, FindingHost.host_status,
-                )
-                .join(Finding, FindingHost.finding_id == Finding.id)
-                .filter(FindingHost.host_id.in_(chunk), Finding.project_id == self.project_id)
-                .all()
-            ):
-                d = _slot(host_id)
-                if host_status not in _INACTIVE_ENDPOINT_STATES:
-                    d["active"] += 1
-                    # Beside "Active Findings", on the same rule: a critical
-                    # dismissed or remediated on this host is not one of its
-                    # critical findings.
-                    if severity == "critical":
-                        d["critical"] += 1
+            # The Hosts list's badge, so a host's row says what its badge says
+            # (review 2026-10-23b, REP-1: endpoint rows of any finding status
+            # were counted here).  "Critical Findings" is the same rule.
+            for host_id, count in active_finding_counts(self.db, chunk).items():
+                _slot(host_id)["active"] = count
+            for host_id, count in active_finding_counts(self.db, chunk, severity="critical").items():
+                _slot(host_id)["critical"] = count
             for host_id, vuln_ids in self._judged_vuln_ids(chunk).items():
                 _slot(host_id)["promoted_vuln_ids"] |= vuln_ids
             for host_id, count in (
@@ -299,12 +307,14 @@ class ReportGenerator:
         output = io.StringIO()
         writer = csv.writer(output)
         finding_counts = self._inventory_finding_counts([h.id for h in hosts])
+        row_counts = self._inventory_row_counts([h.id for h in hosts])
         for host in hosts:
             open_ports = [p for p in (host.ports or []) if p.state == 'open']
             total_ports = len(host.ports or [])
 
             # Get unique services
-            services = list(set([p.service_name for p in open_ports if p.service_name]))
+            # Sorted, so the first five are the same five on every download.
+            services = sorted({p.service_name for p in open_ports if p.service_name})
             services_str = ', '.join(services[:5])  # Limit to 5 services
             if len(services) > 5:
                 services_str += f' (+{len(services) - 5} more)'
@@ -325,11 +335,12 @@ class ReportGenerator:
             else:
                 scan_date_str = ''
 
-            vc = self._host_vuln_counts(host)
+            rc = row_counts.get(host.id, {"vulns": {}, "vuln_total": 0, "notes": 0})
+            vc = rc["vulns"]
             last_seen_str = host.last_seen.strftime('%Y-%m-%d %H:%M:%S') if host.last_seen else ''
 
             fc = finding_counts.get(host.id, {})
-            untriaged_vulns = max(0, len(host.vulnerabilities or []) - len(fc.get('promoted_vuln_ids', ())))
+            untriaged_vulns = max(0, rc["vuln_total"] - len(fc.get('promoted_vuln_ids', ())))
 
             _safe_csv_row(writer, [
                 host.ip_address,
@@ -345,16 +356,16 @@ class ReportGenerator:
                 open_ports_str,
                 total_ports,
                 services_str,
-                vc['critical'],
-                vc['high'],
-                vc['medium'],
-                vc['low'],
+                vc.get('critical', 0),
+                vc.get('high', 0),
+                vc.get('medium', 0),
+                vc.get('low', 0),
                 fc.get('active', 0),
                 fc.get('critical', 0),
                 fc.get('exec', 0),
                 untriaged_vulns,
                 self._host_tags(host),
-                len(host.notes or []),
+                rc["notes"],
                 last_seen_str,
                 scan_filename,
                 scan_date_str
@@ -795,6 +806,7 @@ class ReportGenerator:
     @staticmethod
     def _dossier_summary(
         canonical_findings: List[Dict[str, Any]],
+        active_findings: int,
         vuln_summary: Dict[str, int],
         untriaged_count: int,
         execution_findings: List[Dict[str, Any]],
@@ -805,16 +817,20 @@ class ReportGenerator:
         its name).  Finding severities (5-key
         vocab) are kept SEPARATE from vulnerability severities (6-key incl
         unknown) — the two vocabularies are intentionally distinct and must not
-        be merged."""
+        be merged.
+
+        ``active_findings`` is the Hosts list's badge
+        (``host_detail_service.active_finding_counts``), never re-derived from
+        the endpoint rows (review 2026-10-23b, REP-1).  ``canonical_findings``
+        has one entry per ENDPOINT (the host and each of its names), so the
+        totals count each finding once."""
+        severity_of = {cf["finding_id"]: cf["severity"] for cf in canonical_findings}
         findings_by_severity: Dict[str, int] = {}
-        active = 0
-        for cf in canonical_findings:
-            findings_by_severity[cf["severity"]] = findings_by_severity.get(cf["severity"], 0) + 1
-            if cf.get("host_status") not in _INACTIVE_ENDPOINT_STATES:
-                active += 1
+        for severity in severity_of.values():
+            findings_by_severity[severity] = findings_by_severity.get(severity, 0) + 1
         return {
-            "active_findings": active,
-            "total_findings": len(canonical_findings),
+            "active_findings": active_findings,
+            "total_findings": len(severity_of),
             "findings_by_severity": findings_by_severity,
             "vulns_by_severity": vuln_summary,
             "untriaged_vulns": untriaged_count,
@@ -948,6 +964,7 @@ class ReportGenerator:
         execution_findings_map = self._execution_findings_by_host(host_ids, promoted_evidence_ids)
         tester_summaries_map = self._tester_summaries_by_host(host_ids)
         names_map = self._names_by_host(host_ids)
+        active_counts = active_finding_counts(self.db, host_ids)
 
         # v2.328.0 — the third coverage state, from the ONE shared derivation
         # (scope_coverage / host_query use the same predicate): hosts in no
@@ -975,6 +992,7 @@ class ReportGenerator:
             "host_conflicts_map": host_conflicts_map,
             "port_conflicts_map": port_conflicts_map,
             "canonical_findings_map": canonical_by_host,
+            "active_finding_counts": active_counts,
             "promoted_vuln_ids_map": promoted_vuln_ids,
             "execution_findings_map": execution_findings_map,
             "names_map": names_map,
@@ -1091,7 +1109,7 @@ class ReportGenerator:
             "execution_findings": execution_findings,
             "tester_summaries": tester_summaries,
             "dossier_summary": self._dossier_summary(
-                canonical_findings, vuln_summary, len(untriaged_vulnerabilities),
+                canonical_findings, context["active_finding_counts"].get(host.id, 0), vuln_summary, len(untriaged_vulnerabilities),
                 execution_findings, tester_summaries, notes,
             ),
             "analyst_context": {

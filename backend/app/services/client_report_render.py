@@ -127,7 +127,7 @@ def _attachment_ids(value, found: set) -> set:
     return found
 
 
-def inputs_fingerprint(db: Session, report: Report, dataset: dict) -> str:
+def inputs_fingerprint(db: Session, report: Report, dataset: dict, *, resolve=None) -> str:
     """One SHA-256 over what a draft's render reads: the dataset (keys
     sorted) without today's date — the one field that changes by itself on
     a draft — the template's ``fingerprint`` (its files, its base's, its
@@ -161,7 +161,10 @@ def inputs_fingerprint(db: Session, report: Report, dataset: dict) -> str:
     # check cost seconds with thousands of screenshots, and a file deleted
     # between the existence check and the read was a 500 (review 2026-10-14,
     # R2).
-    resolve = live_evidence_resolver(db, report.project_id, dataset)
+    # ``resolve``: the preview's own resolver, so the render does not read
+    # every image of the dataset a second time (review 2026-10-23b, REP-9).
+    if resolve is None:
+        resolve = live_evidence_resolver(db, report.project_id, dataset)
     for att_id in sorted(_attachment_ids(dataset, set())):
         path = resolve({"attachment_id": att_id})
         digest.update(f"image:{att_id}\0".encode("ascii"))
@@ -216,7 +219,7 @@ def _lock_report(db: Session, report_id: int) -> Optional[Report]:
 
 
 def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, basename: str,
-            *, issued: bool = False):
+            *, issued: bool = False, resolve_evidence=None):
     # An issued report renders from ITS OWN copy of the template, made when
     # it was issued: whatever happened to the template folder or its uploaded
     # files since can neither change the files nor block them.
@@ -246,7 +249,7 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
         basename=basename,
         resolve_evidence=(
             _issued_evidence_resolver(db, report) if issued
-            else live_evidence_resolver(db, report.project_id, dataset)
+            else resolve_evidence or live_evidence_resolver(db, report.project_id, dataset)
         ),
         postprocess=template.postprocess,
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
@@ -290,10 +293,12 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
         # AFTER the render (which ends the read transaction before Quarto
         # runs) and committed with the job's completion (a lost lease rolls
         # it back with the rest).
-        fingerprint = inputs_fingerprint(db, report, dataset)
+        # One resolver for both: it reads every image the dataset names.
+        resolve = live_evidence_resolver(db, report.project_id, dataset)
+        fingerprint = inputs_fingerprint(db, report, dataset, resolve=resolve)
         basename = f"{file_slug(dataset['project']['name'])}-draft-{report.id}"
         with tempfile.TemporaryDirectory(prefix="bs-preview-") as tmp:
-            files = _render(db, report, dataset, [fmt], Path(tmp), basename)
+            files = _render(db, report, dataset, [fmt], Path(tmp), basename, resolve_evidence=resolve)
             if fmt not in files:
                 raise ValueError(f"The '{report.template}' template does not produce {fmt}.")
             path = files[fmt]
@@ -349,6 +354,8 @@ def _render_issued(db: Session, report: Report) -> None:
     final_dir = root / str(report.project_id) / str(report.id)
     with tempfile.TemporaryDirectory(prefix="bs-issue-") as tmp:
         files = _render(db, report, dataset, quarto_render.FORMATS, Path(tmp), basename, issued=True)
+        # Asked before the lock: it can start a subprocess (REP-9).
+        version = quarto_render.quarto_version()
         # Render outside the lock (Quarto takes a while), publish under it:
         # whichever attempt gets here first publishes, every later one
         # discards its render and leaves the files alone.
@@ -371,7 +378,7 @@ def _render_issued(db: Session, report: Report) -> None:
             record.storage_path = str(target.relative_to(root))
             if fmt not in existing:
                 db.add(record)
-    report.quarto_version = quarto_render.quarto_version()
+    report.quarto_version = version
     report.render_status = RenderStatus.DONE
     report.render_error = None
     db.commit()

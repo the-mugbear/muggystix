@@ -33,7 +33,9 @@ Validation reads what the bytes ARE, never the name or the browser's type:
   are not uploadable (an SVG would carry script into the HTML report).
 * DOCX — a real Word document (``[Content_Types].xml``, ``word/document.xml``,
   ``word/styles.xml``), no macro part, no member path escaping the archive,
-  and a bounded uncompressed size (no zip bomb).
+  a bounded uncompressed size (no zip bomb), no external relationship but a
+  hyperlink, and no field in a header or footer that fetches a file
+  (``INCLUDEPICTURE``, ``INCLUDETEXT``, ``LINK``).
 * Size — the asset's ``max_bytes`` (default 5 MB for an image, 10 MB for a
   Word file); pixels — the asset's ``min_width`` / ``min_height``, and at most
   50 megapixels; an ``aspect`` that differs by more than 10 % is a warning.
@@ -49,10 +51,14 @@ import re
 import struct
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
+
+from defusedxml import DefusedXmlException
+from defusedxml import ElementTree as defused_et
 
 from app.core.config import settings
 from app.services.quarto_render import is_asset_id, is_template_name
@@ -68,16 +74,73 @@ _EXT = {"png": ".png", "jpeg": ".jpg", "docx": ".docx"}
 # attached template, a linked picture, a frame, an OLE object …) is FETCHED
 # when the document is opened.  Pandoc's own reference.docx — the shipped
 # ones are copies of it — carries a sample hyperlink to example.com.
-_RELATIONSHIP = re.compile(rb"<(?:\w+:)?Relationship\b[^>]*>", re.IGNORECASE)
-_EXTERNAL_MODE = re.compile(rb"""\bTargetMode\s*=\s*["']\s*External\s*["']""", re.IGNORECASE)
-_HYPERLINK_TYPE = re.compile(rb"""\bType\s*=\s*["'][^"']*/hyperlink\s*["']""", re.IGNORECASE)
+#
+# The parts are PARSED, never matched as text (review 2026-10-23b, REP-7):
+# ``TargetMode="&#69;xternal"`` is "External" to Word's parser and was not to
+# a regex.  defusedxml refuses a DTD or an entity, which no part needs.
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# A field Word fills by fetching what it names (a picture, a document, a
+# linked object) when the document is opened or its fields are updated.
+_FETCHING_FIELD = re.compile(r"\s*(INCLUDEPICTURE|INCLUDETEXT|LINK)\b", re.IGNORECASE)
+_HEADER_OR_FOOTER = re.compile(r"word/(header|footer)\d*\.xml", re.IGNORECASE)
+
+
+class _Unreadable(Exception):
+    pass
+
+
+def _parse(part: bytes):
+    try:
+        return defused_et.fromstring(part)
+    except (ET.ParseError, DefusedXmlException) as exc:
+        raise _Unreadable() from exc
 
 
 def _fetches_from_outside(rels: bytes) -> bool:
-    return any(
-        _EXTERNAL_MODE.search(rel) and not _HYPERLINK_TYPE.search(rel)
-        for rel in _RELATIONSHIP.findall(rels)
-    )
+    for rel in _parse(rels).iter():
+        if not str(rel.tag).endswith("Relationship"):
+            continue
+        external = (rel.get("TargetMode") or "").strip().lower() == "external"
+        hyperlink = (rel.get("Type") or "").strip().lower().endswith("/hyperlink")
+        if external and not hyperlink:
+            return True
+    return False
+
+
+def _field_instructions(part: bytes) -> Iterator[str]:
+    """Each field's instruction in a document part, in order: a simple field's
+    ``w:instr``, and a complex field's ``w:instrText`` runs between its
+    ``begin`` and its ``separate`` / ``end`` — joined, since Word splits one
+    instruction over several runs."""
+    # One entry per open field (fields nest): its instruction so far, or None
+    # once its ``separate`` is passed (the runs after it are the result).
+    open_fields: List[Optional[List[str]]] = []
+    for el in _parse(part).iter():
+        if el.tag == f"{_W}fldSimple":
+            yield el.get(f"{_W}instr") or ""
+        elif el.tag == f"{_W}fldChar":
+            kind = el.get(f"{_W}fldCharType")
+            if kind == "begin":
+                open_fields.append([])
+            elif not open_fields:
+                continue  # a stray separate / end
+            elif kind == "separate":
+                if open_fields[-1] is not None:
+                    yield "".join(open_fields[-1])
+                open_fields[-1] = None
+            elif kind == "end":
+                done = open_fields.pop()
+                if done is not None:
+                    yield "".join(done)
+        elif el.tag == f"{_W}instrText" and open_fields and open_fields[-1] is not None:
+            open_fields[-1].append(el.text or "")
+    for left in open_fields:
+        if left is not None:
+            yield "".join(left)
+
+
+def _fetching_field(part: bytes) -> bool:
+    return any(_FETCHING_FIELD.match(instr) for instr in _field_instructions(part))
 _KIND_LABEL = {"png": "PNG image", "jpeg": "JPEG image", "docx": "Word document (.docx)"}
 
 
@@ -242,18 +305,24 @@ def _check_docx(data: bytes) -> None:
         # on a share, a linked picture on a server) is fetched by Word when
         # the client opens the report — a report must make no outbound
         # request (review 2026-10-23).  A hyperlink is not fetched.
-        for name in names:
-            if not name.lower().endswith(".rels"):
+        # Pandoc carries the reference document's headers and footers into
+        # every report, so a field there that fetches (INCLUDEPICTURE "http://…")
+        # is refused too.
+        for name in sorted(names):
+            rels = name.lower().endswith(".rels")
+            if not rels and not _HEADER_OR_FOOTER.fullmatch(name):
                 continue
             try:
-                rels = archive.read(name)
-            except (KeyError, zipfile.BadZipFile, RuntimeError):
+                part = archive.read(name)
+                outside = _fetches_from_outside(part) if rels else _fetching_field(part)
+            except (KeyError, zipfile.BadZipFile, RuntimeError, _Unreadable):
                 raise AssetUploadError("This Word document could not be read.")
-            if _fetches_from_outside(rels):
+            if outside:
                 raise AssetUploadError(
                     "This Word document uses a file outside itself (an attached template, a linked "
-                    "picture or object), which Word would fetch when the report is opened. Remove it, "
-                    "or start from a copy of the template's reference.docx."
+                    "picture or object, or a field that includes one), which Word would fetch when "
+                    "the report is opened. Remove it, or start from a copy of the template's "
+                    "reference.docx."
                 )
 
 

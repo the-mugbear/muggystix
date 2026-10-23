@@ -9,7 +9,7 @@ moved here and both routes call it.  A service never imports a router
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -141,31 +141,33 @@ def host_conflict_history(
     return out
 
 
-def active_finding_counts(db: Session, host_ids: List[int]) -> Dict[int, int]:
+def active_finding_counts(
+    db: Session, host_ids: List[int], *, severity: Optional[str] = None,
+) -> Dict[int, int]:
     """Count of ACTIVE findings per host (foundation 6d) — the Hosts-list
-    finding badge.  "Active" = the finding is still being worked AND this
-    host's own endpoint is live: a host dismissed as a false positive (or
-    recorded remediated) on a finding kept counting it (review 2026-09-23 R7).
-    One grouped query."""
+    finding badge, and the inventory downloads' "Active Findings" /
+    "Critical Findings" (``severity="critical"``).  "Active" = the finding is
+    still being worked AND this host's own endpoint is live: a host dismissed
+    as a false positive (or recorded remediated) on a finding kept counting it
+    (review 2026-09-23 R7).  A finding counts once per host, however many of
+    the host's names it is recorded on.  One grouped query."""
     if not host_ids:
         return {}
     from app.db.models_findings import (
         ACTIVE_FINDING_STATUSES, Finding, FindingHost, finding_active_on_host,
     )
-    return {
-        hid: cnt
-        for hid, cnt in (
-            db.query(FindingHost.host_id, func.count(func.distinct(Finding.id)))
-            .join(Finding, Finding.id == FindingHost.finding_id)
-            .filter(
-                FindingHost.host_id.in_(host_ids),
-                Finding.status.in_(ACTIVE_FINDING_STATUSES),
-                finding_active_on_host(),
-            )
-            .group_by(FindingHost.host_id)
-            .all()
+    query = (
+        db.query(FindingHost.host_id, func.count(func.distinct(Finding.id)))
+        .join(Finding, Finding.id == FindingHost.finding_id)
+        .filter(
+            FindingHost.host_id.in_(host_ids),
+            Finding.status.in_(ACTIVE_FINDING_STATUSES),
+            finding_active_on_host(),
         )
-    }
+    )
+    if severity is not None:
+        query = query.filter(Finding.severity == severity)
+    return {hid: cnt for hid, cnt in query.group_by(FindingHost.host_id).all()}
 
 
 def cert_web_interfaces(db: Session, host_id: int, limit: int = 5) -> list:

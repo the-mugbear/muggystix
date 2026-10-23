@@ -619,10 +619,6 @@ def update_report(
     if "template" in sent and body.template:
         _template_or_422(body.template, client=True)
         report.template = body.template
-    if "baseline_report_id" in sent:
-        if report.kind != ReportKind.ADDENDUM:
-            raise HTTPException(status_code=422, detail="Only an addendum has a baseline.")
-        report.baseline_report_id = _issued_baseline(db, project, body.baseline_report_id).id
     if "settings" in sent and body.settings is not None:
         # Only the details SENT change; every other stored override is kept
         # as it is, so a page that read the draft a while ago never reverts

@@ -308,7 +308,6 @@ export interface ClientReportList {
 export interface ClientReportUpdate {
   title?: string;
   template?: string;
-  baseline_report_id?: number;
   /** The details CHANGED in this save, each with its new override (`null` =
    *  follow the project; the executive summary is one of its keys).  A
    *  detail not sent keeps what is stored; one sent equal to what the draft

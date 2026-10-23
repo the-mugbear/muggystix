@@ -77,5 +77,9 @@ def test_an_endpoint_still_in_retest_keeps_counting(db_session, test_project):
 
 
 def test_the_rule_is_one_definition_shared_with_reports():
-    assert report_generator._INACTIVE_ENDPOINT_STATES is INACTIVE_ENDPOINT_STATES
+    # The inventory downloads count with the Hosts list's own function
+    # (review 2026-10-23b, REP-1; ``test_review_2026_10_23b_reports.py``
+    # pins the figures), which applies ``finding_active_on_host``.
+    from app.services import host_detail_service
+    assert report_generator.active_finding_counts is host_detail_service.active_finding_counts
     assert INACTIVE_ENDPOINT_STATES == {"remediated", "false_positive"}
