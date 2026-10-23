@@ -74,6 +74,9 @@ class HostBase(BaseModel):
     os_type: Optional[str] = None
     os_vendor: Optional[str] = None
     os_accuracy: Optional[int] = None
+    # 'operator' when the OS was corrected by hand (no import replaces it),
+    # else None.
+    os_source: Optional[str] = None
     # SMB message-signing posture (typed column): 'disabled' (relay-vulnerable)
     # | 'enabled' | 'required' | None.  Declared here so the response_model
     # doesn't strip it out of the host list/detail payloads.

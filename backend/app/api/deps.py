@@ -5,7 +5,7 @@ Shared FastAPI dependencies for project-scoped endpoints.
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, Path, Request, UploadFile, status
@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import CompileError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.session import get_db, is_statement_timeout
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User, UserRole, UserSession, APIKey
 from app.db.models_agent import Agent, AgentRateBucket, AgentSession, AgentSessionWorkflow
@@ -233,10 +233,8 @@ _AGENT_RATE_WINDOW_SECONDS = 60.0
 # that log at all.  Shared state now lives in `agent_rate_buckets`, which is
 # where a limit spanning four Uvicorn workers has to live.
 #
-# Sweep old buckets every Nth admitted request for an agent.  Sampling, not a
-# per-request delete: the statement is indexed and small, but on the hot path
-# "small and pointless" still costs a round trip.
-_AGENT_RATE_SWEEP_EVERY = 500
+# An agent's spent windows are deleted by the first request of its next one
+# (``admit_agent_request``).
 
 
 #: Path an agent posts to in order to renew its own key. Named once so the
@@ -279,12 +277,12 @@ class _AgentKeyContext:
     """Everything the agent auth chain decides from, read in one statement.
 
     ``operator_*`` describe the one person the key acts for: the session's
-    starter, else the agent's owner.  ``agent`` is None when the key's agent
-    is missing or inactive.
+    starter, else the agent's owner.  ``agent`` is always there:
+    ``api_keys.agent_id`` is NOT NULL and cascades.
     """
     api_key: APIKey
     session: Optional[AgentSession]
-    agent: Optional[Agent]
+    agent: Agent
     project_archived: bool
     operator_id: Optional[int]
     operator_active: bool
@@ -306,7 +304,7 @@ def _load_agent_key(db: Session, token: str) -> Optional[_AgentKeyContext]:
         )
         .select_from(APIKey)
         .outerjoin(AgentSession, AgentSession.id == APIKey.agent_session_id)
-        .outerjoin(Agent, and_(Agent.id == APIKey.agent_id, Agent.is_active.is_(True)))
+        .join(Agent, Agent.id == APIKey.agent_id)
         .outerjoin(Project, Project.id == Agent.project_id)
         .outerjoin(User, User.id == func.coalesce(AgentSession.started_by_id, Agent.owner_id))
         .outerjoin(
@@ -339,6 +337,15 @@ def _load_agent_key(db: Session, token: str) -> Optional[_AgentKeyContext]:
     )
 
 
+def _key_expired(api_key: APIKey) -> bool:
+    """Has this agent key passed its expiry?  A key with NO expiry counts as
+    expired: agent keys are time-limited (``/.well-known`` says so), the one
+    mint always sets one (``mint_session_key``), and a NULL — a row written
+    some other way — must not be the one key that never lapses."""
+    expires_at = _aware(api_key.expires_at)
+    return expires_at is None or expires_at < datetime.now(timezone.utc)
+
+
 def large_upload_refusal(path: str, headers: Dict[str, str]) -> Optional[str]:
     """Why a scan upload must be refused BEFORE its body is read, or None.
 
@@ -351,9 +358,11 @@ def large_upload_refusal(path: str, headers: Dict[str, str]) -> Optional[str]:
     * the page's upload needs a bearer token that :func:`verify_token`
       accepts (signature and expiry; no database) and that is not a 2FA
       challenge token;
-    * the agents' upload needs a key that names an ACTIVE agent key —
-      :func:`_load_agent_key`, the gate's own read, on a session of its own
-      that is closed before the body is read.
+    * the agents' upload needs a key that names an ACTIVE, UNEXPIRED agent
+      key — :func:`_load_agent_key`, the gate's own read, on a session of its
+      own that is closed before the body is read.  An expired key is refused
+      here even while it is renewable: the route would refuse it anyway, and
+      only after the whole body had been spooled (review 2026-10-23).
 
     This is a door, not the authentication: the route's dependencies still
     decide everything else (a revoked session, an expired key's structured
@@ -372,10 +381,17 @@ def large_upload_refusal(path: str, headers: Dict[str, str]) -> Optional[str]:
 
         db = _session_module.SessionLocal()
         try:
-            known = _load_agent_key(db, token) is not None
+            ctx = _load_agent_key(db, token)
         finally:
             db.close()
-        return None if known else "Invalid agent API key"
+        if ctx is None:
+            return "Invalid agent API key"
+        if _key_expired(ctx.api_key):
+            return (
+                "Your API key expired. Renew it (POST "
+                f"{AGENT_SESSION_RENEW_PATH} with the same key) and send the upload again."
+            )
+        return None
 
     scheme, _, value = (headers.get("authorization") or "").partition(" ")
     if scheme.lower() != "bearer" or not value.strip():
@@ -413,6 +429,37 @@ _CREDENTIALS_CHANGED_DETAIL = {
         "output you are holding first."
     ),
 }
+
+
+_OPERATOR_NOT_A_MEMBER_DETAIL = {
+    "error": "operator_not_a_member",
+    "recoverable": False,
+    "message": (
+        "This key's operator is no longer a member of the project, so its "
+        "session has been ended and the key cannot be renewed. Save any output "
+        "you are holding to a file; a project member can start a new session."
+    ),
+}
+
+
+def end_session_of_departed_operator(db: Session, session: Optional[AgentSession]) -> None:
+    """End ``session`` (revoking its keys) because its operator holds no
+    membership of the project and is not a global admin, and commit.
+
+    The one reaction to a key whose operator has left: removing a member
+    already ends their sessions there (``remove_member``); this covers the
+    operator whose authority came from the global admin role and went with
+    it.  Ended rather than refused, so that a later membership does not bring
+    the key back (review 2026-10-23, H-AG1)."""
+    from app.services.agent_session_service import END_REASON_LAPSED, end_agent_session
+
+    if session is None or getattr(session.status, "value", session.status) != "active":
+        return
+    end_agent_session(
+        db, session, reason="its operator is no longer a member of the project",
+        end_reason=END_REASON_LAPSED,
+    )
+    db.commit()
 
 
 def _commit_keeping_loaded(db: Session) -> None:
@@ -473,8 +520,10 @@ def authenticate_for_renewal(
     v2.304.0.  This is the one place an expired key is accepted, and it exists
     because the alternative is discarding work: an agent blocks for hours on a
     scan, its key lapses while it waits, and it finds out at upload time. Every
-    other check still applies — the key must be active, its agent must be
-    active, and its session must be alive and under its maximum lifetime.
+    other check still applies — the key must be active, its operator active
+    and still a member of the project (or a global admin), and its session
+    alive and under its maximum lifetime; the call counts against the key's
+    per-minute limit.
 
     Deliberately NOT a general auth dependency. It grants exactly one action:
     extending the deadline on the key that was presented. It cannot read or
@@ -492,8 +541,9 @@ def authenticate_for_renewal(
     if ctx is None:
         raise HTTPException(status_code=401, detail="Invalid or revoked agent API key")
     api_key_obj, agent = ctx.api_key, ctx.agent
-    if not agent:
-        raise HTTPException(status_code=401, detail="Agent inactive or not found")
+    # Counted in the key's own per-minute bucket like every other call: the
+    # route is outside the gate, and had no limit at all (review 2026-10-23).
+    admit_agent_request(db, agent)
 
     # Renewal extends a credential, so a key the operator's password change
     # has cancelled must not be extended either.
@@ -516,6 +566,18 @@ def authenticate_for_renewal(
                 ),
             },
         )
+
+    # ... nor one whose operator no longer belongs to the project.  The gate
+    # refuses such a key on every call (403), but renewal is mounted outside
+    # it and kept the key alive: a global admin who started a session on a
+    # project they were not a member of, then lost the admin role, could
+    # renew for the session's whole lifetime and — re-added to the project —
+    # use the old key again (review 2026-10-23, H-AG1; the revival 2.524.0
+    # closed for ``remove_member``).  The session is ENDED, not merely
+    # refused, so a later membership cannot bring the key back.
+    if not ctx.operator_is_admin and ctx.membership_role is None:
+        end_session_of_departed_operator(db, ctx.session)
+        raise HTTPException(status_code=401, detail=_OPERATOR_NOT_A_MEMBER_DETAIL)
 
     if not key_is_renewable(ctx.session):
         raise HTTPException(
@@ -609,29 +671,19 @@ def get_current_agent(
         raise HTTPException(status_code=401, detail="Invalid agent API key")
     api_key_obj = ctx.api_key
 
-    if api_key_obj.expires_at is not None:
-        # Some backends/drivers (and SQLite) hand back a tz-naive datetime
-        # even for a DateTime(timezone=True) column.  Comparing that to a
-        # tz-aware now() raises TypeError and 500s every agent request, so
-        # normalise to UTC-aware before comparing.
-        expires_at = api_key_obj.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < datetime.now(timezone.utc):
-            # v2.304.0 — a structured 401, because "expired" and "revoked" are
-            # the same status code but completely different situations for the
-            # caller, and the caller is usually holding hours of scan output at
-            # this point.  Flat prose gave it no way to tell whether retrying
-            # was worth anything.  ``recoverable`` says: renew with THIS key and
-            # try again.
-            raise HTTPException(
-                status_code=401,
-                detail=_expired_key_detail(ctx.session),
-            )
+    if _key_expired(api_key_obj):
+        # v2.304.0 — a structured 401, because "expired" and "revoked" are
+        # the same status code but completely different situations for the
+        # caller, and the caller is usually holding hours of scan output at
+        # this point.  Flat prose gave it no way to tell whether retrying
+        # was worth anything.  ``recoverable`` says: renew with THIS key and
+        # try again.  A key with no expiry is expired (``_key_expired``).
+        raise HTTPException(
+            status_code=401,
+            detail=_expired_key_detail(ctx.session),
+        )
 
     agent = ctx.agent
-    if not agent:
-        raise HTTPException(status_code=401, detail="Agent inactive or not found")
 
     # The key's binding is its AgentSession: ``api_keys.agent_session_id`` is
     # NOT NULL with a cascading foreign key (f4c8b2d0e6a1), so every key that
@@ -841,6 +893,18 @@ def check_agent_rate_limit(
     one window, while an attacker no longer gets retries the limiter declines
     to count.
     """
+    admit_agent_request(db, agent)
+    return agent
+
+
+def admit_agent_request(db: Session, agent: Agent) -> None:
+    """Count one request against ``agent``'s per-minute budget, or raise 429.
+
+    The limiter's one implementation: every gated agent call
+    (:func:`check_agent_rate_limit`) and the key renewal, which is mounted
+    outside the gate (review 2026-10-23: it had no limit at all), count in
+    the same bucket.
+    """
     now = datetime.now(timezone.utc)
     window_seconds = int(_AGENT_RATE_WINDOW_SECONDS)
     # Truncate to the window so every worker derives the same bucket key
@@ -883,7 +947,26 @@ def check_agent_rate_limit(
             "admitting the request; run migrations",
             exc_info=True,
         )
-        return agent
+        return
+
+    if count == 1:
+        # The first request of a new window: the agent's earlier windows can
+        # no longer count against anything, so they go now — once a minute at
+        # most per active agent, an indexed delete of a handful of rows.
+        # (Review 2026-10-23, R-AG1: the sweep used to run on every 500th
+        # admitted request of a window, which the 429 at 240 made
+        # unreachable, so the table only grew.)
+        try:
+            db.query(AgentRateBucket).filter(
+                AgentRateBucket.agent_id == agent.id,
+                AgentRateBucket.window_start < window_start,
+            ).delete(synchronize_session=False)
+            _commit_keeping_loaded(db)
+        except (ProgrammingError, OperationalError) as exc:
+            db.rollback()
+            if is_statement_timeout(exc):
+                raise
+            logger.warning("agent rate bucket sweep failed", exc_info=True)
 
     if count > agent.rate_limit_rpm:
         # Say when the window ends (acceptance run 2026-10-22: a paging sweep
@@ -898,21 +981,6 @@ def check_agent_rate_limit(
             ),
             headers={"Retry-After": str(retry_after)},
         )
-
-    # Opportunistic housekeeping: drop buckets from windows nothing can be
-    # counted against any more.  Sampled rather than run per request — the
-    # delete is indexed and tiny, but it is still pure hot-path overhead.
-    if count % _AGENT_RATE_SWEEP_EVERY == 0:
-        try:
-            db.query(AgentRateBucket).filter(
-                AgentRateBucket.window_start
-                < window_start - timedelta(seconds=window_seconds),
-            ).delete(synchronize_session=False)
-            db.commit()
-        except Exception:  # pragma: no cover - housekeeping must never 500
-            db.rollback()
-            logger.warning("agent rate bucket sweep failed", exc_info=True)
-    return agent
 
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1080,7 @@ AGENT_SKIP_REFUSAL = "`skip` is not a parameter here; page with `offset`"
 def enforce_agent_operator_access(
     request: Request,
     agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
 ) -> Agent:
     """An agent key may do what its operator may do — checked on every request.
 
@@ -1084,11 +1153,19 @@ def enforce_agent_operator_access(
         return agent
 
     if membership_role is None:
+        # Only reachable for an operator who was a global admin when the
+        # session started and is a member no longer (removing a member ends
+        # their sessions).  The session ends here as at renewal, so that a
+        # later membership does not revive the key (review 2026-10-23, H-AG1).
+        end_session_of_departed_operator(
+            db, db.get(AgentSession, getattr(request.state, "agent_session_id", None) or 0),
+        )
         raise HTTPException(
             status_code=403,
             detail=(
                 "This key's operator is no longer a member of the project. The "
-                "key cannot act on a project its operator has left."
+                "key cannot act on a project its operator has left, and its "
+                "session has been ended."
             ),
         )
     request.state.key_operator_role = membership_role

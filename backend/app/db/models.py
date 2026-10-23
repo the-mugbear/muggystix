@@ -41,6 +41,12 @@ class Host(Base):
     os_type = Column(String)
     os_vendor = Column(String)
     os_accuracy = Column(Integer)
+    # Provenance of the OS fields above: 'operator' when a person or their
+    # agent corrected them (``PATCH /agent/hosts/{id}``), NULL when a scanner
+    # set them.  No import replaces an operator's OS
+    # (``HostDeduplicationService._update_existing_host``); clearing the
+    # correction drops the lock.  Revision 33edf48e7db9.
+    os_source = Column(String(16))
     # SMB message-signing posture, extracted to a queryable column (per the
     # column-vs-blob policy) from nmap smb-security-mode / netexec rather than
     # left in script-output blobs: 'disabled' (relay-vulnerable), 'enabled'

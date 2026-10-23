@@ -53,31 +53,11 @@ from app.schemas.dns_names import (
 from app.schemas.pagination import Paginated
 from app.services import dns_name_service as svc
 from app.services.csv_utils import safe_csv_row
-from app.services.host_query_common import escape_like
+from app.services.names_list_service import NameSort, NameState, SortOrder, names_query
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_STATES = ("all", "unresolved", "resolved", "in_scope", "out_of_scope", "wildcard", "shared")
-
-
-def _apply_state_filter(q, state: str, project_id: int):
-    n = models.DNSName
-    if state == "unresolved":
-        return q.filter(~svc.resolving_exists_condition())
-    if state == "resolved":
-        return q.filter(svc.resolving_exists_condition())
-    if state == "in_scope":
-        return q.filter(svc.name_in_scope_condition(project_id))
-    if state == "out_of_scope":
-        return q.filter(~svc.name_in_scope_condition(project_id))
-    if state == "wildcard":
-        return q.filter(n.kind == "wildcard")
-    if state == "shared":
-        return q.filter(svc.shared_address_condition(project_id))
-    return q
-
 
 def _rows_to_schema(
     db: Session, project_id: int, rows: List[tuple],
@@ -122,32 +102,18 @@ def list_names(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     search: Optional[str] = Query(None, description="Case-insensitive substring on the FQDN"),
-    state: str = Query("all", description="all | unresolved | resolved | in_scope | out_of_scope | wildcard | shared"),
-    sort: str = Query("fqdn", pattern="^(fqdn|last_seen|first_seen)$"),
-    order: str = Query("asc", pattern="^(asc|desc)$"),
+    state: NameState = Query("all", description="all | unresolved | resolved | in_scope | out_of_scope | wildcard | shared"),
+    sort: NameSort = Query("fqdn"),
+    order: SortOrder = Query("asc"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    if state not in _STATES:
-        raise HTTPException(status_code=400, detail=f"state must be one of {', '.join(_STATES)}")
-    q = _names_query(db, project.id, search=search, state=state, sort=sort, order=order)
+    # ``names_list_service.names_query`` is the agents' ``/agent/assist/names``
+    # too; an unknown ``state`` is the type's 422 on both doors.
+    q = names_query(db, project.id, search=search, state=state, sort=sort, order=order)
     total = q.with_entities(func.count(models.DNSName.id)).order_by(None).scalar() or 0
     rows = q.offset(skip).limit(limit).all()
     return Paginated.build(_rows_to_schema(db, project.id, rows), total, skip, limit)
-
-
-def _names_query(db: Session, project_id: int, *, search: Optional[str], state: str, sort: str, order: str):
-    """The one filtered/ordered ``(DNSName, in_scope)`` query behind the list
-    and the export, so an export can never cover a different set than the
-    page the operator is looking at."""
-    n = models.DNSName
-    in_scope = svc.name_in_scope_condition(project_id).label("in_scope")
-    q = db.query(n, in_scope).filter(n.project_id == project_id)
-    if search and search.strip():
-        q = q.filter(n.fqdn.ilike(f"%{escape_like(search.strip().lower())}%", escape="\\"))
-    q = _apply_state_filter(q, state, project_id)
-    col = {"fqdn": n.fqdn, "last_seen": n.last_seen, "first_seen": n.first_seen}[sort]
-    return q.order_by(col.desc().nullslast() if order == "desc" else col.asc().nullsfirst(), n.id.asc())
 
 
 _EXPORT_CHUNK = 500
@@ -163,9 +129,9 @@ _EXPORT_CHUNK = 500
 def export_names(
     format: str = Query("txt", pattern="^(txt|csv)$"),
     search: Optional[str] = Query(None, description="Case-insensitive substring on the FQDN"),
-    state: str = Query("all", description="all | unresolved | resolved | in_scope | out_of_scope | wildcard | shared"),
-    sort: str = Query("fqdn", pattern="^(fqdn|last_seen|first_seen)$"),
-    order: str = Query("asc", pattern="^(asc|desc)$"),
+    state: NameState = Query("all", description="all | unresolved | resolved | in_scope | out_of_scope | wildcard | shared"),
+    sort: NameSort = Query("fqdn"),
+    order: SortOrder = Query("asc"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
@@ -176,12 +142,10 @@ def export_names(
     columns: ``fqdn, kind, in_scope, current_ips, last_seen`` where
     ``current_ips`` is ``;``-joined and derived by the one "currently
     resolves to" rule."""
-    if state not in _STATES:
-        raise HTTPException(status_code=400, detail=f"state must be one of {', '.join(_STATES)}")
     # Streamed: its queries run after the response has started, over the whole
     # inventory — exempt from the API statement timeout (review 2026-10-01 R23).
     disable_statement_timeout(db)
-    q = _names_query(db, project.id, search=search, state=state, sort=sort, order=order)
+    q = names_query(db, project.id, search=search, state=state, sort=sort, order=order)
     project_id = project.id
 
     def _chunks(query):

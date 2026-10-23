@@ -16,7 +16,7 @@ describe('workPhrase', () => {
     const tracking = { remediationTracking: true };
     expect(workPhrase({ remediation_entries: 1 }, tracking)).toBe('1 remediation entry');
     expect(workPhrase({ remediation_entries: 4 }, tracking)).toBe('4 remediation entries');
-    expect(workPhrase({ corrections: 1, tags: 1 })).toBe('1 tag · 1 corrected name');
+    expect(workPhrase({ corrections: 1, tags: 1 })).toBe('1 tag · 1 hand correction');
   });
 
   it('says nothing about remediation while the installation does not track it — and still counts the records', () => {

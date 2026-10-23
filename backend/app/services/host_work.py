@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, NamedTuple, Sequence
 
-from sqlalchemy import Integer, any_, bindparam, exists, func, literal, select, union_all
+from sqlalchemy import Integer, any_, bindparam, exists, func, literal, or_, select, union_all
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session, aliased
 
@@ -61,8 +61,11 @@ def work_kinds() -> List[WorkKind]:
         WorkKind("remediation_entries", RemediationEvent.host_id),
         # A proposal about one of the host's scanner observations.
         WorkKind("proposals", proposed_vuln.host_id, (AgentProposal.vulnerability_id == proposed_vuln.id,)),
-        # A host name someone typed in place of the scanner's.
-        WorkKind("corrections", named_host.id, (named_host.hostname_source == "operator",)),
+        # A host name or OS someone typed in place of the scanner's (one
+        # piece of work per corrected host).
+        WorkKind("corrections", named_host.id, (
+            or_(named_host.hostname_source == "operator", named_host.os_source == "operator"),
+        )),
     ]
 
 

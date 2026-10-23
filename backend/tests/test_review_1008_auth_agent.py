@@ -275,7 +275,7 @@ def _run_chain(db, raw, **kwargs):
     request = _agent_request(raw, **kwargs)
     agent = deps.get_current_agent(request=request, credentials=None, db=db)
     agent = deps.check_agent_rate_limit(agent=agent, db=db)
-    agent = deps.enforce_agent_operator_access(request=request, agent=agent)
+    agent = deps.enforce_agent_operator_access(request=request, agent=agent, db=db)
     return request, agent
 
 

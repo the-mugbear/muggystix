@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, literal, or_, select, tuple_
-from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
+from sqlalchemy.orm import Session, joinedload, selectinload, Query as SAQuery
 
 from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
 from app.services import ingestion_results_service
@@ -91,6 +91,7 @@ from app.services.host_serialization import (
 )
 from app.services.scope_coverage import host_scope_membership
 from app.services.host_query_common import escape_like
+from app.services.names_list_service import NameState, apply_name_state, names_query
 from app.services.note_attachment_service import require_readable_file
 from app.services.agent_prompt_service import PROMPT_VERSION
 from app.services.posture_service import compute_posture
@@ -2052,80 +2053,52 @@ def list_assist_recent_notes(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     author: Optional[str] = Query(None, description="Username, or 'me'."),
+    search: Optional[str] = Query(
+        None,
+        description=(
+            "Notes whose text, or whose host's address or name, contains this "
+            "(case-insensitive) — the Collaboration feed's search."
+        ),
+    ),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """"What has the team been working on?" — newest first.
+    """"What has the team been working on?" — newest activity first (an
+    edit counts), the Collaboration feed's order.
 
     v2.293.0.  Per-host notes answered "what do we know about THIS host"; this
     answers the question an analyst asks when they pick the engagement back up,
     which is about the work rather than about one asset.
-    """
-    pid = request.state.agent_project_id
-    # v2.313.0 — this filtered `Annotation.project_id == pid` and returned an
-    # empty list for every project since it shipped.
-    #
-    # `project_id` is not a scope column: it is one of seven MUTUALLY EXCLUSIVE
-    # targets (`ck_annotations_exactly_one_target`), so a note with it set is a
-    # note on the *project itself*, and a host note necessarily has it NULL.
-    # Filtering on it selected the one target nothing writes — 33 of 33 notes in
-    # the deployment were host-targeted. The endpoint answered "the team has
-    # done nothing" while `assist_get_host_notes` returned the same notes fine,
-    # which is how an agent found it.
-    #
-    # A note's project is whatever its target belongs to, so reach it through
-    # each target. Port notes go one hop further, via their host. All outer
-    # joins: a note matches on exactly one branch and is NULL on the rest.
-    #
-    # Every target is covered on purpose. Only host notes exist today, so
-    # a narrower fix would pass its tests and quietly reintroduce the same class
-    # of gap the first time someone annotates a scan.
-    from app.db.models_findings import Finding
 
-    port_host = aliased(models.Host)
-    q = (
-        db.query(
-            models.Annotation, models.Host.ip_address,
-            Finding.title, models.Scan.filename,
-            models.Port.port_number, port_host.ip_address,
-        )
-        .outerjoin(models.Host, models.Annotation.host_id == models.Host.id)
-        .outerjoin(Finding, models.Annotation.finding_id == Finding.id)
-        .outerjoin(models.Scan, models.Annotation.scan_id == models.Scan.id)
-        .outerjoin(models.Scope, models.Annotation.scope_id == models.Scope.id)
-        .outerjoin(models.Port, models.Annotation.port_id == models.Port.id)
-        .outerjoin(port_host, models.Port.host_id == port_host.id)
-        .filter(or_(
-            models.Annotation.project_id == pid,
-            models.Host.project_id == pid,
-            Finding.project_id == pid,
-            models.Scan.project_id == pid,
-            models.Scope.project_id == pid,
-            port_host.project_id == pid,
-        ))
-    )
+    The read is the Collaboration feed's own,
+    ``note_activity_service.project_notes_page`` (review 2026-10-23, R-AG2),
+    over every target a note can have — host, port, finding, scan, the scope
+    or the project — where the page lists host notes.
+    """
+    from app.services.note_activity_service import project_notes_page
+
+    author_id: Optional[int] = None
     if author:
         if author.lower() == "me":
-            q = q.filter(models.Annotation.user_id == request.state.key_operator_id)
+            author_id = request.state.key_operator_id
         else:
             row = db.query(User.id).filter(func.lower(User.username) == author.lower()).first()
             if row is None:
                 raise HTTPException(status_code=400, detail=f"No user named {author!r}")
-            q = q.filter(models.Annotation.user_id == row[0])
+            author_id = row[0]
 
-    # Every join is to the note's ONE target (many-to-one), so a row is a note
-    # and the count is the list's.
-    total = q.with_entities(func.count(models.Annotation.id)).scalar() or 0
-    rows = (
-        q.options(*note_load_options())
-        # id breaks a tie: notes written together share created_at, and a page
-        # boundary between them would repeat or skip one.
-        .order_by(models.Annotation.created_at.desc(), models.Annotation.id.desc())
-        .offset(offset).limit(limit).all()
+    total, rows = project_notes_page(
+        db, request.state.agent_project_id, every_target=True,
+        author_id=author_id, search=search or None,
+        offset=offset, limit=limit, load_options=note_load_options(),
     )
-    serialized = _assist_notes(db, [r[0] for r in rows])
+    serialized = _assist_notes(db, [r.note for r in rows])
     out = []
-    for note, (a, ip, f_title, scan_name, port_no, port_ip) in zip(serialized, rows):
+    for note, row in zip(serialized, rows):
+        a, ip, f_title, scan_name, port_no, port_ip = (
+            row.note, row.host_ip, row.finding_title, row.scan_filename,
+            row.port_number, row.port_host_ip,
+        )
         if a.host_id:
             target = {"kind": "host", "id": a.host_id, "label": ip}
         elif a.port_id:
@@ -2222,6 +2195,14 @@ _ASSIST_NAME_IP_CAP = 10
 def list_assist_names(
     request: Request,
     q: Optional[str] = Query(None, description="Case-insensitive substring on the FQDN"),
+    state: NameState = Query(
+        "all",
+        description=(
+            "The Names page's state chips: all | unresolved | resolved | in_scope | "
+            "out_of_scope | wildcard | shared (a name whose current address other "
+            "names share — test it BY NAME)."
+        ),
+    ),
     in_scope: Optional[bool] = Query(None, description="Only names a declared domain covers (true) or does not (false)"),
     resolved: Optional[bool] = Query(None, description="Only names with (true) / without (false) a current A/AAAA answer"),
     host_id: Optional[int] = Query(None, description="Only names that currently resolve to this host's address"),
@@ -2231,9 +2212,11 @@ def list_assist_names(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """The names inventory, the same predicates the Names page uses
-    (``name_in_scope_condition``, ``resolving_exists_condition``,
-    ``current_binding_condition``), so this view can never disagree with it.
+    """The names inventory: the Names page's own query
+    (``names_list_service.names_query``, review 2026-10-23, R-AG3) with its
+    ``state`` words, so this view can never disagree with it.  ``in_scope``,
+    ``resolved`` and ``kind`` are the same states as booleans and narrow
+    further; ``host_id`` is the names currently resolving to that host.
 
     ``in_scope=true&resolved=false`` is the queue: names in scope that no
     upload has ever resolved.  A name whose
@@ -2243,18 +2226,11 @@ def list_assist_names(
     """
     pid = request.state.agent_project_id
     n = models.DNSName
-    in_scope_col = dns_name_service.name_in_scope_condition(pid).label("in_scope")
-    query = db.query(n, in_scope_col).filter(n.project_id == pid)
-    if q and q.strip():
-        query = query.filter(n.fqdn.ilike(f"%{escape_like(q.strip().lower())}%", escape="\\"))
-    if in_scope is True:
-        query = query.filter(dns_name_service.name_in_scope_condition(pid))
-    elif in_scope is False:
-        query = query.filter(~dns_name_service.name_in_scope_condition(pid))
-    if resolved is True:
-        query = query.filter(dns_name_service.resolving_exists_condition())
-    elif resolved is False:
-        query = query.filter(~dns_name_service.resolving_exists_condition())
+    query = names_query(db, pid, search=q, state=state)
+    if in_scope is not None:
+        query = apply_name_state(query, "in_scope" if in_scope else "out_of_scope", pid)
+    if resolved is not None:
+        query = apply_name_state(query, "resolved" if resolved else "unresolved", pid)
     if kind:
         query = query.filter(n.kind == kind)
     if host_id is not None:
@@ -2277,7 +2253,7 @@ def list_assist_names(
             .exists()
         )
     total = query.with_entities(func.count(n.id)).order_by(None).scalar() or 0
-    rows = query.order_by(n.fqdn.asc(), n.id.asc()).offset(offset).limit(limit).all()
+    rows = query.offset(offset).limit(limit).all()   # the page's order (fqdn, id)
     states = dns_name_service.address_state_for_names(db, pid, [name.id for name, _ in rows])
     items = []
     for name, is_in_scope in rows:

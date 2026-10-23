@@ -829,7 +829,13 @@ class HostDeduplicationService:
         new_os = host_data.get('os_name')
         if new_os and host.os_name and new_os != host.os_name:
             self._record_conflict('host', host.id, 'os_name', host.os_name, new_os, prior_scan, scan_id)
-        if (not host.os_name or new_accuracy > (host.os_accuracy or 0)):
+        # An operator's correction (``os_source == 'operator'``, set by
+        # ``PATCH /agent/hosts/{id}``) is never replaced by a scan, however
+        # accurate its guess: the disagreement is the conflict row above.
+        # The same rule as the display name's operator rank.
+        if host.os_source == 'operator':
+            pass
+        elif (not host.os_name or new_accuracy > (host.os_accuracy or 0)):
             if host_data.get('os_name'):
                 host.os_name = host_data.get('os_name')
                 host.os_family = host_data.get('os_family') or os_family_from_name(host_data.get('os_name'))
