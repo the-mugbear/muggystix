@@ -1982,10 +1982,13 @@ class IngestionService:
                     # before it saw the cancel: the scan exists and its data is
                     # in the inventory.  Say so on the cancelled job instead of
                     # leaving the scan unlinked.  Only when nothing newer owns
-                    # the job (a re-claimed attempt is 'processing' again).
-                    db.refresh(job)
+                    # the job: read under the row lock and fenced on this
+                    # attempt's claim (review 2026-10-23b, ING-9 — read
+                    # unlocked, a retry and a peer's claim in between had this
+                    # attempt clear the new attempt's ``in_progress_scan_id``).
                     _scan_id = result.get("scan_id")
-                    if job.status == "failed" and job.scan_id is None and _scan_id:
+                    job = _transitions.lock_failed_attempt(db, job_id, claimed_at)
+                    if job is not None and job.scan_id is None and _scan_id:
                         job.scan_id = _scan_id
                         # Kept and linked, so no longer a leftover to delete
                         # if the operator re-queues the job (R1).

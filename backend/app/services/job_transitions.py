@@ -239,6 +239,14 @@ class JobTransitions:
         )
         return db.execute(stmt).scalar_one_or_none()
 
+    def lock_failed_attempt(self, db: Session, job_id: int, claimed_at: datetime) -> Optional[Any]:
+        """The row, locked, while it is still THIS attempt's failure (a cancel
+        keeps the claim token; a retry clears it and a claim writes a new
+        one); ``None`` otherwise.  For writing what the failed attempt leaves
+        behind without reaching a row a retry or a peer's claim now owns."""
+        m = self.model
+        return self._locked(db, job_id, m.status == "failed", m.started_at == claimed_at)
+
     def cancel(
         self,
         db: Session,
