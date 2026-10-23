@@ -279,9 +279,14 @@ def test_a_bare_word_query_confines_its_port_subquery_to_the_project(db_session,
     sql = str(predicate.compile(
         dialect=db_session.get_bind().dialect, compile_kwargs={"literal_binds": True},
     ))
-    subquery = sql[sql.index("IN (SELECT"):]
+    # Since R4 (2026-10-22) the port half is a correlated EXISTS on the outer
+    # host, so it reads only that host's ports; there is no IN that would
+    # have to repeat the project filter (test_read_path_review pins the
+    # Hosts list's form; this is the DSL's bare word).
+    assert " IN (SELECT" not in sql, sql
+    subquery = sql[sql.index("EXISTS (SELECT"):]
     assert "ports_v2" in subquery
-    assert f"hosts_v2.project_id = {test_project.id}" in subquery, subquery
+    assert "ports_v2.host_id = hosts_v2.id" in subquery, subquery
 
 
 def test_a_bare_word_query_still_finds_only_this_projects_hosts(client, db_session, test_project):
