@@ -92,15 +92,15 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
     result, loading, keyCopied, markKeyCopied, close: handleClose, onDialogOpenChange, showClose,
   } = useKeyHandoff(rotate, { onOpenChange });
 
-  const now = Date.now();
-  const keyExpiry = session?.key_expires_at ? new Date(session.key_expires_at).getTime() : null;
-  const renewDeadline = session?.renewable_until ? new Date(session.renewable_until).getTime() : null;
-  const keyLive = keyExpiry != null && keyExpiry > now;
+  // Where the session stands is the server's (`key_state`, on its clock —
+  // review 2026-10-10 R1e); the dates are only worded.
+  const renewDeadline = session?.renewable_until ?? null;
+  const keyLive = session?.key_state === 'live';
   // No live key row at all means it was revoked — the only way back is a
   // rotation.  An expired-but-renewable key still works after the agent's
   // first 401 (it renews itself), so that path stays open.
-  const keyRevoked = keyExpiry == null;
-  const pastCap = renewDeadline != null && renewDeadline <= now;
+  const keyRevoked = session?.key_expires_at == null;
+  const pastCap = session?.key_state === 'ended';
 
   const handleRotate = () => {
     if (!session) return;

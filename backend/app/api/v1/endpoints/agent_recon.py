@@ -20,6 +20,7 @@ from app.db.session import disable_statement_timeout, get_db
 from app.db import models
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
+from app.api.downloads import attachment
 from app.api.deps import agent_read_floor, check_agent_rate_limit, get_client_info
 from app.api.v1.endpoints.agent_schemas import (
     AgentRowsPage, KeepTruncatedUploadRequest, ReconUploadResponse, ReconJobStatus, agent_page,
@@ -152,7 +153,7 @@ def _stream(db: Session, generator, media_type: str, filename: str) -> Streaming
     return StreamingResponse(
         generator,
         media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers=attachment(filename),
     )
 
 

@@ -59,7 +59,13 @@ def test_a_name_outside_plain_ascii_travels_in_both_forms(name, plain):
     assert _real_name(header) == name
 
 
-@pytest.mark.parametrize("name", ["hosts.csv", "names.txt", "scope-acme-report-3.csv", "project-scope_cidrs.txt"])
+@pytest.mark.parametrize("name", [
+    "hosts.csv", "names.txt", "scope-acme-report-3.csv", "project-scope_cidrs.txt",
+    # The names the last hand-written headers sent (references, the tool-ready
+    # file, the agents' NDJSON and target files): the same header through the helper.
+    "bluestick.pem", "bluestick-agent-guide.md", "assist-project-7-hosts.jsonl",
+    "assist-project-7-report-context.jsonl", "nmap-targets.txt", "host-ports.txt", "web-targets.txt", "named-targets.ndjson",
+])
 def test_a_plain_name_is_sent_as_it_always_was(name):
     assert content_disposition(name) == f"attachment; filename={name}"
     assert attachment(name) == {"Content-Disposition": f"attachment; filename={name}"}
@@ -102,16 +108,11 @@ def test_a_scan_export_downloads_whatever_the_scan_file_is_called(
     assert _real_name(header) == f"{filename.replace(' ', '_')}_hosts.{format_type}"
 
 
-# The files this change could not edit (other streams own them in the same
-# batch) and how many hand-written headers each still has; every name in them
-# is a constant or built from an integer, so none can fail to encode.  Move
-# each to ``attachment(...)`` and take its line out — the list only shrinks.
-HAND_WRITTEN_ELSEWHERE = {
-    "api/v1/endpoints/agent_assist.py": 2,
-    "api/v1/endpoints/agent_recon.py": 1,
-    "api/v1/endpoints/hosts.py": 1,
-    "api/v1/endpoints/references.py": 2,
-}
+# Every route now names its download through ``attachment(...)`` (review
+# 2026-10-10 stream: the last six hand-written headers moved; their names are
+# plain ASCII, so the header each sends is what it sent — the two quoted
+# ``filename="…"`` ones lose only the quotes RFC 6266 does not need).
+HAND_WRITTEN_ELSEWHERE: dict = {}
 
 
 def test_no_route_writes_the_header_by_hand():

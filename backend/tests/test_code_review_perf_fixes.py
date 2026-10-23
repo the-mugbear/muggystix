@@ -90,4 +90,5 @@ def test_host_test_listing_counts_evidence_in_sql_not_per_row(client, db_session
 def test_host_test_listing_of_an_empty_project_is_zeros(client, test_project):
     """No tests: an empty page and a zero total, not an error."""
     body, _ = _listing(client, test_project)
-    assert body == {"items": [], "total": 0, "has_more": False}
+    # The page envelope (services/paging, R1f).
+    assert body == {"items": [], "total": 0, "limit": 200, "offset": 0, "returned": 0, "has_more": False}

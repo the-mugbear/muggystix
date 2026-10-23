@@ -33,6 +33,7 @@ PAGED = {
     "/agent/assist/hosts/{host_id}/notes": "assist_get_host_notes",
     "/agent/assist/notes": "assist_list_recent_notes",
     "/agent/assist/findings": "assist_list_findings",
+    "/agent/assist/ingestion-issues": "assist_list_ingestion_issues",
     "/agent/assist/names": "assist_list_names",
     "/agent/assist/query-history": "assist_query_history",
     "/agent/assist/scans": "assist_list_scans",
@@ -43,6 +44,7 @@ PAGED = {
     "/agent/assist/scanner-observations/hosts": "assist_list_observation_hosts",
     "/agent/assist/uninterpreted-lines": "assist_list_uninterpreted_lines",
     "/agent/assist/workbench/investigate": "assist_list_worth_a_look",
+    "/agent/assist/workbench/terrain": "assist_get_terrain",
     "/agent/assist/workbench/findings": "assist_list_my_findings",
     "/agent/evidence": "list_evidence",
     "/agent/proposals": "list_proposals",
@@ -61,12 +63,8 @@ NOT_PAGED = {
         "`findings_has_more`) inside an answer that is otherwise whole on every page",
     "/agent/assist/evidence/gaps":
         "the Evidence page's own answer, key for key; its service cuts at `limit` and cannot skip",
-    "/agent/assist/ingestion-issues":
-        "a summary of counts with a capped `issues` list beside `total_issues`",
     "/agent/assist/scans/compare":
         "several lists in one answer, each capped at `limit`; `counts` is exact",
-    "/agent/assist/workbench/terrain":
-        "a map of address blocks cut at `limit` (`blocks_total`, `limited`)",
     "/agent/evidence/{evidence_id}/raw-chunk":
         "one record's raw output by BYTE offset (`offset`, `length`, `next_offset`, "
         "`total_bytes`) — not a list of rows",
@@ -188,6 +186,11 @@ def estate(client, db_session, test_project, test_user):
             status="completed", tool_name="netexec", final_file_type="netexec_txt",
             uninterpreted_lines={"total": 1, "distinct": 1, "shapes": [
                 {"kind": "text_only", "shape": "RDP <IP> 3389 <HOST>", "count": 1}]},
+        ))
+        # …and a failed import (the ingestion issues).
+        db_session.add(models.IngestionJob(
+            project_id=pid, filename=f"broken-{i}.xml", original_filename=f"broken-{i}.xml",
+            storage_path="/x", status="failed", tool_name="nmap", error_message="not XML",
         ))
 
     # ROWS untouched hosts, each carrying the SAME exploitable critical: the
@@ -350,8 +353,10 @@ def test_skip_is_an_unknown_argument_over_mcp(client, test_project, tool, argume
     assert "skip" in str(refused)
 
 
-def test_the_page_routes_two_doors_share_still_answer_their_own_shape(client, test_project):
-    """The envelope is the AGENTS' door: the people's routes of the two shared
-    router factories answer what they did (the frontend reads them)."""
+def test_the_page_routes_two_doors_share_answer_the_one_envelope(client, test_project):
+    """Review 2026-10-10, R1f: the two shared router factories' lists answer
+    the service's page envelope on BOTH doors (``services/paging``) — the
+    people's answer gained ``limit`` / ``offset`` / ``returned`` beside what it
+    said; the agents' door no longer recomputes anything."""
     tests = client.get(f"/api/v1/projects/{test_project.id}/host-tests").json()
-    assert tests == {"items": [], "total": 0, "has_more": False}
+    assert tests == {"items": [], "total": 0, "limit": 50, "offset": 0, "returned": 0, "has_more": False}

@@ -446,6 +446,44 @@ def test_assist_findings_endpoint_returns_evidence(client, test_project, db_sess
     assert f0["evidence"] == "evidence here"
 
 
+def test_a_scanner_row_says_which_scans_saw_it_and_when(client, test_project, db_session):
+    """Review 2026-10-10 stream, D6: the agents' scanner rows carried no
+    provenance.  Each says the scan that first recorded it, the latest that
+    reported it again, and when that latest scan ran (as the scan states it:
+    UTC, or the tool's own zone-less clock; null when the file had no time)."""
+    from datetime import datetime as dt
+    from app.db import models
+    from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
+
+    host = models.Host(ip_address="10.8.8.10", state="up", project_id=test_project.id)
+    first = models.Scan(project_id=test_project.id, filename="a.nessus", tool_name="nessus",
+                        start_time=dt(2026, 9, 1, 8, 0), time_source=models.SCAN_TIME_TOOL_RUN)
+    again = models.Scan(project_id=test_project.id, filename="b.nessus", tool_name="nessus",
+                        start_time=dt(2026, 9, 20, 14, 30), time_source=models.SCAN_TIME_TOOL_CLOCK)
+    timeless = models.Scan(project_id=test_project.id, filename="c.nessus", tool_name="nessus")
+    db_session.add_all([host, first, again, timeless])
+    db_session.flush()
+    db_session.add_all([
+        Vulnerability(host_id=host.id, scan_id=first.id, last_seen_scan_id=again.id, title="seen twice",
+                      severity=VulnerabilitySeverity.CRITICAL, source=VulnerabilitySource.NESSUS),
+        Vulnerability(host_id=host.id, scan_id=first.id, title="seen once",
+                      severity=VulnerabilitySeverity.HIGH, source=VulnerabilitySource.NESSUS),
+        Vulnerability(host_id=host.id, scan_id=timeless.id, title="no time",
+                      severity=VulnerabilitySeverity.LOW, source=VulnerabilitySource.NESSUS),
+    ])
+    db_session.commit()
+
+    body = _start_session(client, test_project.id)
+    items = client.get(f"/api/v1/agent/assist/hosts/{host.id}/vulnerabilities",
+                       headers=_auth_headers(body["api_key"])).json()["items"]
+    got = {i["title"]: (i["scan_id"], i["last_seen_scan_id"], i["observed_at"]) for i in items}
+    assert got == {
+        "seen twice": (first.id, again.id, "2026-09-20T14:30:00"),          # the tool's clock, no offset
+        "seen once": (first.id, None, "2026-09-01T08:00:00Z"),
+        "no time": (timeless.id, None, None),
+    }
+
+
 def test_assist_findings_severity_filter_and_pagination(client, test_project, db_session):
     from app.db import models
     from app.db.models_vulnerability import (
@@ -1299,8 +1337,8 @@ def test_ingestion_issues_separates_absent_from_never_parsed(
     assert body["failed"] == 1
     # The ParseError is claimed by the job, so it is NOT listed again.
     assert body["unresolved_parse_errors"] == 0
-    assert len(body["issues"]) == 1
-    issue = body["issues"][0]
+    assert len(body["items"]) == 1
+    issue = body["items"][0]
     assert issue["kind"] == "failed"
     # The job's own "parser raised" is useless to an operator; the parse
     # error's user-facing message is what gets folded in.
@@ -1326,7 +1364,7 @@ def test_ingestion_issues_surfaces_a_completed_but_degraded_upload(
     body = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()
     assert body["degraded"] == 1
     assert body["has_issues"] is True
-    issue = next(i for i in body["issues"] if i["kind"] == "degraded")
+    issue = next(i for i in body["items"] if i["kind"] == "degraded")
     assert issue["skipped_count"] == 30
     assert "incomplete" in issue["message"]
 
@@ -1355,7 +1393,7 @@ def test_every_import_needs_attention_counts_is_listed_and_marked(client, db_ses
     db_session.commit()
 
     body = client.get("/api/v1/agent/assist/ingestion-issues", headers=_assist(client, test_project.id)).json()
-    rows = {i["job_id"]: i for i in body["issues"]}
+    rows = {i["job_id"]: i for i in body["items"]}
     assert body["needs_attention"] == 2
     assert sorted(j for j, i in rows.items() if i["needs_attention"]) == sorted([truncated.id, waiting.id])
     assert rows[truncated.id]["kind"] == "partial"
@@ -1400,7 +1438,7 @@ def test_ingestion_issues_is_quiet_when_nothing_is_wrong(client, test_project):
     headers = _assist(client, test_project.id)
     body = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()
     assert body["has_issues"] is False
-    assert body["issues"] == []
+    assert body["items"] == []
 
 
 def test_host_detail_carries_web_interfaces_and_screenshot_references(

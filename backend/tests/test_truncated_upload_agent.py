@@ -308,7 +308,7 @@ def test_an_agreed_request_imports_what_the_file_holds_and_is_recorded(
     assert page.status_code == 200, page.text
     (row,) = [item for item in page.json()["items"] if item["id"] == job_id]
     assert (row["status"], row["partial"], row["failure_kind"]) == ("completed", True, None)
-    issues = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()["issues"]
+    issues = client.get("/api/v1/agent/assist/ingestion-issues", headers=headers).json()["items"]
     (issue,) = [i for i in issues if i["job_id"] == job_id]
     assert issue["kind"] == "partial" and issue["needs_attention"] is True
 

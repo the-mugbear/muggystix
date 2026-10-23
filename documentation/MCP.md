@@ -84,13 +84,13 @@ many"), `returned` the length of `items`, and `has_more` says rows remain — as
 again with `offset` + `returned`. A tool description that says "paged" means
 exactly this. The helper is `agent_schemas.agent_page`, and
 `tests/test_agent_list_paging.py` lists the routes: the host, finding, name,
-scan, note, segment and scanner-observation lists, the untouched queue and the
+scan, note, segment, scanner-observation and ingestion-issue lists, the address
+terrain, the untouched queue and the
 operator's findings, evidence, proposals, host tests, the remediation list and
 timeline, and the scope's subnets and domains. An argument a tool does not take
-(`skip`, say) is an unknown argument (`-32602`). Five reads are not this page
-and say so in their descriptions: `assist_list_evidence_gaps`,
-`assist_list_ingestion_issues`, `assist_get_terrain` and `assist_compare_scans`
-carry a capped list with its count beside it and no `offset`;
+(`skip`, say) is an unknown argument (`-32602`). Three reads are not this page
+and say so in their descriptions: `assist_list_evidence_gaps` and
+`assist_compare_scans` carry a capped list with its count beside it and no `offset`;
 `assist_get_client_report` pages its `findings` member (`findings_total`,
 `findings_has_more`).
 
@@ -139,7 +139,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "What are our critical findings?" | `assist_list_findings` — project-wide, with `severity_counts` |
 | "What has nobody picked up?" | `assist_list_findings` with `unowned=true` (findings nobody owns) · `assist_count_hosts` with `q=has:critical AND assigned:none` (hosts with a critical scanner observation and nobody assigned — a different question) |
 | "What do we already know about this host?" | `assist_get_host_notes` (paged) |
-| "Which scanner rows are on this host?" | `assist_get_host_vulnerabilities` — raw scanner observations, not findings; each row says whether a finding covers it on this host |
+| "Which scanner rows are on this host?" | `assist_get_host_vulnerabilities` — raw scanner observations, not findings; each row says whether a finding covers it on this host, and which scans saw it and when (`scan_id`, `last_seen_scan_id`, `observed_at`) |
 | "Every web interface on this host, not just the ten on host detail?" | `assist_list_host_web_interfaces` |
 | "What did NetExec find on this host, and was it read right?" | `assist_list_host_access` — each result's interpreted fields beside the tool's line |
 | "Which lines did BlueStick not read?" | `assist_list_uninterpreted_lines` — per import, as redacted shapes; see `documentation/PARSE_AUDIT_BRIEF.md` |
@@ -243,7 +243,8 @@ Three things an assist agent is routinely asked for, and how each is served:
 ### Evidence and proposals
 
 `record_evidence` / `list_evidence` record and read what the agent ran against a
-host and what came back; `get_evidence` reads one record (with the output's size
+host and what came back (`list_evidence preview=false` leaves the 2 KB output
+previews out of a long list); `get_evidence` reads one record (with the output's size
 and `raw_output_sha256`), and `read_evidence_raw` its raw output in pieces
 (`offset` 0, then each `next_offset` until null; the pieces joined hash to
 `sha256`) — or `curl GET /agent/evidence/{id}/raw` for the whole. Context about

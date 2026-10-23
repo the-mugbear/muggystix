@@ -15,7 +15,7 @@ status, host corrections), ``agent_recon.py`` (uploads), ``host_tests.py`` and
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -25,16 +25,15 @@ from sqlalchemy import func, literal, or_, select, tuple_
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
 
 from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
+from app.services import ingestion_results_service
 from app.services.default_scope import project_scope
-from app.services.import_attention_service import failure_kind
-from app.services.operations_read_service import blocked_import_condition
-from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.vulnerability_service import VulnerabilityService
 from app.db import models
 from app.db.models_agent import Agent
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User
 from app.db.models_findings import FindingSeverity, FindingSource
+from app.api.downloads import attachment
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.params import FindingHostStateParam, FindingNeedsParam
 from app.schemas.findings import FindingNeed
@@ -96,6 +95,7 @@ from app.services.note_attachment_service import require_readable_file
 from app.services.agent_prompt_service import PROMPT_VERSION
 from app.services.posture_service import compute_posture
 from app.services.scan_inventory_filters import apply_scan_inventory_filters
+from app.services.scan_time import scan_time_for_api
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.subnet_insight_service import compute_subnet_insights
 
@@ -647,9 +647,7 @@ def download_assist_hosts_ndjson(
     return StreamingResponse(
         _iter_assist_hosts_ndjson(db, query, operator_id=request.state.key_operator_id),
         media_type="application/x-ndjson",
-        headers={
-            "Content-Disposition": f"attachment; filename=assist-project-{request.state.agent_project_id}-hosts.jsonl"
-        },
+        headers=attachment(f"assist-project-{request.state.agent_project_id}-hosts.jsonl"),
     )
 
 
@@ -1347,6 +1345,19 @@ def get_assist_host_vulnerabilities(
         s = v.source
         return s.value if hasattr(s, "value") else str(s)
 
+    # When each row was observed: the run time of the latest scan that
+    # reported it, one lookup for the page (D6).
+    seen_by = {v.id: v.last_seen_scan_id or v.scan_id for v in rows}
+    scan_times = {}
+    wanted_scans = {sid for sid in seen_by.values() if sid is not None}
+    if wanted_scans:
+        scan_times = {
+            sid: scan_time_for_api(start, source)
+            for sid, start, source in db.query(
+                models.Scan.id, models.Scan.start_time, models.Scan.time_source,
+            ).filter(models.Scan.id.in_(wanted_scans))
+        }
+
     findings = []
     for v in rows:
         num, svc = port_map.get(v.port_id, (None, None))
@@ -1365,6 +1376,9 @@ def get_assist_host_vulnerabilities(
             solution=(v.solution or None) and v.solution[:_DESC_CAP],
             evidence=(v.plugin_output or None) and v.plugin_output[:_EVIDENCE_CAP],
             check_id=v.check_id,
+            scan_id=v.scan_id,
+            last_seen_scan_id=v.last_seen_scan_id,
+            observed_at=scan_times.get(seen_by[v.id]),
             **{
                 key: value for key, value in _vuln_coverage(v, coverage).items()
                 if key != "finding_match"
@@ -1442,11 +1456,7 @@ def download_assist_report_context(
     return StreamingResponse(
         _stream(),
         media_type="application/x-ndjson",
-        headers={
-            "Content-Disposition": (
-                f"attachment; filename=assist-project-{request.state.agent_project_id}-report-context.jsonl"
-            ),
-        },
+        headers=attachment(f"assist-project-{request.state.agent_project_id}-report-context.jsonl"),
     )
 
 
@@ -2627,7 +2637,8 @@ class AssistIngestionIssue(BaseModel):
     created_at: Optional[datetime] = None
 
 
-class AssistIngestionIssues(BaseModel):
+class AssistIngestionIssues(AgentPage):
+    """The counts, and one page of the issues (`items`; `total` is every issue)."""
     queued: int = 0
     processing: int = 0
     failed: int = Field(0, description=(
@@ -2679,8 +2690,9 @@ class AssistIngestionIssues(BaseModel):
     #: True when anything at all is wrong or pending — the one field to check
     #: before concluding "there is no data for that".
     has_issues: bool = False
-    issues: List[AssistIngestionIssue] = []
-    total_issues: int = 0
+    items: List[AssistIngestionIssue] = Field(default_factory=list, description=(
+        "One page of the issues, newest first: ask again with offset + returned while has_more."
+    ))
 
 
 @router.get(
@@ -2692,6 +2704,7 @@ class AssistIngestionIssues(BaseModel):
 def list_assist_ingestion_issues(
     request: Request,
     limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -2723,184 +2736,87 @@ def list_assist_ingestion_issues(
     conclusion from what is present.
     """
     pid = request.state.agent_project_id
+    # The Ingestion Results page's own service: its views, its counts, and
+    # the list paged in SQL (review 2026-10-10, R1b — this route was a second
+    # implementation that loaded every failed job).
+    counts = ingestion_results_service.job_counts(db, pid)
+    unresolved_total, orphan_errors = ingestion_results_service.unresolved_parse_error_counts(db, pid)
+    page, total = ingestion_results_service.list_issues(db, pid, limit=limit, offset=offset)
 
-    status_counts = dict(
-        db.query(models.IngestionJob.status, func.count(models.IngestionJob.id))
-        .filter(models.IngestionJob.project_id == pid)
-        .group_by(models.IngestionJob.status)
-        .all()
-    )
+    items: List[AssistIngestionIssue] = []
+    for entry in page:
+        kind = entry["kind"]
+        if kind == "parse_error":
+            e = entry["parse_error"]
+            items.append(AssistIngestionIssue(
+                kind=kind,
+                filename=e.filename,
+                file_type=e.file_type,
+                message=e.user_message or e.error_message,
+                parse_error_id=e.id,
+                created_at=e.created_at,
+            ))
+            continue
+        j = entry["job"]
+        if kind == "degraded":
+            items.append(AssistIngestionIssue(
+                kind=kind,
+                filename=j.original_filename or j.filename,
+                tool_name=j.tool_name,
+                message=(
+                    f"Parsed, but {j.skipped_count} row(s) were dropped — data "
+                    "from this file is incomplete."
+                ),
+                skipped_count=j.skipped_count or 0,
+                parser_warnings=j.parser_warnings,
+                job_id=j.id,
+                created_at=j.created_at,
+            ))
+        elif kind == "partial":
+            said = (j.parser_warnings or "").strip()
+            items.append(AssistIngestionIssue(
+                kind=kind,
+                needs_attention=entry["needs_attention"],
+                dismissed=j.dismissed_at is not None,
+                filename=j.original_filename or j.filename,
+                tool_name=j.tool_name,
+                message=(
+                    "Finished partial — parsing stopped early, so part of this file "
+                    "is NOT in the project." + (f" {said}" if said else "")
+                ),
+                skipped_count=j.skipped_count or 0,
+                parser_warnings=j.parser_warnings,
+                job_id=j.id,
+                created_at=j.created_at,
+            ))
+        else:   # failed / expired
+            items.append(AssistIngestionIssue(
+                kind=kind,
+                needs_attention=entry["needs_attention"],
+                dismissed=j.dismissed_at is not None,
+                filename=j.original_filename or j.filename,
+                tool_name=j.tool_name,
+                message=entry["parse_error_message"] or j.error_message or j.last_error,
+                failure_kind=j.failure_kind,
+                job_id=j.id,
+                parse_error_id=j.parse_error_id,
+                created_at=j.created_at,
+            ))
 
-    failed_jobs = (
-        db.query(models.IngestionJob)
-        .filter(
-            models.IngestionJob.project_id == pid,
-            models.IngestionJob.status == "failed",
-        )
-        .order_by(models.IngestionJob.created_at.desc())
-        .all()
-    )
-    # Completed, and not all of the file is in the project: it finished
-    # PARTIAL (the shared rule `needs_attention` counts by), or it dropped
-    # rows.  The list used only the second, so a truncated import that skipped
-    # nothing was counted and never listed (feedback #45).
-    incomplete_jobs = (
-        db.query(models.IngestionJob)
-        .filter(
-            models.IngestionJob.project_id == pid,
-            models.IngestionJob.status == "completed",
-            or_(models.IngestionJob.partial.is_(True), models.IngestionJob.skipped_count > 0),
-        )
-        .order_by(models.IngestionJob.created_at.desc())
-        .all()
-    )
-    partial_jobs = [j for j in incomplete_jobs if j.partial]
-    degraded_jobs = [j for j in incomplete_jobs if not j.partial]
-
-    # A failed job usually carries a parse_error_id, so listing both tables
-    # unfiltered would report the same upload twice under two names.  Fold the
-    # parse error's user-facing message into the job row and list only the
-    # parse errors no job points at.
-    claimed_error_ids = {
-        j.parse_error_id for j in failed_jobs if j.parse_error_id is not None
-    }
-    error_messages: Dict[int, str] = {}
-    # The same rows carry the failure's kind, read as the pages read it.
-    claimed_errors: Dict[int, Any] = {}
-    if claimed_error_ids:
-        claimed_errors = {
-            row.id: row
-            for row in db.query(
-                models.ParseError.id, models.ParseError.user_message, models.ParseError.error_type,
-            ).filter(models.ParseError.id.in_(claimed_error_ids)).all()
-        }
-        error_messages = {eid: (row.user_message or "") for eid, row in claimed_errors.items()}
-
-    unresolved_query = (
-        db.query(models.ParseError)
-        .filter(
-            models.ParseError.project_id == pid,
-            models.ParseError.status == "unresolved",
-        )
-    )
-    # Same predicate assist_get_coverage / compute_evidence_coverage uses, so
-    # the two tools can be read side by side (see AssistIngestionIssues).
-    unresolved_total = unresolved_query.count()
-    orphan_query = unresolved_query
-    if claimed_error_ids:
-        orphan_query = orphan_query.filter(
-            ~models.ParseError.id.in_(claimed_error_ids)
-        )
-    orphan_errors = orphan_query.order_by(models.ParseError.created_at.desc()).all()
-
-    # A staged upload that expired, or that the operator discarded, is written
-    # with the job status ``failed`` although nothing failed.  The page counts
-    # them apart (``parse_errors._expired_job`` / ``_discarded_job``, the same
-    # two message tests); this read counted all three as failed imports —
-    # 48 where the page said 16 failed + 32 expired (agent feedback #31).
-    def _staged_kind(job) -> str:
-        message = job.error_message or ""
-        if message.startswith(EXPIRED_MESSAGE_PREFIX):
-            return "expired"
-        if message == DISCARDED_MESSAGE:
-            return "discarded"
-        return "failed"
-
-    kinds = {j.id: _staged_kind(j) for j in failed_jobs}
-    discarded = sum(1 for k in kinds.values() if k == "discarded")
-    expired = sum(1 for k in kinds.values() if k == "expired")
-    failed_jobs = [j for j in failed_jobs if kinds[j.id] != "discarded"]
-    # The ids the count is made of, so each listed row can say whether it is
-    # one of them — the count and the marks are one statement's answer.
-    waiting_ids = {
-        job_id for (job_id,) in db.query(models.IngestionJob.id)
-        .filter(models.IngestionJob.project_id == pid, blocked_import_condition())
-        .all()
-    }
-    needs_attention = len(waiting_ids)
-
-    issues: List[AssistIngestionIssue] = []
-    for j in partial_jobs:
-        said = (j.parser_warnings or "").strip()
-        issues.append(AssistIngestionIssue(
-            kind="partial",
-            needs_attention=j.id in waiting_ids,
-            dismissed=j.dismissed_at is not None,
-            filename=j.original_filename or j.filename,
-            tool_name=j.tool_name,
-            message=(
-                "Finished partial — parsing stopped early, so part of this file "
-                "is NOT in the project." + (f" {said}" if said else "")
-            ),
-            skipped_count=j.skipped_count or 0,
-            parser_warnings=j.parser_warnings,
-            job_id=j.id,
-            created_at=j.created_at,
-        ))
-    for j in failed_jobs:
-        issues.append(AssistIngestionIssue(
-            kind=kinds[j.id],
-            needs_attention=j.id in waiting_ids,
-            dismissed=j.dismissed_at is not None,
-            filename=j.original_filename or j.filename,
-            tool_name=j.tool_name,
-            message=(
-                error_messages.get(j.parse_error_id)
-                or j.error_message
-                or j.last_error
-            ),
-            failure_kind=failure_kind(j, claimed_errors.get(j.parse_error_id)),
-            job_id=j.id,
-            parse_error_id=j.parse_error_id,
-            created_at=j.created_at,
-        ))
-    for j in degraded_jobs:
-        issues.append(AssistIngestionIssue(
-            kind="degraded",
-            filename=j.original_filename or j.filename,
-            tool_name=j.tool_name,
-            message=(
-                f"Parsed, but {j.skipped_count} row(s) were dropped — data "
-                "from this file is incomplete."
-            ),
-            skipped_count=j.skipped_count or 0,
-            parser_warnings=j.parser_warnings,
-            job_id=j.id,
-            created_at=j.created_at,
-        ))
-    for e in orphan_errors:
-        issues.append(AssistIngestionIssue(
-            kind="parse_error",
-            filename=e.filename,
-            file_type=e.file_type,
-            message=e.user_message or e.error_message,
-            parse_error_id=e.id,
-            created_at=e.created_at,
-        ))
-
-    # Newest first, with undated rows last rather than first — reverse-sorting
-    # a "is None" flag would float them to the top, which is the opposite of
-    # what "most recent" means to a reader.
-    _oldest = datetime.min.replace(tzinfo=timezone.utc)
-    issues.sort(key=lambda i: i.created_at or _oldest, reverse=True)
-    queued = int(status_counts.get("queued", 0) or 0)
-    processing = int(status_counts.get("processing", 0) or 0)
+    queued, processing = counts["queued"], counts["processing"]
     return AssistIngestionIssues(
         queued=queued,
         processing=processing,
-        failed=len(failed_jobs) - expired,
-        expired=expired,
-        discarded=discarded,
-        needs_attention=int(needs_attention),
-        partial=len(partial_jobs),
-        degraded=len(degraded_jobs),
-        unresolved_parse_errors=len(orphan_errors),
+        failed=counts["failed"],
+        expired=counts["expired"],
+        discarded=counts["discarded"],
+        needs_attention=counts["needs_attention"],
+        partial=counts["partial"],
+        degraded=counts["degraded"],
+        unresolved_parse_errors=orphan_errors,
         unresolved_parse_errors_total=unresolved_total,
-        has_issues=bool(issues) or queued > 0 or processing > 0,
-        # total_issues is the unpaginated count; `issues` is capped, so a
-        # truncated list must not read as the complete set.
-        total_issues=len(issues),
-        issues=issues[:limit],
+        has_issues=total > 0 or queued > 0 or processing > 0,
+        **agent_page(items, total=total, limit=limit, offset=offset),
     )
 
 

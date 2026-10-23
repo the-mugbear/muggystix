@@ -32,7 +32,7 @@ import logging
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import agent_read_floor, check_agent_rate_limit
@@ -68,16 +68,14 @@ router = APIRouter()
 # shape differs — paging or trimming)
 # ---------------------------------------------------------------------------
 
-class AgentTerrainResponse(BaseModel):
-    """The address terrain, ordered and cut for an agent.  ``blocks_total``
-    is every block the service returned; ``truncated`` is the service's own
-    flag (more blocks than it draws), ``limited`` says this page left some out."""
-    blocks: List[TerrainBlock]
-    blocks_total: int = 0
+class AgentTerrainResponse(AgentPage):
+    """The address terrain, ordered and paged for an agent: ``items`` are
+    blocks, ``total`` is every block the service returned; ``truncated`` is
+    the service's own flag (more blocks than it draws)."""
+    items: List[TerrainBlock] = Field(default_factory=list)
     total_hosts: int = 0
     unplaced_hosts: int = 0
     truncated: bool = False
-    limited: bool = False
     sort: str = "address"
 
 
@@ -286,6 +284,7 @@ def get_assist_terrain(
         "address", description="Block order: by address (as drawn), or most untouched / most untouched critical first.",
     ),
     limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -306,13 +305,11 @@ def get_assist_terrain(
     elif sort == "critical_untouched":
         blocks.sort(key=lambda b: (-b.critical_untouched, -b.untouched))
     return AgentTerrainResponse(
-        blocks=blocks[:limit],
-        blocks_total=len(blocks),
         total_hosts=terrain.total_hosts,
         unplaced_hosts=terrain.unplaced_hosts,
         truncated=terrain.truncated,
-        limited=len(blocks) > limit,
         sort=sort,
+        **agent_page(blocks[offset:offset + limit], total=len(blocks), limit=limit, offset=offset),
     )
 
 

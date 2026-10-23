@@ -41,7 +41,7 @@ const LONG_PROJECT = `Engagement-${'x'.repeat(189)}`;          // 200 characters
 
 const session = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
   id: 42, project_id: 1, status: 'active',
-  key_expires_at: FUTURE, renewable_until: LATER, ...over,
+  key_expires_at: FUTURE, renewable_until: LATER, key_state: 'live', ...over,
 });
 const rotated = (over: Partial<ResumeAgentSessionResponse> = {}): ResumeAgentSessionResponse => ({
   session_id: 42, project_id: 1, project_name: 'Demo', agent_id: 9, api_key: KEY, instructions: PROMPT,
@@ -105,7 +105,7 @@ describe('ResumeAgentSessionDialog — before anything is rotated', () => {
   });
 
   it('an expired key inside the session’s lifetime: the agent renews it itself, the line is still offered', () => {
-    show(session({ key_expires_at: PAST }));
+    show(session({ key_expires_at: PAST, key_state: 'resumable' }));
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveTextContent(`The key expired at ${formatTimestamp(PAST)}`);
     expect(dialog).toHaveTextContent(`renewed until ${formatTimestamp(LATER)}`);
@@ -113,14 +113,14 @@ describe('ResumeAgentSessionDialog — before anything is rotated', () => {
   });
 
   it('a revoked key (none on the row): that path is closed, no line to paste, rotating is offered', () => {
-    show(session({ key_expires_at: null }));
+    show(session({ key_expires_at: null, key_state: 'resumable' }));
     expect(screen.getByText(/The previous key was revoked, so this path is closed/)).toBeInTheDocument();
     expect(screen.queryByText(resumePromptLine(42))).toBeNull();
     expect(screen.getByRole('button', { name: 'Rotate key and get the prompt' })).toBeEnabled();
   });
 
   it('past its maximum lifetime: says so and offers no rotation', () => {
-    show(session({ key_expires_at: PAST, renewable_until: PAST }));
+    show(session({ key_expires_at: PAST, renewable_until: PAST, key_state: 'ended' }));
     expect(screen.getByText(/past its maximum lifetime and can no longer be renewed or resumed/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Rotate key and get the prompt' })).toBeNull();
     expect(screen.queryByText(resumePromptLine(42))).toBeNull();

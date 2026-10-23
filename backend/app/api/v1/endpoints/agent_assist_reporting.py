@@ -45,6 +45,7 @@ from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
 from app.db.session import get_db
 from app.schemas.client_reports import ReportFileOut, ReportOut
+from app.services.paging import rows_remain
 from app.services import query_history_service, query_service
 from app.services import saved_query_service as saved_queries
 from app.services import scanner_observation_service as observations
@@ -405,7 +406,7 @@ def get_assist_client_report(
             "counts": dataset.get("counts") or {},
             "findings": findings,
             "findings_total": len(stated),
-            "findings_has_more": offset + len(findings) < len(stated),
+            "findings_has_more": rows_remain(offset, len(findings), len(stated)),
             "limit": limit,
             "offset": offset,
             "delta": dataset.get("delta"),

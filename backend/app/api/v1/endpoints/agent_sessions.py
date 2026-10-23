@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -71,6 +71,11 @@ class AgentSessionRowResponse(BaseModel):
     # whose agent is dead and whose key has lapsed.
     key_expires_at: Optional[datetime] = None
     renewable_until: Optional[datetime] = None
+    # Review 2026-10-10 R1e — ``agent_session_service.session_key_state`` of
+    # the three facts above, on the server's clock: ``live`` (a key works
+    # now), ``resumable`` (active, no working key, inside its lifetime) or
+    # ``ended``.  The page words it and never recomputes it.
+    key_state: Literal["live", "resumable", "ended"] = "ended"
     # v2.343.0 — ``end_reason`` is how the session
     # ended ('agent' / 'operator' / 'lapsed'; None while active), and
     # ``feedback_count`` is how many feedback submissions it made.  Together

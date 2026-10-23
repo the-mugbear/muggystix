@@ -286,6 +286,7 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
       user_id: 1, user_username: 'me', started_at: '2026-09-29T10:00:00Z', completed_at: null,
       last_activity_at: null,
       key_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      key_state: 'live',
       call_count: 4, note_count: 0, connection: 'mcp', first_call_at: null,
     }];
     renderPage();

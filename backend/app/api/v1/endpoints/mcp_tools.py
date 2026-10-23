@@ -334,8 +334,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "finding id. `finding_id` / `finding_status` name the finding that "
             "covers the issue; `finding_on_this_host` false means it covers other "
             "hosts only, so the row is unjudged here; `finding_endpoint_status` is "
-            "this host's own state on it. cve, plugin_id or search narrow to one "
-            "issue."
+            "this host's own state on it. scan_id / last_seen_scan_id / observed_at say "
+            "which scans reported it and when the latest ran. cve, plugin_id or search "
+            "narrow to one issue."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/vulnerabilities",
@@ -594,7 +595,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "planned / worked / untouched (exclusive, adding up to hosts), plus "
             "critical and critical_untouched. Answers 'which ranges has nobody "
             "touched?'. sort=untouched or critical_untouched puts the neglected "
-            "blocks first."
+            "blocks first. The blocks are `items`, paged with limit / offset "
+            "(`total` = every block)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/terrain",
@@ -670,8 +672,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "nobody started), discarded, partial, degraded, queued / processing, and "
             "needs_attention (failed or partial, not dismissed, not replaced by a "
             "later import — the answer to 'how many imports need attention'; each "
-            "of them is in `issues` with needs_attention true, and a dismissed one "
-            "says dismissed). An "
+            "of them is in the list with needs_attention true, and a dismissed one "
+            "says dismissed). The issues are `items`, newest first, paged with "
+            "limit / offset (`total`, `has_more`). An "
             "issue's kind: failed or expired = nothing from that file is in the "
             "project (a failed issue's failure_kind says why: truncated_file = the "
             "file was cut short and holds complete records; importing what it holds "
@@ -1003,7 +1006,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "list_evidence": {
         "description": (
-            "Evidence records, newest first, paged, with a 2 KB preview of each raw output. "
+            "Evidence records, newest first, paged, with a 2 KB preview of each raw output "
+            "(preview=false leaves the previews out: a page of summaries, outcomes and sizes). "
             "The full output: read_evidence_raw, in pieces, or curl GET /agent/evidence/{id}/raw "
             "with your key."
         ),

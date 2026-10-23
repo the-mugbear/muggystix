@@ -20,6 +20,7 @@ from app.api.deps import get_current_user
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db, is_deadlock
+from app.services.paging import rows_remain
 from app.services import agent_evidence_service as evidence
 from app.services import proposal_service as proposals
 from app.services.finding_actions import finding_actor
@@ -54,7 +55,7 @@ def list_proposals(
         agent_session_id=agent_session_id, mine_user_id=user.id if mine else None,
         limit=limit, offset=offset,
     )
-    return {"total": total, "items": proposals.serialize_many(db, rows), "has_more": offset + len(rows) < total}
+    return {"total": total, "items": proposals.serialize_many(db, rows), "has_more": rows_remain(offset, len(rows), total)}
 
 
 @router.get("/proposals/summary", summary="Pending proposals per kind (the top-bar count)")
@@ -249,7 +250,7 @@ def list_evidence(
         agent_session_id=agent_session_id, unlinked=unlinked, limit=limit, offset=offset,
     )
     return {"total": total, "items": [evidence.serialize_evidence(r) for r in rows],
-            "has_more": offset + len(rows) < total}
+            "has_more": rows_remain(offset, len(rows), total)}
 
 
 class _FindingFromEvidence(BaseModel):

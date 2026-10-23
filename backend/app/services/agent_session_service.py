@@ -735,6 +735,10 @@ class AgentSessionRow:
             "purpose": self.purpose,
             "key_expires_at": self.key_expires_at,
             "renewable_until": self.renewable_until,
+            # Review 2026-10-10 R1e: where the session stands, decided HERE
+            # on the server's clock — the page keeps only the wording (it
+            # recomputed this from the two dates with the browser's clock).
+            "key_state": session_key_state(self.status, self.key_expires_at, self.renewable_until),
             "end_reason": self.end_reason,
             "feedback_count": self.feedback_count,
             "user_full_name": self.user_full_name,

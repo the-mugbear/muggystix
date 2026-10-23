@@ -1,11 +1,9 @@
 /**
  * The operator's own live agent sessions (5.328.0).
  *
- * "Live" is decided HERE, by the key's expiry. The list this hook used to read
- * (`GET /assist/sessions`) derived an `ended` status on the server for a
- * session whose key had run out; the one session list reports the stored
- * status beside `key_expires_at` — such a session is resumable, not over — so
- * this is where "an agent can use it right now" is pinned.
+ * "Live" is the row's `key_state`, decided by the server on its own clock
+ * (review 2026-10-10, R1e: it was the key's expiry against the browser's
+ * clock). A session whose key ran out is `resumable`, not over, and not live.
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -26,7 +24,7 @@ const HOUR = 3_600_000;
 const at = (ms: number) => new Date(Date.now() + ms).toISOString();
 const session = (over = {}) => ({
   id: 72, project_id: 1, status: 'active', user_id: 7,
-  key_expires_at: at(HOUR), ...over,
+  key_expires_at: at(HOUR), key_state: 'live', ...over,
 });
 const listed = (...sessions: object[]) => ({ project_id: 1, sessions, total: sessions.length });
 
@@ -36,17 +34,13 @@ beforeEach(() => {
 });
 
 describe('hasLiveKey', () => {
-  const now = Date.parse('2026-10-01T12:00:00Z');
-  it('is true only for an active session whose key has not run out', () => {
-    expect(hasLiveKey({ status: 'active', key_expires_at: '2026-10-01T12:00:01Z' }, now)).toBe(true);
-    // Run out, on the second: nothing can use it (it may still be resumable).
-    expect(hasLiveKey({ status: 'active', key_expires_at: '2026-10-01T12:00:00Z' }, now)).toBe(false);
-    expect(hasLiveKey({ status: 'active', key_expires_at: '2026-10-01T11:00:00Z' }, now)).toBe(false);
-    // Revoked: no key at all.
-    expect(hasLiveKey({ status: 'active', key_expires_at: null }, now)).toBe(false);
-    expect(hasLiveKey({ status: 'active' }, now)).toBe(false);
-    // Ended, whatever its last key said.
-    expect(hasLiveKey({ status: 'ended', key_expires_at: '2026-10-02T12:00:00Z' }, now)).toBe(false);
+  it('is true only for an active session the server calls live', () => {
+    expect(hasLiveKey({ status: 'active', key_state: 'live' })).toBe(true);
+    // Run out or revoked: nothing can use it (it may still be resumable).
+    expect(hasLiveKey({ status: 'active', key_state: 'resumable' })).toBe(false);
+    expect(hasLiveKey({ status: 'active', key_state: 'ended' })).toBe(false);
+    // Ended, whatever else the row said.
+    expect(hasLiveKey({ status: 'ended', key_state: 'live' })).toBe(false);
   });
 });
 
@@ -54,8 +48,8 @@ describe('useMyAssistSessions', () => {
   it('asks for this operator’s active sessions and keeps the ones with a live key', async () => {
     api.listAgentSessions.mockResolvedValue(listed(
       session({ id: 72 }),
-      session({ id: 60, key_expires_at: at(-HOUR) }),   // key ran out: resumable, not live
-      session({ id: 61, key_expires_at: null }),        // key revoked
+      session({ id: 60, key_expires_at: at(-HOUR), key_state: 'resumable' }),   // key ran out: resumable, not live
+      session({ id: 61, key_expires_at: null, key_state: 'resumable' }),        // key revoked
     ));
     const { result } = renderHook(() => useMyAssistSessions());
     await waitFor(() => expect(result.current.loading).toBe(false));

@@ -193,7 +193,126 @@ def test_no_route_carries_its_own_copy_of_the_rule():
 
     from app.api.v1.endpoints import findings_bulk, host_bulk
 
-    for module in (findings_bulk, host_bulk):
+    from app.services import host_test_service
+
+    for module in (findings_bulk, host_bulk, host_test_service):
         source = inspect.getsource(module)
         assert "load_project_assignee(" in source, module.__name__
         assert "ProjectMembership" not in source, module.__name__
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-10-10, R1c: a host test's assignee and the finding PATCH
+# ---------------------------------------------------------------------------
+
+def _old_test_rule(db, project_id, user_id):
+    """``host_test_service.validate_assignee`` as it stood before R1c: a
+    member with a writing role, whatever their account's state, or an active
+    global admin.  True = accepted."""
+    if db.query(ProjectMembership.id).filter(
+        ProjectMembership.project_id == project_id, ProjectMembership.user_id == user_id,
+        ProjectMembership.role.in_(("admin", "analyst")),
+    ).first():
+        return True
+    return bool(db.query(User.id).filter(
+        User.id == user_id, User.is_active.is_(True), User.role == UserRole.ADMIN,
+    ).first())
+
+
+@pytest.fixture
+def testers(db_session, test_project, people):
+    analyst = _user(db_session, 711, "r1c-analyst")
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=analyst.id, role="analyst"))
+    admin = _user(db_session, 712, "r1c-padmin")
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=admin.id, role="admin"))
+    db_session.commit()
+    return {**people, "analyst": analyst.id, "project_admin": admin.id}
+
+
+#: who -> accepted as a host test's assignee.  Only the inactive analyst
+#: member changes (the old copy had no ``is_active`` check).
+TEST_ASSIGNEE = {
+    "analyst": True,
+    "project_admin": True,
+    "member": False,                       # a viewer cannot work a test
+    "non_member": False,
+    "inactive_member": False,              # an analyst whose account is off: was accepted
+    "global_admin_no_membership": True,
+    "inactive_global_admin": False,
+    "nobody": False,
+}
+
+
+@pytest.mark.parametrize("who", sorted(TEST_ASSIGNEE))
+def test_a_host_tests_assignee_follows_the_one_rule(client, db_session, test_project, testers, who):
+    user_id = testers[who]
+    old = _old_test_rule(db_session, test_project.id, user_id)
+    assert old == (TEST_ASSIGNEE[who] or who == "inactive_member")
+    host = models.Host(project_id=test_project.id, ip_address="10.74.1.1", state="up")
+    db_session.add(host)
+    db_session.commit()
+    answer = client.post(f"/api/v1/projects/{test_project.id}/host-tests", json={"tests": [{
+        "request_key": f"r1c-{who}", "host_id": host.id, "tool": "curl", "description": "check",
+        "rationale": "r1c", "assigned_to_id": user_id,
+    }]})
+    if TEST_ASSIGNEE[who]:
+        assert answer.status_code == 201, answer.text
+    else:
+        assert (answer.status_code, answer.json()["detail"]) == (
+            422, "Assignee must be a project analyst or administrator"), answer.text
+
+
+def _assignments(db, user_id):
+    from app.db.models_project import Notification
+
+    db.expire_all()
+    return db.query(Notification).filter(
+        Notification.user_id == user_id, Notification.type == "assignment",
+    ).order_by(Notification.id).all()
+
+
+def test_the_finding_patch_tells_the_new_owner_as_the_bulk_assign_does(
+    client, db_session, test_project, people,
+):
+    finding = Finding(project_id=test_project.id, title="R1c single", severity="high",
+                      status="open", source="manual")
+    db_session.add(finding)
+    db_session.commit()
+    finding_id, member = finding.id, people["member"]
+    base = f"/api/v1/projects/{test_project.id}"
+
+    patched = client.patch(f"{base}/findings/{finding_id}", json={"owner_id": member})
+    assert patched.status_code == 200, patched.text
+    (told,) = _assignments(db_session, member)
+    assert (told.finding_id, told.source_type, told.source_id) == (finding_id, "finding", finding_id)
+    assert "R1c single" in told.title
+
+    # Sending the same owner again changes nothing and tells nobody again.
+    again = client.patch(f"{base}/findings/{finding_id}", json={"owner_id": member})
+    assert again.status_code == 200, again.text
+    assert len(_assignments(db_session, member)) == 1
+
+    # The bulk assign is the same function: several findings, one notification,
+    # about the ones that changed hands.
+    more = [Finding(project_id=test_project.id, title=f"R1c {i}", severity="low", status="open",
+                    source="manual") for i in range(3)]
+    db_session.add_all(more)
+    db_session.commit()
+    bulk = client.post(f"{base}/findings/bulk/assign", json={
+        "finding_ids": [f.id for f in more] + [finding_id], "assignee_user_id": member,
+    })
+    assert bulk.status_code == 200 and bulk.json()["affected"] == 4, bulk.text
+    told = _assignments(db_session, member)
+    assert len(told) == 2
+    assert (told[-1].title, told[-1].source_type) == ("3 findings assigned to you", "findings")
+
+
+def test_taking_a_finding_yourself_tells_nobody(client, db_session, test_project, test_user):
+    finding = Finding(project_id=test_project.id, title="R1c mine", severity="high",
+                      status="open", source="manual")
+    db_session.add(finding)
+    db_session.commit()
+    patched = client.patch(f"/api/v1/projects/{test_project.id}/findings/{finding.id}",
+                           json={"owner_id": test_user.id})
+    assert patched.status_code == 200, patched.text
+    assert _assignments(db_session, test_user.id) == []

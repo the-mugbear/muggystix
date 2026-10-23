@@ -596,6 +596,38 @@ class NotificationService:
         self.db.add(notification)
         return notification
 
+    def notify_findings_assigned(
+        self, *, assignee_id: int, project, findings: List, actor: Optional[User],
+    ) -> Optional[Notification]:
+        """Tell ``assignee_id`` the findings just given to them — ONE
+        notification per action, however many findings (review 2026-10-10
+        R1c: the bulk assign told the person and the finding's own PATCH did
+        not).  One finding is named and opens it (``source_type: "finding"``);
+        several say how many and open the reader's findings (``"findings"``,
+        ``utils/notificationLinks``).  Nothing
+        when the list is empty or the person gave them to themself.  The
+        caller commits."""
+        if not findings or (actor is not None and actor.id == assignee_id):
+            return None
+        n = len(findings)
+        who = f"@{actor.username}" if actor is not None else "Someone"
+        if n == 1:
+            finding = findings[0]
+            title = f"Finding assigned to you: {finding.title}"
+            body = f"{who} assigned the finding '{finding.title}' to you in '{project.name}'"
+            source_type, source_id, finding_id = "finding", finding.id, finding.id
+        else:
+            title = f"{n} findings assigned to you"
+            body = f"{who} assigned {n} findings to you in '{project.name}'"
+            source_type, source_id, finding_id = "findings", project.id, None
+        notification = Notification(
+            user_id=assignee_id, project_id=project.id, type="assignment",
+            title=title[:255], body=body, source_type=source_type, source_id=source_id,
+            finding_id=finding_id, actor_id=actor.id if actor is not None else None,
+        )
+        self.db.add(notification)
+        return notification
+
     def notify_host_tests_assigned(
         self, tests: Iterable, actor_id: Optional[int], agent_session_id: Optional[int] = None,
     ) -> List[Notification]:

@@ -31,6 +31,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.downloads import attachment
 from app.api.deps import identify_agent_if_present
 from app.api.deps import get_current_user, get_current_user_if_present, require_role
 from app.core.config import settings
@@ -170,7 +171,7 @@ def tls_certificate():
     return PlainTextResponse(
         _TLS_CERT_PATH.read_text(),
         media_type="application/x-pem-file",
-        headers={"Content-Disposition": 'attachment; filename="bluestick.pem"'},
+        headers=attachment("bluestick.pem"),
     )
 
 
@@ -490,5 +491,5 @@ async def agents_guide(
     return PlainTextResponse(
         content,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="bluestick-agent-guide.md"'},
+        headers=attachment("bluestick-agent-guide.md"),
     )

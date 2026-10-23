@@ -46,11 +46,6 @@ def _base_query(db: Session, project_id: int):
     would flag every host behind an approved load-balancer name as a scope
     violation.  See dns_name_service.host_reachable_via_in_scope_name_condition.
     """
-    from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
-
-    mapped = select(models.HostSubnetMapping.id).where(
-        models.HostSubnetMapping.host_id == models.Host.id
-    )
     return (
         # The five columns the callers read, not Host entities: the
         # whole-project export built 80k ORM objects (2.5 s at 80k hosts;
@@ -60,8 +55,29 @@ def _base_query(db: Session, project_id: int):
             models.Host.state, models.Host.last_seen,
         )
         .filter(models.Host.project_id == project_id)
-        .filter(~mapped.exists())
-        .filter(~host_reachable_via_in_scope_name_condition(project_id))
+        .filter(coverage_state_condition(COVERAGE_NONE, project_id))
+    )
+
+
+def coverage_state_condition(state: str, project_id: int):
+    """Host in one coverage state — the DSL's ``scope:<state>`` predicate,
+    the ONE statement of the three states (review 2026-10-10 R1a: this
+    module, the DSL and the Scope page's arithmetic each wrote it)."""
+    from app.services.host_query_predicates import scope_coverage_predicate
+
+    return scope_coverage_predicate([state], project_id)
+
+
+def coverage_state_count(db: Session, project_id: int, state: str) -> int:
+    """How many of the project's hosts are in ``state`` — exactly the hosts
+    ``scope:<state>`` lists (and, for ``none``, ``/hosts?out_of_scope_only``).
+    Unlike :func:`out_of_scope_count` it does not answer 0 for a project that
+    declares no scope: a count printed beside a link to the list must be the
+    list's own size."""
+    return (
+        db.query(func.count(models.Host.id))
+        .filter(models.Host.project_id == project_id, coverage_state_condition(state, project_id))
+        .scalar() or 0
     )
 
 

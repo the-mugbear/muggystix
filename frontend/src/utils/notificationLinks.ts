@@ -44,6 +44,11 @@ export const notificationHref = (n: Linkable): string | null => {
     if (n.host_id) return `/hosts/${n.host_id}#host-detail-proposed-tests`;
     return '/operations';
   }
+  // Findings assigned to you (R1c: the finding's own owner change tells the
+  // new owner as the bulk assign does): one opens the finding, several the
+  // Findings list narrowed to yours.
+  if (n.source_type === 'finding' && n.finding_id) return `/findings/${n.finding_id}`;
+  if (n.source_type === 'findings') return '/findings?owner=me';
   // A remediation alert: the list its rows are in — overdue, due soon, or
   // deferrals whose review date has come — in the alert's project
   // (`source_id`).  It opens on the cross-project page narrowed to that

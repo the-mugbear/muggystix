@@ -8,28 +8,25 @@ export interface StateLine { text: string; tone: StateTone }
  *  lapsed-but-renewable, or gone.  "active" alone cannot tell a live agent from
  *  one that died a day ago; the key's state can.  Null for a session that is
  *  not active, or one that carries neither date.  The one reading for EVERY
- *  session (5.383.0): a session has no kind, and an active row that nothing
- *  can act on any more is "key expired · past its lifetime" here — it had a
- *  flag and a "stalled" mark of its own while rows were told apart by kind.
- *  `now` is the BROWSER's clock, compared with the server's dates: a skewed
- *  clock can call a key live or lapsed a little early or late here, but the
- *  server remains the authority — a call it refuses is what the user sees. */
-export const keyState = (row: AgentSessionRow, now: number = Date.now()): StateLine | null => {
+ *  session (5.383.0): a session has no kind.  Which of the three it is comes
+ *  from the SERVER (`row.key_state`, review 2026-10-10 R1e — this compared the
+ *  dates with the browser's clock); this function only words it. */
+export const keyState = (row: AgentSessionRow): StateLine | null => {
   if (row.status !== 'active') return null;
-  const exp = row.key_expires_at ? new Date(row.key_expires_at).getTime() : null;
-  const cap = row.renewable_until ? new Date(row.renewable_until).getTime() : null;
-  if (exp != null && exp > now) {
+  if (row.key_state === 'live') {
     return { text: `key valid until ${formatTimestamp(row.key_expires_at)}`, tone: 'ok' };
   }
-  if (cap != null && cap > now) {
+  if (row.key_state === 'resumable') {
     return {
-      text: exp == null
+      text: row.key_expires_at == null
         ? `key revoked · resumable until ${formatTimestamp(row.renewable_until)}`
         : `key expired · resumable until ${formatTimestamp(row.renewable_until)}`,
       tone: 'warn',
     };
   }
-  if (exp != null || cap != null) return { text: 'key expired · past its lifetime', tone: 'muted' };
+  if (row.key_expires_at != null || row.renewable_until != null) {
+    return { text: 'key expired · past its lifetime', tone: 'muted' };
+  }
   return null;
 };
 
@@ -58,14 +55,13 @@ export interface LiveSessionsSummary {
  */
 export const liveSessionsSummary = (
   active: AgentSessionRow[],
-  now: number = Date.now(),
   /** `mine` (5.330.0): `active` is the READER'S OWN active sessions
    *  (`myActiveSessionFilters`) — Operations' line. The counting is the same;
    *  only the wording says whose they are. Agent Sessions passes nothing. */
   options: { mine?: boolean } = {},
 ): LiveSessionsSummary => {
-  const connected = active.filter((r) => keyState(r, now)?.tone === 'ok').length;
-  const resumable = active.filter((r) => keyState(r, now)?.tone === 'warn').length;
+  const connected = active.filter((r) => keyState(r)?.tone === 'ok').length;
+  const resumable = active.filter((r) => keyState(r)?.tone === 'warn').length;
   const n = (v: number, one: string) => `${v.toLocaleString()} ${v === 1 ? one : `${one}s`}`;
   let text: string;
   if (active.length === 0) {
@@ -85,8 +81,7 @@ export const liveSessionsSummary = (
 };
 
 /** True while an agent can use the session right now (its key is live). */
-export const agentConnected = (row: AgentSessionRow, now: number = Date.now()): boolean =>
-  keyState(row, now)?.tone === 'ok';
+export const agentConnected = (row: AgentSessionRow): boolean => hasLiveKey(row);
 
 /** v5.219.0 — how an ended session ended and whether it said anything
  *  on the way out.  'agent' is the clean exit; the other two mean the agent
@@ -131,15 +126,9 @@ export const sessionRowPath = (row: AgentSessionRow): string | null =>
 /** A session whose key still works: an agent could take a task right now.
  *  This — not the stored `status` — is what "my live sessions" means: an
  *  active session whose key ran out is resumable from Agent Sessions, but
- *  nothing is connected to it. (The list this replaced derived an `ended`
- *  status for such rows on the server.) */
-export const hasLiveKey = (
-  row: Pick<AgentSessionRow, 'status' | 'key_expires_at'>,
-  now: number = Date.now(),
-): boolean =>
-  row.status === 'active'
-  && row.key_expires_at != null
-  && new Date(row.key_expires_at).getTime() > now;
+ *  nothing is connected to it.  The server decides it (`key_state`). */
+export const hasLiveKey = (row: Pick<AgentSessionRow, 'status' | 'key_state'>): boolean =>
+  row.status === 'active' && row.key_state === 'live';
 
 /** The session-list filters for "this operator's sessions that may be live";
  *  the caller keeps the rows `hasLiveKey` accepts. One definition for

@@ -21,7 +21,7 @@ def test_host_tests_envelope_shape_and_has_more_boundary(client, db_session, tes
     url = f"/api/v1/projects/{test_project.id}/host-tests"
     empty = client.get(url)
     assert empty.status_code == 200, empty.text
-    assert empty.json() == {"items": [], "total": 0, "has_more": False}
+    assert empty.json() == {"items": [], "total": 0, "limit": 50, "offset": 0, "returned": 0, "has_more": False}
 
     host = models.Host(project_id=test_project.id, ip_address="10.9.0.1", state="up")
     db_session.add(host)

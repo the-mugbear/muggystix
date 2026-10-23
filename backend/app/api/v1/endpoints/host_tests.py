@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import check_agent_rate_limit, get_current_project, require_project_role
 from app.api.v1.endpoints.agent_common import load_agent_session, require_project_host
-from app.api.v1.endpoints.agent_schemas import as_agent_page
 from app.api.deps import get_current_user
 from app.db.models_agent import Agent
 from app.db.models_auth import User
@@ -42,9 +41,9 @@ def agent_actor(request: Request, agent: Agent = Depends(check_agent_rate_limit)
     )
 
 
-def make_router(reader, writer, *, page=None):
-    """``page`` puts the list's answer in a door's own page: the agents' door
-    passes ``as_agent_page``; the people's door answers the service's dict."""
+def make_router(reader, writer):
+    """The two doors' host-test routes.  The list answers the service's page
+    envelope (``services/paging``) on both."""
     router = APIRouter()
 
     @router.post("/host-tests", status_code=201, summary="Propose tests directly on hosts")
@@ -69,7 +68,7 @@ def make_router(reader, writer, *, page=None):
         answer = tests.list_tests(db, actor.project_id, actor.who.user_id, host_id=host_id, status=status,
                                   label=label, assigned_to_id=assigned_to_id, agent_session_id=agent_session_id,
                                   mine=mine, q=q, active_only=active_only, limit=limit, offset=offset)
-        return page(answer, limit=limit, offset=offset) if page else answer
+        return answer
 
     @router.get("/host-tests/{test_id}", summary="Read one host test")
     def detail(test_id: int, actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -99,4 +98,4 @@ def record_result(test_id: int, body: HostTestResult, actor: Actor = Depends(hum
     data = {"test": tests.serialize_many(db, [row])[0], "evidence": agent_evidence_service.serialize_evidence(record)}
     db.commit()
     return data
-agent_router = make_router(agent_actor, agent_actor, page=as_agent_page)  # operator write gate is router-level in api.py
+agent_router = make_router(agent_actor, agent_actor)  # operator write gate is router-level in api.py

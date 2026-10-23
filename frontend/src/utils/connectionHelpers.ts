@@ -1,4 +1,5 @@
 import type { Port } from '../services/api';
+import { webScheme } from './webPort';
 
 export interface ConnectionHelper {
   /** Short label shown in the UI (e.g. "curl", "smbclient") */
@@ -40,9 +41,9 @@ export const getConnectionHelpers = (
   const svc = (port.service_name || '').toLowerCase();
   const helpers: ConnectionHelper[] = [];
 
-  // --- Web / HTTP(S) ---
-  if (isHttp(pn, svc)) {
-    const scheme = isHttps(pn, svc) ? 'https' : 'http';
+  // --- Web / HTTP(S) --- (`utils/webPort`, the one rule — R1d)
+  const scheme = webScheme(port);
+  if (scheme) {
     const portSuffix = (scheme === 'https' && pn === 443) || (scheme === 'http' && pn === 80) ? '' : `:${pn}`;
     const vhost = isSafeHostname(options.vhost) ? options.vhost : null;
     // A bare IPv6 address needs brackets in a URL and in curl's --resolve.
@@ -335,18 +336,3 @@ export const getConnectionHelpers = (
 
   return helpers;
 };
-
-// --- Internal helpers ---
-
-const HTTPS_PORTS = new Set([443, 8443, 9443, 4443]);
-const HTTP_PORTS = new Set([80, 8080, 8081, 8000, 8008, 8888, 9090, 8181, 3000]);
-
-function isHttp(port: number, svc: string): boolean {
-  if (HTTP_PORTS.has(port) || HTTPS_PORTS.has(port)) return true;
-  return svc.includes('http') || svc.includes('web') || svc.includes('ssl');
-}
-
-function isHttps(port: number, svc: string): boolean {
-  if (HTTPS_PORTS.has(port)) return true;
-  return svc.includes('https') || svc.includes('ssl');
-}

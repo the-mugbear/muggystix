@@ -52,8 +52,7 @@ export const useAgentTask = (): AgentTask => {
         ...myAssistSessionsRead(projectId, user.id),
         staleTime: 0,
       });
-      const now = Date.now();
-      return rows.filter((s) => hasLiveKey(s, now));
+      return rows.filter((s) => hasLiveKey(s));
     } catch {
       return [];
     }

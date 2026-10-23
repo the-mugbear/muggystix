@@ -45,10 +45,11 @@ const AgentSessionsLine: React.FC = () => {
     staleTime: FRESH_FOR_MS,
   });
   const rows = sessions.data?.sessions;
-  // The sentence is as of the read it was made from (`dataUpdatedAt`).
+  // The sentence is as of the read it was made from: each row's `key_state`
+  // is the server's, at that read.
   const summary = useMemo(
-    () => (rows ? liveSessionsSummary(rows, sessions.dataUpdatedAt, { mine: true }) : null),
-    [rows, sessions.dataUpdatedAt],
+    () => (rows ? liveSessionsSummary(rows, { mine: true }) : null),
+    [rows],
   );
   const text = summary?.text ?? null;
   const waiting = summary?.waiting ?? false;

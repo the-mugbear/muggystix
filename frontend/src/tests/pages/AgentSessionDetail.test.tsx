@@ -58,6 +58,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   generated_by_tool: 'claude-code',
   purpose: 'map the DMZ',
   key_expires_at: ahead(10 * HOUR),
+  key_state: 'live',
   renewable_until: ahead(5 * 24 * HOUR),
   end_reason: null,
   feedback_count: 1,

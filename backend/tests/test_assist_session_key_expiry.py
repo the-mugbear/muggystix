@@ -252,3 +252,27 @@ def test_the_sweep_keeps_the_session_record(client, db_session, test_project):
     db_session.expire_all()
     session = db_session.get(AgentSession, sid)
     assert session is not None and session.purpose == "ftp sweep"
+
+
+def test_each_row_says_where_its_session_stands_on_the_servers_clock(client, db_session, test_project):
+    """Review 2026-10-10, R1e: the page read the browser's clock against the
+    two dates to call a session live / resumable / over.  The row carries
+    ``key_state`` (``session_key_state``) and the page only words it."""
+    from app.services.agent_session_service import session_key_state
+
+    live = _start(client, test_project.id)
+    lapsed = _start(client, test_project.id)
+    _expire_keys(db_session, lapsed)
+    gone = _start(client, test_project.id)
+    _expire_keys(db_session, gone)
+    _age_past_renewal(db_session, gone)
+    ended = _start(client, test_project.id)
+    assert client.post(f"/api/v1/projects/{test_project.id}/agent-sessions/{ended}/end").status_code == 204
+
+    rows = {r["id"]: r for r in _list(client, test_project.id)}
+    assert {sid: rows[sid]["key_state"] for sid in (live, lapsed, gone, ended)} == {
+        live: "live", lapsed: "resumable", gone: "ended", ended: "ended",
+    }
+    for r in rows.values():
+        parse = lambda v: _when(v) if v else None  # noqa: E731
+        assert r["key_state"] == session_key_state(r["status"], parse(r["key_expires_at"]), parse(r["renewable_until"]))
