@@ -202,6 +202,14 @@ def test_the_queues_scanner_row_reads_can_use_the_signal_index(db_session, test_
     statement, parameters = captured[-1]
 
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    # The question is whether each read's filter lets Postgres USE the partial
+    # index.  Since 2.523.0 ``uq_vulnerability_identity`` also leads with
+    # host_id, and on a tiny test table the planner may pick it for the
+    # correlated "no critical or exploitable row" probe — a choice the
+    # statistics earlier tests left decide (gate, 2026-10-22: one shard of
+    # four).  Take it out of the choice for this statement only: DDL in the
+    # test's own transaction, rolled back with it.
+    db_session.execute(text("DROP INDEX uq_vulnerability_identity"))
     cursor = db_session.connection().connection.cursor()
     cursor.execute("EXPLAIN (COSTS OFF) " + statement, parameters)
     plan = "\n".join(row[0] for row in cursor.fetchall())
