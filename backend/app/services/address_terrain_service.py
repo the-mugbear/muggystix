@@ -4,11 +4,11 @@
 Every host of the project, grouped into its /24 (IPv6: its /64), and within a
 block counted by how far the team has taken it:
 
-* ``tested``    — a planned test was executed against it (``has:tested``);
-* ``planned``   — in a test plan, not yet tested (``has:planned``);
-* ``worked``    — someone has it: a review or assignment, a note, or a
-  finding — but no plan entry;
-* ``untouched`` — none of those (the "Worth a look" definition of untouched).
+* ``tested``    — it has a tested evidence record (``has:tested``);
+* ``planned``   — a test proposed or in progress, not tested (``has:planned``);
+* ``worked``    — touched but neither (``NOT has:untouched``): a review or
+  assignment, a note, a finished test, an evidence record or a finding;
+* ``untouched`` — none of those (``has:untouched``).
 
 The four stages are exclusive and add up to ``hosts``.  Beside them, the
 exposure the team has not reached yet: ``critical`` hosts carry a critical
@@ -16,8 +16,10 @@ scanner observation (``has:critical``), ``critical_untouched`` are the ones
 among them nobody has touched.  Counts only — no score, no age (a project is
 one assessment window).
 
-One statement: one row per host with four flags, grouped here in Python so the
-address arithmetic stays exact for IPv4 and IPv6 alike.
+One statement: one row per host with its stage (a CASE over the Hosts
+language's predicates — ``host_query_predicates``, the one definition of each)
+and its critical flag, grouped here in Python so the address arithmetic stays
+exact for IPv4 and IPv6 alike.
 """
 from __future__ import annotations
 
@@ -25,15 +27,14 @@ import ipaddress
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models import Annotation, HostFollow
-from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES, TESTED_OUTCOMES
-from app.db.models_proposals import EvidenceRecord
-from app.db.models_findings import FindingHost
 from app.db.models_project import Project
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+from app.services.host_query_predicates import (
+    planned_predicate, severity_predicate, tested_predicate, untouched_predicate,
+)
 
 #: Enough blocks for any engagement BlueStick has seen (production: ~300);
 #: beyond it the largest blocks are kept and the response says so.
@@ -87,48 +88,19 @@ def _sort_key(cidr: str):
 
 def compute_address_terrain(db: Session, project: Project) -> AddressTerrainResponse:
     host = models.Host
-    in_project = db.query(host.id).filter(host.project_id == project.id)
-    tested = (
-        db.query(EvidenceRecord.host_id.label("hid"))
-        .filter(
-            EvidenceRecord.outcome.in_(TESTED_OUTCOMES),
-            EvidenceRecord.host_id.in_(in_project),
-        )
-        .distinct().subquery("tested")
+    # The stage is the Hosts language's own predicates, in order — `has:tested`,
+    # `has:planned`, NOT `has:untouched` — so each stage IS the list its
+    # drill-down opens and there is no second copy of "untouched" here (review
+    # 2026-10-23, R-INV1: the terrain wrote the five NOT EXISTS out again).  A
+    # CASE stops at the first true branch, so a tested host costs one probe.
+    stage = case(
+        (tested_predicate(project.id), 1),
+        (planned_predicate(project.id), 2),
+        (~untouched_predicate(db), 3),
+        else_=4,
     )
-    planned = (
-        db.query(HostTest.host_id.label("hid"))
-        .filter(HostTest.host_id.in_(in_project), HostTest.status.in_(ACTIVE_TEST_STATUSES))
-        .distinct().subquery("planned")
-    )
-    worked = (
-        db.query(HostFollow.host_id.label("hid")).filter(HostFollow.host_id.in_(in_project))
-        .union(
-            db.query(Annotation.host_id).filter(Annotation.host_id.in_(in_project)),
-            db.query(FindingHost.host_id).filter(FindingHost.host_id.in_(in_project)),
-            db.query(HostTest.host_id).filter(HostTest.host_id.in_(in_project), HostTest.status != "dismissed"),
-            db.query(EvidenceRecord.host_id).filter(EvidenceRecord.host_id.in_(in_project)),
-        )
-        .subquery("worked")
-    )
-    critical = (
-        db.query(Vulnerability.host_id.label("hid"))
-        .filter(
-            Vulnerability.severity == VulnerabilitySeverity.CRITICAL,
-            Vulnerability.host_id.in_(in_project),
-        )
-        .distinct().subquery("critical")
-    )
-    flag = lambda sub: sub.c.hid.isnot(None)  # noqa: E731
     rows = (
-        db.query(
-            host.ip_address,
-            flag(tested), flag(planned), flag(worked), flag(critical),
-        )
-        .outerjoin(tested, tested.c.hid == host.id)
-        .outerjoin(planned, planned.c.hid == host.id)
-        .outerjoin(worked, worked.c.hid == host.id)
-        .outerjoin(critical, critical.c.hid == host.id)
+        db.query(host.ip_address, stage, severity_predicate(["CRITICAL"]))
         .filter(host.project_id == project.id)
         .execution_options(yield_per=5000)
     )
@@ -137,7 +109,7 @@ def compute_address_terrain(db: Session, project: Project) -> AddressTerrainResp
     counts: Dict[str, List[int]] = {}
     block_of: Dict[str, Optional[str]] = {}  # per /24 prefix string, parsed once
     total = unplaced = 0
-    for ip, is_tested, is_planned, is_worked, is_critical in rows:
+    for ip, stage, is_critical in rows:
         total += 1
         ip = ip or ""
         key = ip.rpartition(".")[0] if ip.count(".") == 3 else ip
@@ -153,7 +125,6 @@ def compute_address_terrain(db: Session, project: Project) -> AddressTerrainResp
         if c is None:
             c = counts[cidr] = [0, 0, 0, 0, 0, 0, 0]
         c[0] += 1
-        stage = 1 if is_tested else 2 if is_planned else 3 if is_worked else 4
         c[stage] += 1
         if is_critical:
             c[5] += 1
