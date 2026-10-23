@@ -29,7 +29,7 @@ from app.db.session import Base
 from tests.conftest import USING_POSTGRES, _drop_database, _ensure_database, engine as suite_engine
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BEFORE = "c8e2a4f6b1d9"
+BEFORE = "33edf48e7db9"
 REVISION = "7b83a791a783"
 
 

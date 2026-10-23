@@ -57,11 +57,9 @@ class Agent(Base):
         index=True,
     )
     description = Column(Text)
-    # UNREAD (review 2026-10-23): nothing ever set it false, so the auth
-    # chain's "agent inactive" refusal and the reactivation at session start
-    # were dead and went.  The column stays only until a revision drops it —
-    # a key is switched off with ``api_keys.is_active`` / by ending its session.
-    is_active = Column(Boolean, default=True, nullable=False)
+    # No ``is_active`` (dropped by 33edf48e7db9, review 2026-10-23): nothing
+    # ever set it false.  A key is switched off with ``api_keys.is_active`` /
+    # by ending its session.
     rate_limit_rpm = Column(Integer, default=240, server_default="240", nullable=False)
 
     # Tracking

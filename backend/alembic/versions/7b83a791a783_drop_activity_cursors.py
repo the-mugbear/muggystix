@@ -12,13 +12,13 @@ Collaboration; nothing reads them).
 ``d1e8f7a6b5c4`` table less the two indexes ``a5d9c3e1f7b2`` dropped.
 
 Revision ID: 7b83a791a783
-Revises: c8e2a4f6b1d9
+Revises: 33edf48e7db9
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "7b83a791a783"
-down_revision = "c8e2a4f6b1d9"
+down_revision = "33edf48e7db9"
 branch_labels = None
 depends_on = None
 
