@@ -109,26 +109,6 @@ state_set() {
     echo "$1|$2" >> "$ROLLBACK_STATE_FILE"
 }
 
-# The image compose builds or names for a service.  `config --images SERVICE`
-# also lists the images of every service it depends on, in no fixed order
-# (asking for the frontend's answered with the backend's one time in two), so
-# the one NAMED for the service is picked: <project>-<service>, else a name
-# ending in the service's, else — the database has no dependencies — the
-# first line.
-service_image_ref() {
-    local service="$1" listed project ref=""
-    listed="$($DC config --images "$service" 2>/dev/null || true)"
-    [[ -n "$listed" ]] || return 0
-    if [[ "$service" == "db" ]]; then
-        printf '%s\n' "$listed" | head -1
-        return 0
-    fi
-    project="$(compose_project_name)"
-    ref="$(printf '%s\n' "$listed" | grep -xE "${project:-[^/]+}[-_]${service}(:[^/]+)?" | head -1 || true)"
-    [[ -n "$ref" ]] || ref="$(printf '%s\n' "$listed" | grep -E "(^|[-_/])${service}(:[^/]+)?\$" | head -1 || true)"
-    printf '%s\n' "$ref"
-}
-
 # A .env that option 4 wrote only so Compose could parse the file during a
 # teardown.  It must never become a deployment's configuration.
 TEARDOWN_ENV_MARKER="# BLUESTICK-TEARDOWN-TEMPORARY-ENV"
@@ -305,7 +285,7 @@ ensure_pinned_base_images() {
         "NODE_IMAGE|frontend/Dockerfile|node:22-alpine|NODE_VERSION" \
         "NGINX_IMAGE|frontend/Dockerfile|nginx:alpine|NGINX_VERSION"; do
         IFS='|' read -r arg dockerfile floating var <<< "$spec"
-        env_override="$(grep -E "^${arg}=" .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+        env_override="$(stack_env_val "$arg")"
         [[ -n "${!arg:-}" || -n "$env_override" ]] && continue
         pinned="$(sed -n "s/^ARG ${arg}=//p" "$dockerfile" 2>/dev/null | head -1)"
         [[ -z "$pinned" ]] && continue
@@ -321,7 +301,7 @@ resolved_base_image() {
     # $1 build arg, $2 Dockerfile
     local value
     value="${!1:-}"
-    [[ -z "$value" ]] && value="$(grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [[ -z "$value" ]] && value="$(stack_env_val "$1")"
     [[ -z "$value" ]] && value="$(sed -n "s/^ARG $1=//p" "$2" 2>/dev/null | head -1)"
     printf '%s\n' "$value"
 }
@@ -650,7 +630,7 @@ report_permissions() {
 # Read HOST_IP from .env
 # ------------------------------------------------------------------
 get_configured_ip() {
-    grep "^HOST_IP=" .env 2>/dev/null | cut -d'=' -f2
+    stack_env_val HOST_IP
 }
 
 # ------------------------------------------------------------------
@@ -675,6 +655,14 @@ ensure_ssl_certs() {
     if [[ -f "ssl/certs/networkmapper.crt" && -f "ssl/certs/networkmapper.key" ]]; then
         print_success "SSL certificates found"
         return 0
+    fi
+    # A CA-issued certificate whose key is missing is the operator's to fix:
+    # generating here deleted it and wrote a self-signed one over it (review
+    # 2026-10-23, N1; the rule of option 3 — never regenerate over a CA cert).
+    if cert_is_ca_issued; then
+        print_error "ssl/certs/networkmapper.crt was issued by a CA, but its key (ssl/certs/networkmapper.key) is missing."
+        print_error "Nothing was changed: put the key back beside it (or issue a new pair: ca/local-ca.sh), then run this again."
+        return 1
     fi
 
     print_warning "SSL certificates not found - generating self-signed certs..."
@@ -740,7 +728,11 @@ backup_config() {
     dest="$parent/$(basename "$PROJECT_ROOT")-config-backup-$stamp"
     found=0
 
-    if ! mkdir -p "$dest"; then
+    # Private from the moment it exists (review 2026-10-23, N3): it was made
+    # under the shell's umask and closed only by the chmod at the end, so for
+    # the length of the copy SECRET_KEY and the TLS key sat in a folder every
+    # account could list and read.
+    if ! mkdir -m 700 -p "$dest"; then
         print_error "Could not create $dest — nothing was backed up."
         return 1
     fi
@@ -1094,8 +1086,8 @@ marked_deploy_completed() {
 # ------------------------------------------------------------------
 ensure_database_up() {
     local pg_user pg_db up_rc=0
-    pg_user="$(_stack_env_val POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
-    pg_db="$(_stack_env_val POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
+    pg_user="$(stack_env_val POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
+    pg_db="$(stack_env_val POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
     if $DC exec -T db pg_isready -U "$pg_user" -d "$pg_db" </dev/null >/dev/null 2>&1; then
         return 0
     fi
@@ -1141,8 +1133,8 @@ upgrade_refusal_gate() {
         print_info  "Copy the whole scripts/ folder of this release, or override: DEPLOY_SKIP_REFUSAL_CHECK=1 ./scripts/deploy.sh"
         return 1
     fi
-    pg_user="$(_stack_env_val POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
-    pg_db="$(_stack_env_val POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
+    pg_user="$(stack_env_val POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
+    pg_db="$(stack_env_val POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
     if ! $DC exec -T db pg_isready -U "$pg_user" -d "$pg_db" </dev/null >/dev/null 2>&1; then
         if postgres_volume_exists; then
             # ensure_database_up ran just before; it said why if it failed.
@@ -1415,9 +1407,9 @@ rollback_to_previous() {
             # deploy is over, and the next option 1 takes a new rollback point.
             state_del DEPLOY_IN_PROGRESS
             if [[ "$uploads_partial" -eq 1 ]]; then
-                rollback_summary "RUNNING — PARTLY RESTORED (database restored, uploads/ not)" \
-                    "The previous build is running on the pre-deploy database, but restoring uploads/ failed: evidence images and issued report files may be missing." \
-                    "Retry the files with the command restore-db.sh printed above (under 'uploads/ is PARTLY RESTORED')."
+                rollback_summary "RUNNING — PARTLY RESTORED (database restored, files not)" \
+                    "The previous build is running on the pre-deploy database, but restoring uploads/ or the report-template files failed: evidence images, issued report files or a template's logo may be missing." \
+                    "Retry the files with the command restore-db.sh printed above (under '… is PARTLY RESTORED')."
                 return 1
             fi
             rollback_summary "RUNNING" \

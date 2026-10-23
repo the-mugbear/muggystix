@@ -266,7 +266,7 @@ compose() { "${COMPOSE[@]}" "$@"; }
 # order — taking the first line ran Alembic inside the postgres image one
 # time in two, and removing only the database's still left the image of any
 # OTHER dependency to be picked.  So the image NAMED for the service is
-# selected, the way deploy.sh's service_image_ref does:
+# selected, the way stack-lib.sh's service_image_ref does:
 # <project>-<service>, else a name ending in the
 # service's.  (Each script has its own compose command, so the three lines
 # are repeated rather than shared.)

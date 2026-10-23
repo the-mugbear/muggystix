@@ -27,7 +27,13 @@ fail              [{"match": regex, "rc": n, "times": k}]  a matching call
 no_recreate       [regex]  an `up` matching this "succeeds or fails" as
                   scripted but recreates nothing
 pending_repairs   text printed by data_repairs.py --pending
-dump_body         bytes pg_dump writes (default a complete fake dump)
+dump_body         bytes pg_dump writes (default a complete fake dump holding
+                  ``alembic_version=<alembic_revision>``, which
+                  `pg_restore -t alembic_version -f -` reads back)
+revision_after_dump  alembic_revision once pg_dump has run (a migration that
+                  ran between the dump and a later read)
+image_revisions   {image id: [rev, …]}  what `docker run --entrypoint ls IMAGE
+                  /app/alembic/versions` lists (absent: ls fails)
 refusals          {revision: n}  what scripts/upgrade-refusals.sql counts
                                  for that revision (default 0)
 refusal_errors    [revision, …]  checks that fail to run (an older schema)
@@ -52,9 +58,6 @@ import tarfile
 DIR = os.environ["FAKE_DOCKER_DIR"]
 STATE = os.path.join(DIR, "state.json")
 LOG = os.path.join(DIR, "calls.log")
-
-COMPLETE_DUMP = b"PGDMP fake table of contents\nrow data\nEND"
-
 
 def load() -> dict:
     with open(STATE, encoding="utf-8") as fh:
@@ -89,8 +92,27 @@ def image_id(state: dict, ref: str) -> str | None:
     return None
 
 
+def dump_body(state: dict) -> bytes:
+    """What `pg_dump` writes: ``dump_body`` if scripted, else a complete fake
+    dump whose alembic_version row is the database's revision AT THE DUMP."""
+    if "dump_body" in state:
+        return state["dump_body"].encode()
+    rev = state.get("alembic_revision", "")
+    return f"PGDMP fake table of contents\nalembic_version={rev}\nrow data\nEND".encode()
+
+
 def pg_restore(args: list[str], state: dict) -> int:
     data = sys.stdin.buffer.read()
+    if "-t" in args and "alembic_version" in args and "-" in args:
+        # `pg_restore -a -t alembic_version -f -`: the table's rows as SQL.
+        m = re.search(rb"alembic_version=(\S+)", data)
+        if not data.startswith(b"PGDMP"):
+            return 1
+        if m:
+            out("SET statement_timeout = 0;\n\n"
+                "COPY public.alembic_version (version_num) FROM stdin;\n"
+                f"{m.group(1).decode()}\n\\.\n\n")
+        return 0
     if "--list" in args:
         if not data.startswith(b"PGDMP"):
             return 1
@@ -222,7 +244,9 @@ def compose(args: list[str], state: dict) -> int:
             if tool == "pg_isready":
                 return 0
             if tool == "pg_dump":
-                sys.stdout.buffer.write(state.get("dump_body", COMPLETE_DUMP.decode()).encode())
+                sys.stdout.buffer.write(dump_body(state))
+                state["alembic_revision"] = state.get("revision_after_dump", state.get("alembic_revision", ""))
+                save(state)
                 return 0
             if tool == "pg_restore":
                 return pg_restore(inner, state)
@@ -327,6 +351,15 @@ def main(argv: list[str]) -> int:
         save(state)
         return 0
     if cmd == "run":
+        if "ls" in rest and "/app/alembic/versions" in rest:
+            # The migrations an image carries (`image_revisions` {image id: [rev, …]}).
+            ref = rest[rest.index("ls") + 1]
+            revs = state.get("image_revisions", {}).get(image_id(state, ref) or ref)
+            if revs is None:
+                sys.stderr.write("ls: /app/alembic/versions: No such file or directory\n")
+                return 2
+            out("".join(f"{r}_some_revision.py\n" for r in revs))
+            return 0
         if "pg_restore" in rest:
             return pg_restore(rest[rest.index("pg_restore"):], state)
         if "tar" in rest and "czf" in rest:
