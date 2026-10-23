@@ -277,6 +277,27 @@ describe('ProposalItem — after the decision', () => {
     renderItem({ ...base, current_value: 'Newer text.', base_value: 'Old text.', changed_since_proposed: true });
     expect(screen.getByRole('note')).toHaveTextContent(/changed after the draft was written/);
   });
+
+  // Owner, 2026-10-22: a draft from before drafts recorded the text they
+  // replace (base_recorded false) is left pending by a bulk accept with its
+  // own reason; on its own it carries that line as a caution.
+  const UNKNOWN = 'This draft was made before drafts recorded the text they replace — decide it on its own, beside the current text.';
+
+  it('cautions on a draft whose base was never recorded, with text in the section or none', () => {
+    const { unmount } = renderItem({ ...base, current_value: 'Written by hand.', base_recorded: false, changed_since_proposed: null });
+    expect(screen.getByRole('note')).toHaveTextContent(UNKNOWN);
+    unmount();
+    renderItem({ ...base, current_value: null, base_recorded: false, changed_since_proposed: null });
+    expect(screen.getByRole('note')).toHaveTextContent(UNKNOWN);
+  });
+
+  it('says nothing of it when the base was recorded, or once decided', () => {
+    const { unmount } = renderItem({ ...base, current_value: 'Same.', base_value: 'Same.', base_recorded: true, changed_since_proposed: false });
+    expect(screen.queryByRole('note')).toBeNull();
+    unmount();
+    renderItem({ ...base, status: 'accepted', base_recorded: false });
+    expect(screen.queryByText(UNKNOWN)).toBeNull();
+  });
 });
 
 // 2.522.0 / 5.417.0 — prod feedback #76: an agent proposes a subnet's

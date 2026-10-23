@@ -14,7 +14,7 @@ import { type OnProposalDecided, useProposalDecision } from '../../hooks/useProp
 import type { EvidenceResolver } from '../../utils/reportImages';
 import { cn } from '../../utils/cn';
 import { scrollBelowChrome } from '../../utils/uiStyles';
-import { ProposalDecisionControls, ProposalReasons, ProposalSource, staleBase } from './ProposalItem';
+import { baseUnknown, ProposalDecisionControls, ProposalReasons, ProposalSource, staleBase } from './ProposalItem';
 import TextComparison from './TextComparison';
 
 export const draftLetter = (index: number): string =>
@@ -63,6 +63,7 @@ const Draft: React.FC<{
         proposed={value}
         mono={pr.field === 'cvss_vector'}
         staleBase={staleBase(pr)}
+        baseUnknown={baseUnknown(pr)}
         evidence={evidence}
       />
       <div className="space-y-xxs">

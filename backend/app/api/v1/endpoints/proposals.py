@@ -87,6 +87,11 @@ class DecideBody(BaseModel):
 class _LeftForOneAtATime(Exception):
     """A bulk accept did not apply this proposal, by rule: nothing failed."""
 
+    def __init__(self, reason: str, detail: str):
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
 
 def _decide(
     db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody,
@@ -97,9 +102,11 @@ def _decide(
     it used to build and discard each row, about five statements apiece;
     review 2026-10-01 N8).
 
-    ``skip_rewritten`` (the bulk accept): a report-text proposal whose
-    section was rewritten after the draft is left pending — nothing written,
-    the locks released — and ``_LeftForOneAtATime`` is raised.  A single
+    ``skip_rewritten`` (the bulk accept): a proposal
+    ``proposal_service.left_for_one_at_a_time`` names — report text rewritten
+    after the draft, or drafted before the base was recorded; a subnet edited
+    since — is left pending — nothing written, the locks released — and
+    ``_LeftForOneAtATime`` is raised.  A single
     accept does not pass it: there the reviewer has the current text beside
     the draft, with the warning, and overwrites knowingly."""
     try:
@@ -131,10 +138,10 @@ def _decide_locked(
     proposal = proposals.lock_for_decision(db, project_id, proposal_id)
     # Under those locks, so the text compared is the text an accept would
     # replace: a save of the section waits for this decision or came first.
-    if skip_rewritten and action == "accept" and proposals.rewritten_since_proposed(db, proposal):
-        detail = proposals.left_pending_detail(proposal)
+    left = proposals.left_for_one_at_a_time(db, proposal) if skip_rewritten and action == "accept" else None
+    if left is not None:
         db.rollback()
-        raise _LeftForOneAtATime(detail)
+        raise _LeftForOneAtATime(*left)
     try:
         if action == "accept":
             proposals.accept_proposal(db, proposal, user, edited_value=body.edited_value, note=body.note)
@@ -203,8 +210,9 @@ def bulk_decide(
     is the single proposal's ``changed_since_proposed``
     (``proposal_service.text_changed_since_proposed``), made under the
     decision's locks.  A proposal made before the field's text was recorded
-    with it cannot be compared and is decided as before, as a single accept
-    of it shows no warning either.  A reject skips nothing."""
+    with it cannot be compared, so it is left pending too, with its own
+    reason (``base_not_recorded``; owner, 2026-10-22) — a single accept of it
+    shows that caution.  A reject skips nothing."""
     done, failed, skipped = [], [], []
     competing = (
         proposals.competing_drafts(db, project.id, body.ids) if body.action == "accept" else {}
@@ -221,7 +229,7 @@ def bulk_decide(
             done.append(pid)
         except _LeftForOneAtATime as left:
             skipped.append({
-                "id": pid, "reason": proposals.REWRITTEN_SINCE_PROPOSED, "detail": str(left),
+                "id": pid, "reason": left.reason, "detail": left.detail,
             })
         except HTTPException as exc:
             failed.append({"id": pid, "status_code": exc.status_code, "detail": exc.detail})

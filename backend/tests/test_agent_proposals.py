@@ -605,28 +605,41 @@ def test_bulk_accept_leaves_text_a_person_rewrote_after_the_draft(client, db_ses
     answer = r.json()
     assert set(answer) == {"decided", "failed", "skipped"}
     assert answer["failed"] == []
-    assert answer["skipped"] == [{
-        "id": ids["impact"], "reason": "text_changed_since_proposed",
-        "detail": proposal_service.REWRITTEN_SINCE_PROPOSED_DETAIL,
-    }]
-    assert sorted(answer["decided"]) == sorted([ids["recommendation"], ids["description"], ids["references"]])
+    # In request order: the description (no recorded base — owner, 2026-10-22:
+    # not overwritten blind either, with its own reason), then the impact.
+    assert answer["skipped"] == [
+        {
+            "id": ids["impact"], "reason": "text_changed_since_proposed",
+            "detail": proposal_service.REWRITTEN_SINCE_PROPOSED_DETAIL,
+        },
+        {
+            "id": ids["description"], "reason": "base_not_recorded",
+            "detail": proposal_service.BASE_NOT_RECORDED_DETAIL,
+        },
+    ]
+    assert sorted(answer["decided"]) == sorted([ids["recommendation"], ids["references"]])
     db_session.expire_all()
     row = db_session.get(Finding, finding["id"])
     assert row.impact == "What the lead wrote by hand."             # not replaced
     assert row.recommendation == "Draft recommendation."
     assert row.references == "Draft references."                     # spacing was not a rewrite
-    # No recorded base: decided as a single accept of it would be (no warning there either).
-    assert row.description == "Draft description."
-    skipped = db_session.get(AgentProposal, ids["impact"])
-    assert skipped.status == "pending" and skipped.error is None and skipped.decided_at is None
+    assert row.description == "Written since; nobody can say whether before the draft."  # not replaced
+    for left in (ids["impact"], ids["description"]):
+        skipped = db_session.get(AgentProposal, left)
+        assert skipped.status == "pending" and skipped.error is None and skipped.decided_at is None
 
     # The reason is the single proposal's own word, from the one comparison …
     pending = client.get(f"{_base(test_project)}/proposals", params={"status": "pending"}).json()["items"]
-    assert [(p["id"], p["changed_since_proposed"]) for p in pending] == [(ids["impact"], True)]
-    # … and decided on its own, knowingly, it is applied.
+    assert sorted((p["id"], p["changed_since_proposed"], p["base_recorded"]) for p in pending) == sorted([
+        (ids["impact"], True, True), (ids["description"], None, False),
+    ])
+    # … and decided on its own, knowingly, each is applied.
     assert client.post(f"{_base(test_project)}/proposals/{ids['impact']}/accept", json={}).status_code == 200
+    assert client.post(f"{_base(test_project)}/proposals/{ids['description']}/accept", json={}).status_code == 200
     db_session.expire_all()
-    assert db_session.get(Finding, finding["id"]).impact == "Draft impact."
+    row = db_session.get(Finding, finding["id"])
+    assert row.impact == "Draft impact."
+    assert row.description == "Draft description."
 
 
 def test_bulk_reject_skips_nothing_and_an_unchanged_bulk_accept_answers_no_skips(client, db_session, test_project):

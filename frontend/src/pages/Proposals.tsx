@@ -259,7 +259,7 @@ const Proposals: React.FC = () => {
       body: action === 'accept'
         ? (
           <div className="space-y-xs">
-            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown. A draft of a section that was rewritten after the draft was made is left pending too: decide those one at a time. Scope details likewise: several for one subnet, or a subnet edited after its proposal.</p>
+            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown. A draft of a section that was rewritten after the draft was made is left pending too, and so is a draft made before drafts recorded the text they replace: decide those one at a time. Scope details likewise: several for one subnet, or a subnet edited after its proposal.</p>
             {limitNote && <p>{limitNote}</p>}
           </div>
         )

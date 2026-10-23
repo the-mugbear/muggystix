@@ -108,6 +108,11 @@ export const ProposalSource: React.FC<{ pr: Proposal }> = ({ pr }) => {
 export const staleBase = (pr: Proposal): { value: string | null } | null =>
   (pr.changed_since_proposed ? { value: pr.base_value ?? null } : null);
 
+/** A pending report-text draft made before drafts recorded the text they
+ *  replace: cautioned, as a bulk accept leaves it (`base_not_recorded`). */
+export const baseUnknown = (pr: Proposal): boolean =>
+  pr.kind === 'finding_text' && pr.status === 'pending' && pr.base_recorded === false;
+
 const Body: React.FC<{ pr: Proposal }> = ({ pr }) => {
   const payload = pr.payload ?? {};
   if (pr.kind === 'finding_text') {
@@ -119,6 +124,7 @@ const Body: React.FC<{ pr: Proposal }> = ({ pr }) => {
           proposed={value}
           mono={pr.field === 'cvss_vector'}
           staleBase={staleBase(pr)}
+          baseUnknown={baseUnknown(pr)}
         />
       );
     }
