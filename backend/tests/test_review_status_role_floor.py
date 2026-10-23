@@ -52,7 +52,7 @@ def _attempts(client, world):
         "set": client.post(f"{base}/hosts/{first}/follow", json={"status": "in_review"}),
         "clear": client.delete(f"{base}/hosts/{first}/follow"),
         "bulk": client.post(f"{base}/hosts/bulk/follow", json={"host_ids": [first, second], "status": "reviewed"}),
-        "still reviewed": client.post(f"{base}/workbench/followups/still-reviewed", json={"host_ids": [first]}),
+        "still reviewed": client.post(f"{base}/operations/followups/still-reviewed", json={"host_ids": [first]}),
     }
 
 
@@ -77,7 +77,7 @@ def test_a_writer_sets_and_clears_as_before(client, db_session, world, acting_as
     assert client.delete(f"{base}/hosts/{first}/follow").status_code == 204
     bulk = client.post(f"{base}/hosts/bulk/follow", json={"host_ids": [first, second], "status": "reviewed"})
     assert bulk.status_code == 200 and bulk.json()["affected"] == 2
-    again = client.post(f"{base}/workbench/followups/still-reviewed", json={"host_ids": [first]})
+    again = client.post(f"{base}/operations/followups/still-reviewed", json={"host_ids": [first]})
     assert again.status_code == 200, again.text
     db_session.expire_all()
     mine = db_session.query(HostFollow).filter(

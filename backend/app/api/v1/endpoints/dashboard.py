@@ -18,7 +18,7 @@ from app.services.subnet_calculator import SubnetCalculator
 from app.services.vulnerability_service import VulnerabilityService
 from app.services.host_follow_service import HostFollowService
 # v2.244.0 — the personal-work routes (my-tasks / my-attention / team-review /
-# new-scans-since) were removed: GET /workbench batches all four from the same
+# new-scans-since) were removed: GET /operations batches all four from the same
 # operations_read_service functions and is what the Operations page calls.  The
 # DTO re-exports went with them; nothing imported them from this module.
 from app.api.deps import get_current_user

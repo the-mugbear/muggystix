@@ -8,7 +8,7 @@
  *   Findings · Hosts · Tests · Changed since review · Pick up
  *
  * Counts and rows are separate requests.  The counts are the page's light
- * workbench call (and the queue's total); a tab's rows are fetched only when
+ * summary call (and the queue's total); a tab's rows are fetched only when
  * the tab is opened — Radix mounts the active panel alone — through
  * `usePagedList` (§39: a failed read is "could not be checked", never an
  * empty list).  Each list route is the function that
@@ -74,7 +74,7 @@ interface PanelProps {
 const FindingsPanel: React.FC<{
   need: FindingNeed | null;
   onNeed: (need: FindingNeed | null) => void;
-  /** The workbench's count per kind of work, until this list has its own. */
+  /** The summary's count per kind of work, until this list has its own. */
   pageNeeds: Partial<Record<FindingNeed, number | null>>;
 }> = ({ need, onNeed, pageNeeds }) => {
   const projectId = useProjectId();
@@ -111,7 +111,7 @@ const HostsPanel: React.FC<PanelProps> = ({ canWrite }) => {
 const TestsPanel: React.FC<PanelProps & {
   kind: MyTaskReason | null;
   onKind: (kind: MyTaskReason | null) => void;
-  /** The workbench's count per kind, until this list has its own. */
+  /** The summary's count per kind, until this list has its own. */
   pageGroups: MyTasksReasonCounts | null;
 }> = ({ canWrite, kind, onKind, pageGroups }) => {
   const projectId = useProjectId();
@@ -213,7 +213,7 @@ export interface OperationsTabsProps {
   tab: OperationsTab | null;
   onTab: (tab: OperationsTab) => void;
   counts: OperationsTabCounts;
-  /** The workbench (findings, hosts, tests, changed) is still loading. */
+  /** The summary (findings, hosts, tests, changed) is still loading. */
   countsLoading: boolean;
   /** The queue's total (pick up) is still loading. */
   pickupLoading: boolean;
@@ -222,7 +222,7 @@ export interface OperationsTabsProps {
   onTier: (tier: number | null) => void;
   testKind: MyTaskReason | null;
   onTestKind: (kind: MyTaskReason | null) => void;
-  /** The workbench's test counts per kind (`my_tasks.group_counts`). */
+  /** The summary's test counts per kind (`my_tasks.group_counts`). */
   testGroups?: MyTasksReasonCounts | null;
   /** The Findings tab's filter (`?need=`). */
   findingNeed: FindingNeed | null;

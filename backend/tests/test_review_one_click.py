@@ -315,7 +315,7 @@ def test_bulk_reviewed_is_the_single_write_per_host(client, db_session, test_pro
     db_session.add(models.Port(host_id=fresh[0].id, port_number=8443, protocol="tcp", state="open",
                                first_seen=datetime.now(timezone.utc) + timedelta(hours=1)))
     db_session.commit()
-    wb = f"/api/v1/projects/{test_project.id}/workbench"
+    wb = f"/api/v1/projects/{test_project.id}/operations"
     followups = client.get(wb).json()["followups"]
     revisit = client.get(f"{_base(test_project)}/", params={"q": "follow:revisit"}).json()
     assert [r["ip_address"] for r in followups["items"]] == ["10.70.4.1"]

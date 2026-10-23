@@ -1,16 +1,18 @@
-"""The Operations workbench — composition of the personal-work surface.
+"""Operations — composition of the personal-work surface.
 
-Moved out of the ``/workbench`` route in v2.428.0 so the agent read ``GET
-/agent/assist/workbench`` returns the SAME sections, computed by the same
+Moved out of the route in v2.428.0 so the agent read ``GET
+/agent/assist/operations`` returns the SAME sections, computed by the same
 code, relative to the key's operator.  The section aggregations themselves
 live in ``operations_read_service``; this module composes them and computes
 the durable per-user "since your last visit" diff (``operations_cursors``).
+(This module was ``workbench_service`` and the routes ``/workbench`` until
+2026-10-22.)
 
 Nothing in this module moves the cursor, so an agent's read never does.  A
-person's does twice, both in the ``/workbench`` router: their FIRST read of a
-project starts it (``GET /workbench``, v2.476.0 — there is nothing to compare
+person's does twice, both in the ``/operations`` router: their FIRST read of a
+project starts it (``GET /operations``, v2.476.0 — there is nothing to compare
 against yet, so nothing is swallowed), and after that only ``POST
-/workbench/seen`` (acknowledging what they were shown) advances it.
+/operations/seen`` (acknowledging what they were shown) advances it.
 """
 import logging
 from datetime import datetime, timezone
@@ -70,7 +72,7 @@ class SinceLastVisit(BaseModel):
     new_critical_hosts: int = 0
     new_high_hosts: int = 0
     # When these counts were taken.  The client hands it back to
-    # ``POST /workbench/seen`` so acknowledging covers the snapshot that was
+    # ``POST /operations/seen`` so acknowledging covers the snapshot that was
     # displayed, not whatever arrived between the load and the click.
     as_of: Optional[datetime] = None
 
@@ -134,7 +136,7 @@ class ProjectSetup(BaseModel):
     has_scopes: bool = False
 
 
-class WorkbenchResponse(BaseModel):
+class OperationsResponse(BaseModel):
     # Project-wide and structural; in the light call too.
     setup: ProjectSetup = Field(default_factory=ProjectSetup)
     #: Project-wide: every host awaiting a retest (2.501.0) — the lead's line
@@ -152,8 +154,8 @@ class WorkbenchResponse(BaseModel):
     since_last_visit: SinceLastVisit = Field(default_factory=SinceLastVisit)
     # v2.347.0 — engagement-wide: untouched hosts worth a look (design
     # review item 2), beneath the personal queue on My Work.
-    # v2.424.1 — ``None`` when the caller asked for the workbench without it
-    # (``include_investigate=false``) and fetches ``GET /workbench/investigate``
+    # v2.424.1 — ``None`` when the caller asked for the summary without it
+    # (``include_investigate=false``) and fetches ``GET /operations/investigate``
     # separately: the queue is most of the time on a large project, and the
     # personal sections should not wait for it.
     investigate: Optional[InvestigationQueueResponse] = Field(default_factory=InvestigationQueueResponse)
@@ -280,10 +282,10 @@ def compute_since_last_visit(
     )
 
 
-def compute_workbench(
+def compute_operations(
     db: Session, current_user: User, project: Project, include_investigate: bool = True,
     include_rows: bool = True,
-) -> WorkbenchResponse:
+) -> OperationsResponse:
     """Batch the Operations personal-work surface into one response, for
     ``current_user``.  Each engagement-wide section that fails is reported as
     ``*_unavailable`` rather than rendered as an empty (``nothing to do``) one.
@@ -292,7 +294,7 @@ def compute_workbench(
     ``my_work``, the sections' own totals, ``followups.total`` — the blockers
     and the since-last-visit diff, with every ``items`` list empty.  Operations
     shows one list at a time and pages it through its own route
-    (``GET /workbench/findings|hosts|tests|followups|investigate``), each the
+    (``GET /operations/findings|hosts|tests|followups|investigate``), each the
     same function called here, so a tab's count is the size of its list.  The
     agents' read keeps the previews."""
     preview = (lambda n: n) if include_rows else (lambda n: 0)
@@ -353,7 +355,7 @@ def compute_workbench(
         db.rollback()
         blockers = OperationsBlockers()
         blockers_unavailable = True
-    return WorkbenchResponse(
+    return OperationsResponse(
         setup=setup,
         retests_pending=compute_retests_pending(db, project),
         my_work=my_work,

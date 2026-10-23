@@ -35,11 +35,11 @@ const LINK_CLASS =
   'rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 /** The reads Operations is made of, by API function: the counts (the light
- *  workbench call, the queue's total) and each tab's list.  Any action in a
+ *  `getOperations` call, the queue's total) and each tab's list.  Any action in a
  *  list — take, claim, still reviewed, re-open, an undo — moves a row between
  *  them, so all are out of date together. */
 export const OPERATIONS_READS = [
-  'getWorkbench', 'getInvestigationQueue',
+  'getOperations', 'getInvestigationQueue',
   'getMyFindingsPage', 'getMyReviewHostsPage', 'getMyTestsPage', 'getReviewFollowupsPage',
 ] as const;
 

@@ -1,8 +1,8 @@
 /**
  * "Where the team has been" — the address terrain (5.306.0).  A section of
  * the Posture overview since 5.330.0 (it was on Operations, which is the
- * reader's own page now); the file, the storage key and the route
- * `/workbench/terrain` keep their names.  Every link it carries opens a
+ * reader's own page now); the file and the storage key keep their names, and
+ * the route is `/operations/terrain` (`/workbench/terrain` until 2026-10-22).  Every link it carries opens a
  * Hosts list, so it reads the same from either page.
  *
  * The project's address space as ground: every /24 (IPv6 /64) a plot on a
@@ -12,7 +12,7 @@
  * untouched hosts carry a critical scanner observation.
  *
  * Cost: nothing until the section nears the viewport. Then one request
- * (`GET /workbench/terrain`, one statement). The table view carries every
+ * (`GET /operations/terrain`, one statement). The table view carries every
  * number the map does, and is what a browser without WebGL gets.
  *
  * 5.329.0 (design review 2026-10-02) — the section's finding is its sentence

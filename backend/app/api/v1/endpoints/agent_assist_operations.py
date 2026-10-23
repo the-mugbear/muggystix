@@ -3,16 +3,17 @@
 An agent asked "what should we look at next?", "what's mine?", "what changed since I
 was last here?", "what changed between these two scans?" or "what is still
 unassessed in segment Y?" had no read that could answer: those live on the
-Operations workbench, the scan compare and the Evidence gap lists, which were
+Operations page, the scan compare and the Evidence gap lists, which were
 JWT-only.  These routes are those pages for a key, and each one calls the SAME
 service its page calls — never a second rollup (ASSIST_TOOLS.md review rule 3:
 an agent and a page disagreeing on a number is worse than the agent not having
-it).
+it).  (The Operations reads were under ``/assist/workbench`` until 2026-10-22;
+the old paths are a 404 — owner decision, no alias.)
 
-* ``GET /assist/workbench``            → ``workbench_service.compute_workbench``
-* ``GET /assist/workbench/investigate`` → ``operations_read_service.compute_investigation_queue``
-* ``GET /assist/workbench/findings``   → ``operations_read_service.compute_my_findings``
-* ``GET /assist/workbench/terrain``    → ``address_terrain_service.compute_address_terrain``
+* ``GET /assist/operations``             → ``operations_service.compute_operations``
+* ``GET /assist/operations/investigate`` → ``operations_read_service.compute_investigation_queue``
+* ``GET /assist/operations/findings``    → ``operations_read_service.compute_my_findings``
+* ``GET /assist/operations/terrain``     → ``address_terrain_service.compute_address_terrain``
 * ``GET /assist/evidence/gaps?domain=`` → ``evidence_service.evidence_gap_hosts``
 * ``GET /assist/scans/compare``        → ``scan_diff_service.compute_scan_diff``
 * ``GET /assist/scans/{id}/hosts``     → ``scan_snapshot_service.scan_host_snapshots``
@@ -57,7 +58,7 @@ from app.services.scan_snapshot_service import (
     scan_host_snapshots,
     scan_port_observations,
 )
-from app.services.workbench_service import WorkbenchResponse, compute_workbench
+from app.services.operations_service import OperationsResponse, compute_operations
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,7 +81,7 @@ class AgentTerrainResponse(AgentPage):
 
 
 class AgentMyFindingsResponse(MyFindingsResponse, AgentPage):
-    """``GET /workbench/findings`` as the agent receives it: the page's own
+    """``GET /operations/findings`` as the agent receives it: the page's own
     answer (``items``, ``total_open``, ``need_counts``) plus the agents' page
     words.  ``total`` is the size of the list THIS call pages — the service's
     own figure for it (``need_counts[need]``, or ``total_open`` with no
@@ -88,7 +89,7 @@ class AgentMyFindingsResponse(MyFindingsResponse, AgentPage):
 
 
 class AgentInvestigationQueue(InvestigationQueueResponse, AgentPage):
-    """``GET /workbench/investigate`` as the agent receives it: the page's own
+    """``GET /operations/investigate`` as the agent receives it: the page's own
     answer (``items``, ``queue_total``, ``untouched_total``, ``tiers``,
     ``tier_counts``) plus the agents' page words.  ``total`` is the size of
     the list THIS call pages — the service's own figure for it (the tier's
@@ -137,21 +138,21 @@ def _project(db: Session, request: Request) -> Project:
 
 
 # ---------------------------------------------------------------------------
-# Workbench
+# Operations
 # ---------------------------------------------------------------------------
 
 @router.get(
-    "/assist/workbench",
-    response_model=WorkbenchResponse,
-    summary="The operator's Operations workbench — my work, their reviews that changed, since last visit, blockers",
+    "/assist/operations",
+    response_model=OperationsResponse,
+    summary="The operator's Operations page — my work, their reviews that changed, since last visit, blockers",
 )
-def get_assist_workbench(
+def get_assist_operations(
     request: Request,
     include_investigate: bool = Query(
         False,
         description=(
             "Embed the first 25 rows of the untouched queue ('Untouched, with a "
-            "reason'). Off by default: page it with GET /assist/workbench/investigate instead."
+            "reason'). Off by default: page it with GET /assist/operations/investigate instead."
         ),
     ),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -185,13 +186,13 @@ def get_assist_workbench(
     if operator is None:
         raise HTTPException(
             status_code=400,
-            detail="This session has no operator bound; the workbench is personal to one.",
+            detail="This session has no operator bound; Operations is personal to one.",
         )
-    return compute_workbench(db, operator, project, include_investigate=include_investigate)
+    return compute_operations(db, operator, project, include_investigate=include_investigate)
 
 
 @router.get(
-    "/assist/workbench/investigate",
+    "/assist/operations/investigate",
     response_model=AgentInvestigationQueue,
     summary="'Untouched, with a reason' — untouched hosts with a stated reason, in tier order",
 )
@@ -233,10 +234,10 @@ def get_assist_investigation_queue(
 
 
 @router.get(
-    "/assist/workbench/findings",
+    "/assist/operations/findings",
     response_model=AgentMyFindingsResponse,
     summary="Findings that need the operator, the whole list paged — the Operations 'Findings' tab",
-    # The page (GET /projects/{id}/workbench/findings) asks for membership of
+    # The page (GET /projects/{id}/operations/findings) asks for membership of
     # the project and nothing more; so does this.
     dependencies=[Depends(agent_read_floor(ProjectRole.VIEWER))],
 )
@@ -251,7 +252,7 @@ def get_assist_my_findings(
     """Findings the session's OPERATOR owns that need something from them —
     under investigation, required report text missing, a proposal to decide —
     each row's ``needs`` saying which, severity first.  The same function, in
-    the same order, as the Operations "Findings" tab; the workbench carries
+    the same order, as the Operations "Findings" tab; ``GET /assist/operations`` carries
     only its first 15 rows.
 
     ``total`` is the size of the list this call pages (with ``need``, that
@@ -274,7 +275,7 @@ def get_assist_my_findings(
 
 
 @router.get(
-    "/assist/workbench/terrain",
+    "/assist/operations/terrain",
     response_model=AgentTerrainResponse,
     summary="Hosts per address block (/24, IPv6 /64): tested / planned / worked / untouched",
 )

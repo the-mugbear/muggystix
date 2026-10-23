@@ -34,7 +34,7 @@ import {
 
 /** Tools grouped by capability (5.313.0). Every session is offered every
  *  tool — the key is the operator's project role, not a workflow — so the
- *  groups are presentation only. The `key` is the catalog's `workflows` tag the
+ *  groups are presentation only. The `key` is the catalog's `groups` tag the
  *  group is read from. */
 const CAPABILITY_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
   {
@@ -95,12 +95,12 @@ const McpReference: React.FC = () => {
   const groups = useMemo(() => {
     const tools = catalog?.tools ?? [];
     const kinds = CAPABILITY_GROUPS.filter((g) => g.key !== 'shared').map((g) => g.key);
-    const shared = tools.filter((t) => kinds.every((k) => t.workflows?.includes(k)));
-    const byWorkflow = (wf: string) =>
-      tools.filter((t) => t.workflows?.includes(wf) && !shared.includes(t));
+    const shared = tools.filter((t) => kinds.every((k) => t.groups?.includes(k)));
+    const byGroup = (group: string) =>
+      tools.filter((t) => t.groups?.includes(group) && !shared.includes(t));
     return CAPABILITY_GROUPS.map((g) => ({
       ...g,
-      tools: g.key === 'shared' ? shared : byWorkflow(g.key),
+      tools: g.key === 'shared' ? shared : byGroup(g.key),
     })).filter((g) => g.tools.length > 0);
   }, [catalog]);
 

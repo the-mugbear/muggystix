@@ -73,7 +73,7 @@ const catalog = (): McpCatalog => ({
       kind: 'read',
       method: 'GET',
       path: '/api/v1/agent/assist/hosts',
-      workflows: ['assist'],
+      groups: ['assist'],
       input_schema: { type: 'object', properties: { q: { type: 'string' } }, required: [] },
     },
     {
@@ -82,7 +82,7 @@ const catalog = (): McpCatalog => ({
       kind: 'write',
       method: 'POST',
       path: '/api/v1/agent/hosts/{host_id}/notes',
-      workflows: ['assist'],
+      groups: ['assist'],
       input_schema: {
         type: 'object',
         properties: { host_id: { type: 'integer' }, body: { type: 'string' } },
@@ -95,7 +95,7 @@ const catalog = (): McpCatalog => ({
       kind: 'write',
       method: 'POST',
       path: '/api/v1/agent/host-tests',
-      workflows: ['testing'],
+      groups: ['testing'],
       input_schema: { type: 'object', properties: {}, required: [] },
     },
     {
@@ -104,7 +104,7 @@ const catalog = (): McpCatalog => ({
       kind: 'write',
       method: 'POST',
       path: '/api/v1/agent/tool-suggestions',
-      workflows: ['assist', 'testing', 'scope'],
+      groups: ['assist', 'testing', 'scope'],
       input_schema: {
         type: 'object',
         properties: { name: { type: 'string' }, rationale: { type: 'string' } },

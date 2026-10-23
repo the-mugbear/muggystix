@@ -142,7 +142,7 @@ def test_ingestion_results_serve_the_counts_and_the_shapes(client, db_session, t
     )
     db_session.add(job)
     db_session.commit()
-    base = f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results"
+    base = f"/api/v1/projects/{test_project.id}/ingestion-results"
     row = next(i for i in client.get(base).json()["items"] if i["id"] == job.id)
     assert (row["uninterpreted_total"], row["uninterpreted_distinct"]) == (3, 1)
     body = client.get(f"{base}/{job.id}/uninterpreted").json()

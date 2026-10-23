@@ -39,8 +39,11 @@ from app.api.v1.endpoints import (
     agent_sessions,
     # v3 alpha.3 — project coverage summary (drives v3 Operations).
     coverage,
-    # Refactor P2 — batched Operations workbench + since-last-visit cursor.
-    workbench,
+    # Refactor P2 — batched Operations data + since-last-visit cursor.
+    operations,
+    # The Scans page's Ingestion results view (under /parse-errors until
+    # 2026-10-22).
+    ingestion_results,
     # Site-metrics arc P1 — project "needs help" attention model.
     attention,
     # Site-metrics arc P1.5 — Site entity management (tier / owner / coverage).
@@ -240,7 +243,9 @@ project_router.include_router(host_filter_views.router, prefix="/hosts", tags=["
 project_router.include_router(host_queries.router, prefix="/hosts", tags=["host-queries"])
 project_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 project_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
-project_router.include_router(workbench.router, prefix="/workbench", tags=["workbench"])
+# The Operations page's data (its path was ``/workbench`` until 2026-10-22;
+# the old paths are a 404, owner decision — no alias).
+project_router.include_router(operations.router, prefix="/operations", tags=["operations"])
 project_router.include_router(attention.router, prefix="/attention", tags=["attention"])
 project_router.include_router(sites.router, prefix="/sites", tags=["sites"])
 project_router.include_router(insights.router, prefix="/insights", tags=["insights"])
@@ -255,6 +260,9 @@ project_router.include_router(subnet_labels.router, prefix="/scopes", tags=["sub
 project_router.include_router(scopes.router, prefix="/scopes", tags=["scopes"])
 project_router.include_router(export.router, prefix="/export", tags=["export"])
 project_router.include_router(parse_errors.router, prefix="/parse-errors", tags=["parse-errors"])
+# The Ingestion results view was ``/parse-errors/ingestion-results`` until
+# 2026-10-22; the old paths are a 404 (owner decision — no alias).
+project_router.include_router(ingestion_results.router, prefix="/ingestion-results", tags=["parse-errors"])
 project_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 # AI-assisted report drafting (LLM narrative from findings + evidence).  Same
 # /reports prefix; separate file keeps the non-deterministic LLM concern out of

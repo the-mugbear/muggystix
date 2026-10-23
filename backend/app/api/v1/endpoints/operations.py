@@ -1,4 +1,8 @@
-"""Operations workbench — one batched call for the personal-work surface.
+"""Operations — one batched call for the personal-work surface.
+
+Served under ``/projects/{id}/operations`` (it was ``/workbench``, and this
+module ``workbench.py``, until 2026-10-22; the old paths are a 404 — owner
+decision, no alias).
 
 Refactor P2.  Operations previously fired four independent requests
 (my-attention, my-tasks, team-review — a roster removed in v2.451.1 — plus a
@@ -30,8 +34,8 @@ from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.api.params import FindingNeedParam
 # CR4-2 — depend on services, not other routers' handlers.  The composition
-# (and "since last visit") lives in workbench_service (v2.428.0) so the agent
-# read GET /agent/assist/workbench is the same code.
+# (and "since last visit") lives in operations_service (v2.428.0) so the agent
+# read GET /agent/assist/operations is the same code.
 from app.services.address_terrain_service import AddressTerrainResponse, compute_address_terrain
 from app.services.operations_read_service import (
     compute_investigation_queue,
@@ -46,7 +50,7 @@ from app.services.operations_read_service import (
     ReviewFollowupsResponse,
 )
 from app.services.host_follow_service import HostFollowService
-from app.services.workbench_service import WorkbenchResponse, compute_workbench
+from app.services.operations_service import OperationsResponse, compute_operations
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,7 +62,7 @@ router = APIRouter()
 
 class MarkSeenRequest(BaseModel):
     # ``SinceLastVisit.as_of`` of the snapshot being acknowledged.  Omitted
-    # means "now".  (The first-visit bootstrap is ``GET /workbench``'s own
+    # means "now".  (The first-visit bootstrap is ``GET /operations``'s own
     # since v2.476.0.)
     as_of: Optional[datetime] = None
 
@@ -82,15 +86,15 @@ class StillReviewedResponse(BaseModel):
 
 @router.get(
     "",
-    response_model=WorkbenchResponse,
-    summary="Operations workbench — the caller's counts (and list previews), blockers and the since-last-visit diff in one call",
+    response_model=OperationsResponse,
+    summary="Operations — the caller's counts (and list previews), blockers and the since-last-visit diff in one call",
 )
-def get_workbench(
+def get_operations(
     include_investigate: bool = Query(
         True,
         description=(
             "Include the engagement-wide untouched queue ('Untouched, with a reason'). Operations passes "
-            "false and loads it from GET /workbench/investigate so the personal "
+            "false and loads it from GET /operations/investigate so the personal "
             "sections are not held up by it (v2.424.1)."
         ),
     ),
@@ -99,7 +103,7 @@ def get_workbench(
         description=(
             "False returns every count, the blockers and the since-last-visit diff "
             "with every `items` list empty (v2.452.0): Operations shows one list "
-            "at a time and pages it through GET /workbench/findings, /hosts, "
+            "at a time and pages it through GET /operations/findings, /hosts, "
             "/tests, /followups or /investigate."
         ),
     ),
@@ -110,8 +114,8 @@ def get_workbench(
     """Batch the Operations personal-work surface into one response.
 
     Reuses the read-service aggregations so the standalone widgets and the
-    workbench cannot drift.  ``since_last_visit`` reflects the durable
-    per-user cursor; advance it with ``POST /workbench/seen``.
+    batched call cannot drift.  ``since_last_visit`` reflects the durable
+    per-user cursor; advance it with ``POST /operations/seen``.
 
     The caller's FIRST read of a project starts that cursor (v2.476.0; the
     page used to send ``POST /workbench/seen`` from an effect for it).  The
@@ -119,11 +123,11 @@ def get_workbench(
     true``, no baseline — and the baseline becomes that answer's ``as_of``.
     Only the first: once a baseline exists a read never moves it (a glance, or
     the page's once-a-minute re-read of its counts, must not swallow changes
-    nobody acknowledged).  The agents' read (``GET /agent/assist/workbench``)
+    nobody acknowledged).  The agents' read (``GET /agent/assist/operations``)
     is the same service without this step: an agent never moves a person's
     cursor.
     """
-    answer = compute_workbench(
+    answer = compute_operations(
         db, current_user, project,
         include_investigate=include_investigate, include_rows=include_rows,
     )
@@ -141,7 +145,7 @@ def get_workbench(
 
 # ---------------------------------------------------------------------------
 # The Operations tabs' lists (v2.452.0).  Each is the SAME function that
-# produces the tab's count in ``GET /workbench``, paged — never a second
+# produces the tab's count in ``GET /operations``, paged — never a second
 # definition of a list.  ``tests/test_operations_tabs.py`` pins, per tab,
 # count == the size of the list these routes page through.
 # ---------------------------------------------------------------------------
@@ -257,7 +261,7 @@ def get_investigation_queue(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """The same queue ``GET /workbench`` embeds, on its own request (v2.424.1).
+    """The same queue ``GET /operations`` embeds, on its own request (v2.424.1).
 
     ``tier`` narrows the rows to one tier (v2.427.0); ``queue_total`` and
     ``tier_counts`` still describe the whole queue, whatever ``tier`` /
@@ -283,8 +287,8 @@ def get_address_terrain(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """The address terrain (v2.426.0; shown on Posture since v2.451.0 — the
-    path keeps its name): per block, hosts tested / planned /
+    """The address terrain (v2.426.0; shown on Posture since v2.451.0 — it
+    stays under ``/operations``): per block, hosts tested / planned /
     worked / untouched (exclusive, adding up to ``hosts``) and the critical
     exposure nobody has touched.  503 on failure — never an empty map."""
     try:
@@ -338,7 +342,7 @@ def mark_still_reviewed(
     response_model=MarkSeenResponse,
     summary="Advance the caller's Operations 'since last visit' cursor to the acknowledged snapshot",
 )
-def mark_workbench_seen(
+def mark_operations_seen(
     body: Optional[MarkSeenRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

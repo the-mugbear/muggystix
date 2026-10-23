@@ -1,6 +1,6 @@
 """Tests for the authoritative My Tasks aggregation (refactor P1).
 
-v2.244.0 — ``GET /dashboard/my-tasks`` was removed; ``GET /workbench`` batches
+v2.244.0 — ``GET /dashboard/my-tasks`` was removed; ``GET /operations`` batches
 this from the same ``compute_my_tasks`` service function and is what the
 Operations page calls. These tests now exercise the endpoint that ships. The
 behaviour under test is unchanged: the aggregation always lived in the service,
@@ -89,11 +89,11 @@ def _in_review(db_session, user_id, host_id):
 
 
 def _url(pid):
-    return f"/api/v1/projects/{pid}/workbench"
+    return f"/api/v1/projects/{pid}/operations"
 
 
 def _my_tasks(client, pid):
-    """The my_tasks slice of the workbench response."""
+    """The my_tasks slice of the ``GET /operations`` response."""
     r = client.get(_url(pid))
     assert r.status_code == 200, r.text
     return r.json()["my_tasks"]
@@ -196,7 +196,7 @@ def test_my_tasks_assigned_survives_limit_against_many_triage(
                              assigned_to_id=test_user.id)
 
     # Calls the service directly: the limit is the whole point of this
-    # regression and /workbench applies a fixed one. This is also where the
+    # regression and /operations applies a fixed one. This is also where the
     # bug lived — the route was only ever a wrapper.
     from app.services.operations_read_service import compute_my_tasks
 

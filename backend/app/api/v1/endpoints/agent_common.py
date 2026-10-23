@@ -46,7 +46,7 @@ def load_agent_session(db: Session, request: Request) -> AgentSession:
 def load_operator(db: Session, request: Request) -> Optional[models_auth.User]:
     """The user row of the operator the key acts for
     (``request.state.key_operator_id``), for the reads that judge something
-    as that person (the DSL's ``follow:`` / ``assigned:``, the workbench)."""
+    as that person (the DSL's ``follow:`` / ``assigned:``, Operations)."""
     return db.get(models_auth.User, request.state.key_operator_id)
 
 

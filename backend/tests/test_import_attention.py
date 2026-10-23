@@ -75,15 +75,15 @@ def test_superseded_failures_leave_needs_attention_everywhere(client, db_session
     assert s["imports_need_attention"] == len(attention)
     assert s["imports_superseded"] == 2
 
-    r = client.get(f"{base}/parse-errors/ingestion-results").json()
+    r = client.get(f"{base}/ingestion-results").json()
     assert r["summary"]["total_needs_attention"] == len(attention)
     assert r["summary"]["total_superseded"] == 2
 
-    listed = client.get(f"{base}/parse-errors/ingestion-results", params={"status": "needs_attention"}).json()
+    listed = client.get(f"{base}/ingestion-results", params={"status": "needs_attention"}).json()
     assert {i["id"] for i in listed["items"]} == attention
     assert listed["total"] == len(attention)
 
-    sup = client.get(f"{base}/parse-errors/ingestion-results", params={"status": "superseded"}).json()
+    sup = client.get(f"{base}/ingestion-results", params={"status": "superseded"}).json()
     rows = {i["id"]: i for i in sup["items"]}
     assert set(rows) == {j["a"].id, j["f"].id}
     assert rows[j["a"].id]["superseded_by_job_id"] == j["b"].id
@@ -149,7 +149,7 @@ def test_rows_carry_the_parsers_specific_reason(client, db_session, test_project
                  dismissed=datetime.now(timezone.utc))
 
     base = f"/api/v1/projects/{test_project.id}"
-    items = {i["id"]: i for i in client.get(f"{base}/parse-errors/ingestion-results").json()["items"]}
+    items = {i["id"]: i for i in client.get(f"{base}/ingestion-results").json()["items"]}
     assert items[specific.id]["failure_reason"].startswith("SMBMap parser found 0 hosts")
     # A driver error is a parser bug: said in plain words, never the SQL text.
     assert items[sql.id]["failure_reason"].startswith("A value in this file was longer than BlueStick stores")
@@ -192,7 +192,7 @@ def test_expired_and_discarded_uploads_are_not_counted_as_failed(client, db_sess
     Ingestion Results while /scans said "expired before review"."""
     from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 
-    base = f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results"
+    base = f"/api/v1/projects/{test_project.id}/ingestion-results"
     real = _job(db_session, test_project, sha="1" * 64, error="boom")
     no_message = _job(db_session, test_project, sha="2" * 64)
     expired = _job(db_session, test_project, sha="3" * 64,
@@ -219,7 +219,7 @@ def test_the_failed_figure_says_how_many_are_dismissed_and_lists_exactly_those(c
     checked against the whole list and not a page of it."""
     from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 
-    base = f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results"
+    base = f"/api/v1/projects/{test_project.id}/ingestion-results"
     now = datetime.now(timezone.utc)
     open_ids = {_job(db_session, test_project, sha=f"{n:064x}", error="boom").id for n in range(1, 3)}
     dismissed_ids = {
@@ -270,7 +270,7 @@ def test_evidence_counts_imports_by_the_same_rule(client, db_session, test_proje
     base = f"/api/v1/projects/{test_project.id}"
 
     quality = client.get(f"{base}/posture/evidence").json()["data_quality"]
-    listed = client.get(f"{base}/parse-errors/ingestion-results?status=needs_attention&limit=100").json()
+    listed = client.get(f"{base}/ingestion-results?status=needs_attention&limit=100").json()
 
     assert quality["imports_needing_attention"] == listed["summary"]["total_needs_attention"]
     assert quality["imports_needing_attention"] == len(listed["items"]) == 5

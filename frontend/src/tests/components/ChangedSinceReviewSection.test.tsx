@@ -72,7 +72,7 @@ const data = (items: ReviewFollowupRow[], over: Partial<ReviewFollowupsResponse>
 // the list and the counts): it says which reads are out of date, and what is
 // on screen is read again.  These stand in for the tab's list and the page's
 // counts; `reread` says which of them was asked for again.
-const { reread, ReadsOnScreen } = readsOnScreen({ getReviewFollowupsPage: 'list', getWorkbench: 'counts' });
+const { reread, ReadsOnScreen } = readsOnScreen({ getReviewFollowupsPage: 'list', getOperations: 'counts' });
 const onPage = vi.fn();
 const onRetry = vi.fn();
 type Props = React.ComponentProps<typeof ChangedSinceReviewSection>;

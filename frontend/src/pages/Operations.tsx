@@ -18,7 +18,7 @@
  * five-row samples in sentence rows, then two queue tables — each with its
  * own "more", and the same host could show three times.  The tab is in the
  * URL (`?tab=`; with none, the first non-empty tab in bar order opens), the
- * counts come from one light workbench call, and only the selected tab's rows
+ * counts come from one light summary call, and only the selected tab's rows
  * are fetched (`components/operations/OperationsTabs`).
  *
  * What left in 5.330.0, and where it is: the measures strip (tested x of y,
@@ -38,10 +38,10 @@ import StartAssistDialog from '../components/StartAssistDialog';
 import {
   OperationsBlockers,
   SinceLastVisit,
-  WorkbenchResponse,
-  getWorkbench,
+  OperationsResponse,
+  getOperations,
   getInvestigationQueue,
-  markWorkbenchSeen,
+  markOperationsSeen,
 } from '../services/api';
 import type { FindingNeed, InvestigationQueueResponse, MyTaskReason } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
@@ -79,9 +79,9 @@ const oldestLoad = (...loadedAt: number[]): Date | null => {
   return times.length ? new Date(Math.min(...times)) : null;
 };
 
-/** The light workbench call: every tab's count, the blockers and the
+/** The light summary call: every tab's count, the blockers and the
  *  since-last-visit diff — no rows, and not the queue. */
-const LIGHT_WORKBENCH = { includeInvestigate: false, includeRows: false } as const;
+const LIGHT_CALL = { includeInvestigate: false, includeRows: false } as const;
 /** How often the page's COUNTS are read again while it is open (owner,
  *  2026-10-10).  The two count reads only — never the list on screen: that
  *  re-read is the reader's (Refresh, a page, an action). */
@@ -267,37 +267,37 @@ const Operations: React.FC = () => {
 
   // Two independent reads, in parallel; each isolates its own failure, so
   // an outage shows as counts that "could not be checked" instead of
-  // blanking the page.  The light workbench read is asked again once a
+  // blanking the page.  The light summary read is asked again once a
   // minute while the page is open (5.365.0, `COUNTS_POLL_MS`): the tab badges
   // and the lead follow what teammates and imports changed.  The queue's
   // total and the selected tab's list are NOT polled.
   //
-  // Operations owns ONE light /workbench read: every tab's count, the
+  // Operations owns ONE light /operations read: every tab's count, the
   // blockers, the since-last-visit diff and whether the project has anything
   // in it — no rows (5.331.0).  A tab's rows are its panel's own request, made
   // when the tab is opened.
-  const workbenchQuery = useQuery({
-    queryKey: ['getWorkbench', projectId, LIGHT_WORKBENCH],
-    queryFn: ({ signal }) => getWorkbench(projectId, LIGHT_WORKBENCH, signal),
+  const summaryQuery = useQuery({
+    queryKey: ['getOperations', projectId, LIGHT_CALL],
+    queryFn: ({ signal }) => getOperations(projectId, LIGHT_CALL, signal),
     ...pollEvery(COUNTS_POLL_MS),
   });
   // Counts that could not be read again are not known: never the previous
   // ones under a failure.
-  const workbench: WorkbenchResponse | null = workbenchQuery.isError ? null : workbenchQuery.data ?? null;
+  const summary: OperationsResponse | null = summaryQuery.isError ? null : summaryQuery.data ?? null;
   // The first load only: a re-read (the minute's, or after an action) keeps
   // what is on screen until it answers.
-  const workbenchLoading = workbenchQuery.isPending;
-  const workbenchError = queryErrorText(workbenchQuery.error, 'Could not load your workbench.');
+  const summaryLoading = summaryQuery.isPending;
+  const summaryError = queryErrorText(summaryQuery.error, 'Could not load your work.');
   // Structural — whether the project has hosts and scope entries decides
   // between the setup blocks and the work (5.365.0: it comes with the counts;
   // the page made a whole scope-coverage request for it).  Unlike a count, it
   // is kept from the last answer when a re-read fails: a failed minute must
   // not swap the reader's list for a setup block.  null = never answered.
-  const setup = workbenchQuery.data?.setup ?? null;
+  const setup = summaryQuery.data?.setup ?? null;
   // The work is shown when the project has hosts — and when the first read
   // failed: nothing says the project is empty, the counts say they could not
   // be loaded (with Retry), and each list still answers for itself.
-  const showWork = setup ? setup.has_hosts : workbenchQuery.isError;
+  const showWork = setup ? setup.has_hosts : summaryQuery.isError;
 
   // With no `?tab=`, the first non-empty tab in bar order opens.  Decided
   // ONCE, when the counts first arrive (or fail): finishing the last finding
@@ -305,8 +305,8 @@ const Operations: React.FC = () => {
   // in the render that first has the counts (it was an effect, which showed
   // one frame of the bar with no tab selected).
   const [defaultTab, setDefaultTab] = useState<OperationsTab | null>(null);
-  if (defaultTab == null && !workbenchQuery.isPending) {
-    setDefaultTab(workbench ? firstNonEmptyTab(operationsTabCounts(workbench, null)) : 'findings');
+  if (defaultTab == null && !summaryQuery.isPending) {
+    setDefaultTab(summary ? firstNonEmptyTab(operationsTabCounts(summary, null)) : 'findings');
   }
   const tab = urlTab ?? defaultTab;
   // The Pick up list is the one on screen — or will be as soon as the counts
@@ -315,7 +315,7 @@ const Operations: React.FC = () => {
   const pickupListOpen = tab === 'pickup';
 
   // The untouched queue's SIZE, on its own request (v5.304.1: on a large
-  // project the queue was most of the workbench's time).  null = not known —
+  // project the queue was most of the batched call's time).  null = not known —
   // loading, or it could not be computed (a 503) — and never shown as 0.
   //
   // While the Pick up tab is open its own list answers this (C2): every page
@@ -373,14 +373,14 @@ const Operations: React.FC = () => {
   // What was acknowledged is ONE snapshot (the read it came from): a fresher
   // one is diffed against the saved cursor, so anything it reports arrived
   // after the acknowledgement and is shown again.
-  const snapshotAt = workbenchQuery.dataUpdatedAt;
+  const snapshotAt = summaryQuery.dataUpdatedAt;
   const [acknowledgedSnapshot, setAcknowledgedSnapshot] = useState<number | null>(null);
   const sinceDismissed = acknowledgedSnapshot != null && acknowledgedSnapshot === snapshotAt;
   const acknowledge = useMutation({
-    mutationFn: (seen: { asOf: string | null; snapshot: number }) => markWorkbenchSeen(projectId, seen.asOf),
+    mutationFn: (seen: { asOf: string | null; snapshot: number }) => markOperationsSeen(projectId, seen.asOf),
     onSuccess: (_saved, seen) => setAcknowledgedSnapshot(seen.snapshot),
   });
-  const sinceAsOf = workbench?.since_last_visit.as_of ?? null;
+  const sinceAsOf = summary?.since_last_visit.as_of ?? null;
   const dismissSince = () => acknowledge.mutate({ asOf: sinceAsOf, snapshot: snapshotAt });
   const sinceError = queryErrorText(acknowledge.error, 'Could not save the acknowledgement. Try again.');
 
@@ -388,7 +388,7 @@ const Operations: React.FC = () => {
   // (While the Pick up list is open the queue's count is that list's, which
   // has its own Retry.)
   const reload = () => {
-    void workbenchQuery.refetch();
+    void summaryQuery.refetch();
     if (!pickupListOpen) void pickupQuery.refetch();
   };
 
@@ -431,16 +431,16 @@ const Operations: React.FC = () => {
   // (A session started or ended in the dialog invalidates this read itself.)
   const { sessions: myAssistSessions } = useMyAssistSessions();
 
-  // The tab bar's counts: the workbench's own totals and the queue's.
-  const counts: OperationsTabCounts = operationsTabCounts(workbench, pickupTotal);
+  // The tab bar's counts: the summary's own totals and the queue's.
+  const counts: OperationsTabCounts = operationsTabCounts(summary, pickupTotal);
 
   // A link that opens a tab of this page, keeping the page's parameters.
   const toTab = (target: OperationsTab, filter?: TabFilter | null) => tabSearch(pageParams, target, filter);
   // One freshness for the page: the OLDEST of its counts' loads (a read that
   // failed again keeps the time it last succeeded).
   const lastFetched = useMemo(
-    () => oldestLoad(workbenchQuery.dataUpdatedAt, pickupQuery.dataUpdatedAt),
-    [workbenchQuery.dataUpdatedAt, pickupQuery.dataUpdatedAt],
+    () => oldestLoad(summaryQuery.dataUpdatedAt, pickupQuery.dataUpdatedAt),
+    [summaryQuery.dataUpdatedAt, pickupQuery.dataUpdatedAt],
   );
 
   return (
@@ -478,7 +478,7 @@ const Operations: React.FC = () => {
           compact
           lastFetched={lastFetched}
           onRefresh={refreshAll}
-          isLoading={workbenchQuery.isFetching}
+          isLoading={summaryQuery.isFetching}
           label="Operations"
         />
       </div>
@@ -491,7 +491,7 @@ const Operations: React.FC = () => {
 
       {/* Until the counts' first answer nothing says what the project holds:
           neither a setup block nor the tab bar is guessed. */}
-      {workbenchLoading && (
+      {summaryLoading && (
         <div role="status" aria-label="Loading your work…" className="flex max-w-3xl flex-col gap-xs">
           {[0, 1, 2, 3].map((i) => (
             <div key={i} className="h-6 animate-pulse rounded-control bg-muted" aria-hidden />
@@ -543,10 +543,10 @@ const Operations: React.FC = () => {
         // the page's counts are in the lead and on the tabs, and project
         // status is on Posture.
         <div className="flex min-w-0 flex-col gap-lg">
-          {workbench && !workbenchError && (
-            <OperationsLead workbench={workbench} counts={counts} toTab={toTab} />
+          {summary && !summaryError && (
+            <OperationsLead summary={summary} counts={counts} toTab={toTab} />
           )}
-          {workbenchError && (
+          {summaryError && (
             // The counts could not be read: the tabs say "—", and each list
             // still answers for itself.  It stays while the counts are asked
             // again (the minute's re-read, or Retry — which then spins), so a
@@ -554,43 +554,43 @@ const Operations: React.FC = () => {
             <Alert variant="destructive">
               <AlertTitle>Couldn't load your work's counts</AlertTitle>
               <AlertDescription>
-                <p className="break-words">{workbenchError}</p>
+                <p className="break-words">{summaryError}</p>
                 <p className="mt-xxs">The tabs below still load their own lists; a count shown as “—” could not be checked.</p>
-                <Button size="sm" variant="outline" className="mt-xs" onClick={reload} disabled={workbenchQuery.isFetching}>
-                  <RefreshCw className={cn('size-3.5', workbenchQuery.isFetching && 'animate-spin')} aria-hidden /> Retry
+                <Button size="sm" variant="outline" className="mt-xs" onClick={reload} disabled={summaryQuery.isFetching}>
+                  <RefreshCw className={cn('size-3.5', summaryQuery.isFetching && 'animate-spin')} aria-hidden /> Retry
                 </Button>
               </AlertDescription>
             </Alert>
           )}
           {/* Since your last visit — what changed in this project while the
               operator was away (durable per-user cursor, P2). */}
-          {workbench && !sinceDismissed && (
+          {summary && !sinceDismissed && (
             <SinceLastVisitBanner
-              since={workbench.since_last_visit}
+              since={summary.since_last_visit}
               onDismiss={dismissSince}
               saving={acknowledge.isPending}
               error={sinceError}
             />
           )}
           <BlockersStrip
-            blockers={workbench?.blockers ?? null}
-            unavailable={workbench?.blockers_unavailable ?? false}
+            blockers={summary?.blockers ?? null}
+            unavailable={summary?.blockers_unavailable ?? false}
           />
 
           {/* The reader's work, one list at a time: the bar's counts come
-              from the workbench; only the selected tab's rows are fetched. */}
+              from the summary; only the selected tab's rows are fetched. */}
           <OperationsTabs
             tab={tab}
             onTab={setTab}
             counts={counts}
-            countsLoading={workbenchLoading}
+            countsLoading={summaryLoading}
             pickupLoading={pickupLoading}
             canWrite={canWrite}
             tier={tier}
             onTier={setTier}
             testKind={testKind}
             onTestKind={setTestKind}
-            testGroups={workbench?.my_tasks?.group_counts ?? null}
+            testGroups={summary?.my_tasks?.group_counts ?? null}
             findingNeed={findingNeed}
             onFindingNeed={setFindingNeed}
           />
@@ -657,14 +657,14 @@ const LEAD_NEXT_LINE = 'mt-xxs block text-metadata font-normal';
  * the page's normal state).
  */
 const OperationsLead: React.FC<{
-  workbench: WorkbenchResponse;
+  summary: OperationsResponse;
   /** The tab bar's counts — the same numbers, so the lead and the tabs
    *  cannot disagree.  A count that is not known is never said as zero. */
   counts: OperationsTabCounts;
   toTab: (tab: OperationsTab, filter?: TabFilter | null) => string;
-}> = ({ workbench, counts, toTab }) => {
-  const b = workbench.blockers;
-  const known = !workbench.blockers_unavailable && b;
+}> = ({ summary, counts, toTab }) => {
+  const b = summary.blockers;
+  const known = !summary.blockers_unavailable && b;
   const failed = known ? b.failed_import_count : 0;
   const partial = known ? b.partial_import_count : 0;
   const blocked = failed + partial;
@@ -675,7 +675,7 @@ const OperationsLead: React.FC<{
   // project awaiting a retest, whoever owns its finding ("Everyone should
   // see a retest is pending"), and how many of those findings are the
   // reader's (also among their decisions below).
-  const pending = workbench.retests_pending;
+  const pending = summary.retests_pending;
   const retestHosts = pending?.hosts ?? 0;
   const retest = counts.findingsRetest ?? 0;
   // 1 — what needs the reader, decisions first.

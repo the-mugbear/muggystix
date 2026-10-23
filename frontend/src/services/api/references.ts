@@ -195,9 +195,10 @@ export interface McpToolDoc {
   kind: 'read' | 'write';
   method: string;
   path: string;
-  /** Which key workflows see this tool in `tools/list` — a session only ever
-   *  gets its own workflow's tools, so the page has to say which is which. */
-  workflows: string[];
+  /** The reference page's headings the tool is filed under (`assist` /
+   *  `testing` / `scope`; all three for a shared tool) — presentation only:
+   *  every session is offered every tool. (`workflows` until 2026-10-22.) */
+  groups: string[];
   input_schema: {
     type: string;
     properties?: Record<string, { type?: string; description?: string; enum?: string[] }>;

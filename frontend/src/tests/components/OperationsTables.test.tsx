@@ -323,7 +323,7 @@ describe('Tests tab', () => {
   // the list and the counts): it says which reads are out of date, and what
   // is on screen is read again.  These stand in for the tab's list and the
   // page's counts; `reread` says which of them was asked for again.
-  const { reread, ReadsOnScreen } = readsOnScreen({ getMyTestsPage: 'list', getWorkbench: 'counts' });
+  const { reread, ReadsOnScreen } = readsOnScreen({ getMyTestsPage: 'list', getOperations: 'counts' });
   const props = (over: Partial<MyTestsTableProps> = {}): MyTestsTableProps => ({
     rows: [
       task({ test_id: 30, reasons: ['assigned', 'in_review'], assigned_to_id: 1, priority: 'low', label: null }),

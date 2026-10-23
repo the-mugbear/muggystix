@@ -4,14 +4,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { WorkbenchResponse } from '../services/api';
+import type { OperationsResponse } from '../services/api';
 import {
   NO_COUNTS, OPERATIONS_TABS, firstNonEmptyTab, needFromParams, operationsTabCounts,
   tabFromParams, tabListSize, tabSearch, testKindFromParams, tierFromParams,
 } from '../utils/operationsTabs';
 import { fromOperationsQueue, operationsBackPath } from '../utils/operationsQueue';
 
-const workbench = (over: Partial<WorkbenchResponse> = {}): WorkbenchResponse => ({
+const summary = (over: Partial<OperationsResponse> = {}): OperationsResponse => ({
   setup: { has_hosts: true, has_scopes: true },
   my_queue: { items: [], in_review_count: 37 },
   my_tasks: {
@@ -40,7 +40,7 @@ describe('operationsTabCounts', () => {
   });
 
   it('each tab’s count is the server’s, and the kinds within a tab add up to it', () => {
-    const c = operationsTabCounts(workbench(), 112);
+    const c = operationsTabCounts(summary(), 112);
     expect(c).toEqual({
       findings: 24, findingsDecide: 3, findingsWrite: 21, findingsRetest: 2,
       hosts: 37,
@@ -56,7 +56,7 @@ describe('operationsTabCounts', () => {
   });
 
   it('without the server’s sums (an older backend) the groups still count; the kinds of finding are not known', () => {
-    const old = workbench({ my_work: undefined });
+    const old = summary({ my_work: undefined });
     expect(operationsTabCounts(old, null)).toMatchObject({
       findings: 24, hosts: 37, tests: 40, testsAssigned: 12, testsInReview: 28, toClaim: 15,
       // Not known — never 0.
@@ -67,7 +67,7 @@ describe('operationsTabCounts', () => {
   it('a count that is not known is null — never 0', () => {
     expect(operationsTabCounts(null, null)).toEqual(NO_COUNTS);
     expect(operationsTabCounts(null, 9).pickup).toBe(9);
-    expect(operationsTabCounts(workbench({ followups_unavailable: true }), 3).changed).toBeNull();
+    expect(operationsTabCounts(summary({ followups_unavailable: true }), 3).changed).toBeNull();
     expect(tabListSize('tests', NO_COUNTS)).toBeNull();
     expect(Object.values(NO_COUNTS).every((v) => v === null)).toBe(true);
   });

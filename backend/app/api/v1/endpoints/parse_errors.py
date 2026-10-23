@@ -1,5 +1,12 @@
+"""Parse-error rows (``/projects/{id}/parse-errors``).
+
+The Ingestion results view is ``endpoints/ingestion_results.py``, at
+``/ingestion-results`` (it was ``/parse-errors/ingestion-results`` until
+2026-10-22).  ``{error_id}`` is matched as an integer only, so a word after
+``/parse-errors/`` — the old view's path among them — is a 404, not a 422.
+"""
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -7,8 +14,6 @@ from pydantic import BaseModel
 
 from app.db.session import get_db
 from app.db import models
-from app.schemas.ingestion_results import IngestionResultItem
-from app.services import ingestion_results_service
 from app.services.host_query_common import escape_like
 from app.schemas.schemas import ParseErrorSummary
 from app.api.deps import get_current_user
@@ -44,14 +49,6 @@ class ParseErrorStatsResponse(BaseModel):
     ignored: int = 0
 
 
-# --- Ingestion Results schemas ---
-
-class IngestionResultsResponse(BaseModel):
-    items: List[IngestionResultItem]
-    total: int
-    summary: Dict[str, Any]  # total_completed, total_failed, total_hosts, total_ports
-
-
 class ParseErrorSafe(BaseModel):
     """Parse error detail with sensitive fields stripped for non-admin users."""
     id: int
@@ -66,115 +63,6 @@ class ParseErrorSafe(BaseModel):
     status: Optional[str] = "unresolved"
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-
-
-@router.get(
-    "/ingestion-results",
-    response_model=IngestionResultsResponse,
-    responses=_ANALYST_RESPONSES,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="List all ingestion results with statistics",
-)
-def get_ingestion_results(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    status: Optional[str] = Query(
-        None,
-        description=(
-            "Filter by IngestionJob.status (queued, processing, completed, failed) — v2.86.2; "
-            "or a view: `needs_attention` (failed or partial, not dismissed, not superseded) or "
-            "`superseded` (failed or partial, not dismissed, file imported by a later job) — v2.403.0; "
-            "`expired` (staged, never started, removed) and `discarded` (staged, discarded by an "
-            "operator) — v2.408.0. `failed` excludes those two: nothing failed in them. "
-            "`failed_dismissed` is the part of `failed` someone has dismissed."
-        ),
-    ),
-    tool: Optional[str] = Query(
-        None,
-        max_length=64,
-        description="Case-insensitive exact match on IngestionJob.tool_name — v2.86.2.",
-    ),
-    search: Optional[str] = Query(
-        None,
-        max_length=200,
-        description=(
-            "Case-insensitive substring match across original_filename, "
-            "error_message, and last_error (v2.86.2).  Pushed server-side so "
-            "the page no longer filters the partial slice it loaded."
-        ),
-    ),
-    sort_by: str = Query(
-        "created_at",
-        pattern="^(created_at|original_filename|status|tool_name|file_size)$",
-        description="Sort key (v2.86.2).",
-    ),
-    sort_order: str = Query(
-        "desc",
-        pattern="^(asc|desc)$",
-        description="Sort direction (v2.86.2).",
-    ),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Get all ingestion jobs (successful and failed) with detailed statistics.
-
-    For completed jobs, includes host/port counts from scan history.
-    For failed jobs, includes error details from parse_errors.
-    Requires analyst role.  ``ingestion_results_service`` is the one
-    implementation; the agents' ``/agent/assist/ingestion-issues`` reads it too.
-    """
-    items, total = ingestion_results_service.list_results(
-        db, project.id, status=status, tool=tool, search=search,
-        sort_by=sort_by, sort_order=sort_order, skip=skip, limit=limit,
-    )
-    summary = ingestion_results_service.summary(db, project.id)
-    return IngestionResultsResponse(items=items, total=total, summary=summary)
-
-
-class UninterpretedShape(BaseModel):
-    kind: str
-    shape: str
-    count: int
-
-
-class UninterpretedLinesResponse(BaseModel):
-    """What an import's parser did not interpret (v2.418.0), as redacted
-    shapes: the structure of each line with its values replaced
-    (app/services/line_shapes.py)."""
-    job_id: int
-    original_filename: str
-    tool_name: Optional[str] = None
-    total: int = 0
-    distinct: int = 0
-    shapes: List[UninterpretedShape] = []
-
-
-@router.get(
-    "/ingestion-results/{job_id:int}/uninterpreted",
-    response_model=UninterpretedLinesResponse,
-    responses=_ANALYST_RESPONSES,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="The lines an import did not interpret, as redacted shapes",
-)
-def get_uninterpreted_lines(
-    job_id: int,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    job = (
-        db.query(models.IngestionJob)
-        .filter(models.IngestionJob.id == job_id, models.IngestionJob.project_id == project.id)
-        .first()
-    )
-    if job is None:
-        raise HTTPException(status_code=404, detail="Import not found")
-    receipt = job.uninterpreted_lines or {}
-    return UninterpretedLinesResponse(
-        job_id=job.id, original_filename=job.original_filename, tool_name=job.tool_name,
-        total=int(receipt.get("total") or 0), distinct=int(receipt.get("distinct") or 0),
-        shapes=[UninterpretedShape(**s) for s in receipt.get("shapes") or []],
-    )
 
 
 @router.get(
@@ -292,7 +180,7 @@ def get_parse_error_stats(
 
 
 @router.get(
-    "/{error_id}",
+    "/{error_id:int}",
     response_model=ParseErrorSafe,
     responses={**_ANALYST_RESPONSES, 404: {"description": "Parse error not found"}},
     summary="Get parse error details (analyst)",
@@ -344,7 +232,7 @@ def get_parse_error(
 
 
 @router.put(
-    "/{error_id}/status",
+    "/{error_id:int}/status",
     response_model=MessageResponse,
     responses={**_ANALYST_RESPONSES, 404: {"description": "Parse error not found"}},
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
@@ -372,7 +260,7 @@ def update_parse_error_status(
 
 
 @router.delete(
-    "/{error_id}",
+    "/{error_id:int}",
     response_model=DeleteParseErrorResponse,
     responses={**_ANALYST_RESPONSES, 404: {"description": "Parse error not found"}},
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],

@@ -114,7 +114,7 @@ def test_the_agents_issues_are_what_they_were(client, db_session, test_project):
     assert body.get("total", body.get("total_issues")) == len(EXPECTED)
 
     # The counts are the page's own.
-    summary = client.get(f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results").json()["summary"]
+    summary = client.get(f"/api/v1/projects/{test_project.id}/ingestion-results").json()["summary"]
     assert (body["failed"], body["expired"], body["discarded"], body["needs_attention"],
             body["queued"], body["processing"]) == (
         summary["total_failed"], summary["total_expired"], summary["total_discarded"],

@@ -85,17 +85,17 @@ def _strip_times(body):
 
 
 # ---------------------------------------------------------------------------
-# Workbench
+# Operations
 # ---------------------------------------------------------------------------
 
-def test_agent_workbench_equals_the_operators_page(client, db_session, test_project):
+def test_agent_operations_equals_the_operators_page(client, db_session, test_project):
     pid = test_project.id
     _seed(db_session, pid)
     headers = _start(client, pid)
 
-    agent = client.get("/api/v1/agent/assist/workbench", headers=headers)
+    agent = client.get("/api/v1/agent/assist/operations", headers=headers)
     assert agent.status_code == 200, agent.text
-    page = client.get(_ui(pid, "/workbench"), params={"include_investigate": "false"})
+    page = client.get(_ui(pid, "/operations"), params={"include_investigate": "false"})
     assert page.status_code == 200, page.text
     assert _strip_times(agent.json()) == _strip_times(page.json())
     # The personal sections are the operator's: the in-review host is theirs.
@@ -103,19 +103,19 @@ def test_agent_workbench_equals_the_operators_page(client, db_session, test_proj
     assert agent.json()["investigate"] is None  # paged separately by default
 
 
-def test_agent_reading_the_workbench_never_marks_it_seen(client, db_session, test_project):
+def test_agent_reading_operations_never_marks_it_seen(client, db_session, test_project):
     pid = test_project.id
     _seed(db_session, pid)
     headers = _start(client, pid)
-    assert client.get("/api/v1/agent/assist/workbench", headers=headers).status_code == 200
-    assert client.get("/api/v1/agent/assist/workbench/investigate", headers=headers).status_code == 200
+    assert client.get("/api/v1/agent/assist/operations", headers=headers).status_code == 200
+    assert client.get("/api/v1/agent/assist/operations/investigate", headers=headers).status_code == 200
     cursor = (
         db_session.query(models.OperationsCursor)
         .filter_by(user_id=1, project_id=pid)
         .first()
     )
     assert cursor is None, "an agent read acknowledged the operator's 'since last visit'"
-    page = client.get(_ui(pid, "/workbench"), params={"include_investigate": "false"}).json()
+    page = client.get(_ui(pid, "/operations"), params={"include_investigate": "false"}).json()
     assert page["since_last_visit"]["is_first_visit"] is True
 
 
@@ -124,8 +124,8 @@ def test_agent_investigate_equals_the_page_and_pages(client, db_session, test_pr
     _seed(db_session, pid)
     headers = _start(client, pid)
 
-    agent = client.get("/api/v1/agent/assist/workbench/investigate", headers=headers)
-    page = client.get(_ui(pid, "/workbench/investigate"))
+    agent = client.get("/api/v1/agent/assist/operations/investigate", headers=headers)
+    page = client.get(_ui(pid, "/operations/investigate"))
     assert agent.status_code == 200 and page.status_code == 200
     # The page's own answer, key for key, plus the agents' page words.
     words = {"total", "limit", "offset", "returned", "has_more"}
@@ -136,7 +136,7 @@ def test_agent_investigate_equals_the_page_and_pages(client, db_session, test_pr
 
     # Paging: the second row alone, with whole-queue totals.
     second = client.get(
-        "/api/v1/agent/assist/workbench/investigate",
+        "/api/v1/agent/assist/operations/investigate",
         params={"limit": 1, "offset": 1}, headers=headers,
     ).json()
     assert [r["host_id"] for r in second["items"]] == [agent.json()["items"][1]["host_id"]]
@@ -147,14 +147,14 @@ def test_agent_investigate_equals_the_page_and_pages(client, db_session, test_pr
     # One tier: `total` is that tier's own count — the list this call pages.
     tier = agent.json()["items"][0]["tier"]
     one = client.get(
-        "/api/v1/agent/assist/workbench/investigate", params={"tier": tier}, headers=headers,
+        "/api/v1/agent/assist/operations/investigate", params={"tier": tier}, headers=headers,
     ).json()
     assert one["total"] == one["tier_counts"][tier - 1] == len(one["items"])
     assert one["queue_total"] == total
 
     # Past the end: no rows, totals still whole.
     past = client.get(
-        "/api/v1/agent/assist/workbench/investigate",
+        "/api/v1/agent/assist/operations/investigate",
         params={"offset": 500}, headers=headers,
     ).json()
     assert past["items"] == [] and past["queue_total"] == total
@@ -162,16 +162,16 @@ def test_agent_investigate_equals_the_page_and_pages(client, db_session, test_pr
 
 
 # ---------------------------------------------------------------------------
-# Findings that need the operator — the WHOLE list (v2.476.0; the workbench
+# Findings that need the operator — the WHOLE list (v2.476.0; GET /operations
 # carries a 15-row preview)
 # ---------------------------------------------------------------------------
 
-AGENT_MY_FINDINGS = "/api/v1/agent/assist/workbench/findings"
+AGENT_MY_FINDINGS = "/api/v1/agent/assist/operations/findings"
 
 
 def _seed_findings_needing_the_operator(db, pid, owner_id=1):
     """27 to decide and 29 to write — each more than a page of 25 and more than
-    the workbench's preview of 15 — plus one that needs nothing."""
+    the Operations preview of 15 — plus one that needs nothing."""
     from app.db.models_findings import Finding
 
     def finding(title, status, **text):
@@ -215,7 +215,7 @@ def test_agent_findings_needing_the_operator_equal_the_page(client, db_session, 
         return client.get(AGENT_MY_FINDINGS, params=params, headers=headers)
 
     def page_get(params):
-        return client.get(_ui(pid, "/workbench/findings"), params=params)
+        return client.get(_ui(pid, "/operations/findings"), params=params)
 
     for need, expected in ((None, 56), ("decide", 27), ("write", 29)):
         agent_ids, agent_pages = _every_page(agent_get, need)
@@ -239,8 +239,8 @@ def test_agent_findings_needing_the_operator_equal_the_page(client, db_session, 
             (25, 25 * n) for n in range(len(agent_pages))
         ], need
 
-    # The preview the workbench carries is the head of this list, not all of it.
-    preview = client.get("/api/v1/agent/assist/workbench", headers=headers).json()["my_findings"]
+    # The preview GET /assist/operations carries is the head of this list, not all of it.
+    preview = client.get("/api/v1/agent/assist/operations", headers=headers).json()["my_findings"]
     whole, _ = _every_page(agent_get, None)
     assert len(preview["items"]) < preview["total_open"] == len(whole)
     assert [i["finding_id"] for i in preview["items"]] == whole[:len(preview["items"])]
@@ -252,7 +252,7 @@ def test_an_unknown_need_is_refused_on_both_doors(client, db_session, test_proje
     pid = test_project.id
     headers = _start(client, pid)
     agent = client.get(AGENT_MY_FINDINGS, params={"need": "other"}, headers=headers)
-    page = client.get(_ui(pid, "/workbench/findings"), params={"need": "other"})
+    page = client.get(_ui(pid, "/operations/findings"), params={"need": "other"})
     assert agent.status_code == page.status_code == 422
     assert agent.json()["detail"][0]["loc"] == page.json()["detail"][0]["loc"] == ["query", "need"]
     assert agent.json()["detail"][0]["msg"] == page.json()["detail"][0]["msg"]
@@ -271,8 +271,8 @@ def test_an_unknown_need_is_refused_on_both_doors(client, db_session, test_proje
         ]
         return param
 
-    assert need_param("/api/v1/agent/assist/workbench/findings") == need_param(
-        "/api/v1/projects/{project_id}/workbench/findings"
+    assert need_param("/api/v1/agent/assist/operations/findings") == need_param(
+        "/api/v1/projects/{project_id}/operations/findings"
     )
     literal = get_args(get_args(FindingNeedParam)[0])[0]
     assert get_args(literal) == FINDING_NEEDS
@@ -298,8 +298,8 @@ def test_agent_terrain_equals_the_page_and_sorts(client, db_session, test_projec
     _seed(db_session, pid)
     headers = _start(client, pid)
 
-    page = client.get(_ui(pid, "/workbench/terrain")).json()
-    agent = client.get("/api/v1/agent/assist/workbench/terrain", headers=headers)
+    page = client.get(_ui(pid, "/operations/terrain")).json()
+    agent = client.get("/api/v1/agent/assist/operations/terrain", headers=headers)
     assert agent.status_code == 200, agent.text
     body = agent.json()
     assert body["items"] == page["blocks"]
@@ -307,14 +307,14 @@ def test_agent_terrain_equals_the_page_and_sorts(client, db_session, test_projec
     assert body["total_hosts"] == page["total_hosts"]
 
     worst = client.get(
-        "/api/v1/agent/assist/workbench/terrain",
+        "/api/v1/agent/assist/operations/terrain",
         params={"sort": "untouched", "limit": 1}, headers=headers,
     ).json()
     assert len(worst["items"]) == 1 and worst["has_more"] is True
     assert worst["items"][0]["untouched"] == max(b["untouched"] for b in page["blocks"])
     # The next page starts where this one stopped (§6: the terrain had no offset).
     rest = client.get(
-        "/api/v1/agent/assist/workbench/terrain",
+        "/api/v1/agent/assist/operations/terrain",
         params={"sort": "untouched", "limit": 1000, "offset": 1}, headers=headers,
     ).json()
     assert worst["items"] + rest["items"] == sorted(page["blocks"], key=lambda b: (-b["untouched"], -b["hosts"]))
@@ -537,10 +537,10 @@ def test_a_viewers_agent_can_read_them(client, db_session, test_project):
     viewer = _member(db_session, test_project, ProjectRole.VIEWER)
     headers = {"X-API-Key": _key_for(db_session, test_project, viewer)}
     for path in (
-        "/api/v1/agent/assist/workbench",
-        "/api/v1/agent/assist/workbench/investigate",
-        "/api/v1/agent/assist/workbench/findings",
-        "/api/v1/agent/assist/workbench/terrain",
+        "/api/v1/agent/assist/operations",
+        "/api/v1/agent/assist/operations/investigate",
+        "/api/v1/agent/assist/operations/findings",
+        "/api/v1/agent/assist/operations/terrain",
         "/api/v1/agent/assist/evidence/gaps?domain=web_tls",
     ):
         r = client.get(path, headers=headers)
@@ -561,7 +561,7 @@ def test_the_mcp_tools_round_trip(client, db_session, test_project):
             "params": {"name": name, "arguments": args or {}},
         }, headers=headers).json()["result"]
 
-    wb = call("assist_get_workbench", rid=1)
+    wb = call("assist_get_operations", rid=1)
     assert wb["isError"] is False, wb
     assert "since_last_visit" in wb["structuredContent"]
 

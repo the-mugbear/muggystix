@@ -207,7 +207,7 @@ class RequestContextMiddleware:
                 # Server-Timing surfaces backend time in the browser's Network
                 # tab, so clicking around a large instance shows which endpoints
                 # are slow without reading logs.  Measured to first-byte: for the
-                # JSON aggregate endpoints (posture/insights/dashboard/workbench)
+                # JSON aggregate endpoints (posture/insights/dashboard/operations)
                 # the handler has fully run by here, so this ≈ total handler time;
                 # for streaming responses it's time-to-first-byte (expected).
                 elapsed_ms = (time.perf_counter() - start) * 1000

@@ -1,10 +1,10 @@
 /**
  * Operations' tabs (5.331.0): which exist, what each counts, which one opens.
  *
- * Pure — the page reads the workbench's counts and the URL, and these decide.
+ * Pure — the page reads the summary's counts and the URL, and these decide.
  * The client-free half of `components/operations/OperationsTabs`.
  */
-import type { FindingNeed, MyTaskReason, WorkbenchResponse } from '../services/api';
+import type { FindingNeed, MyTaskReason, OperationsResponse } from '../services/api';
 
 /** The tabs, in bar order. */
 export const OPERATIONS_TABS = ['findings', 'hosts', 'tests', 'changed', 'pickup'] as const;
@@ -77,27 +77,27 @@ export const NO_COUNTS: OperationsTabCounts = {
   toClaim: null, changed: null, pickup: null,
 };
 
-/** The tab bar's counts, from the workbench's own totals and the queue's. */
+/** The tab bar's counts, from the summary's own totals and the queue's. */
 export function operationsTabCounts(
-  workbench: WorkbenchResponse | null,
+  summary: OperationsResponse | null,
   pickup: number | null,
 ): OperationsTabCounts {
-  if (!workbench) return { ...NO_COUNTS, pickup };
-  const work = workbench.my_work;
-  const groups = workbench.my_tasks?.group_counts;
+  if (!summary) return { ...NO_COUNTS, pickup };
+  const work = summary.my_work;
+  const groups = summary.my_tasks?.group_counts;
   return {
-    findings: work?.findings_needing_me ?? workbench.my_findings?.total_open ?? null,
+    findings: work?.findings_needing_me ?? summary.my_findings?.total_open ?? null,
     findingsDecide: work?.findings_to_decide ?? null,
     findingsWrite: work?.findings_to_write ?? null,
     findingsRetest: work?.findings_to_retest ?? null,
-    hosts: work?.hosts_in_review ?? workbench.my_queue?.in_review_count ?? null,
+    hosts: work?.hosts_in_review ?? summary.my_queue?.in_review_count ?? null,
     tests: work
       ? work.tests_assigned + work.tests_on_hosts_in_review
       : groups ? groups.assigned + groups.in_review : null,
     testsAssigned: work?.tests_assigned ?? groups?.assigned ?? null,
     testsInReview: work?.tests_on_hosts_in_review ?? groups?.in_review ?? null,
     toClaim: work?.to_claim ?? groups?.triage ?? null,
-    changed: workbench.followups_unavailable ? null : (workbench.followups?.total ?? null),
+    changed: summary.followups_unavailable ? null : (summary.followups?.total ?? null),
     pickup,
   };
 }
