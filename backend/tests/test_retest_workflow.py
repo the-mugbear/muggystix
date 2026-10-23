@@ -369,7 +369,10 @@ def test_a_retest_stands_by_one_rule_on_every_list_and_on_the_guard(
 
 def test_an_undo_of_a_removal_puts_the_retest_back_and_the_guard_holds(client, db_session, test_project):
     """Third review 2026-10-15, H1: the removal's snapshot dropped the
-    request, so remove → Undo → Remediated was accepted with no result."""
+    request, so remove → Undo → Remediated was accepted with no result.
+    Review 2026-10-23, H-TR2: the request then came back from the CLIENT, so
+    an Undo that sent none (or a stale page's) skipped the guard — the server
+    keeps it now, and the request carries nothing about it."""
     finding, fh = _finding_on(client, db_session, test_project, ["10.9.5.1", "10.9.5.2"])
     one = fh["10.9.5.1"]
     _move(client, test_project, finding["id"], one, "retest")
@@ -378,21 +381,46 @@ def test_an_undo_of_a_removal_puts_the_retest_back_and_the_guard_holds(client, d
     assert row["retest_requested_at"]
     r = client.delete(f"{_p(test_project)}/findings/{finding['id']}/endpoints/{one}")
     assert r.status_code == 200, r.text
-    # The Undo sends back what the page held of the row.
+    # The Undo names the row and its state, nothing about the retest.
     r = client.post(f"{_p(test_project)}/findings/{finding['id']}/hosts", json={"host_ids": [], "endpoints": [{
         "host_id": row["host_id"], "name_id": None, "host_status": "open",
-        "retest_requested_at": row["retest_requested_at"],
     }]})
     assert r.status_code == 200, r.text
     restored = next(h for h in r.json()["hosts"] if h["host_id"] == row["host_id"])
-    assert restored["retest_stands"] is True
+    assert restored["retest_stands"] is True and restored["retest_requested_at"] == row["retest_requested_at"]
     assert _move(client, test_project, finding["id"], restored["id"], "remediated").status_code == 409
-    # Restoring straight to Remediated is the same move, held the same way.
+    # Restoring straight to Remediated is the same move, held the same way —
+    # and a request field a client still sends (cleared) changes nothing.
     assert client.delete(f"{_p(test_project)}/findings/{finding['id']}/endpoints/{restored['id']}").status_code == 200
     r = client.post(f"{_p(test_project)}/findings/{finding['id']}/hosts", json={"host_ids": [], "endpoints": [{
-        "host_id": row["host_id"], "host_status": "remediated", "retest_requested_at": row["retest_requested_at"],
+        "host_id": row["host_id"], "host_status": "remediated", "retest_requested_at": None,
     }]})
     assert r.status_code == 409, r.text
+
+
+def test_an_undo_restores_the_request_of_the_latest_removal_only(client, db_session, test_project):
+    """The removal's history line is what an Undo reads: a row removed with
+    no request standing comes back with none, even if an earlier removal of
+    the same endpoint carried one (review 2026-10-23, H-TR2)."""
+    finding, fh = _finding_on(client, db_session, test_project, ["10.9.5.11", "10.9.5.12"])
+    one = fh["10.9.5.11"]
+    host_id = next(h["host_id"] for h in client.get(f"{_p(test_project)}/findings/{finding['id']}").json()["hosts"]
+                   if h["id"] == one)
+    base = f"{_p(test_project)}/findings/{finding['id']}"
+    _move(client, test_project, finding["id"], one, "retest")
+    assert client.delete(f"{base}/endpoints/{one}").status_code == 200
+    # Put back as open WITHOUT its request standing: the request comes back…
+    r = client.post(f"{base}/hosts", json={"host_ids": [], "endpoints": [{"host_id": host_id, "host_status": "open"}]})
+    row = next(h for h in r.json()["hosts"] if h["host_id"] == host_id)
+    assert row["retest_stands"] is True
+    # …and a false-positive judgement of the row clears it; removed again
+    # and restored, nothing comes back.
+    _move(client, test_project, finding["id"], row["id"], "false_positive")
+    assert client.delete(f"{base}/endpoints/{row['id']}").status_code == 200
+    r = client.post(f"{base}/hosts", json={"host_ids": [], "endpoints": [{"host_id": host_id, "host_status": "remediated"}]})
+    assert r.status_code == 200, r.text
+    row = next(h for h in r.json()["hosts"] if h["host_id"] == host_id)
+    assert row["host_status"] == "remediated" and row["retest_requested_at"] is None
 
 
 def test_the_endpoint_writers_lock_the_rows_they_move(client, db_session, test_project):

@@ -233,7 +233,8 @@ def test_bulk_response_does_not_reload_each_finding_after_the_commit(
     finally:
         event.remove(db_session.bind, "before_cursor_execute", listener)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["affected"] == 3
+    # Changed or already as asked (review 2026-10-23, R-TR2), all three found.
+    assert resp.json()["affected"] + len(resp.json()["unchanged_ids"]) == 3
     assert resp.json()["skipped_ids"] == [999_999]
     reloads = [
         s for s in statements

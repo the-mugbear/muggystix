@@ -331,12 +331,10 @@ class FindingEndpointRef(BaseModel):
     endpoint, optionally with the per-endpoint status to restore (Undo)."""
     host_id: int
     name_id: Optional[int] = None
-    # An endpoint state or nothing: anything else is a 422.
+    # An endpoint state or nothing: anything else is a 422.  The retest that
+    # stood on a removed row comes back from the server's own record of the
+    # removal, never from the request (review 2026-10-23, H-TR2).
     host_status: Optional[FindingHostStatus] = None
-    # The retest that stood on the removed row (its ``retest_requested_at``),
-    # put back by an Undo so the retest guard still holds (third review
-    # 2026-10-15, H1).  Read only for a row the call re-attaches.
-    retest_requested_at: Optional[datetime] = None
 
 
 class FindingHostsRequest(BaseModel):

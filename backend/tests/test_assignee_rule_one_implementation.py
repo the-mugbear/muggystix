@@ -301,7 +301,9 @@ def test_the_finding_patch_tells_the_new_owner_as_the_bulk_assign_does(
     bulk = client.post(f"{base}/findings/bulk/assign", json={
         "finding_ids": [f.id for f in more] + [finding_id], "assignee_user_id": member,
     })
-    assert bulk.status_code == 200 and bulk.json()["affected"] == 4, bulk.text
+    # The one already theirs is unchanged (review 2026-10-23, R-TR2).
+    assert bulk.status_code == 200 and bulk.json()["affected"] == 3, bulk.text
+    assert bulk.json()["unchanged_ids"] == [finding_id]
     told = _assignments(db_session, member)
     assert len(told) == 2
     assert (told[-1].title, told[-1].source_type) == ("3 findings assigned to you", "findings")

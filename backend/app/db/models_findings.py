@@ -328,7 +328,10 @@ class FindingStatusHistory(Base):
     changed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     summary = Column(Text, nullable=True)
     # An edit's row: which field, and its value before and after (as shown —
-    # an owner's name, a severity's label).  Null on a status / endpoint row.
+    # an owner's name, a severity's label).  Null on a status / endpoint row,
+    # except a removal's: with ``field`` null, ``before_value`` keeps the
+    # removed row (host, name, retest request) for its Undo to put back
+    # (``FindingService._record_endpoint_removed``); no reader shows it.
     field = Column(String(40), nullable=True)
     before_value = Column(Text, nullable=True)
     after_value = Column(Text, nullable=True)

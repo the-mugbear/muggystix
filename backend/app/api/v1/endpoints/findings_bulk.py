@@ -41,11 +41,28 @@ _BULK_CAP = 5000
 class BulkResult(BaseModel):
     """``requested`` vs ``affected`` are reported separately so a caller can
     see that some ids were dropped (not in this project / already gone)
-    instead of assuming the whole batch landed."""
+    instead of assuming the whole batch landed.  ``affected`` counts the
+    findings the call CHANGED (review 2026-10-23, R-TR2: one already in the
+    status, or already the assignee's, was counted too); those are
+    ``unchanged_ids``."""
     affected: int
     requested: int
     # Ids that were rejected, so the UI can say which rather than just a count.
     skipped_ids: List[int] = Field(default_factory=list)
+    # Ids found but already as asked: nothing written for them.
+    unchanged_ids: List[int] = Field(default_factory=list)
+
+
+def _result(requested: List[int], found: List[int], changed: List[int]) -> BulkResult:
+    """The answer, from ids read before the commit (it expires every object,
+    and reading ``f.id`` afterwards is one SELECT per finding)."""
+    found_set, changed_set = set(found), set(changed)
+    return BulkResult(
+        affected=len(changed_set),
+        requested=len(requested),
+        skipped_ids=[i for i in requested if i not in found_set],
+        unchanged_ids=sorted(found_set - changed_set),
+    )
 
 
 def _valid_findings(db: Session, project_id: int, finding_ids: List[int]) -> List[Finding]:
@@ -58,9 +75,11 @@ def _valid_findings(db: Session, project_id: int, finding_ids: List[int]) -> Lis
             status_code=413,
             detail=f"Too many findings in one bulk operation (max {_BULK_CAP})",
         )
+    # In id order: the order the writes lock them in.
     return (
         db.query(Finding)
         .filter(Finding.project_id == project_id, Finding.id.in_(set(finding_ids)))
+        .order_by(Finding.id)
         .all()
     )
 
@@ -93,24 +112,14 @@ def bulk_status(
     if not findings:
         return BulkResult(affected=0, requested=len(payload.finding_ids), skipped_ids=payload.finding_ids)
 
-    svc = FindingService(db)
-    for finding in findings:
-        svc.set_status(
-            finding=finding,
-            status=payload.status,
-            actor_id=current_user.id,
-            summary=payload.summary,
-        )
-    # Before the commit: it expires every object, and reading ``f.id``
-    # afterwards is one SELECT per finding.
-    found = {f.id for f in findings}
-    db.commit()
-
-    return BulkResult(
-        affected=len(findings),
-        requested=len(payload.finding_ids),
-        skipped_ids=[i for i in payload.finding_ids if i not in found],
+    # The one status write: the findings locked in id order first, each
+    # one's "before" read under its lock (review 2026-10-23, R-TR1).
+    moved = FindingService(db).set_statuses(
+        findings=findings, status=payload.status, actor_id=current_user.id, summary=payload.summary,
     )
+    answer = _result(payload.finding_ids, [f.id for f in findings], [f.id for f in moved])
+    db.commit()
+    return answer
 
 
 class BulkAssignRequest(BaseModel):
@@ -146,12 +155,8 @@ def bulk_assign(
 
     # The one assign: history lines and ONE notification for the findings
     # that changed hands (`finding_actions.assign_findings`, as the PATCH).
-    assign_findings(db, project, findings, assignee.id if assignee else None, current_user.id)
+    changed = assign_findings(db, project, findings, assignee.id if assignee else None, current_user.id)
 
-    found = {f.id for f in findings}  # before the commit expires them
+    answer = _result(payload.finding_ids, [f.id for f in findings], [f.id for f in changed])
     db.commit()
-    return BulkResult(
-        affected=len(findings),
-        requested=len(payload.finding_ids),
-        skipped_ids=[i for i in payload.finding_ids if i not in found],
-    )
+    return answer

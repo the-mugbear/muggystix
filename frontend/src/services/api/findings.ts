@@ -360,9 +360,8 @@ export interface FindingEndpointRef {
   host_id: number;
   name_id?: number | null;
   host_status?: string | null;
-  /** An Undo puts back the retest that stood on the removed row, so the
-   *  retest guard still holds (third review 2026-10-15, H1). */
-  retest_requested_at?: string | null;
+  // No retest request: the one that stood on a removed row comes back from
+  // the server's record of the removal, never from the client.
 }
 
 export const addFindingHosts = async (
@@ -754,6 +753,9 @@ export interface BulkFindingResult {
   requested: number;
   /** Ids the server refused (not in this project / already gone). */
   skipped_ids: number[];
+  /** Ids found but already as asked — nothing was written for them;
+   *  `affected` counts only the findings that changed. */
+  unchanged_ids?: number[];
 }
 
 export const bulkSetFindingStatus = async (

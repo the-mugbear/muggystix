@@ -11,7 +11,8 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import ipaddress
-from typing import List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple, Union
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -332,11 +333,12 @@ def link_issue_evidence(
 
 
 def lock_issue_evidence(
-    db: Session, *, host_ids: Sequence[int], issue_key: Optional[str], also: Optional[int] = None,
+    db: Session, *, host_ids: Sequence[int], issue_key: Optional[str],
+    also: Union[int, Sequence[int], None] = None,
 ) -> List[int]:
     """Lock, IN ID ORDER, the unlinked finding-outcome evidence of the tests
-    that confirm this issue on these hosts (plus record ``also``); returns
-    the ids.
+    that confirm this issue on these hosts (plus the record or records
+    ``also``); returns the ids.
 
     Review 2026-10-01 N8: promoting one result locked ITS record and then
     updated its siblings, so two people promoting two results of one issue
@@ -354,8 +356,9 @@ def lock_issue_evidence(
             EvidenceRecord.host_test_id.in_(test_ids) & EvidenceRecord.host_id.in_(hosts)
             & (EvidenceRecord.outcome == "finding") & EvidenceRecord.finding_id.is_(None)
         )
-    if also is not None:
-        conditions.append(EvidenceRecord.id == also)
+    extra = [also] if isinstance(also, int) else sorted(set(also or []))
+    if extra:
+        conditions.append(EvidenceRecord.id.in_(extra))
     if not conditions:
         return []
     return [
@@ -366,11 +369,48 @@ def lock_issue_evidence(
     ]
 
 
+@dataclass
+class EvidencePromotion:
+    """What ``promote_evidence`` did: the finding; ``joined_issue`` — the
+    record confirmed a scanner observation, so this was that observation's
+    promotion; ``created`` — this call made the finding (False: it joined the
+    issue's existing one)."""
+    finding: Finding
+    joined_issue: bool
+    created: bool
+
+
 def create_finding_from_evidence(
     db: Session, project_id: int, evidence_id: int, *,
     title: Optional[str], severity: Optional[str], status: str, actor_id: int,
 ) -> Tuple[Finding, bool]:
-    """A person promotes an evidence record that showed an issue (v2.443.0).
+    """A person's "Create finding" on a result: ``promote_evidence`` for that
+    one record.  Returns ``(finding, joined_issue)``; the caller commits."""
+    made = promote_evidence(
+        db, project_id, evidence_id, title=title, severity=severity, status=status, actor_id=actor_id,
+    )
+    return made.finding, made.joined_issue
+
+
+def promote_evidence(
+    db: Session, project_id: int, evidence_id: int, *,
+    title: Optional[str], severity: Optional[str], status: str, actor_id: int,
+    more_host_ids: Sequence[int] = (), more_evidence_ids: Sequence[int] = (),
+    provenance: Optional[str] = None,
+) -> EvidencePromotion:
+    """Promote an evidence record that showed an issue (v2.443.0) — the ONE
+    implementation behind a person's "Create finding" on a result and an
+    accepted agent ``finding_create`` proposal that cites such a result
+    (review 2026-10-23, H-TR1: the accept made the finding but never linked
+    the record, so the test still offered "Create finding" and a second
+    finding followed).
+
+    ``more_host_ids`` (the proposal's other hosts) are attached too, and
+    ``more_evidence_ids`` (its other cited records) are linked when they
+    showed an issue, are on nobody's finding, sit on a host the finding now
+    has and belong to no other issue.  ``provenance`` goes on the history
+    line ("— from agent proposal #N").  Every record is locked, with the
+    issue's, in one statement BEFORE the finding (the one lock order).
 
     When the record's test confirms a scanner observation still on the host
     (v2.445.0), this IS that observation's promotion, on this host —
@@ -378,8 +418,7 @@ def create_finding_from_evidence(
     finding instead of making a second one for the same issue.  Otherwise it
     is ``FindingService.create_finding`` on the evidence's host (at the name
     the test was aimed at).  Either way the record is linked.  The row is
-    locked: two clicks must not make two findings.  Returns ``(finding,
-    joined_issue)``; the caller commits.
+    locked: two clicks must not make two findings.  The caller commits.
 
     Joining never re-judges the issue (review 2026-10-01 R9): this is one
     host's result, so an existing finding moves only from open / retest to
@@ -402,10 +441,9 @@ def create_finding_from_evidence(
     if target is None:
         raise HTTPException(status_code=404, detail="Evidence record not found in this project")
     test = db.get(HostTest, target.host_test_id) if target.host_test_id else None
-    lock_issue_evidence(
-        db, host_ids=[target.host_id], issue_key=test.issue_key if test is not None else None,
-        also=evidence_id,
-    )
+    issue_key = test.issue_key if test is not None else None
+    others = sorted(set(more_evidence_ids) - {evidence_id})
+    lock_issue_evidence(db, host_ids=[target.host_id], issue_key=issue_key, also=[evidence_id, *others])
     record = (
         db.query(EvidenceRecord)
         .filter(EvidenceRecord.id == evidence_id, EvidenceRecord.project_id == project_id)
@@ -424,32 +462,66 @@ def create_finding_from_evidence(
             .filter(Vulnerability.host_id == record.host_id, Vulnerability.issue_key == test.issue_key)
             .order_by(Vulnerability.id).first()
         )
+    said = f" — {provenance}" if provenance else ""
+    extra_hosts = [hid for hid in dict.fromkeys(more_host_ids) if hid is not None and hid != record.host_id]
+    svc = FindingService(db)
     if vuln is not None:
+        # Made by this call, or the issue's existing one joined (read after
+        # the evidence lock, as the promotion's own lookup is).
+        created = svc.issue_finding(vuln, project_id) is None
         # The observation rates its own finding: the caller's severity is the
         # test's priority, which nobody chose as a severity (the linked-test
         # control shows no selector).  It is used only on the path below.
         finding = promote_or_dismiss_vulnerability(
             db, vuln=vuln, project_id=project_id, actor_id=actor_id, severity=None,
-            status=status, scope="host", summary=f"Confirmed by test evidence #{record.id}",
+            status=status, scope="host", summary=f"Confirmed by test evidence #{record.id}{said}",
             on_join="confirm",
         )
+        if extra_hosts:
+            svc.add_hosts(finding=finding, host_ids=extra_hosts, actor_id=actor_id)
     else:
         if not (title or "").strip() or not severity:
             raise HTTPException(status_code=422, detail="title and severity are required for a new finding")
-        svc = FindingService(db)
+        created = True
         finding = svc.create_finding(
             project_id=project_id, title=title, severity=severity, actor_id=actor_id,
-            status=status, source="execution", summary=f"Created from evidence #{record.id}",
+            status=status, source="execution", summary=f"Created from evidence #{record.id}{said}",
             # The person who confirmed it owns it, as a promoted observation's
             # finding does (`promote_vulnerability`): unowned, a finding made
             # from a test result was on nobody's Operations list.
             owner_id=actor_id,
         )
         names = {record.host_id: test.name_id} if test is not None and test.name_id else None
-        svc._attach_hosts(finding, [record.host_id], names_by_host=names)
+        svc._attach_hosts(finding, [record.host_id, *extra_hosts], names_by_host=names)
     record.finding_id = finding.id
     db.flush()
-    return finding, vuln is not None
+    if others:
+        _link_cited_evidence(db, project_id, others, finding, issue_key)
+    return EvidencePromotion(finding=finding, joined_issue=vuln is not None, created=created)
+
+
+def _link_cited_evidence(
+    db: Session, project_id: int, evidence_ids: Sequence[int], finding: Finding, issue_key: Optional[str],
+) -> None:
+    """Link the other records a promotion cites (already locked by it) that
+    showed an issue, are on no finding, sit on a host the finding has, and
+    were not recorded for a test of a DIFFERENT issue — that one's result
+    stays to promote on its own."""
+    from app.db.models_host_tests import HostTest
+
+    attached = {hid for (hid,) in db.query(FindingHost.host_id).filter(FindingHost.finding_id == finding.id)}
+    rows = (
+        db.query(EvidenceRecord, HostTest.issue_key)
+        .outerjoin(HostTest, HostTest.id == EvidenceRecord.host_test_id)
+        .filter(EvidenceRecord.id.in_(evidence_ids), EvidenceRecord.project_id == project_id)
+        .populate_existing()
+        .all()
+    )
+    for row, its_issue in rows:
+        if (row.finding_id is None and row.outcome == "finding" and row.host_id in attached
+                and (its_issue is None or its_issue == issue_key)):
+            row.finding_id = finding.id
+    db.flush()
 
 
 def serialize_evidence(record: EvidenceRecord, *, preview: bool = True) -> dict:
