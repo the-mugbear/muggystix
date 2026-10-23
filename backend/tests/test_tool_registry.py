@@ -339,22 +339,29 @@ def test_the_registry_row_carries_its_run_command(client, db_session):
 
 def test_an_upgraded_install_holds_the_seeds_run_commands():
     """Seeding never overwrites, so an existing deployment's rows were filled by
-    revision f5c2a0d7b4e6 and a fresh one's by the seed file: the two must say
+    revisions f5c2a0d7b4e6 and b3d9f1a7c5e2 (testssl's command, the Greenbone
+    notes — 2026-10-22) and a fresh one's by the seed file: the two must say
     the same thing.  A later correction of a shipped command is a NEW revision
-    (plus the seed); compare the seed with that revision's word then."""
+    (plus the seed); add that revision's word here then."""
     import importlib.util
     from pathlib import Path
 
-    path = next(
-        (Path(__file__).resolve().parent.parent / "alembic" / "versions").glob("f5c2a0d7b4e6_*.py")
-    )
-    spec = importlib.util.spec_from_file_location("rev_f5c2a0d7b4e6", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    def revision(rev_id: str):
+        path = next(
+            (Path(__file__).resolve().parent.parent / "alembic" / "versions").glob(f"{rev_id}_*.py")
+        )
+        spec = importlib.util.spec_from_file_location(f"rev_{rev_id}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    upgraded = {name: [run, note] for name, (run, note) in revision("f5c2a0d7b4e6")._RUN_COMMANDS.items()}
+    for name, column, value in revision("b3d9f1a7c5e2")._WRITES:
+        upgraded.setdefault(name, [None, None])[0 if column == "run_command" else 1] = value
 
     seeded = {
-        row["name"]: (row["run_command"], row.get("run_note"))
+        row["name"]: [row.get("run_command"), row.get("run_note")]
         for row in registry.load_seed()
-        if row.get("run_command")
+        if row.get("run_command") or row.get("run_note")
     }
-    assert seeded == module._RUN_COMMANDS
+    assert seeded == upgraded

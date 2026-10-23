@@ -781,6 +781,7 @@
   },
   {
     "name": "testssl",
+    "run_command": "testssl --jsonfile out.json https://target:443",
     "description": "Specialized TLS and SSL auditing script that enumerates supported protocols, ciphers, certificates, and common HTTPS misconfigurations. A strong follow-up when scans report weak TLS settings. Invoked as testssl.sh; the recon catalogue and this registry key it as `testssl`, which is the name a reported command is matched against.",
     "category": "Web Analysis",
     "ports": "443, 8443, 9443",
@@ -897,6 +898,7 @@
   },
   {
     "name": "gvm-tools",
+    "run_note": "BlueStick reads the finished report exported as XML — the Greenbone web interface's report download (XML format), or gvm-cli … --xml '<get_reports report_id=\"<id>\" details=\"1\" ignore_pagination=\"1\"/>' > report.xml. Upload that file.",
     "description": "Greenbone Vulnerability Management command-line clients (gvm-cli, gvm-script) that drive an OpenVAS/GVM scanner over GMP \u2014 create targets and tasks, start scans, and export XML reports. Use with a configured Greenbone integration; the GSA web URL cannot drive scans, GMP can.",
     "category": "Vulnerability Scanning",
     "ports": "9390",
@@ -911,6 +913,7 @@
   },
   {
     "name": "gvm-cli",
+    "run_note": "BlueStick reads the finished report exported as XML — the Greenbone web interface's report download (XML format), or gvm-cli … --xml '<get_reports report_id=\"<id>\" details=\"1\" ignore_pagination=\"1\"/>' > report.xml. Upload that file.",
     "description": "Single-command GMP client from gvm-tools for scripted Greenbone/OpenVAS control (authenticate, create target/task, start, get_reports). Alias entry so an agent that reaches for `gvm-cli` by name finds it approved.",
     "category": "Vulnerability Scanning",
     "ports": "9390",
