@@ -5,8 +5,10 @@ Reading (the list, a report, its files) is for auditors and above — the same
 line as every other report and export.  Drafts are written by analysts.
 Issuing is a project admin's sign-off: it freezes the report
 (``ClientReportService.issue``), numbers it, and queues the render of its
-files on the report worker.  A draft's preview is an ordinary report job
-(``report_type='client'``), polled and downloaded through ``/reports/jobs``.
+files on the report worker.  A draft's preview is a report job
+(``report_type='client'``), polled and downloaded through its report
+(``/{id}/previews/{job}``); the generic ``/reports/jobs`` routes do not serve
+it (``app/api/report_jobs.py``).
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import get_current_user
 from app.api.downloads import attachment
+from app.api.report_jobs import job_file_response, job_or_404
 from app.core.security import log_audit_event
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
@@ -219,7 +222,14 @@ def list_report_template_problems(current_user: User = Depends(get_current_user)
 # app/services/template_asset_store.py.
 
 def _declared_asset(name: str, asset_id: str) -> tuple:
+    """The template and its declared asset.  The path must name the template
+    exactly — ``get_template`` forgives surrounding space, a folder on disk
+    does not — and the routes go on with ``template.name``, never the path
+    parameter (review 2026-10-23, R-RPT3: ``pentest%0A`` made an upload
+    folder named with a newline)."""
     template = _template_or_422(name)
+    if template.name != name:
+        raise HTTPException(status_code=404, detail="There is no template of that name.")
     asset = next((a for a in template.assets if a["id"] == asset_id), None)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"The '{name}' template declares no asset '{asset_id}'.")
@@ -248,7 +258,8 @@ async def upload_report_template_asset(
     next preview or issue on; issued reports keep theirs (each renders from
     its own copy of the template, made when it was issued)."""
     _require_global_admin(current_user)
-    _template, asset = _declared_asset(name, asset_id)
+    template, asset = _declared_asset(name, asset_id)
+    name = template.name
     limit = int(asset.get("max_bytes") or 0) or asset_store_module.MAX_DOCX_UNCOMPRESSED
     data = await file.read(limit + 1)  # every await BEFORE any database write
 
@@ -286,7 +297,7 @@ def remove_report_template_asset(
     """Remove an uploaded file; the template falls back to a server-installed
     one, or goes without (a required file then blocks preview and issue)."""
     _require_global_admin(current_user)
-    _declared_asset(name, asset_id)
+    name = _declared_asset(name, asset_id)[0].name
     removed = asset_store_module.remove(name, asset_id)
     if removed is None:
         raise HTTPException(status_code=404, detail="Nothing was uploaded for this file.")
@@ -310,7 +321,7 @@ def preview_report_template_asset(name: str, asset_id: str):
     media = _PREVIEW_MEDIA.get(asset.get("kind") or "")
     if media is None:
         raise HTTPException(status_code=404, detail="This file has no image preview.")
-    uploaded = asset_store_module.overrides(name).get(asset_id)
+    uploaded = asset_store_module.overrides(template.name).get(asset_id)
     # Installed in the template's folder (or, for a template that extends
     # another, wherever the renderer takes the file from).
     path = uploaded if uploaded is not None else (
@@ -814,7 +825,7 @@ def preview_report(
     current_user: User = Depends(get_current_user),
 ):
     """Render a DRAFT from the live findings, as one format.  Returns a report
-    job: poll ``/reports/jobs/{id}`` and download from there."""
+    job: poll ``/{report_id}/previews/{job_id}`` and download from there."""
     report = _load(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report has its files already.")
@@ -822,6 +833,39 @@ def preview_report(
     if body.format not in template.formats:
         raise HTTPException(status_code=422, detail=f"The '{template.name}' template does not produce {body.format}.")
     return _enqueue(db, project=project, user=current_user, fmt=f"report-{body.format}", report_id=report.id)
+
+
+def _report_job(db: Session, project: Project, report_id: int, job_id: int):
+    """One of THIS report's render jobs — the Reports page's door to it (the
+    generic ``/reports/jobs`` routes answer 404 for a client-report job)."""
+    job = job_or_404(db, project.id, job_id, owner=CLIENT_REPORT_JOB)
+    if (job.filters or {}).get("report_id") != report_id:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    return job
+
+
+@router.get("/{report_id}/previews/{job_id}", response_model=ReportJobSchema)
+def get_report_preview(
+    report_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """A preview job of this report: its status, progress, error and
+    ``inputs_fingerprint``."""
+    return _report_job(db, project, report_id, job_id)
+
+
+@router.get("/{report_id}/previews/{job_id}/download")
+def download_report_preview(
+    report_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """A finished preview's file (409 until it is completed, 410 once it has
+    expired)."""
+    return job_file_response(_report_job(db, project, report_id, job_id))
 
 
 @router.post(
@@ -1008,14 +1052,21 @@ def report_scope_response(service: ClientReportService, report: Report) -> Respo
     the download is the bytes kept at issue (or, for a report issued before
     they were kept, built again from the frozen scope) and is refused — 500,
     logged — when they are not the file the report names: a silently
-    different file would fail the client's own check with no explanation."""
-    dataset, summary = service.content(report)
-    if dataset is None:
-        raise HTTPException(status_code=409, detail=summary.get("error") or "This report cannot be built.")
-    scope = dataset.get("scope") or {"subnets": [], "domains": []}
+    different file would fail the client's own check with no explanation.
+
+    A draft's (or a report with nothing frozen) is its live scope block —
+    the one ``build`` puts in the dataset, without building the findings."""
+    frozen = report.status != ReportStatus.DRAFT and bool(report.snapshot)
+    if frozen:
+        dataset, summary = service.content(report)
+        if dataset is None:
+            raise HTTPException(status_code=409, detail=summary.get("error") or "This report cannot be built.")
+        scope = dataset.get("scope") or {"subnets": [], "domains": []}
+    else:
+        scope = service.live_scope(report)
     name = ((scope.get("file") or {}).get("name")
             or report_scope.file_name(project_slug=None, number=report.number, report_id=report.id))
-    if report.status != ReportStatus.DRAFT and report.snapshot and scope.get("file"):
+    if frozen and scope.get("file"):
         try:
             content = issued_scope_file(report, scope)
         except ValueError as exc:

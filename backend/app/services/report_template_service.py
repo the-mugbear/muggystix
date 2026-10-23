@@ -53,7 +53,7 @@ gives it a copy of the template to render from.
 from __future__ import annotations
 
 import hashlib
-import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -61,15 +61,14 @@ from typing import Dict, List, Optional
 from app.core.config import settings
 from app.services import quarto_render, report_scope
 from app.services import template_asset_store as asset_store
+from app.services.quarto_render import is_skipped_part, is_template_name
 from app.services.report_text import REPORT_TEXT_FIELDS
 
-_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # A template that still lists "pdf" (removed v2.407.0) simply loses it.
 FORMATS = ("html", "docx", "qmd")
-# Rendered output and editor state inside a template folder are not part of
-# the template.
-_SKIP_DIRS = {"_output", ".quarto", "__pycache__", ".git"}
-_SKIP_SUFFIXES = ("_files",)
+# What a template's name is and which of its folder's paths are not part of it
+# (rendered output, editor state) are the renderer's: ``is_template_name``,
+# ``is_skipped_part`` (one definition each; review 2026-10-23, R-RPT3).
 
 
 #: What a template is for; see ``ReportTemplate.kind``.
@@ -332,7 +331,7 @@ def list_templates(kind: Optional[str] = "client") -> List[ReportTemplate]:
     if not root.is_dir():
         return []
     out = []
-    for folder in sorted(p for p in root.iterdir() if p.is_dir() and _NAME.match(p.name)):
+    for folder in sorted(p for p in root.iterdir() if p.is_dir() and is_template_name(p.name)):
         if (folder / "template.json").is_file():
             try:
                 template = _load(folder)
@@ -356,7 +355,7 @@ def template_problems() -> List[Dict[str, str]]:
     for folder in sorted(p for p in root.iterdir() if p.is_dir()):
         if folder.name.startswith((".", "_")):
             continue
-        if not _NAME.match(folder.name):
+        if not is_template_name(folder.name):
             out.append({"name": folder.name, "error": (
                 "The folder name must be lower-case letters, digits, '-' or '_' "
                 "(at most 64 characters, starting with a letter or digit)."
@@ -374,7 +373,7 @@ def template_problems() -> List[Dict[str, str]]:
 def get_template(name: Optional[str]) -> ReportTemplate:
     """The named template, or ``TemplateError`` — never a path outside the root."""
     name = (name or "").strip()
-    if not _NAME.match(name):
+    if not is_template_name(name):
         raise TemplateError(f"'{name}' is not a template name.")
     folder = templates_root() / name
     if not folder.is_dir() or not (folder / "template.json").is_file():
@@ -402,7 +401,7 @@ def _folder_files(folder: Path) -> List[Path]:
     files = []
     for path in sorted(folder.rglob("*")):
         rel = path.relative_to(folder)
-        if any(part in _SKIP_DIRS or part.endswith(_SKIP_SUFFIXES) for part in rel.parts):
+        if any(is_skipped_part(part) for part in rel.parts):
             continue
         if path.is_file() and not path.is_symlink():
             files.append(rel)
@@ -461,9 +460,14 @@ def fingerprint(template: ReportTemplate) -> str:
 
 def freeze(template: ReportTemplate, dst: Path) -> str:
     """Write the template into ``dst`` as the renderer would use it now — its
-    base's files, its own, every uploaded file in place — and return the
-    copy's ``folder_digest``.  An issued report renders from this copy, so a
-    later change to the template folder or to an upload cannot change, or
-    block, its files."""
+    base's files, its own, every uploaded file in place, and this release's
+    written-fields filter at ``quarto_render.FROZEN_FIELDS_FILTER`` — and
+    return the copy's ``folder_digest``.  An issued report renders from this
+    copy, so a later change to the template folder, to an upload or to the
+    filter (an upgrade; review 2026-10-23, R-RPT1) cannot change, or block,
+    its files."""
     quarto_render.materialize(template.path, dst, asset_files(template))
+    frozen_filter = dst / quarto_render.FROZEN_FIELDS_FILTER
+    frozen_filter.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(quarto_render.FIELDS_FILTER, frozen_filter)
     return folder_digest(dst)

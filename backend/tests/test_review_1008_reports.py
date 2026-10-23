@@ -601,7 +601,11 @@ def test_issuing_keeps_the_template_as_it_was_used(client, db_session, test_proj
     report = db_session.get(Report, issued["id"])
     frozen = report.snapshot["template"]
     folder = Path(settings.REPORT_FILES_DIR) / str(test_project.id) / str(report.id) / "template" / "pentest"
-    assert frozen == {"name": "pentest", "sha256": templates.folder_digest(folder)}
+    # With the written-fields filter it was issued with (review 2026-10-23, R-RPT1).
+    fields = folder / quarto_render.FROZEN_FIELDS_FILTER
+    assert fields.read_bytes() == quarto_render.FIELDS_FILTER.read_bytes()
+    assert frozen == {"name": "pentest", "sha256": templates.folder_digest(folder),
+                      "fields_sha256": hashlib.sha256(fields.read_bytes()).hexdigest()}
     assert (folder / "img" / "logo.png").read_bytes() == first and (folder / "report.qmd").is_file()
 
     # The logo is replaced and the template folder edited AFTER the issue:

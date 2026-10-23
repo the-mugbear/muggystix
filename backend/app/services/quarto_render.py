@@ -130,6 +130,10 @@ which frames the screenshots).
 
 
 FIELDS_FILTER = Path(__file__).with_name("quarto_fields.lua")
+#: Where the filter sits in a render's folder — and in an issued report's
+#: frozen template copy, which keeps the filter it was issued with
+#: (``report_template_service.freeze``).
+FROZEN_FIELDS_FILTER = "_bluestick/fields.lua"
 
 _PUNCT = set(string.punctuation)
 # ``\Z``, never ``$``: ``$`` also matches before a trailing newline, so
@@ -140,10 +144,35 @@ _EVIDENCE = re.compile(r"\Aevidence/\d+\.(png|jpg|gif)\Z")
 _WIDTH = re.compile(r"\A\d+(\.\d+)?(in|cm|mm|px|%)\Z")
 _PLAIN = re.compile(r"\A[0-9A-Za-z .:+_-]*\Z")
 _SKIP = {"_output", ".quarto", "__pycache__", ".git"}
+
+
+def is_skipped_part(part: str) -> bool:
+    """A path part that is never part of a template: rendered output and
+    editor state (``_output``, ``.quarto``, ``*_files`` …).  The ONE rule —
+    the renderer's copy, the template's file list and its fingerprint all ask
+    it (review 2026-10-23, R-RPT3)."""
+    return part in _SKIP or part.endswith("_files")
+
+
+# A template's folder name, and an asset id: matched whole (``fullmatch`` —
+# ``^…$`` let "pentest\n" through and an upload made a folder for it; review
+# 2026-10-23, R-RPT3).  The ONE definition of each: the template service and
+# the upload store ask ``is_template_name`` / ``is_asset_id``.
+_TEMPLATE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 # A template's own images (logo, cover art …) declared in template.json.  The
 # path charset is narrow on purpose: ``asset()`` prints it unescaped into
 # Markdown, so it must never hold a space, bracket, brace or quote.
-_ASSET_ID = re.compile(r"\A[a-z][a-z0-9_-]{0,31}\Z")
+_ASSET_ID = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+
+
+def is_template_name(name: object) -> bool:
+    return isinstance(name, str) and _TEMPLATE_NAME.fullmatch(name) is not None
+
+
+def is_asset_id(asset_id: object) -> bool:
+    return isinstance(asset_id, str) and _ASSET_ID.fullmatch(asset_id) is not None
+
+
 _ASSET_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*\Z")
 ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp")
 # An asset may instead REPLACE one of the template's own files when installed
@@ -189,7 +218,6 @@ class TemplateBaseError(ValueError):
 # * template.json: a key the template leaves out is the base's, except the
 #   ones in ``_OWN_KEYS`` — a template always states what it is.
 
-_TEMPLATE_NAME = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,63}\Z")
 _OWN_KEYS = ("title", "description", "kind", "extends")
 
 
@@ -212,7 +240,7 @@ def template_base(template_dir: Path, manifest: Optional[dict] = None) -> Option
     name = manifest.get("extends")
     if name is None:
         return None
-    if not isinstance(name, str) or not _TEMPLATE_NAME.match(name):
+    if not is_template_name(name):
         raise TemplateBaseError("`extends` must be the folder name of another template.")
     if name == template_dir.name:
         raise TemplateBaseError(f"`extends`: '{name}' cannot extend itself.")
@@ -327,7 +355,7 @@ def template_assets(
             raise TemplateAssetError("Each asset must be an object with an id and a path.")
         asset_id = str(entry.get("id") or "")
         path = str(entry.get("path") or "")
-        if not _ASSET_ID.match(asset_id):
+        if not is_asset_id(asset_id):
             raise TemplateAssetError(f"Asset id '{asset_id[:40]}' is not a short lower-case name.")
         if asset_id in seen:
             raise TemplateAssetError(f"Asset id '{asset_id}' is declared twice.")
@@ -405,7 +433,7 @@ def _asset_parts(asset_id: str, path: str) -> List[str]:
     if (
         not _ASSET_PATH.match(path)
         or any(p in ("", ".", "..") for p in parts)
-        or any(p in _SKIP or p.endswith("_files") for p in parts)
+        or any(is_skipped_part(p) for p in parts)
     ):
         raise TemplateAssetError(
             f"Asset '{asset_id}': '{path[:80]}' is not a relative path inside the template folder."
@@ -824,7 +852,7 @@ def render_source(
 def _copy_template(src: Path, dst: Path, skipped: Iterable[str] = ()) -> None:
     for path in src.rglob("*"):
         rel = path.relative_to(src)
-        if any(part in _SKIP or part.endswith("_files") for part in rel.parts):
+        if any(is_skipped_part(part) for part in rel.parts):
             continue
         if rel.as_posix() in skipped:
             continue
@@ -1039,8 +1067,14 @@ def render(
     asset_files: Optional[Dict[str, Path]] = None,
     on_progress: Optional[Callable[[], None]] = None,
     before_quarto: Optional[Callable[[], None]] = None,
+    fields_filter: Optional[Path] = None,
 ) -> Dict[str, Path]:
     """Render ``dataset`` with the template into ``out_dir`` → {format: file}.
+
+    ``fields_filter``: the Lua filter that fills the written fields — an
+    issued report's own copy, frozen with its template (review 2026-10-23,
+    R-RPT1); by default this release's ``FIELDS_FILTER``.  Never read from a
+    template folder by itself: the filter is what keeps written text text.
 
     ``on_progress`` is called before each format and before each
     post-processor — the points at which a worker can say it is still alive
@@ -1079,7 +1113,7 @@ def render(
             raise RenderError(f"The template '{template_dir.name}' cannot be used: {exc}") from exc
         _apply_replacements(template_dir, work, asset_files)
         (work / "_bluestick").mkdir(exist_ok=True)
-        shutil.copyfile(FIELDS_FILTER, work / "_bluestick" / "fields.lua")
+        shutil.copyfile(fields_filter or FIELDS_FILTER, work / FROZEN_FIELDS_FILTER)
         missing = _place_evidence(dataset, work, resolve_evidence or (lambda _item: None))
         if missing and strict_evidence:
             raise RenderError(

@@ -425,7 +425,10 @@ def freeze_report_template(report: Report) -> Optional[dict]:
             f"The '{template.name}' template could not be copied into report storage "
             f"({getattr(exc, 'strerror', None) or exc})."
         ) from exc
-    return {"name": template.name, "sha256": digest}
+    # The written-fields filter is frozen in the copy (``freeze``): its own
+    # digest says the report renders with it (review 2026-10-23, R-RPT1).
+    fields = hashlib.sha256((target / quarto_render.FROZEN_FIELDS_FILTER).read_bytes()).hexdigest()
+    return {"name": template.name, "sha256": digest, "fields_sha256": fields}
 
 
 def frozen_template_dir(report: Report) -> Optional[Path]:
@@ -452,6 +455,30 @@ def frozen_template_dir(report: Report) -> Optional[Path]:
             "revise the report."
         )
     return folder
+
+
+def frozen_fields_filter(report: Report, folder: Path) -> Optional[Path]:
+    """The written-fields filter an issued report was issued with, in its
+    template copy ``folder`` (``frozen_template_dir``), checked against its
+    own digest.  None for a report issued before the filter was frozen: it
+    renders with this release's filter, as it always did.  Raises
+    ``ValueError`` when the frozen filter is gone or changed."""
+    expected = ((report.snapshot or {}).get("template") or {}).get("fields_sha256")
+    if not expected:
+        return None
+    path = folder / quarto_render.FROZEN_FIELDS_FILTER
+    try:
+        intact = (path.is_file() and not path.is_symlink()
+                  and hashlib.sha256(path.read_bytes()).hexdigest() == expected)
+    except OSError:
+        intact = False
+    if not intact:
+        raise ValueError(
+            "This report's own copy of its template is missing its field filter, or it is no longer "
+            "the one it was issued with. Restore it (uploads/client_reports, from a backup), or "
+            "revise the report."
+        )
+    return path
 
 
 def freeze_report_scope(report: Report, dataset: dict) -> None:
@@ -1307,6 +1334,12 @@ class ClientReportService:
         return report_scope.attach_file(
             scope, project_slug=project.slug if project else None, number=number, report_id=report.id,
         )
+
+    def live_scope(self, report: Report) -> dict:
+        """The scope block a build of ``report`` would hold now — the same
+        function ``build`` calls, without building the rest of the dataset
+        (review 2026-10-23: a draft's scope file built every finding first)."""
+        return self._scope_block(report, self.db.get(Project, report.project_id), report.number)
 
     # ------------------------------------------------------------------
     # Dataset

@@ -46,8 +46,8 @@ vi.mock('../../services/api', () => ({
   downloadClientReportFile: vi.fn(),
   listProjectMembers: vi.fn(),
   getProjectReportTeam: vi.fn(),
-  getReportJob: vi.fn(),
-  downloadReportJob: vi.fn(),
+  getReportPreview: vi.fn(),
+  downloadReportPreview: vi.fn(),
   draftReportWithAI: vi.fn(),
   listLLMProviders: vi.fn(),
   getClientReportFollowers: vi.fn(),
@@ -332,19 +332,19 @@ describe('Report detail — draft', () => {
   it('previews on the worker and offers the file when it is ready', async () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.previewClientReport.mockResolvedValue({ id: 70, format: 'report-docx', status: 'queued' });
-    mocked.getReportJob.mockResolvedValue({ id: 70, format: 'report-docx', status: 'completed' });
-    mocked.downloadReportJob.mockResolvedValue('example-report-preview.docx');
+    mocked.getReportPreview.mockResolvedValue({ id: 70, format: 'report-docx', status: 'completed' });
+    mocked.downloadReportPreview.mockResolvedValue('example-report-preview.docx');
     renderDetail('?section=issue');
     fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
     await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(1, 5, 'docx'));
     fireEvent.click(await screen.findByRole('button', { name: 'Download Word preview' }, { timeout: 4000 }));
-    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(1, 70));
+    await waitFor(() => expect(mocked.downloadReportPreview).toHaveBeenCalledWith(1, 5, 70));
   });
 
   it('the action bar’s Preview renders HTML and goes to Preview & issue', async () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.previewClientReport.mockResolvedValue({ id: 72, format: 'report-html', status: 'queued' });
-    mocked.getReportJob.mockResolvedValue({ id: 72, format: 'report-html', status: 'queued' });
+    mocked.getReportPreview.mockResolvedValue({ id: 72, format: 'report-html', status: 'queued' });
     renderDetail();
     fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
     await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(1, 5, 'html'));
@@ -355,7 +355,7 @@ describe('Report detail — draft', () => {
   it('says the status may be stale when a preview job cannot be re-read, and carries on', async () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.previewClientReport.mockResolvedValue({ id: 71, format: 'report-docx', status: 'queued' });
-    mocked.getReportJob
+    mocked.getReportPreview
       .mockRejectedValueOnce(Object.assign(new Error('boom'), {
         isAxiosError: true, response: { status: 503, data: { detail: 'The server is busy.' } },
       }))

@@ -331,15 +331,18 @@ def test_an_auditor_still_manages_the_export_they_requested(client, db_session, 
     assert res.status_code == 200 and res.json()["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("report_type,fmt", [("client", "report-issue"), ("remediation", "contact-docx")])
 @pytest.mark.parametrize("action,status", [("cancel", "queued"), ("retry", "failed"), ("dismiss", "completed")])
-def test_a_client_report_job_is_refused_here_for_everyone(client, db_session, test_project, test_user, action, status):
+def test_a_page_owned_job_is_not_found_here_for_everyone(client, db_session, test_project, test_user,
+                                                        action, status, report_type, fmt):
     """An auditor could cancel a queued issue render: the report stayed
-    PENDING with no job.  Even an admin goes through the Reports page."""
-    job = _job(db_session, test_project.id, status, report_type="client",
-               requested_by_id=test_user.id, format="report-issue", filters={"report_id": 1})
+    PENDING with no job.  Even an admin goes through the job's own page —
+    the generic routes do not find it (owner, 2026-10-23: 404, like the
+    list; a contact's document was dismissable here too)."""
+    job = _job(db_session, test_project.id, status, report_type=report_type,
+               requested_by_id=test_user.id, format=fmt, filters={"report_id": 1})
     res = client.post(f"/api/v1/projects/{test_project.id}/reports/jobs/{job.id}/{action}")
-    assert res.status_code == 409, res.text
-    assert "Reports page" in res.json()["detail"]
+    assert res.status_code == 404, res.text
     db_session.expire_all()
     row = db_session.get(ReportJob, job.id)
     assert row.status == status and row.dismissed_at is None

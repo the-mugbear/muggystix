@@ -19,7 +19,7 @@ import React from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { ExternalLink, Loader2 } from 'lucide-react';
 
-import { fetchReportJobBlob } from '../../services/api';
+import { fetchReportPreviewBlob } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
 import { saveBlob, showBlobInTab } from '../../utils/download';
@@ -30,17 +30,19 @@ const OPENING_WORDS = 'Opening the preview…';
 
 interface Props extends Pick<ButtonProps, 'variant' | 'size' | 'className'> {
   projectId: number;
+  /** The draft the preview is of: its job is served through it. */
+  reportId: number;
   jobId: number;
   label: string;
 }
 
-const OpenPreviewButton: React.FC<Props> = ({ projectId, jobId, label, ...button }) => {
+const OpenPreviewButton: React.FC<Props> = ({ projectId, reportId, jobId, label, ...button }) => {
   const toast = useToast();
   const open = useMutation({
     mutationFn: async (tab: Window | null): Promise<'opened' | string> => {
       let fetched: { blob: Blob; filename: string };
       try {
-        fetched = await fetchReportJobBlob(projectId, jobId);
+        fetched = await fetchReportPreviewBlob(projectId, reportId, jobId);
       } catch (err) {
         tab?.close();
         throw err;

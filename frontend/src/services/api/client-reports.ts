@@ -1,11 +1,11 @@
 /**
  * Client reports (v5.261.0) — the findings-first Quarto deliverable, its
  * history and its addenda.  Backend: app/api/v1/endpoints/client_reports.py.
- * A draft's preview is an ordinary report job (poll with getReportJob,
- * download with downloadReportJob); an issued report's files download here.
+ * A draft's preview is a report job of its report (poll with getReportPreview,
+ * download with downloadReportPreview); an issued report's files download here.
  */
 import { api, projectPath } from './client';
-import { saveBlob } from '../../utils/download';
+import { filenameFromContentDisposition, saveBlob } from '../../utils/download';
 import type { ReportJob } from '../api';
 
 export type ClientReportKind = 'full' | 'addendum';
@@ -337,6 +337,40 @@ export const deleteClientReport = async (projectId: number, id: number): Promise
 
 export const previewClientReport = async (projectId: number, id: number, format: ClientReportFormat): Promise<ReportJob> =>
   (await api.post<ReportJob>(`${base(projectId)}/${id}/preview`, { format })).data;
+
+/** A draft's preview job is the report's own: polled and downloaded through
+ *  it (the inventory downloads' `/reports/jobs` routes answer 404 for it). */
+const previewPath = (projectId: number, reportId: number, jobId: number) =>
+  `${base(projectId)}/${reportId}/previews/${jobId}`;
+
+export const getReportPreview = async (
+  projectId: number, reportId: number, jobId: number, signal?: AbortSignal,
+): Promise<ReportJob> => (await api.get<ReportJob>(previewPath(projectId, reportId, jobId), { signal })).data;
+
+/** A finished job's file at `path` as bytes, typed as the server sent them,
+ *  with the server's name for it.  Click-only. */
+export const fetchJobFileBlob = async (path: string, fallback: string): Promise<{ blob: Blob; filename: string }> => {
+  const response = await api.get(path, { responseType: 'blob' });
+  const filename = filenameFromContentDisposition(
+    response.headers['content-disposition'] as string | undefined, fallback,
+  );
+  const type = (response.headers['content-type'] as string | undefined) ?? '';
+  return { blob: new Blob([response.data], type ? { type } : undefined), filename };
+};
+
+/** A finished preview's file, for a page that shows it (an HTML preview
+ *  opened in a tab).  Click-only. */
+export const fetchReportPreviewBlob = async (
+  projectId: number, reportId: number, jobId: number,
+): Promise<{ blob: Blob; filename: string }> =>
+  fetchJobFileBlob(`${previewPath(projectId, reportId, jobId)}/download`, `report_${jobId}`);
+
+/** Save a finished preview's file; answers the name it was saved under. */
+export const downloadReportPreview = async (projectId: number, reportId: number, jobId: number): Promise<string> => {
+  const { blob, filename } = await fetchReportPreviewBlob(projectId, reportId, jobId);
+  saveBlob(blob, filename);
+  return filename;
+};
 
 export const issueClientReport = async (projectId: number, id: number): Promise<ClientReport> =>
   (await api.post<ClientReport>(`${base(projectId)}/${id}/issue`)).data;

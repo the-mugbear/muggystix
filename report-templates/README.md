@@ -121,7 +121,7 @@ A template that is another one with a few files changed does not need to be a co
   - `min_width` / `min_height`: fewest pixels accepted; set them from the printed size, about 250–300 px per inch of the box the image fills.
   - `aspect`: the shape of the place it fills, as `"W:H"`. A different shape is accepted with a warning, since it will be scaled to fit.
 
-  A Word file must be a real `.docx` (no macros, not a `.dotx`) with its styles part.
+  A Word file must be a real `.docx` (no macros, not a `.dotx`) with its styles part, and must use nothing outside itself: an attached template, a linked picture or another external part — which Word would fetch when the client opens the report — is refused (a hyperlink is fine).
 
 ## The data
 
@@ -158,7 +158,7 @@ BlueStick fills the file with Jinja, using delimiters chosen so they never clash
 | Values (printed) | `{{ … }}` | `<< … >>` |
 | Comments | `{# … #}` | `<# … #>` |
 
-The front matter must set `engine: markdown` and list `filters:` with `quarto` and then `_bluestick/fields.lua` (your own filters after it). BlueStick copies that filter into the work folder but does not add it for you; it fills every `md()` field, `todo()` highlight and `bluestick-meta` key, so without it none of them appear.
+The front matter must set `engine: markdown` and list `filters:` with `quarto` and then `_bluestick/fields.lua` (your own filters after it). BlueStick copies that filter into the work folder but does not add it for you; it fills every `md()` field, `todo()` highlight and `bluestick-meta` key, so without it none of them appear. Issuing a report freezes the filter with the template, so an issued report rendered again after an upgrade prints its text as it did when it was issued (a file `_bluestick/fields.lua` in your own template folder is replaced by BlueStick's, never used).
 
 Set `html-math-method: plain` under `format: html:` as the shipped templates do. A report never typesets a formula, so it never loads a math library: Quarto's default is MathJax from a CDN, which would be a request from the reader's browser and a script in the report. BlueStick passes the option on every HTML render whatever the front matter says; the line in the template keeps the Quarto source zip the same when someone renders it by hand.
 

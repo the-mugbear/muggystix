@@ -30,6 +30,7 @@
  */
 import { api, projectPath, setCurrentProjectId, getCurrentProjectId } from './api/client';
 import { serializeHostParams } from './api/hosts';
+import { fetchJobFileBlob } from './api/client-reports';
 import { asAxiosError } from '../utils/apiErrors';
 import { filenameFromContentDisposition, saveBlob } from '../utils/download';
 import type { Paginated } from './api/shared';  // local use; also re-exported via the barrel below
@@ -505,14 +506,8 @@ export const getReportJob = async (projectId: number, jobId: number, signal?: Ab
 /** A finished job's file as bytes, typed as the server sent them, with the
  *  server's name for it — for a page that shows the file (an HTML preview
  *  opened in a tab) rather than saving it.  Click-only, like the save. */
-export const fetchReportJobBlob = async (projectId: number, jobId: number): Promise<{ blob: Blob; filename: string }> => {
-  const response = await api.get(`${projectPath(projectId)}/reports/jobs/${jobId}/download`, { responseType: 'blob' });
-  const filename = filenameFromContentDisposition(
-    response.headers['content-disposition'] as string | undefined, `report_${jobId}`,
-  );
-  const type = (response.headers['content-type'] as string | undefined) ?? '';
-  return { blob: new Blob([response.data], type ? { type } : undefined), filename };
-};
+export const fetchReportJobBlob = async (projectId: number, jobId: number): Promise<{ blob: Blob; filename: string }> =>
+  fetchJobFileBlob(`${projectPath(projectId)}/reports/jobs/${jobId}/download`, `report_${jobId}`);
 
 /** Save a finished job's file; answers the name it was saved under (the
  *  server's), so the page can say which file the reader now has. */

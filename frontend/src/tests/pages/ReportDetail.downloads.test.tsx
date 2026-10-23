@@ -31,9 +31,9 @@ vi.mock('../../services/api', () => ({
   downloadClientReportScope: vi.fn(),
   listProjectMembers: vi.fn(),
   getProjectReportTeam: vi.fn(),
-  getReportJob: vi.fn(),
+  getReportPreview: vi.fn(),
   getClientReportInputs: vi.fn(),
-  downloadReportJob: vi.fn(),
+  downloadReportPreview: vi.fn(),
   draftReportWithAI: vi.fn(),
   listLLMProviders: vi.fn(),
 }));
@@ -104,7 +104,7 @@ describe('A draft’s previews', () => {
       Promise.resolve({ id: fmt === 'docx' ? 70 : 71, format: `report-${fmt}`, status: 'queued' }));
     // The Word job is read three times before it is done; the HTML one once.
     const reads: Record<number, number> = { 70: 0, 71: 0 };
-    mocked.getReportJob.mockImplementation((_project: number, id: number) => {
+    mocked.getReportPreview.mockImplementation((_project: number, _report: number, id: number) => {
       reads[id] += 1;
       const done = reads[id] >= (id === 70 ? 3 : 1);
       return Promise.resolve({ id, format: 'x', status: done ? 'completed' : 'processing' });
@@ -130,7 +130,7 @@ describe('A draft’s previews', () => {
   it('a failed preview is not announced: its row says why', async () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.previewClientReport.mockResolvedValue({ id: 80, format: 'report-docx', status: 'queued' });
-    mocked.getReportJob.mockResolvedValue({ id: 80, format: 'report-docx', status: 'failed', error_message: 'quarto exited 1' });
+    mocked.getReportPreview.mockResolvedValue({ id: 80, format: 'report-docx', status: 'failed', error_message: 'quarto exited 1' });
     renderDetail();
     fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
     expect(await screen.findByText(/Failed: quarto exited 1/, undefined, { timeout: 4000 })).toBeInTheDocument();
@@ -143,10 +143,10 @@ describe('A draft’s previews', () => {
     let nextJob = 70;
     mocked.previewClientReport.mockImplementation((_project: number, _report: number, fmt: string) =>
       Promise.resolve({ id: nextJob++, format: `report-${fmt}`, status: 'queued' }));
-    mocked.getReportJob.mockImplementation((_project: number, id: number) =>
+    mocked.getReportPreview.mockImplementation((_project: number, _report: number, id: number) =>
       Promise.resolve({ id, format: 'x', status: 'completed' }));
     const word = held<string>();
-    mocked.downloadReportJob.mockImplementation((_project: number, id: number) =>
+    mocked.downloadReportPreview.mockImplementation((_project: number, _report: number, id: number) =>
       (id === 70 ? word.promise : Promise.resolve(`preview-${id}.html`)));
 
     renderDetail();
@@ -160,8 +160,8 @@ describe('A draft’s previews', () => {
     await waitFor(() => expect(wordButton).toHaveTextContent('Downloading…'));
     expect(wordButton).toBeDisabled();
     fireEvent.click(wordButton);
-    expect(mocked.downloadReportJob).toHaveBeenCalledTimes(1);
-    expect(mocked.downloadReportJob).toHaveBeenCalledWith(1, 70);
+    expect(mocked.downloadReportPreview).toHaveBeenCalledTimes(1);
+    expect(mocked.downloadReportPreview).toHaveBeenCalledWith(1, 5, 70);
 
     // The other format is not held up by it.
     expect(htmlButton).toBeEnabled();
@@ -195,7 +195,7 @@ describe('Whether a preview is current', () => {
   const finishedWith = (fingerprint: string | null) => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.previewClientReport.mockResolvedValue({ id: 71, format: 'report-html', status: 'queued' });
-    mocked.getReportJob.mockResolvedValue({ id: 71, format: 'report-html', status: 'completed', inputs_fingerprint: fingerprint });
+    mocked.getReportPreview.mockResolvedValue({ id: 71, format: 'report-html', status: 'completed', inputs_fingerprint: fingerprint });
   };
   const freshness = () => screen.findByTestId('preview-freshness-html');
   // The job is polled every two seconds: its first reading is the POST's.

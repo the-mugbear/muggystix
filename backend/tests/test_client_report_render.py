@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -55,9 +56,11 @@ def _seed(db_session, project):
 
 
 def _job(db_session, project, fmt, report_id):
+    # Claimed, as the worker hands it over: ``started_at`` is the claim's
+    # token, which the issue render's failure write is fenced on.
     job = ReportJob(
         project_id=project.id, format=fmt, report_type="client",
-        filters={"report_id": report_id}, status="processing",
+        filters={"report_id": report_id}, status="processing", started_at=datetime.now(timezone.utc),
     )
     db_session.add(job)
     db_session.commit()
@@ -124,3 +127,34 @@ def test_a_failed_issue_render_is_recorded_and_can_be_retried(client, db_session
     assert retried.status_code == 200 and retried.json()["render_status"] == "pending"
     run_client_job(db_session, _job(db_session, test_project, "report-issue", draft["id"]))
     assert client.get(f"{base}/{draft['id']}").json()["render_status"] == "done"
+
+
+# Review 2026-10-23, R-RPT1: the written-fields filter is frozen with the
+# template.  A filter that throws the whole document away for one word.
+_OTHER_FILTER = 'function Pandoc(doc) return pandoc.Pandoc({pandoc.Para({pandoc.Str("LIVE-FILTER")})}) end\n'
+
+
+def test_an_issued_report_renders_with_the_field_filter_it_was_issued_with(
+    client, db_session, test_project, tmp_path, monkeypatch,
+):
+    from app.services import quarto_render
+
+    _seed(db_session, test_project)
+    base = f"/api/v1/projects/{test_project.id}/client-reports"
+    draft = client.post(base, json={"kind": "full"}).json()
+    assert client.post(f"{base}/{draft['id']}/issue").status_code == 200
+    # An upgrade then ships another filter.
+    live = tmp_path / "other_fields.lua"
+    live.write_text(_OTHER_FILTER, encoding="utf-8")
+    monkeypatch.setattr(quarto_render, "FIELDS_FILTER", live)
+
+    run_client_job(db_session, _job(db_session, test_project, "report-issue", draft["id"]))
+    assert client.get(f"{base}/{draft['id']}").json()["render_status"] == "done"
+    html = client.get(f"{base}/{draft['id']}/files/html").content.decode("utf-8")
+    assert "LIVE-FILTER" not in html
+    assert "<strong>optional</strong>" in html
+
+    # A draft takes the release's filter.
+    other = client.post(base, json={"kind": "full"}).json()
+    data, _media, _name = run_client_job(db_session, _job(db_session, test_project, "report-html", other["id"]))
+    assert "LIVE-FILTER" in data.decode("utf-8")

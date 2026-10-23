@@ -362,15 +362,6 @@ def record_prepared(db: Session, job: ReportJob) -> int:
     return len(set(host_ids))
 
 
-def job_for(db: Session, project_id: int, job_id: int) -> ReportJob:
-    job = (db.query(ReportJob)
-           .filter(ReportJob.id == job_id, ReportJob.project_id == project_id,
-                   ReportJob.report_type == REPORT_TYPE).first())
-    if job is None:
-        raise HTTPException(404, "Report not found")
-    return job
-
-
 def serialize_job(job: ReportJob) -> dict:
     return {
         "id": job.id, "status": job.status, "format": job.format, "message": job.message,
