@@ -345,6 +345,15 @@ def test_user(db_session):
     )
     db_session.add(user)
     db_session.commit()
+    # The explicit id does not move the id sequence, so on a fresh test
+    # database the first user a test creates drew id 1 too and failed — a
+    # test that passed only after an earlier file had advanced it (review
+    # 2026-10-23b, TEST-1). Move it past every stored id.
+    if db_session.bind.dialect.name == "postgresql":
+        db_session.execute(text(
+            "SELECT setval(pg_get_serial_sequence('users', 'id'), (SELECT max(id) FROM users))"
+        ))
+        db_session.commit()
     db_session.refresh(user)
     return user
 
