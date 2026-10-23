@@ -679,7 +679,7 @@ Every list you can page takes the same two arguments and answers the same envelo
 - `limit` (rows per page; each route states its default and maximum) and `offset` (rows to skip, default 0).
 - `{items, total, limit, offset, returned, has_more}`, beside whatever else the route answers. `items` is the page. `total` is every row the filters match — **the answer to "how many"; never the length of a page**. `returned` is the length of `items`; `has_more` is true while rows remain: ask again with `offset` + `returned`.
 
-A read described here as "paged" is exactly this. An argument a route does not take is refused over MCP (an unknown argument) and ignored over plain HTTP — so an `offset` misspelt in a curl is page one again, with `offset: 0` in the answer to show it.
+A read described here as "paged" is exactly this. `skip` is refused on every agent route — `422` "`skip` is not a parameter here; page with `offset`" over HTTP, an unknown argument over MCP. Any other argument a route does not take is refused over MCP and ignored over plain HTTP — so an `offset` misspelt in a curl is page one again, with `offset: 0` in the answer to show it.
 
 Two reads carry a capped list inside a larger answer and have no `offset`: evidence gaps (`total` beside `items`) and the scan comparison (`counts` beside lists cut at `limit`). One client report pages its `findings` with `limit` / `offset` and says `findings_total` / `findings_has_more`.
 

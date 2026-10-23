@@ -1002,6 +1002,10 @@ def agent_route_access(route) -> AgentRouteAccess:
     return AgentRouteAccess(read_floor=floor, session_metadata_write=metadata_write)
 
 
+#: The answer to ``?skip=`` on an agent route: agents page with ``offset``.
+AGENT_SKIP_REFUSAL = "`skip` is not a parameter here; page with `offset`"
+
+
 def enforce_agent_operator_access(
     request: Request,
     agent: Agent = Depends(check_agent_rate_limit),
@@ -1027,7 +1031,14 @@ def enforce_agent_operator_access(
     session-metadata writes above.
 
     A global admin bypasses, matching ``require_project_role``.
+
+    It also refuses ``skip`` on every agent route (owner, 2026-10-22): no
+    agent route takes it (``test_agent_list_paging.py``), and a script that
+    still sent it read the first page again as if it were the next one.
+    Other unknown query parameters stay ignored, as FastAPI ignores them.
     """
+    if "skip" in request.query_params:
+        raise HTTPException(status_code=422, detail=AGENT_SKIP_REFUSAL)
     method = request.method.upper()
     declared = agent_route_access(request.scope.get("route"))
     is_write = method not in _READ_METHODS

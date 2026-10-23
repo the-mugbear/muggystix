@@ -90,9 +90,10 @@ def test_observations_say_when_the_page_is_cut(client, test_project, estate):
     whole = client.get(url, headers=headers).json()
     assert seen == [r["issue_key"] for r in whole["items"]] and len(seen) == 3
     assert whole["has_more"] is False
-    # ``skip`` is the page route's word and not an argument here: over plain
-    # HTTP an undeclared query parameter selects nothing (the first page).
-    assert client.get(url, params={"limit": 2, "skip": 2}, headers=headers).json()["offset"] == 0
+    # ``skip`` is the page route's word and not an argument here: an agent
+    # route refuses it (owner, 2026-10-22 — it used to answer the first page).
+    refused = client.get(url, params={"limit": 2, "skip": 2}, headers=headers)
+    assert refused.status_code == 422 and "page with `offset`" in refused.json()["detail"]
 
 
 def test_sort_by_hosts_puts_the_most_widespread_first(client, test_project, estate):

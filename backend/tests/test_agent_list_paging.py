@@ -353,6 +353,43 @@ def test_skip_is_an_unknown_argument_over_mcp(client, test_project, tool, argume
     assert "skip" in str(refused)
 
 
+@pytest.mark.parametrize("path", [
+    "/agent/assist/hosts",
+    "/agent/assist/findings",
+    "/agent/proposals",
+    "/agent/host-tests",
+    "/agent/scope/subnets",
+    "/agent/assist/names",
+    "/agent/hosts",            # a pre-assist read: refused all the same
+])
+def test_skip_is_refused_over_http_on_every_agent_route(client, test_project, path):
+    """Owner, 2026-10-22: over plain HTTP a script still sending ``skip=`` read
+    the FIRST page every time, as if it were the next.  The router-level gate
+    every ``/agent/*`` route passes through (``enforce_agent_operator_access``)
+    answers 422 instead; MCP already refused it as an unknown argument."""
+    from app.api.deps import AGENT_SKIP_REFUSAL
+
+    started = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
+    headers = {"X-API-Key": started.json()["api_key"]}
+
+    refused = client.get(f"{API}{path}", headers=headers, params={"skip": 2})
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == AGENT_SKIP_REFUSAL == "`skip` is not a parameter here; page with `offset`"
+    refused = client.get(f"{API}{path}", headers=headers, params={"skip": 0, "limit": 2})
+    assert refused.status_code == 422, refused.text
+
+    # Any other parameter the route does not take is still ignored over HTTP.
+    assert client.get(f"{API}{path}", headers=headers, params={"page": 2}).status_code == 200
+    assert client.get(f"{API}{path}", headers=headers, params={"offset": 0, "limit": 2}).status_code == 200
+
+
+def test_skip_is_refused_on_an_agent_write_too(client, test_project):
+    started = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
+    headers = {"X-API-Key": started.json()["api_key"]}
+    refused = client.post(f"{API}/agent/host-tests", headers=headers, params={"skip": 1}, json={"tests": []})
+    assert refused.status_code == 422 and "page with `offset`" in refused.json()["detail"]
+
+
 def test_the_page_routes_two_doors_share_answer_the_one_envelope(client, test_project):
     """Review 2026-10-10, R1f: the two shared router factories' lists answer
     the service's page envelope on BOTH doors (``services/paging``) — the
