@@ -275,7 +275,7 @@
 0.10 test_schema_adoption_and_assist_ownership.py
 0.00 test_schema_fk_ondelete_contract.py
 0.00 test_scope_cidr_message.py
-0.17 test_scope_host_mappings_pagination.py
+0.17 test_out_of_scope_pagination.py
 0.53 test_scope_named_targets.py
 0.09 test_scope_subnet_host_counts.py
 0.59 test_scope_targets.py

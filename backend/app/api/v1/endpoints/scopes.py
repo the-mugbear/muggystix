@@ -22,14 +22,12 @@ from app.api.deps import get_current_user
 from app.db.models_auth import User
 from app.api.deps import get_current_project, require_project_role, read_upload_capped
 from app.db.models_project import Project, ProjectRole
-from app.schemas.pagination import Paginated
 from app.schemas.schemas import (
     Scope as ScopeSchema,
     Subnet as SubnetSchema,
     SubnetUpdate,
     SubnetBatchCreate,
     SubnetFileUploadResponse,
-    HostSubnetMapping as HostSubnetMappingSchema,
     ScopeCoverageSummary,
     ScopeCoverageHost,
 )
@@ -63,7 +61,8 @@ logger = logging.getLogger(__name__)
 # Gone, with the scope id (2.489.0): `GET /scopes/{scope_id}` and the
 # `/{scope_id}/…` spelling of every route below.  Earlier: `GET /scopes/`,
 # `DELETE /scopes/{scope_id}` (2.488.0), `POST /` and `PATCH /{scope_id}`
-# (v2.244.0).
+# (v2.244.0).  `GET /scopes/host-mappings` (2.523.0, owner 2026-10-22: no
+# caller; the Hosts list's `subnets=` filter answers which hosts a subnet has).
 
 
 def _is_duplicate_cidr(exc: IntegrityError) -> bool:
@@ -575,41 +574,6 @@ def get_scope_coverage(
         recent_out_of_scope_hosts=recent_entries,
     )
 
-
-@router.get(
-    "/host-mappings",
-    response_model=Paginated[HostSubnetMappingSchema],
-)
-def get_scope_host_mappings(
-    subnet_id: Optional[int] = Query(
-        None,
-        description="Only this subnet's mappings.  Another project's subnet lists nothing.",
-    ),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(2000, ge=1, le=2000),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Host-subnet mappings of the project's scope, optionally restricted to
-    one subnet.  Paginated.  A read: a project with no scope yet lists
-    nothing, and none is created."""
-    q = (
-        db.query(HostSubnetMapping)
-        .join(Subnet, Subnet.id == HostSubnetMapping.subnet_id)
-        .join(Scope, Scope.id == Subnet.scope_id)
-        .filter(Scope.project_id == project.id)
-    )
-    if subnet_id is not None:
-        q = q.filter(HostSubnetMapping.subnet_id == subnet_id)
-
-    # v2.86.13 — envelope shape.  Total comes from the same filtered
-    # query the page returns rows from, so "Showing N of T" math is
-    # consistent with the result list.
-    total = q.with_entities(func.count(HostSubnetMapping.id)).scalar() or 0
-    mappings = q.order_by(HostSubnetMapping.id.asc()).offset(skip).limit(limit).all()
-    return Paginated[HostSubnetMappingSchema].build(
-        items=mappings, total=total, skip=skip, limit=limit,
-    )
 
 @router.post(
     "/correlate-all",

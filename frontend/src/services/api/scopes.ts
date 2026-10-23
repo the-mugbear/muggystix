@@ -1,5 +1,5 @@
 /**
- * Scopes API client — scopes, subnets, subnet labels, host-mappings,
+ * Scopes API client — scopes, subnets, subnet labels,
  * coverage, and the scope export.
  *
  * Extracted from the api.ts monolith.  Consumers still import these from

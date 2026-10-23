@@ -1133,15 +1133,6 @@ class ScopeCoverageSummary(BaseModel):
     has_scope_configuration: bool
     recent_out_of_scope_hosts: List[ScopeCoverageHost]
 
-class HostSubnetMapping(BaseModel):
-    id: int
-    host_id: int
-    subnet_id: int
-    created_at: datetime
-    subnet: Subnet
-    
-    model_config = ConfigDict(from_attributes=True)
-
 class SubnetFileUploadResponse(BaseModel):
     message: str
     scope_id: int

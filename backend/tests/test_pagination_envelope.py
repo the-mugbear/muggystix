@@ -41,34 +41,6 @@ def test_host_tests_envelope_shape_and_has_more_boundary(client, db_session, tes
     assert {t["id"] for t in first["items"]}.isdisjoint({t["id"] for t in last["items"]})
 
 
-def test_scope_host_mappings_envelope_has_more_boundary(
-    client, db_session, test_project,
-):
-    """Confirms server-computed ``has_more`` at the exact boundary
-    where ``skip + len(items) == total`` (last page, fits exactly)."""
-    scope = models.Scope(project_id=test_project.id, description="")
-    db_session.add(scope)
-    db_session.flush()
-    subnet = models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24", description="")
-    db_session.add(subnet)
-    db_session.flush()
-    for i in range(3):
-        h = models.Host(project_id=test_project.id, ip_address=f"10.0.0.{i+1}", state="up")
-        db_session.add(h)
-        db_session.flush()
-        db_session.add(models.HostSubnetMapping(host_id=h.id, subnet_id=subnet.id))
-    db_session.flush()
-
-    r = client.get(
-        f"/api/v1/projects/{test_project.id}/scopes/host-mappings",
-        params={"skip": 0, "limit": 3},
-    )
-    body = r.json()
-    # Exact-fit page: 3 items, total 3, has_more must be False.
-    assert body["total"] == 3
-    assert len(body["items"]) == 3
-    assert body["has_more"] is False, "boundary case (loaded == total) should not say has_more"
-
 
 def test_out_of_scope_envelope_has_more_with_overflow(
     client, db_session, test_project,
