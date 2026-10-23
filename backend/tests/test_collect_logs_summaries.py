@@ -294,6 +294,70 @@ def test_both_files_survive_the_scrubber_readable(diag, tmp_path):
     assert "dc01" not in scrubbed and "Acme" not in scrubbed
 
 
+@pytest.fixture(scope="module")
+def scrubber():
+    path = SCRIPTS / "scrub_logs.py"
+    spec = importlib.util.spec_from_file_location("scrub_logs", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return lambda: module.Scrubber({}, {}, [])
+
+
+_DB = "db-1  | 2026-10-23T10:00:00.123456789Z "
+
+
+@pytest.mark.parametrize("line", [
+    # The slow-statement log (log_min_duration_statement, on by default): lowercase.
+    "2026-10-23 10:00:00.123 UTC [77] LOG:  duration: 600.1 ms  statement: "
+    "INSERT INTO t VALUES ('secret-free-text')\n",
+    # log_statement's form.
+    "2026-10-23 10:00:00.123 UTC [77] LOG:  statement: UPDATE t SET body = 'secret-free-text'\n",
+    # The extended protocol's steps.
+    "2026-10-23 10:00:00.123 UTC [77] LOG:  duration: 0.9 ms  execute <unnamed>: "
+    "SELECT 1 WHERE x = 'secret-free-text'\n",
+    "2026-10-23 10:00:00.123 UTC [77] LOG:  duration: 0.9 ms  bind S_1: SELECT 'secret-free-text'\n",
+    "2026-10-23 10:00:00.123 UTC [77] LOG:  duration: 0.9 ms  parse <unnamed>: SELECT 'secret-free-text'\n",
+    # Its bound values, and an error's statement.
+    "2026-10-23 10:00:00.123 UTC [77] DETAIL:  parameters: $1 = 'secret-free-text'\n",
+    "2026-10-23 10:00:00.123 UTC [77] STATEMENT:  SELECT 'secret-free-text'\n",
+    # A failed restore's COPY row.
+    "2026-10-23 10:00:00.123 UTC [77] CONTEXT:  COPY notes, line 3: \"7\tsecret-free-text\"\n",
+])
+def test_every_form_of_a_postgres_statement_loses_its_values(scrubber, line):
+    """C1 (review 2026-10-23): the slow-statement line is lowercase
+    ``statement:``, and the scrubber matched only ``STATEMENT:`` — a statement
+    slower than 500 ms carried its literals into the "anonymised" bundle."""
+    for text in (line, _DB + line):
+        out = scrubber().scrub(text)
+        assert "secret-free-text" not in out, out
+        assert "<redacted>" in out and out.endswith("\n")
+
+
+def test_a_statement_continued_on_later_lines_loses_them_too(scrubber):
+    """Postgres writes a multi-line statement with a tab after each newline;
+    SQLAlchemy's WHERE clause, with its literals, is on those lines."""
+    log = (
+        _DB + "2026-10-23 10:00:00.123 UTC [77] LOG:  duration: 812.3 ms  statement: SELECT hosts_v2.id \n"
+        + _DB + "\tFROM hosts_v2 \n"
+        + _DB + "\tWHERE hosts_v2.hostname = 'secret-free-text'\n"
+        + _DB + "2026-10-23 10:00:01.000 UTC [12] LOG:  checkpoint starting: time\n"
+        + _DB + "\tthis tab-led line follows no statement\n"
+    )
+    s = scrubber()
+    out = s.scrub(log)
+    assert "secret-free-text" not in out and "FROM hosts_v2" not in out
+    assert "checkpoint starting: time" in out
+    assert "this tab-led line follows no statement" in out
+    # Line by line, as the script feeds it, gives the same answer.
+    s2 = scrubber()
+    assert "".join(s2.scrub(line) for line in log.splitlines(keepends=True)) == out
+
+
+def test_ordinary_lines_that_mention_statements_are_kept(scrubber):
+    line = _DB + "2026-10-23 10:00:00.123 UTC [77] ERROR:  canceling statement due to statement timeout\n"
+    assert scrubber().scrub(line) == line
+
+
 def test_the_bundle_says_which_agent_routes_are_in_use_and_which_frontend_is_served():
     """2026-10-10 — two things a bundle could not answer:
 

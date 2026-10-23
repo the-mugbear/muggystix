@@ -21,8 +21,10 @@ Two sources of what to remove:
    IPv4/IPv6/MAC addresses, e-mails, URLs, FQDNs under common or internal TLDs,
    ``DOMAIN\\user``, home-directory paths, JWTs / bearer tokens / ``key=value``
    secrets, 32-hex hashes, query strings of request lines, SQLAlchemy
-   ``[parameters: …]`` dumps and PostgreSQL ``STATEMENT`` / ``DETAIL`` values
-   (psycopg2 interpolates literals, so both carry row data).
+   ``[parameters: …]`` dumps and PostgreSQL ``STATEMENT`` / ``DETAIL`` /
+   ``CONTEXT`` values and slow-statement lines (``duration: … statement:``),
+   continuation lines included (psycopg2 interpolates literals, so all of
+   them carry row data).
 
 Fails closed: any error exits non-zero and the caller deletes the bundle.
 The report lists how many of each kind were replaced — never the values.
@@ -217,9 +219,26 @@ KEYVAL_SECRET = re.compile(
 HEX32 = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{32}(?![0-9A-Fa-f])")
 REQUEST_QUERY = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD) (/[^\s?\"]*)\?[^\s\"]*")
 SQL_PARAMS = re.compile(r"\[parameters: .*$", re.MULTILINE)
-PG_STATEMENT = re.compile(r"(STATEMENT:\s*).*$", re.MULTILINE)
+# Every form in which Postgres writes a statement's text, which psycopg2 fills
+# with literal row values: an error's ``STATEMENT:`` line, the slow-statement
+# log (``log_min_duration_statement``, on by default) ``LOG:  duration: 812.3
+# ms  statement: …`` — lowercase —, ``log_statement``'s ``LOG:  statement: …``,
+# and the extended protocol's ``duration: … ms  parse|bind|execute <name>: …``.
+PG_STATEMENT = re.compile(
+    r"((?:\bstatement|\bduration: [\d.]+ ms\s+(?:parse|bind|execute)\b[^:\n]*):[ \t]*).*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 PG_DETAIL_KEY = re.compile(r"(DETAIL:\s*Key \(([^)]*)\)=)\(.*?\)( already exists| is not present| is still referenced)?")
+# ``DETAIL:  parameters: $1 = '…'`` (the slow log's bound values) is one of these.
 PG_DETAIL_OTHER = re.compile(r"(DETAIL:[ \t]*)(?![ \t]|Key \().*$", re.MULTILINE)
+# ``CONTEXT:  COPY hosts_v2, line 3: "…"`` (a failed restore) and
+# ``CONTEXT:  unnamed portal with parameters: $1 = '…'`` quote row data too.
+PG_CONTEXT = re.compile(r"(CONTEXT:[ \t]*)(?![ \t]).*$", re.MULTILINE)
+# Postgres writes a multi-line message with a TAB after each newline (elog.c's
+# ``append_with_tabs``), so a statement's second and later lines — where
+# SQLAlchemy puts the WHERE clause and its literals — are lines that start with
+# a tab once ``docker compose logs``' service prefix and timestamp are read off.
+PG_CONTINUATION = re.compile(r"((?:\S+\s+\|\s)?(?:\d{4}-\d\d-\d\dT\S+\s)?)\t")
 
 
 def _is_safe_domain(name: str) -> bool:
@@ -234,6 +253,9 @@ class Scrubber:
         self.phrase_cat = phrases
         self.phrase_re = _trie_regex(sorted(phrases, key=len, reverse=True))
         self.domains = sorted(set(domains), key=len, reverse=True)
+        # True while the previous line was a Postgres field whose value was
+        # redacted: its tab-led continuation lines are redacted with it.
+        self._pg_value_open = False
 
     # -- replacement callbacks -------------------------------------------
     def _ipv4(self, m: re.Match) -> str:
@@ -307,11 +329,28 @@ class Scrubber:
 
     # -- the pipeline ------------------------------------------------------
     def scrub(self, text: str) -> str:
+        """Scrub ``text`` — one line (as ``main`` feeds it) or several, in
+        order: a Postgres statement's continuation lines are recognised by the
+        line before them."""
+        return "".join(self._scrub_line(line) for line in text.splitlines(keepends=True))
+
+    def _scrub_line(self, text: str) -> str:
+        # A continuation of a redacted statement / DETAIL / CONTEXT value.
+        if self._pg_value_open:
+            body = text.rstrip("\r\n")
+            m = PG_CONTINUATION.match(body)
+            if m:
+                self.p.counts["pg-statement"] += 1
+                return f"{m.group(1)}\t<redacted>{text[len(body):]}"
+        self._pg_value_open = False
         # Row data in database errors first: it can hold anything.
         text = SQL_PARAMS.sub(self._counted("sql-parameters", "[parameters: <redacted>]"), text)
+        before = sum(self.p.counts[k] for k in ("pg-statement", "pg-detail"))
         text = PG_STATEMENT.sub(self._counted("pg-statement", r"\1<redacted>"), text)
         text = PG_DETAIL_KEY.sub(self._counted("pg-detail", r"\1(<redacted>)\3"), text)
         text = PG_DETAIL_OTHER.sub(self._counted("pg-detail", r"\1<redacted>"), text)
+        text = PG_CONTEXT.sub(self._counted("pg-detail", r"\1<redacted>"), text)
+        self._pg_value_open = sum(self.p.counts[k] for k in ("pg-statement", "pg-detail")) > before
         # Credentials before anything splits them apart.
         text = JWT.sub(self._counted("secret", "<jwt>"), text)
         text = BEARER.sub(self._counted("secret", r"\1 <redacted>"), text)
