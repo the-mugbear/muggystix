@@ -2417,33 +2417,10 @@ class IngestionService:
                 )
             finally:
                 read_report = end_read(_reading)
-            if not result.get("success"):
-                # C1 — a failed Nessus import (an error, a truncated export,
-                # no host processed) used to leave the hosts and observations
-                # of its committed batches in a scan no job pointed at, and
-                # the re-upload the message asks for then made a second scan.
-                # A failed import leaves nothing behind, like the others.
-                removed = self._discard_attempt_scan(db, job_id)
-                nessus_error_msg = result.get("error") or result.get("message") or "Nessus processing failed"
-                user_msg = result.get("message") or result.get("error")
-                if removed and user_msg:
-                    # The service's message describes what it had written
-                    # ("only N hosts were ingested"); say what is left.
-                    user_msg = f"{user_msg} Nothing from this file was kept."
-                parse_error = log_parse_error(
-                    db=db,
-                    filename=filename,
-                    error_type="parsing_error",
-                    file_type="nessus_xml",
-                    custom_message=user_msg or nessus_error_msg,
-                    project_id=project_id,
-                )
-                raise ParseFailure(
-                    "Nessus processing failed",
-                    user_message=user_msg,
-                    error_id=parse_error.id,
-                    underlying_error=result.get("error"),
-                )
+            # A failed Nessus import RAISES, like every parser (review
+            # 2026-10-23, H-ING2), so it reaches the one failure path in
+            # ``_process_job``: the attempt's scan removed, the next format
+            # tried when Nessus did not read the file, one message.
             db.commit()
             scan_id = result.get("scan_id")
             message = result.get("message")

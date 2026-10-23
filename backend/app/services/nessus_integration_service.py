@@ -9,7 +9,6 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from app.parsers.cut_short import TruncatedFile
 from app.parsers.nessus_parser import NessusParser, NessusHost
 from app.db.models import Host, HostScanHistory, Scan
 from app.services.vulnerability_service import VulnerabilityService
@@ -66,14 +65,15 @@ class NessusIntegrationService:
             scan_name: Optional custom name for the scan
 
         Returns:
-            Dictionary with processing results
+            Dictionary with processing results (``success`` is always True:
+            a failure raises, for the dispatcher to handle)
         """
         project_id = kwargs.get("project_id")
         # v2.341.0 — drop severity-0 report items (ports still derived from
         # them).  Resolved by the upload route from the form field / project
         # setting / deployment default; this layer only honours it.
         skip_informational = bool(kwargs.get("skip_informational", False))
-        from app.services.ingestion_service import ParseFailure, note_scan_created, report_progress
+        from app.services.ingestion_service import note_scan_created, report_progress
         try:
             scan_info, hosts_iter = self.parser.iter_file(file_path)
 
@@ -204,16 +204,14 @@ class NessusIntegrationService:
                     scan_id,
                     scan_label,
                 )
-                return {
-                    'success': False,
-                    'scan_id': scan_id,
-                    'error': 'No hosts were successfully processed',
-                    'warnings': warnings,
-                    'message': (
-                        'Nessus scan parsed but 0 hosts were ingested. '
-                        'Check backend logs for per-host errors.'
-                    ),
-                }
+                # "This parser did not read the file": the dispatcher removes
+                # the scan this attempt committed and tries the next format
+                # (an .xml that only looked like Nessus), or fails the job
+                # through its one failure path.
+                raise ValueError(
+                    "Nessus import found no host it could process "
+                    "(the file is empty, not a Nessus export, or every host failed)"
+                )
 
             logger.info(
                 "Nessus scan %s (%s): %d hosts, %d vulnerabilities, "
@@ -256,27 +254,18 @@ class NessusIntegrationService:
                 )
             }
 
-        except (ParseFailure, TruncatedFile):
-            # Review 2026-10-01 C1 — cancel, timeout, a superseded attempt and
-            # a worker shutdown arrive from report_progress as ParseFailure /
-            # ShutdownRequested (both RuntimeError).  The blanket handler
-            # below turned them into ``success: False``, so a restart FAILED
-            # the job instead of handing it back, and the batches already
-            # committed stayed in a scan nothing pointed at.  They are the
-            # dispatcher's to handle: it deletes the partial scan (the one
-            # the job row names) and re-queues or fails the job.  A file that
-            # was cut short is the dispatcher's too: it removes what the
-            # batches committed and records the failure as ``truncated_file``.
+        except BaseException:
+            # Every failure RAISES (review 2026-10-23, H-ING2): a cancel, a
+            # stall, a shutdown, a file cut short, a file that is not Nessus,
+            # a database error.  The dispatcher is the one failure path — it
+            # removes the scan this attempt committed (the job row names it),
+            # tries the next format when this one did not read the file, and
+            # writes the operator's message.  A ``success: False`` answer used
+            # to stop it there: an .xml sniffed as Nessus never reached nmap,
+            # and a driver error's "[SQL: …]" became the job's message.  The
+            # rollback is for a caller that keeps using the session.
             self.db.rollback()
             raise
-        except Exception as e:
-            self.db.rollback()
-            logger.error(f"Error processing Nessus file {file_path}: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e),
-                'message': f'Failed to process Nessus file: {str(e)}'
-            }
 
     def _create_scan_record(self, scan_info: Dict[str, Any], scan_name: Optional[str], project_id: Optional[int] = None) -> Scan:
         """Create a scan record from Nessus data"""
