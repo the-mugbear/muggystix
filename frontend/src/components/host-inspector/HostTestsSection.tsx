@@ -47,6 +47,7 @@ import {
   type ResultTone,
 } from '../../utils/hostTests';
 import { formatRelativeTime } from '../../utils/relativeTime';
+import { safeHttpHref } from '../../utils/safeHref';
 import SafeMarkdown from '../SafeMarkdown';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -335,7 +336,11 @@ export const HostTestRow: React.FC<{
     test.label,
     test.target_fqdn ? `aimed at ${test.target_fqdn}` : null,
   ].filter(Boolean).join(' · ');
-  const links = (test.references ?? []).filter((r) => /^https?:\/\//i.test(r));
+  // An http(s) reference is a link — `safeHttpHref`, the one test of that.
+  const links = (test.references ?? []).flatMap((r) => {
+    const href = safeHttpHref(r);
+    return href ? [href] : [];
+  });
 
   return (
     <li
