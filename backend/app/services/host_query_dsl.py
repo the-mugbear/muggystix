@@ -37,7 +37,7 @@ character ``position`` where known), which a FastAPI handler maps to 400.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from sqlalchemy import Boolean, and_, false, func, not_, or_
 from sqlalchemy.orm import Session
@@ -989,6 +989,51 @@ def evaluate(node: Node, ctx: BuildCtx) -> ColumnElement:
         from app.services.host_query import build_search_predicate
         return build_search_predicate(ctx.db, node.text, project_id=ctx.project_id)
     raise DSLError("Unevaluatable query node")  # pragma: no cover
+
+
+#: The fields whose leaf is a condition on ONE port (``P.host_has_port``).
+_PORT_LEAF_CONDITIONS = {
+    "port": lambda vals, states: P.port_number_conditions(_parse_ports("port", vals), states),
+    "service": lambda vals, states: P.service_conditions(vals, states),
+    "version": lambda vals, states: P.version_conditions(vals, states),
+}
+
+
+def positive_port_conditions(node: Node) -> Tuple[List[ColumnElement], bool]:
+    """The ``Port`` row conditions of the query's POSITIVE ``port:`` /
+    ``service:`` / ``version:`` leaves (aliases included), from the parse
+    tree — and whether a ``version:`` leaf is among them.
+
+    The Hosts list marks with these the ports that made each row match
+    (``matched_port_ids``), so a row under "service ftp" can say "ftp 21/tcp".
+    They are the leaves' OWN conditions (``P.port_number_conditions`` …), so
+    the mark cannot drift from the filter; the page had a second lexer of
+    this language for it, which already read ``port: 22`` and a quoted
+    ``service:"ssh"@closed`` differently (review 2026-10-23, R-FE2).  A leaf
+    under an odd number of ``NOT`` never marks a port."""
+    found: List[ColumnElement] = []
+    by_product = False
+
+    def walk(n: Node, negated: bool) -> None:
+        nonlocal by_product
+        if isinstance(n, (And, Or)):
+            for child in n.children:
+                walk(child, negated)
+        elif isinstance(n, Not):
+            walk(n.child, not negated)
+        elif isinstance(n, FieldNode) and not negated:
+            field = FIELD_BUILDERS[n.name].name
+            build = _PORT_LEAF_CONDITIONS.get(field)
+            if build is None:
+                return
+            for states, vals in _by_port_state(field, n.values):
+                conditions = build(vals, states)
+                if conditions:
+                    found.append(and_(*conditions))
+                    by_product = by_product or field == "version"
+
+    walk(node, False)
+    return found, by_product
 
 
 def schema() -> dict:

@@ -225,6 +225,10 @@ export interface Host {
   weakness_labels?: Record<string, string>;
   /** v2.423.0 — the misconfiguration checks recorded on the host; list rows. */
   check_ids?: string[];
+  /** List rows: the ids among `ports` that the active port / service /
+   *  version conditions matched — decided by the server's own filter. A list
+   *  row's `ports` are its open ones plus these, not every stored port. */
+  matched_port_ids?: number[];
   /** The kinds of evidence that apply to the host and nothing imported so far
    *  provides (list rows): Evidence's gaps, per host. `key` is a `gap:` value. */
   evidence_gaps?: Array<{ key: string; label: string }>;
@@ -304,6 +308,8 @@ export interface HostListResponse {
   sort_by: string;
   sort_order: string;
   vulnerability_error?: boolean;
+  /** A `version:` condition marked the rows' `matched_port_ids`: name the product. */
+  match_by_product?: boolean;
 }
 
 export interface HostFollowInfo {

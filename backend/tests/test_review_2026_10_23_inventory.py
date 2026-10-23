@@ -102,6 +102,93 @@ def test_posture_active_counts_are_the_active_lists_totals(client, db_session, t
     assert out["headline"]["ownership"]["unowned"] == whole["total"]
 
 
+# --- R-FE2 + the list's ports: the server marks the ports a row matched -------
+
+def _matched_estate(db, project_id):
+    """frontend/src/tests/utils/endpointMatch.test.ts's ports, on one host,
+    plus a full-range sweep's worth of filtered ports on it."""
+    h = _host(db, project_id, "10.234.0.1")
+    for number, state, name, product, version in (
+        (21, "open", "ftp", "vsftpd", "3.0.3"),
+        (2121, "filtered", "ccproxy-ftp", None, None),
+        (22, "open", "ssh", "OpenSSH", "7.4"),
+        (23, "open", "telnet", None, None),
+    ):
+        db.add(models.Port(host_id=h.id, port_number=number, protocol="tcp", state=state,
+                           service_name=name, service_product=product, service_version=version))
+    for number in range(30000, 30200):
+        db.add(models.Port(host_id=h.id, port_number=number, protocol="tcp", state="filtered"))
+    db.commit()
+    return h
+
+
+def _row(client, project_id, **params):
+    r = client.get(f"/api/v1/projects/{project_id}/hosts/", params=params)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    rows = [h for h in body["items"] if h["ip_address"] == "10.234.0.1"]
+    if not rows:
+        return None, body
+    row = rows[0]
+    by_id = {p["id"]: p for p in row["ports"]}
+    matched = [(by_id[i]["port_number"], by_id[i]["state"]) for i in row["matched_port_ids"]]
+    return {"ports": row["ports"], "matched": matched}, body
+
+
+# (filters, matched ports as (number, state)) — the frontend's endpointMatch
+# cases, old == new, then the two its lexer read differently from the server.
+MATCH_CASES = [
+    ({"q": "tag:dmz"}, None),                               # nothing names a port: host not listed
+    ({"has_open_ports": True}, []),
+    ({"services": "ftp"}, [(21, "open")]),
+    ({"services": "ftp", "port_states": "filtered"}, [(2121, "filtered")]),
+    ({"services": "ftp", "port_states": "any"}, [(21, "open"), (2121, "filtered")]),
+    ({"services": "ftp", "port_states": "open,filtered"}, [(21, "open"), (2121, "filtered")]),
+    ({"q": "service:ftp"}, [(21, "open")]),
+    ({"q": "port:2121@filtered"}, [(2121, "filtered")]),
+    ({"q": "service:ftp@any"}, [(21, "open"), (2121, "filtered")]),
+    ({"q": "port:2121@any,23"}, [(23, "open"), (2121, "filtered")]),
+    ({"q": "port:23"}, [(23, "open")]),
+    ({"q": "svc:ssh AND NOT service:telnet@filtered"}, [(22, "open")]),
+    ({"q": "NOT (port:24 OR port:25) port:23"}, [(23, "open")]),
+    ({"q": 'version:"OpenSSH 7"'}, [(22, "open")]),
+    # (The page's test wrote this with a bare `NOT` after a term, which its
+    # lexer took and the server's grammar refuses — "Unexpected 'NOT'".)
+    ({"q": 'service:"ms-wbt-server",ftp AND NOT port:3389@any'}, [(21, "open")]),
+    # The page's lexer read "port:" with nothing after it here and matched
+    # nothing; the server's grammar reads `port: 22` as port:22.
+    ({"q": "port: 22"}, [(22, "open")]),
+    # A state after a closing quote is not part of the value to the server
+    # (`@filtered` is a word of its own, which matches no host); the page's
+    # lexer read it as service ccproxy@filtered and would have marked 2121.
+    # Inside the quotes it is the state.
+    ({"q": 'service:"ccproxy"@filtered'}, None),
+    ({"q": 'service:"ccproxy@filtered"'}, [(2121, "filtered")]),
+]
+
+
+@pytest.mark.parametrize("filters,expected", MATCH_CASES)
+def test_the_list_marks_the_ports_each_condition_matched(client, db_session, test_project, filters, expected):
+    _matched_estate(db_session, test_project.id)
+    row, _body = _row(client, test_project.id, **filters)
+    if expected is None:
+        assert row is None
+        return
+    assert row is not None
+    assert sorted(row["matched"]) == sorted(expected)
+
+
+def test_a_row_carries_its_open_and_matched_ports_not_every_stored_port(client, db_session, test_project):
+    _matched_estate(db_session, test_project.id)
+    row, body = _row(client, test_project.id)
+    assert sorted(p["port_number"] for p in row["ports"]) == [21, 22, 23]
+    assert row["matched"] == [] and body["match_by_product"] is False
+    row, body = _row(client, test_project.id, q="port:2121@filtered")
+    assert sorted(p["port_number"] for p in row["ports"]) == [21, 22, 23, 2121]
+    row, body = _row(client, test_project.id, q='version:"OpenSSH"')
+    assert body["match_by_product"] is True
+
+
 # --- Nits -------------------------------------------------------------------
 
 def test_the_scan_host_list_refuses_an_unknown_state(client, db_session, test_project):

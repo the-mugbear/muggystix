@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload, noload, aliased
-from sqlalchemy import or_, and_, case, distinct, func, true
+from sqlalchemy import or_, and_, case, distinct, false, func, true
 
 from app.core.config import settings
 from app.db.session import disable_statement_timeout, get_db, recover_or_reraise
@@ -372,8 +372,10 @@ def get_hosts_v2(
     # attribute, note or scan-history rows: counts, the 3 newest notes and the
     # 6 newest discoveries come from the grouped / window queries below.
     # ``tests/test_host_list_query_budget.py`` bounds the page's statements.
+    # The row's ports are read below, not loaded here: only what the row
+    # reads (review 2026-10-23).
     query = query.options(
-        selectinload(models.Host.ports),
+        noload(models.Host.ports),
         selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
         # Redundant with the lazy defaults (nothing below reads these); kept
         # so a reader of one by mistake gets nothing rather than a query per
@@ -387,6 +389,31 @@ def get_hosts_v2(
     # Apply pagination and return
     hosts = query.offset(skip).limit(limit).all()
     host_ids = [host.id for host in hosts]
+
+    # The row's ports: its OPEN ones (the open count and the exposure chips)
+    # and the ones the active filters MATCHED in any state (the "Matched"
+    # line), each matched one marked — one statement.  A row used to carry
+    # every stored port: one host with 20,000 filtered ports from a full-range
+    # sweep made a 50-row page 6.6 MB and 0.8 s against 0.1 MB / 30 ms
+    # (measured 2026-10-23).  Which port matched is the filter's own
+    # condition (`host_query.matched_port_condition`), not a reading of the
+    # query in the browser (R-FE2).
+    matched_condition, match_by_product = host_query.matched_port_condition(
+        ports=filters.ports, services=filters.services, port_states=filters.port_states,
+        has_open_ports=filters.has_open_ports, q=filters.q,
+    )
+    ports_by_host: Dict[int, list] = {}
+    matched_by_host: Dict[int, List[int]] = {}
+    if host_ids:
+        is_matched = matched_condition if matched_condition is not None else false()
+        for port, matched in (
+            db.query(models.Port, is_matched)
+            .filter(models.Port.host_id.in_(host_ids), or_(models.Port.state == "open", is_matched))
+            .order_by(models.Port.host_id, models.Port.port_number, models.Port.protocol, models.Port.id)
+        ):
+            ports_by_host.setdefault(port.host_id, []).append(port)
+            if matched:
+                matched_by_host.setdefault(port.host_id, []).append(port.id)
 
     # Review #5 — bounded per-host slices via window queries instead of
     # materialising every child row.  Aggregate note counts; top-3 notes;
@@ -686,7 +713,8 @@ def get_hosts_v2(
         serialized["follow"] = _serialize_follow(follow) if follow else None
 
         # RV-8 — list-weight payload: script-free ports, no host_scripts.
-        serialized["ports"] = [_serialize_port_light(p) for p in host.ports]
+        serialized["ports"] = [_serialize_port_light(p) for p in ports_by_host.get(host.id, [])]
+        serialized["matched_port_ids"] = matched_by_host.get(host.id, [])
 
         serialized["planned_test_count"] = tp_count_map.get(host.id, 0)
         serialized["tested_record_count"] = te_count_map.get(host.id, 0)
@@ -729,6 +757,7 @@ def get_hosts_v2(
         "sort_by": sort_by,
         "sort_order": sort_order,
         "vulnerability_error": vuln_error,
+        "match_by_product": bool(match_by_product),
     }
 
 

@@ -463,16 +463,17 @@ describe('Hosts', () => {
 
   // A "service ftp" filter listed hosts whose rows never said FTP: the
   // Exposure chips are the risk-ranked services, which need not include it.
+  // Which port matched is the server's answer (`matched_port_ids`); the row
+  // names the ports it marks (review 2026-10-23, R-FE2).
   it('names the matching endpoint on each row only while a service filter is applied', async () => {
-    const ftpHosts = [
-      makeHost(1, {
-        ports: [
-          { id: 11, port_number: 21, protocol: 'tcp', state: 'open', service_name: 'ftp', service_product: null, service_version: null },
-          { id: 12, port_number: 23, protocol: 'tcp', state: 'open', service_name: 'telnet', service_product: null, service_version: null },
-        ],
-      }),
-    ];
-    mockedApi.getHosts.mockImplementation(async () => ({ items: ftpHosts, total: 1, project_total: 420, skip: 0, limit: 25 }));
+    const ftpHost = (matched: number[]) => makeHost(1, {
+      ports: [
+        { id: 11, port_number: 21, protocol: 'tcp', state: 'open', service_name: 'ftp', service_product: null, service_version: null },
+        { id: 12, port_number: 23, protocol: 'tcp', state: 'open', service_name: 'telnet', service_product: null, service_version: null },
+      ],
+      matched_port_ids: matched,
+    });
+    mockedApi.getHosts.mockImplementation(async () => ({ items: [ftpHost([11])], total: 1, project_total: 420, skip: 0, limit: 25 }));
     routerState.search = '?services=ftp';
     const { unmount } = renderHosts();
     const match = await screen.findByTestId('endpoint-match');
@@ -485,6 +486,7 @@ describe('Hosts', () => {
     // The page restores its last filters from session storage; start clean.
     sessionStorage.clear();
     routerState.search = '';
+    mockedApi.getHosts.mockImplementation(async () => ({ items: [ftpHost([])], total: 1, project_total: 420, skip: 0, limit: 25 }));
     renderHosts();
     await screen.findByText('10.0.0.1');
     expect(screen.queryByTestId('endpoint-match')).toBeNull();

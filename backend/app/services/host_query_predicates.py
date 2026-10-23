@@ -321,16 +321,29 @@ def port_predicate(db: Session, values: Sequence, states: Optional[Sequence[str]
     builder validates and rejects non-numeric input upstream; this guard
     is defense-in-depth for any other caller.
     """
+    conditions = port_number_conditions(values, states)
+    return host_has_port(*conditions) if conditions is not None else false()
+
+
+def port_number_conditions(values: Sequence, states: Optional[Sequence[str]] = None) -> Optional[List[ColumnElement]]:
+    """The ``Port`` row conditions of ``port:`` — what ``port_predicate``
+    asks of ONE port, and what the Hosts list marks as the port a row matched
+    (``host_query_dsl.positive_port_conditions``).  None for no number."""
     port_ints = [int(v) for v in values if is_id(v)]
     if not port_ints:
-        return false()
-    return host_has_port(*port_match_conditions(ports=port_ints, port_states=states))
+        return None
+    return port_match_conditions(ports=port_ints, port_states=states)
+
+
+def service_conditions(values: Sequence[str], states: Optional[Sequence[str]] = None) -> List[ColumnElement]:
+    """The ``Port`` row conditions of ``service:`` (see ``port_number_conditions``)."""
+    return port_match_conditions(services=list(values), port_states=states)
 
 
 def service_predicate(db: Session, values: Sequence[str], states: Optional[Sequence[str]] = None) -> ColumnElement:
     """Host has at least one OPEN port (or one in ``states``) whose service
     name ILIKE-matches a value."""
-    return host_has_port(*port_match_conditions(services=list(values), port_states=states))
+    return host_has_port(*service_conditions(values, states))
 
 
 def product_version_text() -> ColumnElement:
@@ -354,7 +367,6 @@ def version_predicate(db: Session, values: Sequence[str], states: Optional[Seque
     version (or the two together, "OpenSSH 7.4") ILIKE-matches a value
     (v2.390.0 — `service:` matched the name only, so "which hosts run
     OpenSSH 7.x" had no filter)."""
-    joined = product_version_text()
     # LIKE wildcards in the value are literal, as in service: (review
     # 2026-09-23 R12 — `path:/admin_x` matched `/adminYx`).
     #
@@ -363,11 +375,18 @@ def version_predicate(db: Session, values: Sequence[str], states: Optional[Seque
     # OR in matched nothing extra — and an OR whose arms need three different
     # indexes is an OR Postgres scans the table for.
     # ``tests/test_read_path_review.py`` pins old == new.
+    conditions = version_conditions(values, states)
+    return host_has_port(*conditions) if conditions is not None else false()
+
+
+def version_conditions(values: Sequence[str], states: Optional[Sequence[str]] = None) -> Optional[List[ColumnElement]]:
+    """The ``Port`` row conditions of ``version:`` (see ``port_number_conditions``)."""
+    joined = product_version_text()
     conds = [joined.ilike(f"%{escape_like(v)}%", escape="\\") for v in values if v]
     if not conds:
-        return false()
+        return None
     resolved = resolve_endpoint_states(states, has_endpoint=True)
-    return host_has_port(*([port_state_condition(resolved)] if resolved else []), or_(*conds))
+    return [*([port_state_condition(resolved)] if resolved else []), or_(*conds)]
 
 
 def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
