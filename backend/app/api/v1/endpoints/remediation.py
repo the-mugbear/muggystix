@@ -10,17 +10,16 @@ every route here answers 404.  ``account_router`` holds what is not about one
 project — the installation's settings and the cross-project follow-up reads.
 """
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
     agent_read_floor, enforce_agent_operator_access, get_client_info, get_current_project, get_current_user,
     require_project_role, require_role,
 )
+from app.api.report_jobs import job_file_response, job_or_404
 from app.api.v1.endpoints.agent_common import load_agent_session, require_project_host
 from app.db.models_agent import Agent
 from app.core.security import log_audit_event
@@ -102,6 +101,13 @@ _DEFECT = Query(None, description=(
 _SEVERITY = Query(None, description="The finding's severity; repeat for several (\"Critical & High\").")
 _ACTIVE_ONLY = Query(False, description="Leave out archived projects (the defect metrics' \"all active projects\").")
 _TREND_DAYS = Query(90, ge=7, le=730, description="How many days of daily counts to return.")
+
+
+def _contact_job(db: Session, project_id: int, job_id: int):
+    """A contact's document job — this page's door to it (the generic report
+    routes answer 404 for it)."""
+    return job_or_404(db, project_id, job_id, owner=remediation_report.REPORT_TYPE,
+                      not_found="Report not found")
 
 
 def make_router(reader, admin, *, dependencies=()):
@@ -210,17 +216,14 @@ def make_router(reader, admin, *, dependencies=()):
 
     @router.get("/remediation/contact-report/{job_id}", summary="Whether a contact's list is ready")
     def contact_report_status(job_id: int, actor: Actor = Depends(reader), db: Session = Depends(get_db)):
-        return remediation_report.serialize_job(remediation_report.job_for(db, actor.project_id, job_id))
+        return remediation_report.serialize_job(_contact_job(db, actor.project_id, job_id))
 
     @router.get("/remediation/contact-report/{job_id}/download", summary="Download a prepared list")
     def contact_report_download(job_id: int, actor: Actor = Depends(reader), db: Session = Depends(get_db)):
-        job = remediation_report.job_for(db, actor.project_id, job_id)
-        if job.status != "completed" or not job.result_path:
-            raise HTTPException(409, f"The document is not ready (status: {job.status}).")
-        if not Path(job.result_path).is_file():
-            raise HTTPException(410, "The document has expired. Prepare it again.")
-        return FileResponse(path=job.result_path, media_type=job.media_type or "application/octet-stream",
-                            filename=job.result_filename or f"remediation_{job.id}")
+        return job_file_response(
+            _contact_job(db, actor.project_id, job_id), not_ready="The document is not ready",
+            expired="The document has expired. Prepare it again.", fallback_name="remediation",
+        )
 
     @router.post("/remediation/apply", summary="Set contact, dates and status on findings on hosts")
     def apply(body: ApplyBody, actor: Actor = Depends(admin), db: Session = Depends(get_db)):

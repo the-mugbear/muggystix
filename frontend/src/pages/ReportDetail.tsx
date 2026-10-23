@@ -31,10 +31,10 @@ import {
   ReportTemplate,
   deleteClientReport,
   downloadClientReportScope,
-  downloadReportJob,
+  downloadReportPreview,
   getClientReport,
   getClientReportInputs,
-  getReportJob,
+  getReportPreview,
   issueClientReport,
   previewClientReport,
   rerenderClientReport,
@@ -308,8 +308,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const startedJobs = Object.entries(started) as Array<[ClientReportFormat, ReportJob]>;
   const followedJobs = useJobPolls({
     jobs: startedJobs.map(([, job]) => job),
-    queryKey: (job) => ['getReportJob', projectId, job.id],
-    queryFn: (job, signal) => getReportJob(projectId, job.id, signal),
+    queryKey: (job) => ['getReportPreview', projectId, reportId, job.id],
+    queryFn: (job, signal) => getReportPreview(projectId, reportId, job.id, signal),
     interval: PREVIEW_POLL_MS,
     isDone: (job) => !isRunning(job),
   });
@@ -835,17 +835,17 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 )}
                 {job?.status === 'completed' && fmt === 'html' && (
                   <>
-                    <OpenPreviewButton key={`open-${job.id}`} size="sm" projectId={projectId} jobId={job.id}
-                      label="Open HTML preview" />
+                    <OpenPreviewButton key={`open-${job.id}`} size="sm" projectId={projectId} reportId={reportId}
+                      jobId={job.id} label="Open HTML preview" />
                     <DownloadButton key={job.id} size="sm" variant="ghost" label="Download"
                       name="Download HTML preview" errorText="Could not download the preview."
-                      saveFn={() => downloadReportJob(projectId, job.id)} />
+                      saveFn={() => downloadReportPreview(projectId, reportId, job.id)} />
                   </>
                 )}
                 {job?.status === 'completed' && fmt !== 'html' && (
                   <DownloadButton key={job.id} size="sm" label={`Download ${FORMAT_LABEL[fmt]} preview`}
                     errorText="Could not download the preview."
-                    saveFn={() => downloadReportJob(projectId, job.id)} />
+                    saveFn={() => downloadReportPreview(projectId, reportId, job.id)} />
                 )}
                 {job?.status === 'failed' && (
                   <span className="max-w-md truncate text-caption text-destructive" title={job.error_message ?? undefined}>

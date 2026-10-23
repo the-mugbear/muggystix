@@ -40,9 +40,9 @@ vi.mock('../../services/api', () => ({
   downloadClientReportScope: vi.fn(),
   listProjectMembers: vi.fn(),
   getProjectReportTeam: vi.fn(),
-  getReportJob: vi.fn(),
-  downloadReportJob: vi.fn(),
-  fetchReportJobBlob: vi.fn(),
+  getReportPreview: vi.fn(),
+  downloadReportPreview: vi.fn(),
+  fetchReportPreviewBlob: vi.fn(),
   draftReportWithAI: vi.fn(),
   listLLMProviders: vi.fn(),
   getClientReportFollowers: vi.fn(),
@@ -485,7 +485,7 @@ describe('Open HTML preview', () => {
     installBlobUrls();
     URL.revokeObjectURL = vi.fn();
     mocked.previewClientReport.mockResolvedValue({ id: 71, format: 'report-html', status: 'queued' });
-    mocked.getReportJob.mockResolvedValue({ id: 71, format: 'report-html', status: 'completed' });
+    mocked.getReportPreview.mockResolvedValue({ id: 71, format: 'report-html', status: 'completed' });
   });
   afterEach(() => { window.open = originalOpen; });
 
@@ -500,14 +500,14 @@ describe('Open HTML preview', () => {
     open = vi.fn(() => tab);
     window.open = open as unknown as typeof window.open;
     let answer!: (v: { blob: Blob; filename: string }) => void;
-    mocked.fetchReportJobBlob.mockImplementation(() => new Promise((res) => { answer = res; }));
+    mocked.fetchReportPreviewBlob.mockImplementation(() => new Promise((res) => { answer = res; }));
 
     const button = await finishedHtml();
     expect(screen.getByRole('button', { name: 'Download HTML preview' })).toBeInTheDocument();
     fireEvent.click(button);
     expect(open).toHaveBeenCalledWith('', '_blank');
     expect(tab.document.body.textContent).toBe('Opening the preview…');
-    await waitFor(() => expect(mocked.fetchReportJobBlob).toHaveBeenCalledWith(1, 71));
+    await waitFor(() => expect(mocked.fetchReportPreviewBlob).toHaveBeenCalledWith(1, 5, 71));
     expect(tab.location.href).toBe('');
 
     answer({ blob: blobFor('blob:report'), filename: 'example-preview.html' });
@@ -517,14 +517,14 @@ describe('Open HTML preview', () => {
     expect(made.type).toBe('text/html');
     expect(tab.opener).toBeNull();
     expect(URL.revokeObjectURL).not.toHaveBeenCalled();
-    expect(mocked.downloadReportJob).not.toHaveBeenCalled();
+    expect(mocked.downloadReportPreview).not.toHaveBeenCalled();
     expect(toastMock.warning).not.toHaveBeenCalled();
   });
 
   it('saves the file instead, and says so, when the browser blocks the tab', async () => {
     open = vi.fn(() => null);
     window.open = open as unknown as typeof window.open;
-    mocked.fetchReportJobBlob.mockResolvedValue({ blob: blobFor('blob:report'), filename: 'example-preview.html' });
+    mocked.fetchReportPreviewBlob.mockResolvedValue({ blob: blobFor('blob:report'), filename: 'example-preview.html' });
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
 
     fireEvent.click(await finishedHtml());
@@ -539,7 +539,7 @@ describe('Open HTML preview', () => {
   it('closes the blank tab when the file cannot be fetched', async () => {
     const tab = fakeTab();
     window.open = vi.fn(() => tab) as unknown as typeof window.open;
-    mocked.fetchReportJobBlob.mockRejectedValue(new Error('gone'));
+    mocked.fetchReportPreviewBlob.mockRejectedValue(new Error('gone'));
     fireEvent.click(await finishedHtml());
     await waitFor(() => expect(tab.close).toHaveBeenCalled());
     expect(toastMock.error).toHaveBeenCalled();
@@ -547,7 +547,7 @@ describe('Open HTML preview', () => {
 
   it('Word stays a download', async () => {
     mocked.previewClientReport.mockResolvedValue({ id: 70, format: 'report-docx', status: 'queued' });
-    mocked.getReportJob.mockResolvedValue({ id: 70, format: 'report-docx', status: 'completed' });
+    mocked.getReportPreview.mockResolvedValue({ id: 70, format: 'report-docx', status: 'completed' });
     renderDetail(ISSUE);
     fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
     expect(await screen.findByRole('button', { name: 'Download Word preview' }, { timeout: 4000 })).toBeInTheDocument();

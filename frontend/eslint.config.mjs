@@ -130,7 +130,8 @@ export default [
       // requests that take none: click-only downloads (frontend.md).
       'bluestick/query-fn-signal': ['error', {
         allow: NOT_REQUESTS,
-        noSignal: ['downloadInventoryCsv', 'downloadReportJob', 'fetchReportJobBlob', 'getToolReadyOutput'],
+        noSignal: ['downloadInventoryCsv', 'downloadReportJob', 'fetchReportJobBlob', 'downloadReportPreview',
+          'fetchReportPreviewBlob', 'fetchJobFileBlob', 'getToolReadyOutput'],
       }],
     },
   },

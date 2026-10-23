@@ -42,9 +42,9 @@ vi.mock('../../services/api', () => ({
   downloadClientReportScope: vi.fn(),
   listProjectMembers: vi.fn(),
   getProjectReportTeam: vi.fn(),
-  getReportJob: vi.fn(),
-  downloadReportJob: vi.fn(),
-  fetchReportJobBlob: vi.fn(),
+  getReportPreview: vi.fn(),
+  downloadReportPreview: vi.fn(),
+  fetchReportPreviewBlob: vi.fn(),
   draftReportWithAI: vi.fn(),
   listLLMProviders: vi.fn(),
 }));

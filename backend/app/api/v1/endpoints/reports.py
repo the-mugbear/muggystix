@@ -9,6 +9,7 @@ from app.core.security import check_permissions
 from app.db.models_auth import UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.api.downloads import attachment
+from app.api.report_jobs import job_file_response, job_or_404
 from app.api.params import HostFilterParams
 from app.db.models import ReportJob
 # ReportGenerator now lives in the service layer; re-exported here so the
@@ -23,7 +24,6 @@ from app.schemas.schemas import ReportJobSchema
 from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row  # noqa: F401
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,9 @@ logger = logging.getLogger(__name__)
 #   - the inventory CSV, streamed (``/hosts/csv``);
 #   - the inventory JSON, a report job (``POST /jobs?format=json``);
 #   - the Posture briefing (``/posture.html``);
-#   - the report-job routes, which client-report previews also poll and
-#     download through.
+#   - the report-job routes, for those inventory downloads only (a client
+#     report's render and a contact's document are their pages' own:
+#     ``app/api/report_jobs.py``).
 #
 # Downloads egress project data (and jobs mutate shared queue state).
 # Same policy as /export: VIEWERs are read-only-inventory and cannot pull
@@ -43,10 +44,6 @@ router = APIRouter(dependencies=[
     Depends(get_current_user),
     Depends(require_project_role(ProjectRole.AUDITOR)),
 ])
-
-# Client-report renders (``client_reports.CLIENT_REPORT_JOB``): listed, polled
-# and downloaded here, changed only by the Reports page's own routes.
-CLIENT_REPORT_TYPE = "client"
 
 
 @router.get("/hosts/csv")
@@ -180,14 +177,10 @@ def get_report_job(
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    job = (
-        db.query(ReportJob)
-        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
-        .first()
-    )
-    if not job:
-        raise HTTPException(status_code=404, detail="Report job not found")
-    return job
+    """An inventory download's job.  A page-owned job (a client report's
+    render, a contact's remediation list) is a 404 here, as in the list: its
+    own page's routes serve it."""
+    return job_or_404(db, project.id, job_id)
 
 
 @router.get("/jobs/{job_id}/download")
@@ -197,25 +190,9 @@ def download_report_job(
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Stream a completed report job's artifact."""
-    from fastapi.responses import FileResponse
-
-    job = (
-        db.query(ReportJob)
-        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
-        .first()
-    )
-    if not job:
-        raise HTTPException(status_code=404, detail="Report job not found")
-    if job.status != "completed" or not job.result_path:
-        raise HTTPException(status_code=409, detail=f"Report is not ready (status: {job.status}).")
-    if not Path(job.result_path).is_file():
-        raise HTTPException(status_code=410, detail="Report artifact has expired or been removed.")
-    return FileResponse(
-        path=job.result_path,
-        media_type=job.media_type or "application/octet-stream",
-        filename=job.result_filename or f"report_{job.id}",
-    )
+    """Stream a completed inventory download's artifact (a page-owned job is
+    a 404, as above)."""
+    return job_file_response(job_or_404(db, project.id, job_id))
 
 
 def _job_for_change(db: Session, project: Project, user, job_id: int) -> ReportJob:
@@ -224,24 +201,12 @@ def _job_for_change(db: Session, project: Project, user, job_id: int) -> ReportJ
 
     The router's floor is auditor: reading and downloading exports.  Changing
     a job is a write, so it needs an analyst — or the person who requested
-    that export, so an auditor still manages their own.  A client-report job
-    is refused here whoever asks: it is half of a report's state (cancelling
-    a queued issue render left the report PENDING with no job), and the
-    Reports page has its own routes for it.
+    that export, so an auditor still manages their own.  A page-owned job is
+    not found here whoever asks (``job_or_404``): a client-report job is half
+    of a report's state (cancelling a queued issue render left the report
+    PENDING with no job), and the Reports page has its own routes for it.
     """
-    job = (
-        db.query(ReportJob)
-        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
-        .first()
-    )
-    if not job:
-        raise HTTPException(status_code=404, detail="Report job not found")
-    if job.report_type == CLIENT_REPORT_TYPE:
-        raise HTTPException(
-            status_code=409,
-            detail="This job renders a client report and belongs to the Reports page: "
-                   "preview the draft again, or use \"Render again\" on the issued report.",
-        )
+    job = job_or_404(db, project.id, job_id)
     if job.requested_by_id is not None and job.requested_by_id == user.id:
         return job
     if not is_project_analyst(db, project.id, user):

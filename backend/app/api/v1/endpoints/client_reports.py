@@ -5,8 +5,10 @@ Reading (the list, a report, its files) is for auditors and above — the same
 line as every other report and export.  Drafts are written by analysts.
 Issuing is a project admin's sign-off: it freezes the report
 (``ClientReportService.issue``), numbers it, and queues the render of its
-files on the report worker.  A draft's preview is an ordinary report job
-(``report_type='client'``), polled and downloaded through ``/reports/jobs``.
+files on the report worker.  A draft's preview is a report job
+(``report_type='client'``), polled and downloaded through its report
+(``/{id}/previews/{job}``); the generic ``/reports/jobs`` routes do not serve
+it (``app/api/report_jobs.py``).
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import get_current_user
 from app.api.downloads import attachment
+from app.api.report_jobs import job_file_response, job_or_404
 from app.core.security import log_audit_event
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
@@ -814,7 +817,7 @@ def preview_report(
     current_user: User = Depends(get_current_user),
 ):
     """Render a DRAFT from the live findings, as one format.  Returns a report
-    job: poll ``/reports/jobs/{id}`` and download from there."""
+    job: poll ``/{report_id}/previews/{job_id}`` and download from there."""
     report = _load(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report has its files already.")
@@ -822,6 +825,39 @@ def preview_report(
     if body.format not in template.formats:
         raise HTTPException(status_code=422, detail=f"The '{template.name}' template does not produce {body.format}.")
     return _enqueue(db, project=project, user=current_user, fmt=f"report-{body.format}", report_id=report.id)
+
+
+def _report_job(db: Session, project: Project, report_id: int, job_id: int):
+    """One of THIS report's render jobs — the Reports page's door to it (the
+    generic ``/reports/jobs`` routes answer 404 for a client-report job)."""
+    job = job_or_404(db, project.id, job_id, owner=CLIENT_REPORT_JOB)
+    if (job.filters or {}).get("report_id") != report_id:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    return job
+
+
+@router.get("/{report_id}/previews/{job_id}", response_model=ReportJobSchema)
+def get_report_preview(
+    report_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """A preview job of this report: its status, progress, error and
+    ``inputs_fingerprint``."""
+    return _report_job(db, project, report_id, job_id)
+
+
+@router.get("/{report_id}/previews/{job_id}/download")
+def download_report_preview(
+    report_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """A finished preview's file (409 until it is completed, 410 once it has
+    expired)."""
+    return job_file_response(_report_job(db, project, report_id, job_id))
 
 
 @router.post(
