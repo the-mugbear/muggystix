@@ -48,8 +48,8 @@ def test_assist_host_detail_lists_the_names_seen_at_the_address(
     client, db_session, test_project
 ):
     """Regression: AssistHostDetail inherited ``names`` and the handler never
-    filled it, so every host read as having no names while /agent/hosts/{id}
-    listed them."""
+    filled it, so every host read as having no names while the (since removed)
+    /agent/hosts/{id} listed them."""
     from app.services import dns_name_service as svc
 
     host = models.Host(project_id=test_project.id, ip_address="203.0.113.44", state="up")
@@ -65,8 +65,8 @@ def test_assist_host_detail_lists_the_names_seen_at_the_address(
     headers = _assist(client, test_project.id)
     body = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=headers).json()
     assert sorted(body["names"]) == ["portal.example.com", "vpn.example.com"]
-    browse = client.get(f"/api/v1/agent/hosts/{host.id}", headers=headers).json()
-    assert sorted(browse["names"]) == sorted(body["names"])
+    # The one statement of "the names seen at this address".
+    assert body["names"] == svc.observed_names_at_address(db_session, test_project.id, "203.0.113.44")
 
 
 def _seed_inspector_host(db_session, project, user):
@@ -226,8 +226,8 @@ def test_assist_host_detail_statement_count_does_not_grow_with_ports(
 def test_assist_context_carries_engagement_dates_and_members(
     client, db_session, test_project, test_user
 ):
-    """Over MCP the dates were unreachable (only /agent/project had them, and it
-    is not a tool), and "who is on this engagement" had no answer at all."""
+    """Over MCP the dates were unreachable (only the since-removed /agent/project
+    had them, and it was not a tool), and "who is on this engagement" had no answer at all."""
     from app.db.models_project import ProjectMembership
 
     test_project.start_date = datetime(2026, 9, 1, tzinfo=timezone.utc)

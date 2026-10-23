@@ -73,9 +73,9 @@ def test_a_note_written_through_the_agent_appears_in_recent_notes(
     assert created.status_code in (200, 201), created.text
     note_id = created.json()["id"]
 
-    on_host = client.get(f"/api/v1/agent/hosts/{host.id}/notes", headers=headers)
+    on_host = client.get(f"/api/v1/agent/assist/hosts/{host.id}/notes", headers=headers)
     assert on_host.status_code == 200, on_host.text
-    assert note_id in [n["id"] for n in on_host.json()]
+    assert note_id in [n["id"] for n in on_host.json()["items"]]
 
     recent = client.get("/api/v1/agent/assist/notes", headers=headers)
     assert recent.status_code == 200, recent.text

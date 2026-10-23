@@ -4,6 +4,8 @@ import { Link } from 'react-router-dom';
 import { ExternalLink, Globe, Image as ImageIcon, Loader2, Lock, Unlock } from 'lucide-react';
 
 import {
+  TlsRecordFlag,
+  TlsRecordSummary,
   WebInterface,
   getHostWebInterfaces,
   getWebInterfaceRecord,
@@ -223,17 +225,13 @@ const sourceBadgeVariant = (source: string): 'info' | 'secondary' | 'warning' | 
   }
 };
 
-// v4.7.9 — pull a compact, human-readable summary out of the
-// httpx `tls` blob.  The blob is a loose Record<string, unknown>
-// (ProjectDiscovery's shape varies by httpx version), so every
-// access is defensive.  Returns null when there's nothing useful
-// to show so the caller can skip the whole TLS line.
-const tlsStr = (tls: Record<string, unknown>, ...keys: string[]): string | null => {
-  for (const k of keys) {
-    const v = tls[k];
-    if (typeof v === 'string' && v.trim()) return v.trim();
-  }
-  return null;
+// The server reads the tool's TLS record once (`cert_fields.tls_summary`, the
+// same reading the agents get); this only words it.
+const TLS_FLAG_WORDS: Record<TlsRecordFlag, string> = {
+  self_signed: 'self-signed',
+  expired: 'expired',
+  hostname_mismatch: 'hostname mismatch',
+  wildcard: 'wildcard',
 };
 
 interface TlsSummary {
@@ -242,18 +240,13 @@ interface TlsSummary {
   expiry: string | null;
   daysToExpiry: number | null; // computed from not_after; null if unparseable
   sanCount: number;
-  flags: string[]; // self-signed / expired / mismatched
+  flags: string[]; // self-signed / expired / hostname mismatch / wildcard
 }
 
-const summarizeTls = (tls: Record<string, unknown> | null | undefined): TlsSummary | null => {
-  if (!tls || typeof tls !== 'object') return null;
-  const sans = tls.subject_an ?? tls.subject_alt_names;
-  const flags: string[] = [];
-  if (tls.self_signed === true) flags.push('self-signed');
-  if (tls.expired === true) flags.push('expired');
-  if (tls.mismatched === true) flags.push('hostname mismatch');
-  if (tls.wildcard_certificate === true) flags.push('wildcard');
-  const expiry = tlsStr(tls, 'not_after');
+const summarizeTls = (record: TlsRecordSummary | null | undefined): TlsSummary | null => {
+  if (!record) return null;
+  const flags = (record.flags ?? []).map((f) => TLS_FLAG_WORDS[f] ?? f);
+  const expiry = record.not_after;
   // Derive expiry status from the date itself — httpx doesn't reliably set the
   // `expired` boolean, so a cert past (or near) not_after would otherwise look
   // identical to one valid for years.
@@ -269,11 +262,11 @@ const summarizeTls = (tls: Record<string, unknown> | null | undefined): TlsSumma
       ? flags.filter((f) => f !== 'expired')
       : flags;
   const summary: TlsSummary = {
-    version: tlsStr(tls, 'tls_version', 'version'),
-    issuer: tlsStr(tls, 'issuer_cn', 'issuer_org', 'issuer_dn'),
+    version: record.version,
+    issuer: record.issuer,
     expiry,
     daysToExpiry,
-    sanCount: Array.isArray(sans) ? sans.length : 0,
+    sanCount: (record.sans ?? []).length,
     flags: dedupedFlags,
   };
   // Nothing worth a line if every field came back empty.
@@ -332,7 +325,7 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreensh
   const [historyOpen, setHistoryOpen] = useState(false);
   const [recordOpen, setRecordOpen] = useState(false);
   const isHttps = (row.protocol || '').toLowerCase() === 'https';
-  const tls = summarizeTls(row.tls_info);
+  const tls = summarizeTls(row.tls_summary);
   return (
     // v5.241.0 — a divided row, not a bordered box per URL: a plain interface
     // is two lines (URL; status · source · server · title · size).

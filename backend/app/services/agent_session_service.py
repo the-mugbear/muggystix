@@ -237,18 +237,19 @@ def note_agent_harness(session: Optional[AgentSession], harness: Optional[str], 
         session.generated_by_tool = harness[:_ATTRIBUTION_MAX]
 
 
-def record_mcp_client(raw_key: Optional[str], client_info: Optional[dict]) -> None:
+def record_mcp_client(session_id: Optional[int], client_info: Optional[dict]) -> None:
     """Name the session's harness from an MCP ``initialize`` (v2.434.0).
 
-    ``initialize`` needs no key, so this only acts when the client sent one
-    that is live.  Its own DB session, and it never raises: attribution must
-    not be able to fail a handshake.
+    ``initialize`` needs no key, so the caller passes the session of a key the
+    agents' gate would accept (``deps.live_agent_session_id``, the gate's own
+    read and rules — review 2026-10-23b, AGT-8: a second key lookup here
+    accepted an expired key, one issued before a password change and one whose
+    operator had left).  Its own DB session, and it never raises: attribution
+    must not be able to fail a handshake.
     """
-    import hashlib
-
     from app.db import session as _session_module
 
-    if not raw_key or not isinstance(client_info, dict):
+    if session_id is None or not isinstance(client_info, dict):
         return
     name = client_info.get("name")
     version = client_info.get("version")
@@ -259,12 +260,7 @@ def record_mcp_client(raw_key: Optional[str], client_info: Optional[dict]) -> No
     try:
         session = (
             db.query(AgentSession)
-            .join(APIKey, APIKey.agent_session_id == AgentSession.id)
-            .filter(
-                APIKey.key_hash == hashlib.sha256(raw_key.encode()).hexdigest(),
-                APIKey.is_active.is_(True),
-                AgentSession.status == SESSION_ACTIVE,
-            )
+            .filter(AgentSession.id == session_id, AgentSession.status == SESSION_ACTIVE)
             .first()
         )
         if session is not None and session.generated_by_tool != harness[:_ATTRIBUTION_MAX]:

@@ -50,13 +50,13 @@ def test_the_agents_created_after_reads_a_time_without_offset_as_utc(client, db_
     key = {"X-API-Key": started.json()["api_key"]}
 
     def names(after):
-        r = client.get("/api/v1/agent/scans", headers=key, params={"created_after": after})
+        r = client.get("/api/v1/agent/assist/scans", headers=key, params={"created_after": after})
         assert r.status_code == 200, r.text
-        return sorted(s["filename"] for s in r.json())
+        return sorted(s["filename"] for s in r.json()["items"])
 
     for spelling in SHAPES:
         assert names(spelling) == ["late.xml"], spelling
-    assert client.get("/api/v1/agent/scans", headers=key,
+    assert client.get("/api/v1/agent/assist/scans", headers=key,
                       params={"created_after": "yesterday"}).status_code == 422
 
 

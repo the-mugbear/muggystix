@@ -278,7 +278,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-browse",
-        "description": "The session itself (`/agent/identity`, `/agent/session/renew`, `/agent/session/end`) and the three project writes an agent may make on a host when the operator's role permits (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status (`POST .../follow`), and hostname/OS (`PATCH /agent/hosts/{id}`) — otherwise 403. Also the reads that predate `/agent/assist/*` (`/agent/project`, `/agent/dashboard`, `/agent/hosts`, `/agent/hosts/{id}`, `/agent/hosts/{id}/notes`, `/agent/scans`): kept for existing curl clients, bare arrays with no total — for new work use the `agent-assist` reads, which are paged. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
+        "description": "The session itself (`/agent/identity`, `/agent/session/renew`, `/agent/session/end`) and the three project writes an agent may make on a host when the operator's role permits (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status (`POST .../follow`), and hostname/OS (`PATCH /agent/hosts/{id}`) — otherwise 403. The reads are the `agent-assist` routes. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
     },
     {
         "name": "agent-host-tests",

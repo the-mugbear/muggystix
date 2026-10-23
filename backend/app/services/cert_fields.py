@@ -11,7 +11,7 @@ services (read) share, so the parse logic can't drift between them.
 """
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # Tool-specific not_after serializations, tried after ISO-8601.
 _CERT_DT_FORMATS = (
@@ -189,6 +189,55 @@ def derive_weak_protocol(tls_info: Any) -> Optional[bool]:
             if c is not None:
                 return c
     return None
+
+
+#: The certificate flags a tool states in its TLS record, in the order a
+#: reader is told them: (record key, the flag's name in the summary).
+TLS_FLAG_KEYS = (
+    ("self_signed", "self_signed"),
+    ("expired", "expired"),
+    ("mismatched", "hostname_mismatch"),
+    ("wildcard_certificate", "wildcard"),
+)
+
+
+def _tls_str(tls: dict, *keys: str) -> Optional[str]:
+    """The first non-empty string among ``keys``."""
+    for k in keys:
+        v = tls.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def tls_summary(tls_info: Any) -> Optional[Dict[str, Any]]:
+    """What the tool's own TLS record says, read ONCE for every reader: the
+    host inspector's web rows (``GET /hosts/{id}/web-interfaces`` →
+    ``tls_summary``, worded by ``WebInterfacesCard``) and the agents' web
+    interfaces (review 2026-10-23b, AGT-6 — the browser read the blob itself
+    and the agent got less: no mismatch, no wildcard).
+
+    ``version``, ``issuer`` (CN, else organisation, else DN), ``subject_cn``,
+    ``not_after`` (the text as reported — the reader words how far off it
+    is), ``sans`` (every subject alternative name) and ``flags``: the
+    :data:`TLS_FLAG_KEYS` the record states as true, nothing inferred.  None
+    when the record holds none of these."""
+    if not isinstance(tls_info, dict):
+        return None
+    sans = tls_info.get("subject_an") or tls_info.get("subject_alt_names")
+    sans = [str(s) for s in sans] if isinstance(sans, list) else []
+    summary = {
+        "version": _tls_str(tls_info, "tls_version", "version"),
+        "issuer": _tls_str(tls_info, "issuer_cn", "issuer_org", "issuer_dn"),
+        "subject_cn": _tls_str(tls_info, "subject_cn"),
+        "not_after": _tls_str(tls_info, "not_after"),
+        "sans": sans,
+        "flags": [name for key, name in TLS_FLAG_KEYS if tls_info.get(key) is True],
+    }
+    if not (summary["version"] or summary["issuer"] or summary["subject_cn"]
+            or summary["not_after"] or sans or summary["flags"]):
+        return None
+    return summary
 
 
 def cert_issue_from_columns(

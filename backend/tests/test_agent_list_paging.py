@@ -68,10 +68,6 @@ NOT_PAGED = {
     "/agent/evidence/{evidence_id}/raw-chunk":
         "one record's raw output by BYTE offset (`offset`, `length`, `next_offset`, "
         "`total_bytes`) — not a list of rows",
-    # The pre-assist reads: no MCP tool, kept as they are for existing curl
-    # clients until production shows nobody calls them.
-    "/agent/hosts": "pre-assist read, a bare array; superseded by /agent/assist/hosts",
-    "/agent/scans": "pre-assist read, a bare array; superseded by /agent/assist/scans",
 }
 
 _PAGING_ARGUMENTS = {"limit", "offset", "skip"}
@@ -360,7 +356,7 @@ def test_skip_is_an_unknown_argument_over_mcp(client, test_project, tool, argume
     "/agent/host-tests",
     "/agent/scope/subnets",
     "/agent/assist/names",
-    "/agent/hosts",            # a pre-assist read: refused all the same
+    "/agent/assist/scans",
 ])
 def test_skip_is_refused_over_http_on_every_agent_route(client, test_project, path):
     """Owner, 2026-10-22: over plain HTTP a script still sending ``skip=`` read

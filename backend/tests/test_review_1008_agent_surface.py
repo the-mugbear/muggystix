@@ -14,7 +14,6 @@ from app.services import agent_session_service as sessions
 from app.services import host_query
 
 HOST_READS = [
-    "/api/v1/agent/hosts",
     "/api/v1/agent/assist/hosts",
     "/api/v1/agent/assist/hosts/count",
     "/api/v1/agent/assist/hosts.ndjson",
@@ -74,10 +73,7 @@ def test_the_filters_that_are_understood_still_filter(client, agent_headers):
     assert ips(subnets="10.72.0.0/24") == {"10.72.0.1", "10.72.0.2", "10.72.0.3"}
     assert ips(subnets="10.72.0.0/24, 10.73.0.1") == {"10.72.0.1", "10.72.0.2", "10.72.0.3", "10.73.0.1"}
     assert ips(state="up", subnets="10.72.0.0/24") == {"10.72.0.1", "10.72.0.2"}
-    browse = client.get(
-        "/api/v1/agent/hosts", headers=agent_headers, params={"state": "up", "subnets": "10.73.0.0/16"},
-    )
-    assert [h["ip_address"] for h in browse.json()] == ["10.73.0.1"]
+    assert ips(state="up", subnets="10.73.0.0/16") == {"10.73.0.1"}
 
 
 def test_the_host_states_are_the_dsls():

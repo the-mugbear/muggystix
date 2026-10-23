@@ -232,7 +232,17 @@ def list_evidence(
     """``with_preview=False`` leaves the 2,000-character preview unread (the
     agents' ``preview=false``: a list of 50 records was up to 100 KB of
     previews nobody asked for — review 2026-10-10 stream, D8); serialize such
-    rows with ``serialize_evidence(row, preview=False)``."""
+    rows with ``serialize_evidence(row, preview=False)``.
+
+    A filter id that names nothing in the project is a 404, for every door
+    (``filter_targets.require_in_project``): "no evidence" about a host,
+    finding, test or session that is not here is a false answer."""
+    from app.services.filter_targets import require_in_project
+
+    require_in_project(
+        db, project_id, host_id=host_id, finding_id=finding_id,
+        host_test_id=host_test_id, agent_session_id=agent_session_id,
+    )
     q = db.query(EvidenceRecord).filter(EvidenceRecord.project_id == project_id)
     if unlinked:
         # Records that answer no test (the host page lists those on their own;

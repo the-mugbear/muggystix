@@ -131,10 +131,6 @@ def test_agent_host_lists_and_the_hosts_page_state_the_same_counts(
     assert assist.status_code == 200, assist.text
     assist_rows = {row["ip_address"]: row for row in assist.json()["items"]}
 
-    browse = client.get("/api/v1/agent/hosts?limit=100", headers=headers)
-    assert browse.status_code == 200, browse.text
-    browse_rows = {row["ip_address"]: row for row in browse.json()}
-
     for ip, host in hosts.items():
         expected = _expected(ip)
         # The page sends no summary at all for a host without scanner rows.
@@ -143,17 +139,13 @@ def test_agent_host_lists_and_the_hosts_page_state_the_same_counts(
             assert page_summary, ip
         for severity in SEVERITIES:
             assert page_summary.get(severity, 0) == expected[severity], (ip, severity)
-        for label, rows in (("assist", assist_rows), ("browse", browse_rows)):
-            _same(rows[ip]["vuln_summary"], ip, label)
-            assert rows[ip]["open_port_count"] == _OPEN_PORTS[ip], (label, ip)
+        _same(assist_rows[ip]["vuln_summary"], ip, "assist")
+        assert assist_rows[ip]["open_port_count"] == _OPEN_PORTS[ip], ip
 
-        # The single-host reads go through the same helper.
+        # The single-host read goes through the same helper.
         detail = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=headers)
         assert detail.status_code == 200, detail.text
         _same(detail.json()["vuln_summary"], ip, "assist detail")
-        detail = client.get(f"/api/v1/agent/hosts/{host.id}", headers=headers)
-        assert detail.status_code == 200, detail.text
-        _same(detail.json()["vuln_summary"], ip, "browse detail")
 
 
 def _same(summary, ip, label):

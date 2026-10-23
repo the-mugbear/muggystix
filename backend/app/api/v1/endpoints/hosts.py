@@ -31,14 +31,15 @@ from app.db.models_project import Project, ProjectRole
 from app.db.models_auth import User
 from app.db import models
 from app.db.models_confidence import (
-    NETEXEC_RAW_OUTPUT_LIMIT, HostConfidence, PortConfidence, NetexecResult,
+    HostConfidence, PortConfidence, NetexecResult,
 )
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES, TESTED_OUTCOMES
 from app.db.models_proposals import EvidenceRecord
 from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
 from app.services.note_attachment_service import require_readable_file
-from app.services import host_query
+from app.services import host_access_service, host_query
+from app.services.cert_fields import tls_summary
 from app.services import host_query_predicates as P
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
@@ -2292,6 +2293,10 @@ class WebInterfaceResponse(BaseModel):
     technologies: Optional[List[str]] = None
     favicon_hash: Optional[str] = None
     tls_info: Optional[dict] = None
+    # What the tool's TLS record says (``cert_fields.tls_summary``: version,
+    # issuer, subject_cn, not_after, sans, flags) — the one reading of the
+    # record, which the agents' web interfaces carry too; the page words it.
+    tls_summary: Optional[dict] = None
     # Typed cert / TLS promotions (surfaced per-port in the host inspector).
     cert_not_after: Optional[datetime] = None
     cert_self_signed: Optional[bool] = None
@@ -2432,6 +2437,7 @@ def list_host_web_interfaces(
             favicon_hash=r.favicon_hash,
             page_text=(r.page_text or None) and r.page_text[:2000],
             tls_info=r.tls_info,
+            tls_summary=tls_summary(r.tls_info),
             cert_not_after=r.cert_not_after,
             cert_self_signed=r.cert_self_signed,
             cert_subject_org=r.cert_subject_org,
@@ -2502,43 +2508,9 @@ def get_web_interface_record(
     )
 
 
-class NetexecResultResponse(BaseModel):
-    """One NetExec (credentialed-enumeration) observation of a host.
-
-    v2.45.7 — the `netexec_results` table was populated by the
-    netexec parser but had no API surface, so SMB share enumeration
-    and credentialed-access confirmation were invisible to operators.
-    """
-    id: int
-    scan_id: int
-    protocol: str
-    port: Optional[int] = None
-    auth_success: Optional[bool] = None
-    username: Optional[str] = None
-    hostname: Optional[str] = None
-    domain_name: Optional[str] = None
-    # `shares` is parser-shaped JSON (the netexec output varies); the
-    # frontend renders it defensively.
-    shares: Optional[Any] = None
-    first_seen: Optional[datetime] = None
-    # v2.390.0 — which tool (netexec | smbmap), "(Pwn3d!)" and SMBv1.
-    tool: str = "netexec"
-    local_admin: Optional[bool] = None
-    smbv1: Optional[bool] = None
-    # v2.411.0 — the tool's own line.  Only the SMB banner and login lines are
-    # interpreted; LDAP / RDP / VNC flags and module output live only here, so
-    # it is shown rather than kept invisibly.
-    raw_output: Optional[str] = None
-    # v2.417.0 — the parser keeps the first 10 000 characters of a result's
-    # output; True when it had to cut, so the UI says the line is partial.
-    raw_output_truncated: bool = False
-
-    model_config = ConfigDict(from_attributes=True)
-
-
 @router.get(
     "/{host_id:int}/netexec",
-    response_model=List[NetexecResultResponse],
+    response_model=List[host_access_service.HostAccessResult],
     summary="NetExec credentialed-enumeration results observed on a host",
 )
 def list_host_netexec_results(
@@ -2552,53 +2524,20 @@ def list_host_netexec_results(
     any enumerated SMB shares.
 
     Lazy-loaded by the HostInspector NetExec card, gated on the
-    ``netexec_result_count`` returned by the host-detail endpoint.
+    ``netexec_result_count`` returned by the host-detail endpoint.  Every
+    row, in the order and shape the agents' page of the same rows has
+    (``host_access_service``, one read for both doors).
     """
     host = (
-        db.query(models.Host)
+        db.query(models.Host.id)
         .filter(models.Host.id == host_id, models.Host.project_id == project.id)
         .first()
     )
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    rows = (
-        db.query(NetexecResult)
-        .filter(NetexecResult.host_id == host_id)
-        .order_by(NetexecResult.protocol, NetexecResult.id)
-        .all()
-    )
-    return [
-        NetexecResultResponse(
-            id=r.id,
-            scan_id=r.scan_id,
-            protocol=r.protocol,
-            port=r.port,
-            auth_success=r.auth_success,
-            username=r.username,
-            hostname=r.hostname,
-            domain_name=r.domain_name,
-            shares=r.shares,
-            # NetexecResult model carries `discovered_at` (server_default
-            # = func.now() when the row is inserted), not `first_seen`.
-            # The response schema field is named `first_seen` for parity
-            # with the WebInterface response above — both surface "when
-            # did we first observe this artefact" to the analyst.  Pre-
-            # fix this attribute access raised AttributeError and 500'd
-            # the netexec card.
-            first_seen=r.discovered_at,
-            tool=r.tool or "netexec",
-            local_admin=r.local_admin,
-            smbv1=r.smbv1,
-            # Credentials that worked are what an analyst looks for here: the
-            # line is shown as the tool wrote it.  v2.417.0 — whole, as
-            # stored: the API cut it at 2 000 characters with no marker, so
-            # module output past that point was unreachable.
-            raw_output=r.raw_output or None,
-            raw_output_truncated=len(r.raw_output or "") >= NETEXEC_RAW_OUTPUT_LIMIT,
-        )
-        for r in rows
-    ]
+    rows, _ = host_access_service.page(db, host_id)
+    return [host_access_service.serialize(r) for r in rows]
 
 
 @router.get(

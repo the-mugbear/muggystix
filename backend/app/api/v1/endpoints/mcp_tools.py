@@ -75,6 +75,8 @@ import sys
 from collections.abc import Mapping
 from typing import Any, Dict, Iterator, List, Optional
 
+from app.services.host_query import HOST_STATES
+
 # What an entry says about a parameter (``params``) is laid over what the
 # endpoint declares — see ``derive_tool``.  An id is never below 1, whether or
 # not its endpoint says so: the transport checks it before building the URL.
@@ -647,7 +649,12 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/scans/{scan_id}/hosts",
         "defaults": {"limit": 100},
-        "params": {"scan_id": "Scan id (assist_list_scans)"},
+        "params": {
+            "scan_id": "Scan id (assist_list_scans)",
+            # The endpoint takes the state as text and refuses what it does not
+            # know (422); the tool names the values.
+            "state": {"enum": list(HOST_STATES)},
+        },
     },
     "assist_list_scan_ports": {
         "description": (
@@ -716,7 +723,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "`endpoint_status_counts` covers them all. `evidence_note`, "
             "`evidence_thread` and `comments` — each note says whether a person or "
             "an agent wrote it (`actor_type`). `scanner_evidence` (the first 100 "
-            "of scanner_evidence_total) and `evidence_records`: a scanner's output "
+            "of scanner_evidence_total) and `evidence_records` (the newest 50 of "
+            "evidence_records_total; list_evidence with finding_id pages the rest): a scanner's output "
             "and a command a tester ran are different assertions — say which a "
             "claim rests on. `report_text`, `status_history`, `writing_guidance` "
             "(read it before propose_finding_text) and `images`: `id`, `caption`, "

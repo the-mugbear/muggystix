@@ -1412,7 +1412,14 @@ class FindingService:
         Endpoints are NOT loaded (review 2026-10-01 C2): a widespread issue has
         thousands, and a list row shows a count and a handful.  A caller that
         lists rows takes :meth:`endpoint_summaries` (the page) or
-        :meth:`address_summaries` (the agents' list) for the page's ids."""
+        :meth:`address_summaries` (the agents' list) for the page's ids.
+
+        A ``host_id`` that names no host of the project is a 404 on every door
+        ("no findings on that host" about a host that is not here is false;
+        review 2026-10-23b, AGT-3)."""
+        from app.services.filter_targets import require_in_project
+
+        require_in_project(self.db, project_id, host_id=host_id)
         options = [selectinload(Finding.owner), selectinload(Finding.created_by)]
         q = self._selection(
             self.db.query(Finding).options(*options), project_id=project_id,
