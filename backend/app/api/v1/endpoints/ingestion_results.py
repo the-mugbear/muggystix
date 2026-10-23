@@ -1,4 +1,8 @@
-"""The Scans page's Ingestion results view: one row per import.
+"""One row per upload: what the Scans page's import history shows of an
+upload (2.524.0, owner decision 2026-10-22, G15 — it was the page's
+Ingestion results view).  The history decides the ORDER
+(``GET /scans/history``, with its status filters) and reads its upload rows
+here by id (``?ids=``); analysts and above only.
 
 Served at ``/projects/{id}/ingestion-results``.  Until 2026-10-22 these two
 routes lived in ``parse_errors.py`` under ``/parse-errors/ingestion-results``;
@@ -79,6 +83,16 @@ def get_ingestion_results(
         pattern="^(asc|desc)$",
         description="Sort direction (v2.86.2).",
     ),
+    ids: Optional[str] = Query(
+        None,
+        max_length=2000,
+        description=(
+            "Comma-separated job ids — only these rows (2.524.0). The Scans "
+            "page's import history lists its unsuccessful uploads in the "
+            "order `GET /scans/history` decides and fetches each page's rows "
+            "by id here, as it fetches its scans and batches."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -90,9 +104,15 @@ def get_ingestion_results(
     Requires analyst role.  ``ingestion_results_service`` is the one
     implementation; the agents' ``/agent/assist/ingestion-issues`` reads it too.
     """
+    wanted_ids: Optional[List[int]] = None
+    if ids is not None:
+        try:
+            wanted_ids = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="ids must be comma-separated integers")
     items, total = ingestion_results_service.list_results(
         db, project.id, status=status, tool=tool, search=search,
-        sort_by=sort_by, sort_order=sort_order, skip=skip, limit=limit,
+        sort_by=sort_by, sort_order=sort_order, skip=skip, limit=limit, ids=wanted_ids,
     )
     summary = ingestion_results_service.summary(db, project.id)
     return IngestionResultsResponse(items=items, total=total, summary=summary)

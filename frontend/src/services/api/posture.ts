@@ -253,7 +253,7 @@ export interface EvidenceCoverageResponse {
   domains: EvidenceDomain[];
   matrix?: EvidenceMatrix | null;
   contributing_tools: { tool: string; scans: number }[];
-  /** `imports_needing_attention` is the Operations / Ingestion Results rule
+  /** `imports_needing_attention` is the Operations / Scans "Needs attention" rule
    *  (failed or partial, not dismissed, not superseded); `parse_errors_unresolved`
    *  counts parse-error rows and is kept for the agents' reads. */
   data_quality: {

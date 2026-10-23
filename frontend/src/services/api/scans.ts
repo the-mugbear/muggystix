@@ -226,28 +226,44 @@ export interface ScanBatchSummary {
  *  uploaded files in one chronological list. Rows are hydrated by id through
  *  getScans / getScanBatches, which already compute their summaries. */
 export interface ImportHistoryEntry {
-  kind: 'batch' | 'scan';
+  /** 5.418.0 — `upload`: an ingestion job (an upload that was not imported,
+   *  or any upload a status filter lists); analysts and above only. */
+  kind: 'batch' | 'scan' | 'upload';
   id: number;
   at: string | null;
 }
+
+/** The status filters of the import history (the uploads one view lists). */
+export type ImportHistoryStatus =
+  | 'needs_attention' | 'superseded' | 'expired' | 'discarded' | 'failed' | 'failed_dismissed'
+  | 'staged' | 'queued' | 'processing' | 'completed';
 
 export interface ImportHistoryPage {
   items: ImportHistoryEntry[];
   total: number;
   batch_total: number;
   scan_total: number;
+  upload_total?: number;
   has_more: boolean;
+  /** Analysts and above: how many uploads each status filter lists under the
+   *  same filters; null below analyst (who cannot open those lists). */
+  status_counts?: Partial<Record<ImportHistoryStatus, number>> | null;
 }
 
 export const getImportHistory = async (
   projectId: number,
   options?: {
     search?: string; tool?: string; createdAfter?: string; uploadedBy?: number;
+    /** The uploads one view names, flat (analysts and above). */
+    status?: string; jobId?: number; errorId?: number;
     skip?: number; limit?: number; signal?: AbortSignal;
   },
 ): Promise<ImportHistoryPage> => {
-  const { search, tool, createdAfter, uploadedBy, skip, limit, signal } = options ?? {};
+  const { search, tool, createdAfter, uploadedBy, status, jobId, errorId, skip, limit, signal } = options ?? {};
   const params: Record<string, string | number> = {};
+  if (status) params.status = status;
+  if (jobId != null) params.job_id = jobId;
+  if (errorId != null) params.error_id = errorId;
   if (search) params.search = search;
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
@@ -331,7 +347,7 @@ export interface ScanInventorySummary {
    *  uploader filter itself), most files first. */
   uploaders?: ScanUploader[];
   /** v2.401.0 — the WHOLE project's imports that failed or finished partial
-   *  and nobody dismissed (Ingestion Results' needs-attention view). */
+   *  and nobody dismissed (the import history's `status=needs_attention`). */
   imports_need_attention?: number;
   /** v2.401.0 — failed jobs already dismissed: discarded, expired, acknowledged. */
   imports_not_imported?: number;

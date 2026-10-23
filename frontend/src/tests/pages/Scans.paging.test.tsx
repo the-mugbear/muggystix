@@ -93,19 +93,18 @@ beforeEach(() => {
 });
 
 describe('Scans — the first read', () => {
-  it('keeps the title and the view switch on screen while the list is read', async () => {
-    // The whole page used to be a skeleton until the first answer, so
-    // pressing "Imported scans" took the switch away and put it back.
+  it('keeps the title on screen while the list is read, and has no view switch', async () => {
+    // 5.418.0 — one import history: the "Imported scans | Ingestion results"
+    // switch is gone (owner decision 2026-10-22, G15).
     let answer: (page: ReturnType<typeof historyPage>) => void = () => undefined;
     api.getImportHistory.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
     renderPage();
     expect(await screen.findByRole('heading', { name: 'Scans' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Imported scans' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: 'Ingestion results' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).toBeNull();
     expect(screen.queryByText('file-9.xml')).toBeNull();
     await act(async () => { answer(historyPage()); });
     expect(await screen.findByText('file-9.xml')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Imported scans' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Ingestion results' })).toBeNull();
   });
 });
 

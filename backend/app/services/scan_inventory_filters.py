@@ -41,3 +41,32 @@ def apply_scan_inventory_filters(query, *, search, tool, created_after, uploaded
     if uploaded_by is not None:
         query = query.filter(models.Scan.uploaded_by_id == uploaded_by)
     return query
+
+
+def apply_job_inventory_filters(query, *, search, tool, created_after=None, uploaded_by=None):
+    """The same four filters over UPLOADS (``ingestion_jobs``) — the import
+    history's rows that have no scan, its status views, and their counts.
+
+    One implementation for every upload list: the import history
+    (``GET /scans/history`` with a status), its chips' counts and
+    ``GET /ingestion-results`` all call it.  The search reads what an upload
+    row shows — its filename and what went wrong (``error_message``,
+    ``last_error``); the tool is the upload's own ``tool_name``; the date is
+    when it was uploaded; the uploader is who submitted it.  Assumes
+    ``models.IngestionJob`` is part of the query's FROM clause.
+    """
+    Job = models.IngestionJob
+    if search and search.strip():
+        needle = f"%{escape_like(search.strip())}%"
+        query = query.filter(
+            Job.original_filename.ilike(needle, escape="\\")
+            | Job.error_message.ilike(needle, escape="\\")
+            | Job.last_error.ilike(needle, escape="\\")
+        )
+    if tool and tool.strip():
+        query = query.filter(func.lower(Job.tool_name) == tool.strip().lower())
+    if created_after is not None:
+        query = query.filter(Job.created_at >= created_after)
+    if uploaded_by is not None:
+        query = query.filter(Job.submitted_by_id == uploaded_by)
+    return query

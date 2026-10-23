@@ -16,13 +16,14 @@ BlueStick; the operator carries the finished report out.
 
 1. **The original tool output** that was imported: the operator's copy, or the
    file BlueStick retained (kept for `INGESTION_RETAIN_FILES_DAYS`, 7 by
-   default, after the import — Ingestion Results says until when).
+   default, after the import — the upload's row in the Scans import history
+   says until when).
 2. **A BlueStick agent session on the same project** (Operations → Start
    Agent Session; MCP server `bluestick`, or `X-API-Key` against
    `/api/v1/agent/*`). Read-only use is enough; the audit writes nothing. The
    operator who starts the session must hold the project's `analyst` role:
    `assist_list_uninterpreted_lines` answers 403 for an auditor or viewer, as
-   the Ingestion Results page does.
+   the uploads' rows of the Scans import history are an analyst's.
 3. **What BlueStick is meant to read** from the format: `GET
    /api/v1/references/parser-coverage` (the "What BlueStick reads" page) —
    each signal with its level: `observation`, `field`, `text` (kept as the

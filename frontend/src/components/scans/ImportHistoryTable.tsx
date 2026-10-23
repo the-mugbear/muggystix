@@ -24,6 +24,8 @@ import { ScanBatchRow } from './ScanBatchList';
 import ScanContribution from './ScanContribution';
 import { ROW_LINK_CLASS, ScanRowActions } from './ScanRowActions';
 import { SCAN_TIME_HEADING, ScanWhenCell, ViewerZoneHint, type ScanTimeColumn } from './ScanTimeCells';
+import UploadHistoryRow from './UploadHistoryRow';
+import { importResultsPath } from '../../utils/importResultsPath';
 
 export type ScansSortBy = 'created_at' | 'start_time' | 'filename' | 'tool_name' | 'total_hosts' | 'new_hosts';
 export type ScansSortOrder = 'asc' | 'desc';
@@ -50,12 +52,17 @@ interface ImportHistoryTableProps {
   onViewScan: (scanId: number) => void;
   /** Deleting a scan is the project admin's (absent: not offered). */
   onDelete?: (scan: Scan) => void;
+  /** Upload rows open on arrival (a link named one upload). */
+  expandUploads?: boolean;
+  /** A scan row's menu links to the upload that made it (analysts and above). */
+  uploadLinks?: boolean;
 }
 
-/** The import history's table: batch rows and file rows, in the order given. */
+/** The import history's table: batch rows, file rows and upload rows, in the
+ *  order given. */
 const ImportHistoryTable: React.FC<ImportHistoryTableProps> = ({
   rows, sortable, timeColumn, sortBy, sortOrder, onSort, toolFilter, onToolFilter,
-  stagedByBatch, onReviewStaged, filters, onViewScan, onDelete,
+  stagedByBatch, onReviewStaged, filters, onViewScan, onDelete, expandUploads = false, uploadLinks = false,
 }) => {
   // The command's explanation is read by the expanded row itself
   // (`ScanCommandDetail`), the first time it opens.
@@ -134,7 +141,12 @@ const ImportHistoryTable: React.FC<ImportHistoryTableProps> = ({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((row) => (row.kind === 'batch' ? (
+          {rows.map((row) => (row.kind === 'upload' ? (
+            // An upload that was not imported (or, under a status filter, any
+            // upload the filter lists): analysts and above only — the server
+            // gives nobody else these rows.
+            <UploadHistoryRow key={row.key} upload={row.upload} defaultExpanded={expandUploads} />
+          ) : row.kind === 'batch' ? (
             <ScanBatchRow
               key={row.key}
               batch={row.batch}
@@ -155,6 +167,7 @@ const ImportHistoryTable: React.FC<ImportHistoryTableProps> = ({
               onToolFilter={onToolFilter}
               onViewScan={onViewScan}
               onDelete={onDelete}
+              uploadLinks={uploadLinks}
             />
           )))}
         </TableBody>
@@ -207,7 +220,8 @@ const ScanFileRow: React.FC<{
   onToolFilter: (tool: string) => void;
   onViewScan: (scanId: number) => void;
   onDelete?: (scan: Scan) => void;
-}> = ({ scan, expanded: isExpanded, onToggle, timeColumn, toolFilter, onToolFilter, onViewScan, onDelete }) => {
+  uploadLinks: boolean;
+}> = ({ scan, expanded: isExpanded, onToggle, timeColumn, toolFilter, onToolFilter, onViewScan, onDelete, uploadLinks }) => {
   const hasCommand = !!(scan.command_line && scan.command_line.trim());
   // The tool badge is a filter, as the tool select is.  stopPropagation so it
   // does not also trigger the row's own handlers.
@@ -335,6 +349,14 @@ const ScanFileRow: React.FC<{
                 <DropdownMenuItem onSelect={() => onViewScan(scan.id)}>
                   Open scan
                 </DropdownMenuItem>
+                {/* The upload that made it — its format chain, retained file
+                    and Re-process (an analyst's read; was a row of Ingestion
+                    results). */}
+                {uploadLinks && scan.import_job_id != null && (
+                  <DropdownMenuItem asChild>
+                    <Link to={importResultsPath({ job_id: scan.import_job_id })}>Upload details</Link>
+                  </DropdownMenuItem>
+                )}
                 {onDelete && (
                   <DropdownMenuItem
                     onSelect={() => onDelete(scan)}

@@ -546,12 +546,13 @@ class ReconJobStatus(BaseModel):
         "operator and ask whether to import what the file holds (a partial import) "
         "or to supply the complete file; only after they say to import it, POST "
         "/agent/uploads/{job_id}/keep-truncated with {\"operator_agreed\": true}. "
-        "They can also choose it themselves on Ingestion results. Null when "
+        "They can also choose it themselves on the upload's row in the Scans "
+        "page's import history. Null when "
         "the upload did not fail or failed without a parse error (a cancel)."
     ))
     # A finished import's completeness (acceptance run 2026-10-22: a kept cut
     # upload polled as plain "completed").  "Partial" is not a status: it is a
-    # completed job whose parsing stopped early, as Ingestion results shows it.
+    # completed job whose parsing stopped early, as the import history shows it.
     partial: bool = Field(False, description=(
         "True when the import completed but parsing stopped early, so what came "
         "after that point in the file is NOT in the project (a kept cut-short "

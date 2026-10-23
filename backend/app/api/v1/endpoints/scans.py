@@ -33,7 +33,8 @@ from app.services import dns_name_service, host_work, scan_sightings
 from app.services import ingestion_service as imports
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
-from app.services.scan_inventory_filters import apply_scan_inventory_filters
+from app.services import ingestion_results_service
+from app.services.scan_inventory_filters import apply_job_inventory_filters, apply_scan_inventory_filters
 from app.services.scan_snapshot_service import (
     ScanHostSnapshot,
     ScanPortObservation,
@@ -46,7 +47,7 @@ from app.services.scan_diff_service import (
     compute_scan_diff,
 )
 from app.api.deps import get_current_user
-from app.api.deps import get_current_project, require_project_role
+from app.api.deps import get_current_project, has_project_role, require_project_role
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 
@@ -178,7 +179,10 @@ class ScanInventorySummary(BaseModel):
     # failures — or a batch whose every file expired — existed.
     imports_need_attention: int = Field(
         0, ge=0,
-        description="Imports that failed or finished partial and nobody dismissed (Ingestion Results' needs-attention view)",
+        description=(
+            "Imports that failed or finished partial and nobody dismissed (the import "
+            "history's `status=needs_attention`)"
+        ),
     )
     imports_not_imported: int = Field(
         0, ge=0,
@@ -191,7 +195,7 @@ class ScanInventorySummary(BaseModel):
     imports_not_imported_by_reason: Dict[str, int] = Field(default_factory=dict)
     # v2.403.0 — failed or partial imports, not dismissed, whose file a later
     # job imported cleanly: not in `imports_need_attention`, and what
-    # Ingestion Results' "Dismiss N superseded" clears.
+    # the import history's "Dismiss N superseded" clears.
     imports_superseded: int = Field(
         0, ge=0,
         description="Failed or partial imports (not dismissed) whose file a later job imported",
@@ -1028,22 +1032,44 @@ class ScanBatchSummary(BaseModel):
 
 
 class ImportHistoryEntry(BaseModel):
-    kind: str = Field(..., description="'batch' (several files dropped together) or 'scan' (a file uploaded on its own)")
-    id: int
-    at: Optional[datetime] = Field(None, description="When it was uploaded — a batch's newest matching file, else its creation")
+    kind: str = Field(..., description=(
+        "'batch' (several files dropped together), 'scan' (a file uploaded on its own) "
+        "or 'upload' (an ingestion job: an upload that was not imported, or — under a "
+        "status filter — any upload the view lists; analysts and above only)"
+    ))
+    id: int = Field(..., description="The batch, scan or ingestion job id")
+    at: Optional[datetime] = Field(None, description=(
+        "When it was uploaded — a batch's newest matching file, else its creation; an "
+        "upload's own upload time"
+    ))
 
 
 class ImportHistoryPage(BaseModel):
     """v2.361.0 — the ORDER of the import history: upload batches and
     individually uploaded files in one chronological list.  Only the order
     lives here; each row's content comes from the endpoints that already
-    compute it (``GET /scans/?ids=`` and ``GET /scans/batches?ids=``), so the
-    per-scan and per-batch summaries have one implementation."""
+    compute it (``GET /scans/?ids=``, ``GET /scans/batches?ids=`` and, for an
+    upload, ``GET /ingestion-results?ids=``), so the per-scan, per-batch and
+    per-upload summaries have one implementation.
+
+    2.524.0 (owner decision 2026-10-22, G15: ONE import history) — the uploads
+    that were not imported are rows of the same order, for analysts and above,
+    and a status filter lists the uploads one of Ingestion results' views
+    named, in the same order."""
     items: List[ImportHistoryEntry] = Field(default_factory=list)
     total: int = 0
     batch_total: int = 0
     scan_total: int = 0
+    upload_total: int = Field(0, description=(
+        "Rows that are uploads (always 0 below analyst; every row under a status filter)"
+    ))
     has_more: bool = False
+    status_counts: Optional[Dict[str, int]] = Field(None, description=(
+        "Analysts and above: how many uploads each status filter lists under the "
+        "same search / tool / date / uploader filters (`ingestion_results_service."
+        "job_counts`; `needs_attention` is `blocked_import_condition`). Null below "
+        "analyst, who cannot open those lists."
+    ))
 
 
 class ScanInventoryMarker(BaseModel):
@@ -1148,10 +1174,33 @@ def get_import_history(
     tool: Optional[str] = Query(None, max_length=64),
     created_after: Optional[datetime] = Query(None),
     uploaded_by: Optional[int] = _UPLOADED_BY,
+    status: Optional[str] = Query(None, max_length=32, description=(
+        "Analysts and above (403 below). List the uploads one view names, flat, newest "
+        "first, instead of the grouped history: `needs_attention` (failed or partial, not "
+        "dismissed, not superseded), `failed`, `failed_dismissed`, `expired`, `discarded`, "
+        "`superseded`, or a job status (`staged`, `queued`, `processing`, `completed`). "
+        "Anything else is a 422."
+    )),
+    job_id: Optional[int] = Query(None, ge=1, description=(
+        "Analysts and above. Only this upload (a link to one row)."
+    )),
+    error_id: Optional[int] = Query(None, ge=1, description=(
+        "Analysts and above. Only the upload that carries this parse error."
+    )),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
     """Batches and individually uploaded files interleaved by upload time.
+
+    2.524.0 (owner decision 2026-10-22, G15: ONE import history) — for
+    analysts and above the uploads that were not imported are rows of the
+    same order (``ingestion_results_service.unsuccessful_upload_condition``:
+    failed, expired or discarded, no scan, not in a batch — a batch row lists
+    its own files), and ``status`` / ``job_id`` / ``error_id`` turn the
+    history into the flat list of uploads that view names, in the same order.
+    Below analyst no upload is listed or counted: those rows, and their
+    detail, are the analyst's read (``GET /ingestion-results``).
 
     The page showed them as two cards, each paginated on its own, so "what
     was imported, in order" could not be read off it — and merging two
@@ -1162,10 +1211,11 @@ def get_import_history(
     Same filter semantics as the two lists: with a filter, a batch appears
     only if it holds a matching file, and is dated by its newest MATCHING
     file; with none, every batch appears (one with only queued or failed
-    files has no scan row, and is dated by its creation).  Four statements
-    whatever the page and however long the history: each kind's count, and
-    each kind's newest skip+limit entries — the only ones that can reach the
-    requested page — dated and ordered by Postgres.
+    files has no scan row, and is dated by its creation).  A fixed number of
+    statements whatever the page and however long the history: each kind's
+    count, and each kind's newest skip+limit entries — the only ones that can
+    reach the requested page — dated and ordered by Postgres (plus, for an
+    analyst, the uploads' kind and the status counts).
     """
     filters_active = bool(search or tool or created_after or uploaded_by)
 
@@ -1173,6 +1223,47 @@ def get_import_history(
         if dt is None:
             return None
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    Job = models.IngestionJob
+    reads_uploads = has_project_role(db, project.id, current_user, ProjectRole.ANALYST)
+    upload_view = status is not None or job_id is not None or error_id is not None
+    if upload_view and not reads_uploads:
+        raise HTTPException(status_code=403, detail="Insufficient project role. Required: analyst")
+    if status is not None and status not in ingestion_results_service.VIEWS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown status '{status}'. Use one of: {', '.join(ingestion_results_service.VIEWS)}.",
+        )
+    job_filters = dict(search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by)
+    # What each status filter lists under these filters — its OWN condition
+    # (`job_counts` / `view_condition`), so a count opens exactly its list.
+    status_counts = None
+    if reads_uploads:
+        counts = ingestion_results_service.job_counts(db, project.id, job_filters)
+        status_counts = {view: counts[view] for view in ingestion_results_service.VIEWS}
+    uploads = apply_job_inventory_filters(
+        db.query(Job.id, Job.created_at).filter(Job.project_id == project.id), **job_filters,
+    )
+    upload_order = (Job.created_at.desc().nulls_last(), Job.id.desc())
+
+    if upload_view:
+        # The flat list one view names: every matching upload, batched or not,
+        # imported or not — one row each, paged in SQL.
+        if status is not None:
+            uploads = uploads.filter(ingestion_results_service.view_condition(status))
+        if job_id is not None:
+            uploads = uploads.filter(Job.id == job_id)
+        if error_id is not None:
+            uploads = uploads.filter(Job.parse_error_id == error_id)
+        upload_total = int(uploads.with_entities(func.count(Job.id)).scalar() or 0)
+        rows = uploads.order_by(*upload_order).offset(skip).limit(limit).all()
+        return ImportHistoryPage(
+            items=[ImportHistoryEntry(kind="upload", id=jid, at=_aware(when)) for jid, when in rows],
+            total=upload_total,
+            upload_total=upload_total,
+            has_more=rows_remain(skip, len(rows), upload_total),
+            status_counts=status_counts,
+        )
 
     # Each batch's newest matching file.
     newest_match = (
@@ -1218,22 +1309,38 @@ def get_import_history(
         )
     ]
 
-    # The page is cut from the two heads merged: nothing beyond either kind's
-    # newest skip+limit can sort into the first skip+limit of both.
+    # The uploads that were not imported (analysts and above): a row each,
+    # dated by their upload.
+    upload_total = 0
+    upload_entries: list = []
+    if reads_uploads:
+        unsuccessful = uploads.filter(ingestion_results_service.unsuccessful_upload_condition())
+        upload_total = int(unsuccessful.with_entities(func.count(Job.id)).scalar() or 0)
+        upload_entries = [
+            ("upload", jid, _aware(when))
+            for jid, when in unsuccessful.order_by(*upload_order).limit(skip + limit).all()
+        ]
+
+    # The page is cut from the heads merged: nothing beyond any kind's newest
+    # skip+limit can sort into the first skip+limit of all of them.  On equal
+    # times a batch comes first, then a scan, then an upload; then the higher id.
     floor = datetime.min.replace(tzinfo=timezone.utc)
+    kind_rank = {"batch": 2, "scan": 1, "upload": 0}
     merged = sorted(
-        batch_entries + scan_entries,
-        key=lambda e: (e[2] or floor, e[0] == "batch", e[1]),
+        batch_entries + scan_entries + upload_entries,
+        key=lambda e: (e[2] or floor, kind_rank[e[0]], e[1]),
         reverse=True,
     )
-    total = int(batch_total) + int(scan_total)
+    total = int(batch_total) + int(scan_total) + upload_total
     page = merged[skip: skip + limit]
     return ImportHistoryPage(
         items=[ImportHistoryEntry(kind=k, id=i, at=at) for k, i, at in page],
         total=total,
         batch_total=int(batch_total),
         scan_total=int(scan_total),
+        upload_total=upload_total,
         has_more=rows_remain(skip, len(page), total),
+        status_counts=status_counts,
     )
 
 

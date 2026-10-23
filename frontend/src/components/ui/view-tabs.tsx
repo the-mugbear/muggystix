@@ -1,7 +1,6 @@
 /**
  * A page's VIEW switch: two or three ways of looking at one page, shown as a
- * small segmented control under its title (Findings | Scanner observations;
- * Imported scans | Ingestion results).  The caller owns which view is on —
+ * small segmented control under its title.  The caller owns which view is on —
  * normally the address — and what a switch does to it.
  *
  * Not for a hub's sub-pages (the tab strip in the shell), a filter (chips), or

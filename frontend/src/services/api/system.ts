@@ -32,7 +32,7 @@ export interface FailedJobsInProject {
 export interface QueueMetrics {
   generated_at: string;
   /** `failed` counts undismissed jobs; `failed_by_project` says where they are
-   *  (the list that shows them — Ingestion Results — is per project). */
+   *  (the list that shows them — the Scans import history — is per project). */
   ingestion: QueueSnapshot & { failed_by_project: FailedJobsInProject[] };
   report: QueueSnapshot;
   /** v5.302.0 — free space on the uploads filesystem (on one host, the disk

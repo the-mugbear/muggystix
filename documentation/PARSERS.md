@@ -117,8 +117,9 @@ format of the registry to it, or to a stated reason why a cut cannot be told.
    document." · "This Nmap XML file was cut short: it ends after 412 complete
    hosts, …" · for JSON lines "…, part-way through the line that follows."
    The count is also in `parse_errors.error_details.records_read`.
-2. **The row offers "Import what the file holds"** (Ingestion results and the
-   Scans queue row; analysts and above) beside the retry. A plain retry reads
+2. **The row offers "Import what the file holds"** (the upload's row in the
+   Scans import history and the Scans queue row; analysts and above) beside
+   the retry. A plain retry reads
    the same bytes and fails the same way.
 3. **That action re-queues the job with one attempt's instruction**
    (`POST /upload/jobs/{id}/retry {"keep_truncated": true}` →
@@ -869,7 +870,7 @@ class MyToolParser:
 - **Optional quality stats:** set `self.last_parse_stats = {"skipped": N,
   "warnings": "...", "summary": "...", "partial": bool, "uninterpreted": [...]}`.
   These land on the `IngestionJob` as `skipped_count` / `parser_warnings` /
-  `partial` / `uninterpreted_lines` (visible on Inventory → Scans → Ingestion results).
+  `partial` / `uninterpreted_lines` (visible on the upload's row of Inventory → Scans, the import history).
   `uninterpreted` is the lines you dropped or kept only as text, as REDACTED
   shapes from `app/services/line_shapes.py` (`ShapeTally`) — never a raw line,
   a credential or a cell value (v2.418.0; NetExec is the reference).

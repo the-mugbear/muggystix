@@ -1,8 +1,11 @@
-"""Ingestion Results — the ONE implementation (review 2026-10-10, R1b).
+"""Uploads and how they went — the ONE implementation (review 2026-10-10, R1b).
 
-The page (``GET /ingestion-results``) and the agents' read
+The Scans page's import history (``GET /scans/history``: its upload rows,
+status filters and their counts — 2.524.0, owner decision 2026-10-22, G15;
+until then the page's separate Ingestion results view), its rows by id
+(``GET /ingestion-results?ids=``) and the agents' read
 (``GET /agent/assist/ingestion-issues``, MCP ``assist_list_ingestion_issues``)
-both call this module.  The agents' read used to be a second implementation:
+all call this module.  The agents' read used to be a second implementation:
 it loaded every failed job with ``.all()`` and told an expired or discarded
 staged upload from a failed import by testing the message text in Python,
 and drifted from the page three times.
@@ -30,9 +33,9 @@ from sqlalchemy.orm import Session, aliased
 from app.db import models
 from app.schemas.ingestion_results import IngestionResultError, IngestionResultItem, IngestionResultStats
 from app.services.format_registry import format_label
-from app.services.host_query_common import escape_like
 from app.services.import_attention_service import annotate_jobs, superseded_import_condition
 from app.services.operations_read_service import blocked_import_condition
+from app.services.scan_inventory_filters import apply_job_inventory_filters
 from app.services.staged_import_service import (
     DISCARDED_MESSAGE,
     EXPIRED_MESSAGE_PREFIX,
@@ -98,6 +101,24 @@ def issue_job_condition():
     )
 
 
+#: Every ``status=`` value a list of uploads understands: the views below and
+#: the stored job statuses.  The import history refuses anything else (422).
+VIEWS = (
+    "needs_attention", "superseded", "expired", "discarded", "failed", "failed_dismissed",
+    "staged", "queued", "processing", "completed",
+)
+
+
+def unsuccessful_upload_condition():
+    """An upload the grouped import history lists as a row of its own
+    (owner decision 2026-10-22, G15): it was not imported — failed, expired or
+    discarded (all written ``failed``) — so it has no scan row, and it was not
+    part of a batch (a batch row lists its own files).  A completed import is
+    its scan row; an upload still in flight or awaiting review is the
+    ingestion queue's, and its status view's."""
+    return and_(Job.status == "failed", Job.scan_id.is_(None), Job.batch_id.is_(None))
+
+
 def view_condition(status: str):
     """The page's ``status=`` value as a condition: a view name, or a plain
     job status."""
@@ -125,16 +146,22 @@ def view_condition(status: str):
 # Counts
 # ---------------------------------------------------------------------------
 
-def job_counts(db: Session, project_id: int) -> Dict[str, int]:
+def job_counts(db: Session, project_id: int, filters: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
     """Every count about the project's jobs, in one statement, each with its
     view's own condition: ``failed`` / ``expired`` / ``discarded`` /
     ``failed_dismissed`` / ``needs_attention`` / ``superseded`` (what the page's
     chips list), ``partial`` / ``degraded`` (the agents' issue kinds) and one
-    per stored status (``status:<value>``)."""
+    per stored status (``status:<value>``).
+
+    ``filters`` (``search`` / ``tool`` / ``created_after`` / ``uploaded_by``)
+    narrows every count with the import history's own upload filters, so a
+    chip counts exactly the list it opens under the same filters; without
+    them ``needs_attention`` is the project's ``blocked_import_condition``
+    count — the Operations figure."""
     def n(cond):
         return func.count(case((cond, Job.id)))
 
-    row = (
+    query = (
         db.query(
             n(failed_import_condition()),
             n(expired_job_condition()),
@@ -150,9 +177,11 @@ def job_counts(db: Session, project_id: int) -> Dict[str, int]:
             n(Job.status == "processing"),
         )
         .filter(Job.project_id == project_id)
-        .one()
     )
-    keys = ("failed", "expired", "discarded", "failed_dismissed", "needs_attention", "superseded",
+    if filters:
+        query = apply_job_inventory_filters(query, **filters)
+    row = query.one()
+    keys =("failed", "expired", "discarded", "failed_dismissed", "needs_attention", "superseded",
             "partial", "degraded", "staged", "completed", "queued", "processing")
     return {k: int(v or 0) for k, v in zip(keys, row)}
 
@@ -353,19 +382,19 @@ def list_results(
     sort_order: str = "desc",
     skip: int = 0,
     limit: int = 50,
+    ids: Optional[List[int]] = None,
 ) -> Tuple[List[IngestionResultItem], int]:
-    """The page's list: ``(rows, total)``; ``total`` uses the same filters."""
+    """The page's list: ``(rows, total)``; ``total`` uses the same filters.
+
+    ``ids`` names the rows (the import history hydrates its upload rows by id,
+    as it does its scans and batches)."""
     base = db.query(Job).filter(Job.project_id == project_id)
+    if ids is not None:
+        base = base.filter(Job.id.in_(ids))
     if status:
         base = base.filter(view_condition(status))
-    if tool:
-        base = base.filter(func.lower(Job.tool_name) == tool.lower())
-    if search:
-        like = f"%{escape_like(search)}%"
-        base = base.filter(or_(
-            Job.original_filename.ilike(like), Job.error_message.ilike(like), Job.last_error.ilike(like),
-        ))
-    total = base.with_entities(func.count(Job.id)).scalar() or 0
+    base = apply_job_inventory_filters(base, search=search, tool=tool)
+    total =base.with_entities(func.count(Job.id)).scalar() or 0
     col = SORT_COLUMNS[sort_by]
     order = col.asc() if sort_order == "asc" else col.desc()
     # The id breaks ties: sorted by a column many rows share (status, tool),

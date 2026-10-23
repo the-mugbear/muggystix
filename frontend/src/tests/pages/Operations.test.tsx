@@ -631,7 +631,7 @@ describe('Operations page', () => {
       expect(href('112 untouched hosts have a reason to look')).toBe('/operations?tab=pickup&tier=2');
       // "Free to claim" opens the Tests tab narrowed to exactly those.
       expect(href('15 tests are free to claim')).toBe('/operations?tab=tests&tier=2&kind=triage');
-      expect(href('2 imports failed')).toBe('/scans?view=results&status=needs_attention');
+      expect(href('2 imports failed')).toBe('/scans?status=needs_attention');
       // NO number that is not a link: nothing is added up (it said "101 items").
       const plain = lead.cloneNode(true) as HTMLElement;
       plain.querySelectorAll('a').forEach((a) => a.remove());
@@ -1241,7 +1241,7 @@ describe('Operations page', () => {
         expect(heading.compareDocumentPosition(screen.getByRole('tablist')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(screen.getByText('1 import failed · 1 finished partial')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Inspect import errors' }));
-        expect(navigateSpy).toHaveBeenCalledWith('/scans?view=results&status=needs_attention');
+        expect(navigateSpy).toHaveBeenCalledWith('/scans?status=needs_attention');
         // 5.320.0 — imports are the only blocked work: no run rows.
         expect(screen.queryByText(/Run #|interrupted run/)).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Open run' })).not.toBeInTheDocument();

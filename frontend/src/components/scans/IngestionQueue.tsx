@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Hourglass, Loader2, PauseCircle,
 } from 'lucide-react';
@@ -115,7 +115,7 @@ export function useIngestionQueue(projectId: number): IngestionQueueState {
   // history below, and listing it twice made the queue look perpetually busy.
   // Every staged job is in, which the 25 recent may not reach; a superseded
   // failure (a later job imported the same file) needs nothing and is listed
-  // on Ingestion Results.
+  // in the import history (its Superseded filter).
   const pendingJobs = useMemo(() => {
     const recent = recentJobs.filter(
       (j) => j.status !== 'completed' && j.status !== 'staged' && j.superseded_by_job_id == null,
@@ -327,11 +327,7 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
                 {queueOpen && (
                   <p className="text-metadata text-muted-foreground">
                     In-flight uploads, staged files waiting for a format review, and failures among
-                    the recent uploads. Successful uploads appear in Import history below;{' '}
-                    <Link to={importResultsPath()} className="text-primary underline-offset-2 hover:underline">
-                      every import is on Ingestion Results
-                    </Link>
-                    .
+                    the recent uploads. Every upload — imported or not — is in the import history below.
                   </p>
                 )}
               </div>
@@ -361,7 +357,7 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
                         title: 'Discard staged uploads',
                         body:
                           `Remove the ${n} staged file${n === 1 ? '' : 's'} listed in this queue? Nothing was imported from them. `
-                          + 'They stay listed in Ingestion Results as discarded.',
+                          + 'They stay listed in the import history as discarded.',
                         resourceName: `${n} staged upload${n === 1 ? '' : 's'}`,
                         severity: 'warning',
                         confirmLabel: `Discard ${n}`,
@@ -713,7 +709,7 @@ const IngestionQueueRow: React.FC<IngestionQueueRowProps> = ({
         <TableRow>
           <TableCell colSpan={7} className="bg-accent p-md">
             {/* A cut-short file fails the same way on a plain Retry: offer
-                what Ingestion results offers — only while the file is kept
+                what the upload's row in the history offers — only while the file is kept
                 (past the retention sweep the action was a 409). */}
             {canWrite && isCutShort(job) && (
               <div className="mb-sm">

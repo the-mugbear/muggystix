@@ -13,4 +13,7 @@ export const INGESTION_JOB_READS = [
   'getScansSummary',
   'getBatchUnimportedJobs',
   'getIngestionResults',
+  // The import history lists the uploads that were not imported, and counts
+  // each status filter (5.418.0).
+  'getImportHistory',
 ] as const;

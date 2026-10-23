@@ -217,8 +217,8 @@ cut short and nothing from it was imported, though it holds complete records.
 What to do about that is the operator's decision: for a file the session
 itself uploaded the agent asks them and, only after they say to import it,
 calls `keep_truncated_upload` (not an `assist_*` tool; `MCP.md` §6); for
-anyone else's upload a person chooses "Import what the file holds" on
-Ingestion results. Either way the complete file can be uploaded instead.
+anyone else's upload a person chooses "Import what the file holds" on the
+upload's row in the Scans page's import history. Either way the complete file can be uploaded instead.
 
 ---
 

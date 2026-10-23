@@ -31,7 +31,7 @@ describe('importResultParts', () => {
     ]);
     expect(parts.find((p) => p.key === 'added')?.to).toBe('/hosts?scan_ids=9&first_seen_in_scan=true');
     expect(parts.find((p) => p.key === 'known')?.to).toBe('/hosts?scan_ids=9');
-    expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans?view=results&job_id=77');
+    expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans?job_id=77');
   });
 
   // Owner, 2026-10-11: the hosts whose display name an import changed are a
@@ -57,10 +57,10 @@ describe('importResultParts', () => {
     })).map((p) => p.text)).toEqual(['3 already known', '2 renamed']);
   });
 
-  it('a gap with no job to name still opens Ingestion results', () => {
+  it('a gap with no job to name still opens the import history', () => {
     const parts = importResultParts(scan({ import_skipped: 3, import_partial: true }));
-    expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans?view=results');
-    expect(parts.find((p) => p.key === 'partial')?.to).toBe('/scans?view=results');
+    expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans');
+    expect(parts.find((p) => p.key === 'partial')?.to).toBe('/scans');
   });
 
   it('says "no hosts" rather than nothing for an upload that recorded none', () => {

@@ -217,7 +217,7 @@ describe('QueueHealthCard', () => {
     render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
 
     const link = await screen.findByRole('link', { name: /Review failed jobs/ });
-    expect(link).toHaveAttribute('href', '/scans?view=results&status=failed');
+    expect(link).toHaveAttribute('href', '/scans?status=failed');
   });
 
   // The queue is deployment-wide; Ingestion Results lists ONE project's jobs.
@@ -238,7 +238,7 @@ describe('QueueHealthCard', () => {
     // v5.288.0 — lower case mid-sentence (was "78 failed Scan ingestion jobs").
     await screen.findByText('78 failed scan ingestion jobs');
     const current = screen.getByRole('link', { name: /Review 18 in Default/ });
-    expect(current).toHaveAttribute('href', '/scans?view=results&status=failed');
+    expect(current).toHaveAttribute('href', '/scans?status=failed');
     fireEvent.click(screen.getByRole('button', { name: /Review 60 in Eval — Scenarios/ }));
     expect(selectProject).toHaveBeenCalledWith(projects[0]);
   });

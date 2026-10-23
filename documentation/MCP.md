@@ -610,7 +610,7 @@ whose file is gone (409), re-queues the job on the same path as a person's
 (`truncated_upload_kept`: operator, project, session, job, format, count of
 complete records — never file contents) with it. **What it cannot do** is know
 that the operator said yes; the flag is the agent's statement, and the record
-— and the partial import on Ingestion results, which needs someone until it is
+— and the partial import in the Scans import history's "Needs attention", which needs someone until it is
 dismissed — is how a person checks it afterwards.
 
 ---

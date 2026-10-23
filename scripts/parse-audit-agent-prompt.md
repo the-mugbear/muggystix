@@ -30,7 +30,8 @@ Give the agent:
     console captures or --log files, spider_plus JSON, SMBMap output…), in a
     folder the agent can read. Your own copies, or the retained copy under
     uploads/ingestion_queue/ on the BlueStick host (kept 7 days after import
-    by default; Ingestion Results shows "File retained until …").
+    by default; the upload's row in the Scans import history shows "File
+    retained until …").
 
  3. RECOMMENDED — a BlueStick agent session on the same project, so the agent
     can see what was actually STORED for each host, not only what was missed:

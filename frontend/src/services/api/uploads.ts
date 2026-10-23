@@ -142,7 +142,7 @@ export const reprocessIngestionJob = async (
 };
 
 /** v5.232.0 — discard a staged job: its file goes, the row stays as a
- *  dismissed failure (out of the queue, still in Ingestion Results). */
+ *  dismissed failure (out of the queue, still in the import history). */
 export const discardIngestionJob = async (projectId: number, jobId: number): Promise<IngestionJob> => {
   const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/discard`);
   return response.data;
@@ -399,7 +399,7 @@ export const retryIngestionJob = async (
 };
 
 
-// Ingestion Results API
+// Upload rows (the import history's; the Ingestion Results page's until 5.418.0)
 export interface IngestionResultItem {
   /** The INGESTION JOB id — not a ParseError id. The two are independent
    *  sequences that overlap, so passing this where a parse-error id is
@@ -493,34 +493,23 @@ export interface IngestionResultsResponse {
   };
 }
 
-export type IngestionResultsSortBy =
-  | 'created_at' | 'original_filename' | 'status' | 'tool_name' | 'file_size';
-
 export interface IngestionResultsQuery {
-  skip?: number;
+  /** Only these uploads (ingestion job ids): the import history hydrates its
+   *  upload rows by id, in the order `getImportHistory` gave (5.418.0). */
+  ids: number[];
   limit?: number;
-  // v2.86.2 — server-side filter + sort knobs.  When unset the
-  // backend default (created_at desc, no filter) applies.
-  status?: string;
-  tool?: string;
-  search?: string;
-  sortBy?: IngestionResultsSortBy;
-  sortOrder?: 'asc' | 'desc';
 }
 
+/** The import history's upload rows (one per ingestion job id named) — the
+ *  analyst's read: an upload that was not imported, and its detail. */
 export const getIngestionResults = async (
   projectId: number,
-  query: IngestionResultsQuery = {},
+  query: IngestionResultsQuery,
   signal?: AbortSignal,
 ): Promise<IngestionResultsResponse> => {
   const params = new URLSearchParams();
-  if (query.skip !== undefined) params.set('skip', String(query.skip));
-  if (query.limit !== undefined) params.set('limit', String(query.limit));
-  if (query.status) params.set('status', query.status);
-  if (query.tool) params.set('tool', query.tool);
-  if (query.search) params.set('search', query.search);
-  if (query.sortBy) params.set('sort_by', query.sortBy);
-  if (query.sortOrder) params.set('sort_order', query.sortOrder);
+  params.set('ids', query.ids.join(','));
+  params.set('limit', String(query.limit ?? Math.max(1, query.ids.length)));
   const qs = params.toString();
   const response = await api.get(`${projectPath(projectId)}/ingestion-results${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
