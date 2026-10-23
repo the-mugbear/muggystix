@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload, noload, aliased
 from sqlalchemy import or_, and_, case, distinct, func, true
 
 from app.core.config import settings
-from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
+from app.db.session import disable_statement_timeout, get_db, recover_or_reraise
 from app.api.downloads import attachment
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
@@ -461,13 +461,9 @@ def get_hosts_v2(
         vulnerability_service = VulnerabilityService(db)
         vuln_map = vulnerability_service.get_bulk_host_vulnerability_summaries(host_ids)
     except Exception as exc:
-        # A statement the API timeout cancelled is the request's answer (503,
-        # from get_db) — and for anything else the failed statement has
-        # aborted the transaction, so undo it or every query below fails with
-        # "current transaction is aborted" and the page answers 500.
-        if is_statement_timeout(exc):
-            raise
-        db.rollback()
+        # A timeout is the request's answer (503); anything else is rolled
+        # back so the queries below can run (`recover_or_reraise`).
+        recover_or_reraise(db, exc)
         logger.exception("Failed to load vulnerability summaries for %d hosts", len(host_ids))
         vuln_map = {hid: {'total': 0, 'by_severity': {}} for hid in host_ids}
         vuln_error = True
@@ -1503,7 +1499,8 @@ def get_host_v2(
         vuln_summary = vulnerability_service.get_bulk_host_vulnerability_summaries(
             [host_id]
         ).get(host_id, {"total": 0, "by_severity": {}})
-    except Exception:
+    except Exception as exc:
+        recover_or_reraise(db, exc)
         logger.exception("Failed to load vulnerability summary for host %d", host_id)
         vuln_summary = {
             'total': 0,

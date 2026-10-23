@@ -33,7 +33,7 @@ from app.db.models_host_tests import HostTest
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Project
-from app.db.session import is_statement_timeout
+from app.db.session import recover_or_reraise
 from app.schemas.findings import FindingNeed
 from app.services.import_attention_service import (
     superseded_import_condition,
@@ -141,10 +141,8 @@ def compute_my_attention_queue(
     try:
         vuln_map = vuln_service.get_bulk_host_vulnerability_summaries(host_ids)
     except Exception as exc:
-        if is_statement_timeout(exc):
-            raise
+        recover_or_reraise(db, exc)
         logger.exception("Failed to load vuln summaries for my-attention queue")
-        db.rollback()
         vuln_map = {}
 
     # Open port counts in a single GROUP BY query.

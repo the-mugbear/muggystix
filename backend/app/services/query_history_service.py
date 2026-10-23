@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import QueryHistory
 from app.db.models_auth import User
-from app.db.session import is_statement_timeout
+from app.db.session import recover_or_reraise
 from app.services import query_service
 from app.services.host_query_dsl import DSLError
 
@@ -139,7 +139,5 @@ def _record_quietly(db: Session, user: User, project_id: int, text: str, by_agen
             record(db, user_id=user.id, project_id=project_id, kind=QUERY, text=text, by_agent=by_agent, **outcome)
         db.commit()
     except Exception as exc:  # noqa: BLE001 — the history is a convenience; the answer stands
-        if is_statement_timeout(exc):
-            raise
+        recover_or_reraise(db, exc)
         logger.warning("Could not record a query in the history", exc_info=True)
-        db.rollback()

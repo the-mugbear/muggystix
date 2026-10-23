@@ -129,6 +129,18 @@ def is_statement_timeout(exc: BaseException) -> bool:
     return getattr(orig, "pgcode", None) == QUERY_CANCELED_SQLSTATE
 
 
+def recover_or_reraise(db, exc: BaseException) -> None:
+    """For a handler that catches a failed read and carries on without it:
+    a statement the API timeout cancelled is the REQUEST's answer (re-raised,
+    so ``get_db`` turns it into a 503); anything else aborted the transaction,
+    so roll it back — or every later query fails with "current transaction is
+    aborted" and the page answers 500.  The one implementation (review
+    2026-10-23, R-INV3: the host detail's copy did neither)."""
+    if is_statement_timeout(exc):
+        raise exc
+    db.rollback()
+
+
 DEADLOCK_SQLSTATE = "40P01"
 
 

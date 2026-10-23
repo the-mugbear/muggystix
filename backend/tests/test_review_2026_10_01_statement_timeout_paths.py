@@ -251,6 +251,32 @@ def test_a_failed_optional_section_does_not_take_the_page_with_it(real_db_client
     assert [h["ip_address"] for h in body["items"]] == ["10.90.0.1"]
 
 
+def _host_detail_path(db_session, project) -> str:
+    host = db_session.query(models.Host).filter_by(project_id=project.id, ip_address="10.90.0.1").one()
+    return f"{_base(project)}/hosts/{host.id}"
+
+
+def test_a_failed_summary_does_not_take_the_host_detail_with_it(real_db_client, db_session, populated, monkeypatch):
+    """Review 2026-10-23 (R-INV3): the host detail caught a failed summary
+    without rolling back, so the next query (the follow, the notes) failed on
+    the aborted transaction and the page answered 500 — the list route's fix,
+    not copied.  Both now call ``session.recover_or_reraise``."""
+    test_client, sessions = real_db_client
+    path = _host_detail_path(db_session, populated)
+    _patch_section(monkeypatch, "host-vulnerabilities", _breaks_the_transaction(sessions))
+    response = test_client.get(path)
+    assert response.status_code == 200, response.text[:400]
+    assert response.json()["ip_address"] == "10.90.0.1"
+
+
+def test_a_cancelled_summary_in_the_host_detail_is_a_503(real_db_client, db_session, populated, monkeypatch):
+    test_client, sessions = real_db_client
+    path = _host_detail_path(db_session, populated)
+    _patch_section(monkeypatch, "host-vulnerabilities", _times_out(sessions))
+    response = test_client.get(path)
+    assert response.status_code == 503, response.text[:400]
+
+
 def test_failed_scanner_observation_counts_are_an_error_never_a_null(real_db_client, populated, monkeypatch):
     """Review 2026-10-22 (A-R7): the counts are the whole answer of
     ``/dashboard/stats``.  A null section was drawn by the Posture page as "no
