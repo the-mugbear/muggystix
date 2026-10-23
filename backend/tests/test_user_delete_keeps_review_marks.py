@@ -25,10 +25,13 @@ Pinned here:
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import text
 
+from tests.two_connections import two_sessions  # noqa: F401  (fixture)
 from app.api.v1.endpoints.auth import get_current_user
 from app.db import models
 from app.db.models import FollowStatus, HostFollow
@@ -185,3 +188,105 @@ def test_the_user_delete_deletes_no_follow_row(client, db_session, world):
     assert client.delete(f"/api/v1/users/{world['leaving']}").status_code == 200
     db_session.expire_all()
     assert db_session.query(HostFollow).count() == before == 3
+
+
+# ---------------------------------------------------------------------------
+# An assignment needs a person — kept by the database for every writer
+# (external review of 2c1007ba: the route's own UPDATE ran before the DELETE,
+# so an assignment committed between the two survived the SET NULL).
+# ---------------------------------------------------------------------------
+
+def _kept_row(two_sessions):
+    """A committed project, its member, one host and the member's
+    unassigned In-review mark on it."""
+    project, member = two_sessions.project()
+
+    def build(db):
+        host = models.Host(project_id=project.id, ip_address="10.82.0.1", state="up")
+        db.add(host)
+        db.flush()
+        follow = HostFollow(host_id=host.id, user_id=member.id, status=FollowStatus.IN_REVIEW)
+        db.add(follow)
+        db.flush()
+        return follow
+
+    follow = two_sessions.commit(build)
+    return project, member, follow.id
+
+
+def _row(two_sessions, follow_id):
+    db = two_sessions.fresh()
+    try:
+        return db.execute(
+            text("SELECT user_id, assigned_at, assigned_by_id, status FROM host_follows WHERE id = :id"),
+            {"id": follow_id},
+        ).one()
+    finally:
+        db.close()
+
+
+def test_an_assignment_committed_before_the_delete_does_not_survive_it(two_sessions):
+    """The review's sequence: the delete has begun, an assignment of the
+    person's row commits, then the account goes.  The mark stays, the
+    assignment does not."""
+    _project, member, follow_id = _kept_row(two_sessions)
+    deleting, assigning = two_sessions.a, two_sessions.b
+    deleting.execute(text("SELECT 1"))  # the delete's transaction is open
+    assigning.execute(
+        text("UPDATE host_follows SET assigned_at = now(), assigned_by_id = :by WHERE id = :id"),
+        {"id": follow_id, "by": member.id},
+    )
+    assigning.commit()
+    deleting.execute(text("DELETE FROM users WHERE id = :id"), {"id": member.id})
+    deleting.commit()
+
+    row = _row(two_sessions, follow_id)
+    assert row.user_id is None and row.status == "IN_REVIEW"
+    assert row.assigned_at is None and row.assigned_by_id is None
+
+
+def test_an_assignment_that_waits_for_the_delete_is_cleared_too(two_sessions):
+    """The other order: the delete's SET NULL holds the row, an assignment
+    waits for it and lands on a row with no person — the trigger clears it."""
+    _project, member, follow_id = _kept_row(two_sessions)
+    deleting, assigning = two_sessions.a, two_sessions.b
+    deleting.execute(text("DELETE FROM users WHERE id = :id"), {"id": member.id})
+    done = threading.Event()
+
+    def assign():
+        assigning.execute(
+            text("UPDATE host_follows SET assigned_at = now() WHERE id = :id"), {"id": follow_id},
+        )
+        assigning.commit()
+        done.set()
+
+    thread = threading.Thread(target=assign, daemon=True)
+    thread.start()
+    assert not done.wait(0.5), "the assignment should wait for the delete's row lock"
+    deleting.commit()
+    thread.join(10)
+    assert done.is_set()
+
+    row = _row(two_sessions, follow_id)
+    assert row.user_id is None and row.assigned_at is None and row.assigned_by_id is None
+
+
+def test_no_writer_can_put_an_assignment_on_a_row_with_no_person(db_session, test_project):
+    """Any writer — not only the delete: the trigger clears the assignment on
+    insert and update, and the check states the rule."""
+    host = models.Host(project_id=test_project.id, ip_address="10.82.0.2", state="up")
+    db_session.add(host)
+    db_session.flush()
+    follow = HostFollow(
+        host_id=host.id, user_id=None, status=FollowStatus.REVIEWED,
+        assigned_at=datetime.now(timezone.utc),
+    )
+    db_session.add(follow)
+    db_session.flush()
+    db_session.execute(
+        text("UPDATE host_follows SET assigned_at = now() WHERE id = :id"), {"id": follow.id},
+    )
+    row = db_session.execute(
+        text("SELECT assigned_at, assigned_by_id FROM host_follows WHERE id = :id"), {"id": follow.id},
+    ).one()
+    assert row.assigned_at is None and row.assigned_by_id is None

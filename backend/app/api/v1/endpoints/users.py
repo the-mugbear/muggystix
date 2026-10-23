@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.db.session import disable_statement_timeout, get_db
 from app.db.models_auth import FULL_NAME_MAX, User, UserRole
 from app.db.models_project import Project, ProjectMembership
-from app.db.models import HostFollow
 from app.core.security import (
     get_password_hash,
     validate_password_strength,
@@ -657,10 +656,11 @@ def delete_user(
     # note — attributed to no one, so a reviewed host stays reviewed.  What
     # ends with the person is the ASSIGNMENT those rows carried: nobody holds
     # the host now, so ``assigned:none`` lists it for someone to pick up, as
-    # it did when the rows were deleted.  Nothing here deletes a follow row.
-    db.query(HostFollow).filter(
-        HostFollow.user_id == user.id, HostFollow.assigned_at.isnot(None),
-    ).update({"assigned_at": None, "assigned_by_id": None}, synchronize_session=False)
+    # it did when the rows were deleted.  Nothing here deletes or clears a
+    # follow row: the database does both in the delete's own statement (SET
+    # NULL, then the trigger `host_follows_assignment_needs_a_person`
+    # clears the assignment), so an assignment committed while this request
+    # runs cannot survive it (external review of 2c1007ba).
     db.delete(user)
     db.commit()
 

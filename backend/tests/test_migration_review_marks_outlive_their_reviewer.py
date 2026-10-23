@@ -69,11 +69,20 @@ INSERT INTO projects (id, name, slug, status) VALUES (1, 'P', 'p', 'active');
 INSERT INTO users (id, username, hashed_password, role, is_active) VALUES
     (1, 'alice', 'x', 'member', true), (2, 'bob', 'x', 'member', true), (3, 'carol', 'x', 'member', true);
 INSERT INTO hosts_v2 (id, project_id, ip_address, state) VALUES (1, 1, '10.0.0.1', 'up');
-INSERT INTO host_follows (id, host_id, user_id, status, reviewed_at, review_summary) VALUES
-    (1, 1, 1, 'REVIEWED', now(), 'Checked.'),
-    (2, 1, 2, 'IN_REVIEW', NULL, NULL),
-    (3, 1, 3, 'REVIEWED', now(), NULL);
+INSERT INTO host_follows (id, host_id, user_id, status, reviewed_at, review_summary, assigned_at, assigned_by_id) VALUES
+    (1, 1, 1, 'REVIEWED', now(), 'Checked.', now(), 2),
+    (2, 1, 2, 'IN_REVIEW', NULL, NULL, NULL, NULL),
+    (3, 1, 3, 'REVIEWED', now(), NULL, NULL, NULL);
 """
+
+
+def _guards(conn):
+    """(trigger present, check present) — the "an assignment needs a person" rule."""
+    trigger = conn.execute(text(
+        "SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_host_follows_assignment_needs_a_person'")).scalar()
+    check = conn.execute(text(
+        "SELECT count(*) FROM pg_constraint WHERE conname = 'ck_host_follows_assignment_needs_a_person'")).scalar()
+    return bool(trigger), bool(check)
 
 
 def _column(conn):
@@ -96,14 +105,17 @@ def test_review_marks_outlive_their_reviewer_up_and_down(scratch):
     _alembic(url, "upgrade", HEAD)
     with eng.begin() as conn:
         assert _column(conn) == ("YES", "n")
+        assert _guards(conn) == (True, True)
         conn.execute(text("DELETE FROM users WHERE id IN (1, 3)"))
         rows = conn.execute(text(
-            "SELECT id, user_id, status, reviewed_at IS NOT NULL, review_summary "
+            "SELECT id, user_id, status, reviewed_at IS NOT NULL, review_summary, assigned_at, assigned_by_id "
             "FROM host_follows ORDER BY id")).all()
+        # Kept, and the assignment the deleted person held ended with them —
+        # done by the database in the DELETE itself (the SET NULL fires the trigger).
         assert [tuple(r) for r in rows] == [
-            (1, None, "REVIEWED", True, "Checked."),
-            (2, 2, "IN_REVIEW", False, None),
-            (3, None, "REVIEWED", True, None),
+            (1, None, "REVIEWED", True, "Checked.", None, None),
+            (2, 2, "IN_REVIEW", False, None, None, None),
+            (3, None, "REVIEWED", True, None, None, None),
         ]
     # A living person still holds one row per host.
     with pytest.raises(IntegrityError):
@@ -115,10 +127,12 @@ def test_review_marks_outlive_their_reviewer_up_and_down(scratch):
     with eng.begin() as conn:
         assert [tuple(r) for r in conn.execute(text("SELECT id, user_id FROM host_follows ORDER BY id"))] == [(2, 2)]
         assert _column(conn) == ("NO", "c")
+        assert _guards(conn) == (False, False)
 
     # ---- up again --------------------------------------------------------------
     _alembic(url, "upgrade", HEAD)
     with eng.begin() as conn:
         assert _column(conn) == ("YES", "n")
+        assert _guards(conn) == (True, True)
         conn.execute(text("DELETE FROM users WHERE id = 2"))
         assert [tuple(r) for r in conn.execute(text("SELECT id, user_id FROM host_follows"))] == [(2, None)]

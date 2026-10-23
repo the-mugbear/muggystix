@@ -1176,9 +1176,19 @@ class HostFollow(Base):
     user = relationship("User", foreign_keys=[user_id], back_populates="host_follows")
     assigned_by = relationship("User", foreign_keys=[assigned_by_id])
 
+    # An assignment needs a person (2026-10-22): a row whose reviewer was
+    # deleted keeps its review but holds no assignment, so `assigned:none`
+    # lists the host.  The database enforces it for every writer — the
+    # trigger `host_follows_assignment_needs_a_person` (revision
+    # e8c4a2f6d1b9) clears the assignment whenever a row ends up with no
+    # user_id, the ON DELETE SET NULL included, and this check states it.
     __table_args__ = (
         UniqueConstraint('host_id', 'user_id', name='uq_host_follow_user'),
         Index('idx_host_follow_assigned', 'assigned_at'),
+        CheckConstraint(
+            'user_id IS NOT NULL OR (assigned_at IS NULL AND assigned_by_id IS NULL)',
+            name='ck_host_follows_assignment_needs_a_person',
+        ),
     )
 
 
