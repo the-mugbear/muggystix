@@ -10,9 +10,9 @@
  * this host's draft; whether there is one goes to the caller (`onDirtyChange`),
  * which confirms before navigation discards it.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { MessageSquare } from 'lucide-react';
+import { MessageSquare, NotebookPen } from 'lucide-react';
 import {
   createAnnotation,
   deleteAnnotation,
@@ -23,9 +23,8 @@ import type { Annotation, Host, NoteAttachment, NoteType } from '../../services/
 import { useToast } from '../../contexts/ToastContext';
 import { useConfirm } from '../../hooks/useConfirm';
 import { useProjectId } from '../../hooks/useProjectId';
-import { useObjectUrls } from '../../lib/objectUrls';
+import { usePendingAttachments } from '../../hooks/usePendingAttachments';
 import { formatApiError } from '../../utils/apiErrors';
-import { imagesFromClipboard } from '../../utils/clipboardImages';
 import { announceMentionOutcome } from '../../utils/mentions';
 import { previewThreads, rootNoteId } from '../../utils/notePreview';
 import { Button } from '../ui/button';
@@ -52,18 +51,6 @@ import { NoteThread } from './NoteThread';
 const NOTE_THREAD_PREVIEW_LIMIT = 3;
 const NOTE_TYPES = ['observation', 'question', 'decision', 'handoff'] as const;
 
-interface PendingImage {
-  file: File;
-  url: string;
-  /** Why its upload failed (kept while a retry runs). */
-  error?: string;
-  /** A retry is in flight. */
-  uploading?: boolean;
-  /** The saved note this file belongs to once its upload failed — retry
-   *  targets THIS id, never a later note's (a queue-wide id was wrong when
-   *  two notes in a row had failures). */
-  noteId?: number;
-}
 
 export interface HostDiscussionSectionProps {
   hostId: number;
@@ -109,19 +96,40 @@ export const HostDiscussionSection: React.FC<HostDiscussionSectionProps> = ({
   }, [notes]);
 
   const [noteBody, setNoteBody] = useState('');
-  // Images pasted/attached into the composer, uploaded to the note on save.
-  // `error` marks a file whose upload failed after the note itself was
-  // created; it stays here (bound to its own `noteId`) until the user
-  // retries or removes it — never silently dropped (UX review C3).
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [noteError, setNoteError] = useState<string | null>(null);
   // The thread shows its newest threads until asked for the rest (v5.240.0).
   const [showAllNotes, setShowAllNotes] = useState(false);
 
+  // Images pasted into the composer, uploaded to the note on save; a failed
+  // one stays, bound to its note, until retried or removed (UX review C3) —
+  // the one rule both threads follow (`usePendingAttachments`).  The note is
+  // this project's, and so is each screenshot: every request carries the
+  // project this inspector was rendered in.
+  const attachments = usePendingAttachments<Annotation, NoteAttachment>({
+    createNoteFn: (body) => createAnnotation(projectId, hostId, { body }),
+    uploadFn: (noteId, file) => uploadNoteAttachment(projectId, hostId, noteId, file),
+    onPosted: ({ note, uploaded }) => {
+      if (note.mention_warning) toast.warning(note.mention_warning);
+      else announceMentionOutcome(toast, note);
+      const noteWithImages = uploaded.length ? { ...note, attachments: uploaded } : note;
+      putHost((previous) => ({ ...previous, notes: [noteWithImages, ...(previous.notes ?? [])] }));
+      setNoteBody('');
+      setNoteError(null);
+    },
+    onPostError: () => setNoteError('Unable to save note right now. Please try again.'),
+    // On the note at once, so the thumbnail shows without a re-read.
+    onAttached: (attachment, noteId) => putHost((previous) => ({
+      ...previous,
+      notes: (previous.notes ?? []).map((n) => (
+        n.id === noteId ? { ...n, attachments: [...(n.attachments ?? []), attachment] } : n
+      )),
+    })),
+  });
+
   const dirty = noteBody.trim().length > 0
-    || pendingImages.length > 0
+    || attachments.pending.length > 0
     || replyBody.trim().length > 0;
   useEffect(() => {
     onDirtyChange(dirty);
@@ -226,119 +234,15 @@ export const HostDiscussionSection: React.FC<HostDiscussionSectionProps> = ({
     };
   }, [hostId, linkedNoteId, linkedRootId]);
 
-  // The composer's screenshots are this host's draft: each preview's object
-  // URL is held under its file (`lib/objectUrls`) and released when the image
-  // is taken out or has been uploaded — and whatever is left, when the
-  // inspector goes (a host change included).
-  const previews = useObjectUrls<File>();
-
-  const addPendingImages = useCallback((files: File[]) => {
-    // The preview's URL is made by the store that will revoke it.  (None is
-    // handed back only once the inspector has gone — nothing would show it.)
-    const imgs = files
-      .filter((f) => f.type.startsWith('image/'))
-      .flatMap((file) => {
-        const url = previews.putBlob(file, file);
-        return url === null ? [] : [{ file, url }];
-      });
-    if (imgs.length) setPendingImages((prev) => [...prev, ...imgs]);
-  }, [previews]);
-
-  // Paste an image straight into the note composer (QoL) — captured here so it
-  // attaches to the note on save instead of pasting a garbage data URL into
-  // the text. Non-image clipboard content (plain text) pastes normally.
-  const handleComposerPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = imagesFromClipboard(e.clipboardData);
-    if (files.length) {
-      e.preventDefault();
-      addPendingImages(files);
-    }
-  }, [addPendingImages]);
-
-  const removePendingImage = useCallback((idx: number) => {
-    setPendingImages((prev) => {
-      const target = prev[idx];
-      if (target) previews.release(target.file);
-      return prev.filter((_, i) => i !== idx);
-    });
-  }, [previews]);
-
-  // A new thread: the note, then its screenshots one after another — one
-  // write as far as the composer is concerned.  A screenshot that fails does
-  // not fail the note: it comes back bound to the note that now exists.
-  const postNote = useMutation({
-    mutationFn: async ({ body, images }: { body: string; images: PendingImage[] }) => {
-      // The note is this project's, and so is each screenshot: every request
-      // carries the project this inspector was rendered in.
-      const note = await createAnnotation(projectId, hostId, { body });
-      const uploaded: NoteAttachment[] = [];
-      const failed: PendingImage[] = [];
-      for (const img of images) {
-        try {
-          uploaded.push(await uploadNoteAttachment(projectId, hostId, note.id, img.file));
-          previews.release(img.file);
-        } catch (e) {
-          failed.push({ ...img, error: formatApiError(e, 'Upload failed.'), noteId: note.id });
-        }
-      }
-      return { note, uploaded, failed };
-    },
-    onSuccess: ({ note, uploaded, failed }) => {
-      if (note.mention_warning) toast.warning(note.mention_warning);
-      else announceMentionOutcome(toast, note);
-      const noteWithImages = uploaded.length ? { ...note, attachments: uploaded } : note;
-      putHost((previous) => ({ ...previous, notes: [noteWithImages, ...(previous.notes ?? [])] }));
-      // Keep the failed files (with their previews) so they can be retried
-      // against the note that now exists — the clipboard is gone, this is
-      // the only copy (UX review C3).
-      setPendingImages((prev) => [...prev.filter((p) => p.noteId != null), ...failed]);
-      setNoteBody('');
-      setNoteError(null);
-    },
-    onError: () => setNoteError('Unable to save note right now. Please try again.'),
-  });
+  // A new thread: the note, then its screenshots one after another (the
+  // hook's `post`); images bound to an earlier note stay with that note.
   const handleCreateNote = () => {
     if (!noteBody.trim()) {
       setNoteError('Add a short note before saving.');
       return;
     }
-    // Files still bound to an earlier note's retry queue stay with that note
-    // (`noteId` — failed or being retried); only fresh files go on the new one.
-    postNote.mutate({ body: noteBody.trim(), images: pendingImages.filter((p) => p.noteId == null) });
+    attachments.post(noteBody.trim());
   };
-
-  // Retry one failed attachment against the note it was meant for.  Never
-  // creates a second note.
-  const retryImage = useMutation({
-    mutationFn: ({ target, noteId }: { target: PendingImage; noteId: number }) =>
-      uploadNoteAttachment(projectId, hostId, noteId, target.file),
-    onMutate: ({ target }) => setPendingImages(
-      (prev) => prev.map((p) => (p.url === target.url ? { ...p, uploading: true } : p)),
-    ),
-    onSuccess: (attachment, { target, noteId }) => {
-      previews.release(target.file);
-      setPendingImages((prev) => prev.filter((p) => p.url !== target.url));
-      // On the note at once, so the thumbnail shows without a re-read.
-      putHost((previous) => ({
-        ...previous,
-        notes: (previous.notes ?? []).map((n) => (
-          n.id === noteId ? { ...n, attachments: [...(n.attachments ?? []), attachment] } : n
-        )),
-      }));
-    },
-    onError: (e, { target }) => setPendingImages(
-      (prev) => prev.map((p) => (
-        p.url === target.url ? { ...p, uploading: false, error: formatApiError(e, 'Upload failed.') } : p
-      )),
-    ),
-  });
-  const retryPendingImage = (idx: number) => {
-    const target = pendingImages[idx];
-    if (!target || target.noteId == null) return;
-    retryImage.mutate({ target, noteId: target.noteId });
-  };
-
-  const failedAttachmentCount = pendingImages.filter((p) => p.error && !p.uploading).length;
 
   const deleteNote = useMutation({
     mutationFn: (noteId: number) => deleteAnnotation(projectId, hostId, noteId),
@@ -383,7 +287,7 @@ export const HostDiscussionSection: React.FC<HostDiscussionSectionProps> = ({
     if (!replyTo || !replyBody.trim()) return;
     postReply.mutate({ body: replyBody.trim(), parentId: replyTo.id });
   };
-  const noteSubmitting = postNote.isPending || postReply.isPending;
+  const noteSubmitting = attachments.posting || postReply.isPending;
 
   // Newest threads first in line for the space; the API's order is kept, and a
   // thread being replied to is never hidden.
@@ -418,18 +322,23 @@ export const HostDiscussionSection: React.FC<HostDiscussionSectionProps> = ({
           )}
           {canEdit && (
           <NoteComposer
-            hostId={hostId}
+            id={`host-${hostId}-note-body`}
+            label="Note"
+            placeholder="Add a note — a question, context for the team, a handoff…"
+            hint={<><strong>@username</strong> notifies a teammate · replies reach everyone in the thread · <strong>paste a screenshot</strong> (Ctrl/Cmd+V) to attach it</>}
+            noun="Note"
             body={noteBody}
             onBodyChange={setNoteBody}
             submitting={noteSubmitting}
             onSubmit={handleCreateNote}
+            submitLabel={<><NotebookPen className="size-4" aria-hidden /> Save Note</>}
             error={noteError}
             onDismissError={() => setNoteError(null)}
-            onPaste={handleComposerPaste}
-            images={pendingImages}
-            failedAttachmentCount={failedAttachmentCount}
-            onRemoveImage={removePendingImage}
-            onRetryImage={retryPendingImage}
+            onPaste={attachments.onPaste}
+            images={attachments.pending}
+            failedAttachmentCount={attachments.failedCount}
+            onRemoveImage={attachments.remove}
+            onRetryImage={attachments.retry}
           />
           )}
           {notes.length > 0 && (
