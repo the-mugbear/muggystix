@@ -1280,8 +1280,11 @@ class IngestionService:
             last = last.replace(tzinfo=timezone.utc)
         return last < self._orphan_cutoff()
 
-    def requeue_job(self, job_id: int, *, keep_truncated: bool = False) -> str:
-        """Re-queue a FAILED job whose uploaded file is still on disk.
+    def requeue_job(self, db: Session, job_id: int, *, keep_truncated: bool = False) -> str:
+        """Re-queue a FAILED job whose uploaded file is still on disk, on the
+        caller's session (the request's: a second pooled connection per
+        request is the pool hazard ``enqueue_job`` describes, and it ran
+        without the API statement timeout — review 2026-10-23b, ING-6).
 
         ``keep_truncated``: the operator's "import what the file holds" for
         this attempt (``KEEP_TRUNCATED_OPTION``); a plain retry clears it.
@@ -1301,19 +1304,17 @@ class IngestionService:
         """
         from app.services.staged_import_service import queue_job
 
-        with _session_module.SessionLocal() as db:
-            try:
-                job = queue_job(db, job_id, allowed_from=("failed",), keep_truncated=keep_truncated)
-            except JobNotTransitionable as exc:
-                # ``status`` is either the actual state or the precondition's
-                # reason code.
-                return "file_missing" if exc.status == "file_missing" else "not_failed"
-            except LookupError:
-                return "not_found"
-            logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, job.retry_count)
-            # Wake the worker immediately (same pg_notify hint as the upload
-            # path) — on THIS session, not a third connection.
-            self.enqueue_job(job_id, db=db)
+        try:
+            job = queue_job(db, job_id, allowed_from=("failed",), keep_truncated=keep_truncated)
+        except JobNotTransitionable as exc:
+            # ``status`` is either the actual state or the precondition's
+            # reason code.
+            return "file_missing" if exc.status == "file_missing" else "not_failed"
+        except LookupError:
+            return "not_found"
+        logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, job.retry_count)
+        # Wake the worker immediately (same pg_notify hint as the upload path).
+        self.enqueue_job(job_id, db=db)
         return "requeued"
 
     def update_heartbeat(

@@ -73,3 +73,22 @@ def test_retry_non_failed_job_is_rejected(client, db_session, test_project, tmp_
 def test_retry_unknown_job_404(client, test_project):
     resp = client.post(_url(test_project.id, 999999))
     assert resp.status_code == 404
+
+
+def test_retry_runs_on_the_request_session(client, db_session, test_project, tmp_path, monkeypatch):
+    """review 2026-10-23b, ING-6: the retry opened a second pooled connection
+    (the pool hazard of 2.361.1), outside the API statement timeout."""
+    from app.db import session as session_module
+
+    f = tmp_path / "scan.xml"
+    f.write_text("<nmaprun/>")
+    job = _failed_job(db_session, test_project.id, f)
+
+    def no_second_session():
+        raise AssertionError("the retry opened a session of its own")
+
+    monkeypatch.setattr(session_module, "SessionLocal", no_second_session)
+    resp = client.post(_url(test_project.id, job.id))
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    assert db_session.get(models.IngestionJob, job.id).status == "queued"

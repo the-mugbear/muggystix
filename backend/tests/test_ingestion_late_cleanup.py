@@ -483,7 +483,7 @@ def test_a_claim_that_cannot_remove_the_dead_attempts_scan_does_not_parse(
 
     # A retry, once the cleanup works again, removes it and imports once.
     monkeypatch.setattr(ingestion_module, "delete_partial_scan", real)
-    assert svc.requeue_job(job_id) == "requeued"
+    assert svc.requeue_job(db_session, job_id) == "requeued"
     run_next(db_session, svc)
     job = job_row(db_session, job_id)
     assert job.status == "completed", job.error_message
