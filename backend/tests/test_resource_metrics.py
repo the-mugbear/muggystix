@@ -108,6 +108,63 @@ def test_two_replicas_of_one_queue_each_keep_their_own_report(fake_host, monkeyp
     assert [(r["name"], r["instance"]) for r in rm.worker_reports()] == [("ingestion_jobs", "worker-a")]
 
 
+def _report_file(folder, name, instance, *, at, started=None):
+    data = {"name": name, "instance": instance, "at": at, "memory": None}
+    if started is not None:
+        data["started"] = started
+    (folder / f"{name}.{instance}.json").write_text(json.dumps(data))
+
+
+def test_a_container_replaced_by_a_rebuild_is_not_a_silent_worker(fake_host):
+    """System settings, 2026-10-22: five rebuilds left ten containers' reports
+    behind, each shown as "not reporting — stopped, killed or stuck" and each
+    alerted on in the bell.  A silent report is a REPLACED container when
+    another of its queue is reporting and started after it last spoke: it is
+    left out (so neither the page nor the alert sees it) and its file goes."""
+    _, _, uploads = fake_host
+    folder = uploads / rm.REPORTS_DIR
+    folder.mkdir(parents=True)
+    now = time.time()
+    # The old container spoke until the rebuild, 20 minutes ago …
+    _report_file(folder, "ingestion_jobs", "old", at=now - 1200, started=now - 9000)
+    # … and a report from before 2.523.0, with no start time, too.
+    _report_file(folder, "ingestion_jobs", "older", at=now - 4000)
+    # The new one started at the rebuild and is reporting.
+    _report_file(folder, "ingestion_jobs", "new", at=now - 3, started=now - 1190)
+    # Another queue is untouched by this one's rebuild.
+    _report_file(folder, "report_jobs", "alone", at=now - 1200, started=now - 9000)
+
+    assert sorted((r["name"], r["instance"], r["stale"]) for r in rm.worker_reports()) == [
+        ("ingestion_jobs", "new", False),
+        ("report_jobs", "alone", True),          # no live sibling: really not reporting
+    ]
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "ingestion_jobs.new.json", "report_jobs.alone.json"]
+
+
+def test_a_stuck_replica_beside_a_live_one_is_still_silent(fake_host):
+    """Two replicas started together; one stopped speaking LATER.  Its live
+    sibling started before its last report, so it was not replaced: it is
+    stuck, and stays on the page (and in the alert)."""
+    _, _, uploads = fake_host
+    folder = uploads / rm.REPORTS_DIR
+    folder.mkdir(parents=True)
+    now = time.time()
+    _report_file(folder, "ingestion_jobs", "stuck", at=now - 1200, started=now - 9000)
+    _report_file(folder, "ingestion_jobs", "fine", at=now - 2, started=now - 9001)
+    assert sorted((r["instance"], r["stale"]) for r in rm.worker_reports()) == [
+        ("fine", False), ("stuck", True)]
+    assert (folder / "ingestion_jobs.stuck.json").exists()
+
+
+def test_a_report_says_when_its_process_started(fake_host, monkeypatch):
+    _, _, uploads = fake_host
+    monkeypatch.setattr(rm.socket, "gethostname", lambda: "worker-s")
+    rm.write_worker_report("ingestion_jobs")
+    data = json.loads((uploads / rm.REPORTS_DIR / "ingestion_jobs.worker-s.json").read_text())
+    assert data["started"] == rm.STARTED_WALL <= data["at"]
+
+
 def test_a_worker_report_is_written_whole_read_back_and_goes_stale(fake_host, monkeypatch):
     cgroup, _, uploads = fake_host
     _cgroup(cgroup, current=1 * GB, peak=int(3.9 * GB), limit=4 * GB, own=int(3.7 * GB), oom_kills=1)

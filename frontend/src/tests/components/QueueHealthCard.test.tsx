@@ -220,6 +220,17 @@ describe('QueueHealthCard', () => {
     expect(link).toHaveAttribute('href', '/scans?view=results&status=failed');
   });
 
+  // Most failed imports were never retried (a file that cannot be read is
+  // not re-queued): the card must not say they "exhausted their retries".
+  it('says what failed jobs need, not that they ran out of retries', async () => {
+    mocked.getQueueMetrics.mockResolvedValue(metrics(snapshot({ failed: 4 })));
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+
+    expect(await screen.findByText(/4 failed/)).toBeInTheDocument();
+    expect(screen.queryByText(/exhausted their retries/)).toBeNull();
+    expect(screen.getByText(/retry it .* or dismiss it/)).toBeInTheDocument();
+  });
+
   // The queue is deployment-wide; Ingestion Results lists ONE project's jobs.
   // "78 failed … Review failed jobs →" landed on the current project's list,
   // which could hold none of them — so name each project and go to it.

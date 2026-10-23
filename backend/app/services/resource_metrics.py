@@ -73,6 +73,10 @@ REPORT_FORGET_SECONDS = 24 * 3600.0
 #: When this process started — a worker alerts on a queue with NO report only
 #: once it has run long enough for that queue's worker to have written one.
 STARTED_AT = time.monotonic()
+#: The same moment on the wall clock, written into every report: a silent
+#: report is a container that was REPLACED (a rebuild, a recreate), not one
+#: that stopped, when another of its queue started after it last spoke.
+STARTED_WALL = time.time()
 
 _last_report: float = 0.0
 
@@ -217,7 +221,8 @@ def write_worker_report(name: str) -> None:
         target = folder / f"{name}.{instance}.json"
         tmp = folder / f".{name}.{instance}.{os.getpid()}.tmp"
         tmp.write_text(json.dumps({
-            "name": name, "instance": instance, "at": time.time(), "memory": process_memory(),
+            "name": name, "instance": instance, "at": time.time(), "started": STARTED_WALL,
+            "memory": process_memory(),
         }))
         os.replace(tmp, target)        # a reader never sees half a report
         # The one-file-per-queue report of before 2.519.0 would read as a
@@ -227,23 +232,60 @@ def write_worker_report(name: str) -> None:
         return
 
 
+def _replaced(reports: List[tuple]) -> set:
+    """The paths of silent reports whose container was REPLACED: another
+    container of the same queue is reporting and STARTED after the silent one
+    last spoke.  That is a rebuild or a recreate (every deploy leaves the old
+    container's file behind), not a worker that stopped — so it is neither
+    shown as "not reporting" nor alerted on (System settings, 2026-10-22: ten
+    such warnings and ten bell alerts after five rebuilds).  A replica that is
+    truly stuck is still one: its live siblings started BEFORE its last
+    report.  A report without ``started`` (before 2.523.0) replaces nothing."""
+    newest_start: dict = {}
+    for path, data, age in reports:
+        started = data.get("started")
+        if age <= REPORT_STALE_SECONDS and isinstance(started, (int, float)):
+            name = data["name"]
+            newest_start[name] = max(newest_start.get(name, 0.0), float(started))
+    return {
+        path for path, data, age in reports
+        if age > REPORT_STALE_SECONDS and float(data["at"]) < newest_start.get(data["name"], 0.0)
+    }
+
+
 def worker_reports() -> List[dict]:
     """Every worker's last report, by name: its memory, how old the report is
-    and whether that is too old to be believed (``stale``)."""
+    and whether that is too old to be believed (``stale``).  A report of a
+    container that was replaced (``_replaced``) is left out and its file
+    removed."""
     out: List[dict] = []
     try:
         files = sorted(_reports_dir().glob("*.json"))
     except OSError:
         return out
     now = time.time()
+    read: List[tuple] = []
     for path in files:
         try:
             data = json.loads(path.read_text())
-            if "instance" not in data:
-                continue                  # a report from before 2.519.0
+            if "instance" not in data or not isinstance(data.get("name"), str):
+                continue                  # a report from before 2.519.0, or not one
             age = max(0.0, now - float(data["at"]))
             if age > REPORT_FORGET_SECONDS:
                 continue
+            read.append((path, data, age))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    replaced = _replaced(read)
+    for path in replaced:
+        try:
+            path.unlink(missing_ok=True)  # best effort; the next read decides again
+        except OSError:
+            pass
+    for path, data, age in read:
+        if path in replaced:
+            continue
+        try:
             memory = data.get("memory")
             out.append({
                 "name": str(data["name"])[:60],

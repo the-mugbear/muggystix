@@ -119,7 +119,11 @@ const assess = (
       tone: 'warn',
       headline: `${q.failed} failed ${label} job${q.failed === 1 ? '' : 's'}`,
       action:
-        'These exhausted their retries. Review and dismiss them so the queue view reflects live work.',
+        // They failed and nobody has dismissed them — most were never retried
+        // (a file that could not be read is not re-queued), so "exhausted
+        // their retries" was false (System settings, 2026-10-22).
+        'Each failed and is still waiting for someone: retry it (an import with another format, '
+        + 'if it was read as the wrong one) or dismiss it.',
       href: surface.failedHref,
       hrefLabel: 'Review failed jobs',
       failedByProject: surface.failedHref && q.failed_by_project?.length ? q.failed_by_project : undefined,
