@@ -779,7 +779,7 @@ class AssistHostDetail(HostDetail):
     attributions: List[Dict[str, Any]] = Field(default_factory=list, description="Network provenance (RDAP/prefix lists): cidr, org, ASN, country, cloud provider.")
     host_scripts: List[AssistScript] = []
     host_scripts_truncated: bool = False
-    conflict_count: int = Field(0, description="Recorded disagreements between scans on this host's fields.")
+    conflict_count: int = Field(0, description="Recorded disagreements between scans on this host's fields and on its ports' — the inspector's count.")
     conflicts: List[Dict[str, Any]] = Field(default_factory=list, description=(
         "Newest disagreements first: field, previous/new value and scan filename, current_value."
     ))
@@ -798,9 +798,9 @@ _WEB_INTERFACE_CAP = 10
 _SCRIPT_OUTPUT_CAP = 1500
 _SCRIPTS_PER_OWNER = 10
 _SCRIPT_OUTPUT_BUDGET = 40_000
-#: Conflicts listed on host detail (host-level and port-level each);
-#: ``conflict_count`` is the whole number.
-_CONFLICT_CAP = 20
+#: Conflicts listed on host detail (host- and port-level rows together,
+#: newest first); ``conflict_count`` is the whole number.
+_CONFLICT_CAP = 40
 
 
 class _ScriptBudget:
@@ -1181,9 +1181,7 @@ def get_assist_host(
         host_weakness_flags(db, operator, request.state.agent_project_id, [host.id]).get(host.id, [])
         if operator is not None else []
     )
-    conflicts = host_detail_service.host_conflict_history(
-        db, host, host_limit=_CONFLICT_CAP, port_limit=_CONFLICT_CAP,
-    )
+    conflicts = host_detail_service.host_conflict_history(db, host, limit=_CONFLICT_CAP)
     conflict_count = host_detail_service.host_conflict_counts(db, [host.id]).get(host.id, 0)
     note_count = (
         db.query(func.count(models.Annotation.id))
@@ -1219,7 +1217,7 @@ def get_assist_host(
         host_scripts_truncated=len(host.host_scripts) > len(host_scripts) or budget.exhausted,
         conflict_count=int(conflict_count),
         conflicts=conflicts,
-        conflicts_truncated=int(conflict_count) > sum(1 for c in conflicts if c["object_type"] == "host"),
+        conflicts_truncated=int(conflict_count) > len(conflicts),
         note_count=int(note_count),
         finding_count=int(host_detail_service.active_finding_counts(db, [host.id]).get(host.id, 0)),
         # v2.434.1 (acceptance run H1) — the detail left these at their

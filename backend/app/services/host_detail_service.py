@@ -9,7 +9,7 @@ moved here and both routes call it.  A service never imports a router
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -47,39 +47,72 @@ def host_assignees(db: Session, host_id: int) -> list:
     ]
 
 
+def conflicts_per_host(
+    db: Session, *, host_ids: Optional[List[int]] = None, project_id: Optional[int] = None,
+):
+    """``(hid, n_conf)`` subquery: per host, its recorded disagreements — the
+    rows on the host's own fields AND on its ports' (owner, 2026-10-23: a
+    port conflict is the host's).  A ``ConflictHistory`` row sets exactly one
+    of ``host_id`` / ``port_id``; a port row reaches its host through
+    ``ports_v2``.  Two indexed branches (``idx_conflict_history_host`` /
+    ``_port``) UNION ALL'd, never a ``coalesce`` the indexes cannot serve.
+
+    Narrowed to ``host_ids`` (the list, the inspector) or to the hosts of
+    ``project_id`` (the investigation queue's tier 5)."""
+    Port = models.Port
+
+    def narrowed(q, host_col):
+        if host_ids is not None:
+            q = q.filter(host_col.in_(host_ids))
+        if project_id is not None:
+            q = q.join(models.Host, models.Host.id == host_col).filter(models.Host.project_id == project_id)
+        return q
+
+    on_host = narrowed(
+        db.query(ConflictHistory.host_id.label("hid"), ConflictHistory.id.label("cid")),
+        ConflictHistory.host_id,
+    )
+    on_port = narrowed(
+        db.query(Port.host_id.label("hid"), ConflictHistory.id.label("cid"))
+        .join(Port, Port.id == ConflictHistory.port_id),
+        Port.host_id,
+    )
+    rows = on_host.union_all(on_port).subquery("conflict_rows")
+    return (
+        db.query(rows.c.hid.label("hid"), func.count(rows.c.cid).label("n_conf"))
+        .group_by(rows.c.hid)
+        .subquery("conflict_sig")
+    )
+
+
 def host_conflict_counts(db: Session, host_ids: List[int]) -> Dict[int, int]:
-    """Canonical per-host data-conflict count → the number of HOST-level
-    ``ConflictHistory`` rows (each is a recorded disagreement where a later
-    scan's value displaced a prior value on one of the host's fields, e.g. one
-    scan said OS=Linux, another OS=Windows).
+    """Canonical per-host data-conflict count: every ``ConflictHistory`` row
+    on the host or on one of its ports (``conflicts_per_host``) — each a
+    recorded disagreement where a later scan reported a different value than
+    the one held, e.g. one scan said OS=Linux, another OS=Windows, or two
+    scans named a port's service differently.
 
     Single source of truth: the Hosts-list ``conflict_count`` badge, the
-    host-detail conflicts pane and the agent host detail all call this, so
-    they cannot diverge.  (They used to: the list counted ``ConflictHistory``
-    rows while the pane counted *confidence records* — a different table,
-    including port-level rows — so the same host showed e.g. 14 vs 12.)
+    host-detail conflicts pane, the host assessment's ``conflicts`` and the
+    agent host detail all call this, and the investigation queue's tier 5
+    ("Scans disagree") ranks on the same subquery, so they cannot diverge.
+    (The assessment used to count port rows while the others did not — one
+    inspector, two numbers; review 2026-10-23b, INV-1.)
     """
     if not host_ids:
         return {}
-    return dict(
-        db.query(ConflictHistory.host_id, func.count(ConflictHistory.id))
-        .filter(ConflictHistory.host_id.in_(host_ids))
-        .group_by(ConflictHistory.host_id)
-        .all()
-    )
+    sig = conflicts_per_host(db, host_ids=list(host_ids))
+    return {int(hid): int(n) for hid, n in db.query(sig.c.hid, sig.c.n_conf).all()}
 
 
 _HOST_FIELDS = {"state", "os_name", "hostname"}
 
 
-def host_conflict_history(
-    db: Session, host: models.Host, *, host_limit: int = 100, port_limit: int = 10
-) -> List[dict]:
-    """The recorded disagreements on a host and its ports, newest first.
-
-    ``host_limit`` is 100, not 10: ``conflict_count`` counts every host-level
-    row, and a badge reading "14 conflicts" over a list of 10 is a count its
-    drill-down cannot account for.
+def host_conflict_history(db: Session, host: models.Host, *, limit: int = 100) -> List[dict]:
+    """The recorded disagreements on a host and its ports, newest first — the
+    rows ``host_conflict_counts`` counts, in one list under one cap, so the
+    pane lists what its count says (a reader is told how many the cap left
+    out: the count minus the rows).
 
     v2.367.0 — each row carries what a reader needs to STATE the
     disagreement instead of pointing at scan ids: each scan's filename, and
@@ -87,25 +120,18 @@ def host_conflict_history(
     reported value was adopted, so "previous → new" alone does not say which
     one won).
     """
-    host_conflicts = (
+    port_ids = db.query(models.Port.id).filter(models.Port.host_id == host.id).scalar_subquery()
+    conflicts = (
         db.query(ConflictHistory)
-        .filter(ConflictHistory.host_id == host.id)
+        .filter(or_(ConflictHistory.host_id == host.id, ConflictHistory.port_id.in_(port_ids)))
         # The id breaks a tie: one import records several conflicts in one
         # instant, and which of them the cap kept was the planner's choice.
         .order_by(ConflictHistory.resolved_at.desc(), ConflictHistory.id.desc())
-        .limit(host_limit)
-        .all()
-    )
-    port_ids = db.query(models.Port.id).filter(models.Port.host_id == host.id).scalar_subquery()
-    port_conflicts = (
-        db.query(ConflictHistory)
-        .filter(ConflictHistory.port_id.in_(port_ids))
-        .order_by(ConflictHistory.resolved_at.desc(), ConflictHistory.id.desc())
-        .limit(port_limit)
+        .limit(limit)
         .all()
     )
     scan_ids = {
-        sid for c in host_conflicts + port_conflicts
+        sid for c in conflicts
         for sid in (c.previous_scan_id, c.new_scan_id) if sid is not None
     }
     scan_names = dict(
@@ -114,7 +140,7 @@ def host_conflict_history(
     ) if scan_ids else {}
 
     out = []
-    for conflict in host_conflicts + port_conflicts:
+    for conflict in conflicts:
         is_host = conflict.host_id is not None
         current = (
             getattr(host, conflict.field_name, None)

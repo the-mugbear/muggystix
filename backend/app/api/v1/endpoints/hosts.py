@@ -228,10 +228,11 @@ class ConflictEntry(BaseModel):
     current_value: Optional[str] = None
 
 class HostConflictsResponse(BaseModel):
-    # Canonical host-level conflict count (same definition as the Hosts-list
-    # badge — see _host_conflict_counts).  The detail pane shows this, NOT the
-    # length of `confidence` (which is per-field confidence records, host AND
-    # port, and is not a conflict count).
+    # Canonical conflict count, host and port rows (same definition as the
+    # Hosts-list badge and the assessment — see _host_conflict_counts);
+    # `conflict_history` lists those rows, newest first, under its cap.  The
+    # detail pane shows this, NOT the length of `confidence` (per-field
+    # confidence records, which are not a conflict count).
     conflict_count: int = 0
     confidence: List[ConfidenceEntry]
     conflict_history: List[ConflictEntry]
@@ -523,7 +524,7 @@ def get_hosts_v2(
             .all()
         )
 
-    # Batch lookup: host-level data conflicts (scans disagreed on a field) —
+    # Batch lookup: data conflicts (scans disagreed on a host or port field) —
     # surfaces the confidence/conflict subsystem's "this host's data is
     # contested" signal as a list badge.  Shares ONE definition with the
     # host-detail conflicts pane via _host_conflict_counts (see its docstring).

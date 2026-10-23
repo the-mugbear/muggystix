@@ -30,7 +30,7 @@ from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models import FollowStatus, Annotation as AnnotationModel
+from app.db.models import Annotation as AnnotationModel
 from app.db.models_auth import User
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 
@@ -70,8 +70,10 @@ def unknown_value_error(name: str, value: str, allowed) -> HTTPException:
     )
 
 
-#: ``follow_status`` values: the stored review states plus the two derived ones.
-FOLLOW_STATUS_FILTERS = ("none", "in_review_any", *(s.value for s in FollowStatus))
+#: ``follow_status`` values: the review states the pages offer plus the two
+#: derived ones — a subset of the DSL's ``follow:`` (``P.FOLLOW_FILTER_VALUES``);
+#: the retired ``watching`` is refused as unknown (review 2026-10-23b, INV-9).
+FOLLOW_STATUS_FILTERS = tuple(v for v in P.FOLLOW_FILTER_VALUES if v not in ("mine", "revisit"))
 
 
 def _unknown_of(name: str, value: Optional[str], allowed) -> None:

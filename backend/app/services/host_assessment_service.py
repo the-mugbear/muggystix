@@ -20,26 +20,31 @@ the assertion instead of one "last seen" at the top:
                     older than the host's, i.e. the latest sweep did not see
                     them open.
 
-Eligibility mirrors ``evidence_service`` so the inspector and the Evidence
-page agree on what "not applicable" means.
+Eligible and assessed ARE ``evidence_service``'s host predicates
+(``domain_eligible_condition`` / ``domain_assessed_condition``), so the
+inspector and the Evidence page agree on what "not applicable" and
+"assessed" mean; this module adds only the provenance dates.
 """
 from __future__ import annotations
 
 from datetime import timedelta, timezone
 from typing import Any, Dict
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_proposals import EvidenceRecord
 from app.db.models_host_tests import TESTED_OUTCOMES
-from app.db.models_confidence import ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability
 from app.services.evidence_service import (
-    _AUTH_PORTS, _WEB_PORTS, host_vuln_scan_credentialed, vuln_scanned_filter,
-    vulnerability_evidence_filter,
+    domain_assessed_condition, domain_eligible_condition, host_vuln_scan_credentialed,
+    vuln_scanned_filter, vulnerability_evidence_filter,
 )
+from app.services.host_detail_service import host_conflict_counts
+
+# The Evidence domains this block reports.
+_DOMAINS = ("vuln_assessment", "web_tls", "auth_smb_ad")
 
 # A port observed within this window of the host's newest observation counts
 # as seen by the same sweep (parsers stamp rows over a few seconds).
@@ -67,14 +72,15 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
         .one()
     )
 
-    last_vuln_at, vuln_count = (
-        db.query(func.max(Vulnerability.last_seen), func.count(Vulnerability.id))
-        # A misconfiguration check is not a vulnerability assessment (v2.415.0).
+    # Provenance: the newest vulnerability evidence — a row (a misconfiguration
+    # check is not a vulnerability assessment, v2.415.0) or a vulnerability
+    # scanner's run over the host, which is an assessment even when it
+    # reported nothing (v2.372.0).
+    last_vuln_at = (
+        db.query(func.max(Vulnerability.last_seen))
         .filter(Vulnerability.host_id == hid, vulnerability_evidence_filter())
-        .one()
+        .scalar()
     )
-    # A vulnerability scanner's run over the host is an assessment even when it
-    # reported nothing (v2.372.0) — same rule as the Evidence page.
     last_vuln_scan_at = (
         db.query(func.max(models.HostScanHistory.discovered_at))
         .join(models.Scan, models.HostScanHistory.scan_id == models.Scan.id)
@@ -83,58 +89,55 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
     )
     vuln_dates = [d for d in (_aware(last_vuln_at), _aware(last_vuln_scan_at)) if d is not None]
 
-    open_ports = [p for p in host.ports if p.state == "open"]
-    web_eligible = any(
-        p.port_number in _WEB_PORTS or (p.service_name or "").lower().startswith("http")
-        for p in open_ports
-    )
-    auth_eligible = any(p.port_number in _AUTH_PORTS for p in open_ports)
+    # Eligible / assessed are the Evidence page's own host predicates, read
+    # for this one host in one statement — never restated here (review
+    # 2026-10-23b, INV-3: this copy had drifted on web, counting a web
+    # interface of another project).
+    flags = db.execute(
+        select(*[
+            cond(d).label(f"{d}_{kind}")
+            for d in _DOMAINS
+            for kind, cond in (("eligible", domain_eligible_condition), ("assessed", domain_assessed_condition))
+        ]).where(models.Host.id == hid)
+    ).one()._mapping
 
-    last_web_at, web_count = (
-        db.query(func.max(models.WebInterface.last_seen), func.count(models.WebInterface.id))
-        .filter(models.WebInterface.host_id == hid)
-        .one()
-    )
-
-    auth_assessed = bool(host.smb_signing is not None) or bool(
-        db.query(NetexecResult.id).filter(NetexecResult.host_id == hid).first()
-    )
-
-    conflicts = (
-        db.query(func.count(ConflictHistory.id))
-        .filter(
-            or_(
-                ConflictHistory.host_id == hid,
-                ConflictHistory.port_id.in_([p.id for p in host.ports] or [-1]),
-            )
-        )
+    # Provenance only: when the web evidence was gathered (the same rows
+    # ``domain_assessed_condition("web_tls")`` reads).
+    last_web_at = (
+        db.query(func.max(models.WebInterface.last_seen))
+        .filter(models.WebInterface.host_id == hid,
+                models.WebInterface.project_id == host.project_id)
         .scalar()
-    ) or 0
+    )
 
     host_seen = _aware(host.last_seen)
     stale_open = 0
     if host_seen is not None:
-        for p in open_ports:
-            ps = _aware(p.last_seen)
-            if ps is not None and ps < host_seen - _SAME_SWEEP:
-                stale_open += 1
+        stale_open = (
+            db.query(func.count(models.Port.id))
+            .filter(models.Port.host_id == hid, models.Port.state == "open",
+                    models.Port.last_seen < host_seen - _SAME_SWEEP)
+            .scalar()
+        ) or 0
 
     return {
         "last_observed_at": host.last_seen,
-        "vuln_assessed": bool(vuln_count) or last_vuln_scan_at is not None,
+        "vuln_assessed": bool(flags["vuln_assessment_assessed"]),
         "last_vuln_assessed_at": max(vuln_dates) if vuln_dates else None,
         # Beside "assessed", never part of it (review 2026-10-01): did a
         # vulnerability scan log in to this host?  yes / no / not_stated, or
         # None when the host is not assessed.  One definition, shared with the
         # Evidence page's counts and the DSL's ``vulnscan:``.
         "vuln_scan_credentialed": host_vuln_scan_credentialed(db, hid),
-        "web_eligible": web_eligible,
-        "web_assessed": bool(web_count),
+        "web_eligible": bool(flags["web_tls_eligible"]),
+        "web_assessed": bool(flags["web_tls_assessed"]),
         "last_web_assessed_at": last_web_at,
-        "auth_eligible": auth_eligible,
-        "auth_assessed": auth_assessed,
+        "auth_eligible": bool(flags["auth_smb_ad_eligible"]),
+        "auth_assessed": bool(flags["auth_smb_ad_assessed"]),
         "tests_executed": int(tests_executed or 0),
         "last_tested_at": last_tested_at,
-        "conflicts": int(conflicts),
+        # The Hosts-list badge's and the conflicts pane's count — host and
+        # port rows (INV-1).
+        "conflicts": host_conflict_counts(db, [hid]).get(hid, 0),
         "open_ports_not_in_latest_scan": stale_open,
     }

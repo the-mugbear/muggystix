@@ -112,9 +112,8 @@ def _scan_side_stats(db: Session, scan: models.Scan) -> ScanDiffSide:
             func.count(models.HostScanHistory.host_id),
             func.sum(case((state == "up", 1), else_=0)),
             # Rows that said something about the host's state — the change
-            # detector's reading (``host_change_service``): NULL and
-            # 'unknown' say nothing.
-            func.count(case((and_(state.isnot(None), state != "unknown"), 1))),
+            # detector's reading: NULL and 'unknown' say nothing.
+            func.count(case((P.state_stated_condition(state), 1))),
         )
         .filter(models.HostScanHistory.scan_id == scan.id)
         .one()
@@ -203,12 +202,17 @@ def compute_scan_diff(
     new_count, new_rows = host_presence(b, a)
     dropped_count, dropped_rows = host_presence(a, b)
 
-    # State changes: a host both scans saw, with a different state.  A
-    # missing state reads as "" (as before).
+    # State changes: a host both scans saw, each SAYING a state, and the two
+    # differ.  A scan that recorded none (a DNS import: NULL; a gnmap
+    # Ports-only line: 'unknown') did not see the host change — it did not
+    # say (review 2026-10-23b, INV-2: `coalesce(…, '')` counted every shared
+    # host as "up → (none)").
     ha, hb = aliased(HSH), aliased(HSH)
     changed = and_(
         ha.scan_id == a, hb.scan_id == b, hb.host_id == ha.host_id,
-        func.coalesce(ha.state_at_scan, "") != func.coalesce(hb.state_at_scan, ""),
+        P.state_stated_condition(ha.state_at_scan),
+        P.state_stated_condition(hb.state_at_scan),
+        ha.state_at_scan != hb.state_at_scan,
     )
     changed_count = (
         db.query(func.count(distinct(ha.host_id))).select_from(ha).join(hb, hb.host_id == ha.host_id)

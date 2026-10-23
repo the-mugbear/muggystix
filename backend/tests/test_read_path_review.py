@@ -1111,8 +1111,10 @@ def _wide_pairs(db, pid, user, facts):
                             _old_follow_in(db, HostFollow.status == "reviewed")),
         "follow mine": (P.follow_predicate("mine", user),
                         _old_follow_in(db, HostFollow.user_id == user.id, HostFollow.status == "in_review")),
-        "follow watching": (P.follow_predicate("watching", user),
-                            _old_follow_in(db, HostFollow.user_id == user.id, HostFollow.status == "watching")),
+        # ("follow watching" — the per-caller fallback, old == new until the
+        # retired value stopped being a filter (review 2026-10-23b, INV-9):
+        # `follow:watching` is refused now, so there is nothing to compare;
+        # test_review_2026_10_23b_inventory pins the refusal.)
         # ("conclusion" — `review_conclusion_predicate`, old == new until the
         # `conclusion:` query word was retired with the review conclusions —
         # went with the predicate: there is nothing left to compare.)
@@ -1153,7 +1155,7 @@ _WIDE_NAMES = [
     "exploit", "critical exploit", "exploitport", "vuln window", "changed window", "has notes",
     "note", "tested", "planned", "local admin", "writable share", "smb unsigned", "tag name",
     "label id", "label name", "site none", "follow in_review", "follow reviewed", "follow mine",
-    "follow watching", "assigned any", "assigned none", "assigned me",
+    "assigned any", "assigned none", "assigned me",
     "assigned by name", "scan", "scan first seen", "org", "asn", "country", "cloud", "cloud none",
     "certorg",
 ]

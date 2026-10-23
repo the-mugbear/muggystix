@@ -82,6 +82,13 @@ describe('hostFiltersFromUrl', () => {
     expect(hostFiltersFromUrl(url('follow_status=bogus'), null).filters).toEqual({});
   });
 
+  // The server refuses the retired review state (review 2026-10-23b, INV-9);
+  // an old link or a remembered session holding it is read as no filter.
+  it('reads the retired "watching" as no review filter, from a link or a session', () => {
+    expect(hostFiltersFromUrl(url('follow_status=watching'), null).filters).toEqual({});
+    expect(hostFiltersFromUrl(url(''), { filters: {}, followFilter: 'watching' }).filters).toEqual({});
+  });
+
   it('restores the sort from sort_by, and only a sort it knows', () => {
     expect(hostFiltersFromUrl(url('sort_by=open_ports'), null).sortBy).toBe('open_ports_desc');
     expect(hostFiltersFromUrl(url('sort_by=nonsense'), null).sortBy).toBeNull();

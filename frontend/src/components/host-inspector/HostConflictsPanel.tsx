@@ -109,11 +109,13 @@ const HostConflictsPanel: React.FC<HostConflictsPanelProps> = ({
   id, conflictCount, history, confidence, ports,
 }) => {
   const [showRanking, setShowRanking] = useState(false);
-  // The count is host-level (the same number as the Hosts-list badge); port
-  // disagreements are listed after them and are not part of it.
+  // The count is the host's AND its ports' disagreements (the same number as
+  // the Hosts-list badge and the assessment's "Conflicts"); the history lists
+  // those rows newest first under one cap, so what is not listed is the count
+  // minus every row shown.
   const hostEntries = history.filter((h) => h.object_type !== 'port');
   const portEntries = history.filter((h) => h.object_type === 'port');
-  const unlisted = Math.max(0, conflictCount - hostEntries.length);
+  const unlisted = Math.max(0, conflictCount - history.length);
 
   // One line per disagreement, grouped under its field: nine two-line blocks
   // each repeating "Hostname" / "Was held" / "Then reported" was most of the
@@ -197,20 +199,20 @@ const HostConflictsPanel: React.FC<HostConflictsPanelProps> = ({
       </CardHeader>
       <CardContent className="space-y-sm p-sm pt-0">
         {hostEntries.length > 0 && renderGroups(hostEntries, 'Host conflicts')}
-        {unlisted > 0 && (
-          <p className="text-caption text-muted-foreground">
-            {hostEntries.length === 0
-              ? `${conflictCount} recorded, but the detail could not be listed.`
-              : `${unlisted} older disagreement${unlisted === 1 ? '' : 's'} not listed.`}
-          </p>
-        )}
         {portEntries.length > 0 && (
           <div>
             <p className="text-caption uppercase tracking-wide text-muted-foreground">
-              On its ports (not part of the count)
+              On its ports
             </p>
             {renderGroups(portEntries, 'Port conflicts')}
           </div>
+        )}
+        {unlisted > 0 && (
+          <p className="text-caption text-muted-foreground">
+            {history.length === 0
+              ? `${conflictCount} recorded, but the detail could not be listed.`
+              : `${unlisted} older disagreement${unlisted === 1 ? '' : 's'} not listed.`}
+          </p>
         )}
 
         {confidence.length > 0 && (
