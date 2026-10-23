@@ -152,8 +152,8 @@ export interface HostInspectorProps {
   onDirtyChange?: (dirty: boolean) => void;
   /**
    * When the inspector sits in a queue: step to the next host nobody has
-   * started.  Its presence adds "Save and next unreviewed" to the review
-   * conclusion dialog (v5.237.0).
+   * started.  Its presence adds "Reviewed, next unreviewed" to the review
+   * controls (a review is one click since 2026-10-10).
    */
   onNextUnreviewed?: () => void;
   /**
