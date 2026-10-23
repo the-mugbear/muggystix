@@ -1,0 +1,43 @@
+{
+  "_about": "ONE case table for what places a report image, read by BOTH sides: backend tests/test_report_image_placement.py (report_images.referenced_ids / code_spans) and frontend src/tests/utils/reportImages.test.ts + src/tests/components/SafeMarkdown.test.tsx (utils/reportImages.ts referencedImageIds / codeSpans, and the preview). The editor's preview shows placements while the author types, so the client keeps its own reader; this file is what keeps the two from drifting (review 2026-10-01 M1, 2026-10-02 H5; backlog 2026-10-22, H-d). Add a case here, never to one side. The second half of `references` are spellings pandoc reads as an image: they are not placements (the preview shows none, the report prints none there) until `normalise_references` has rewritten them on save. Offsets in `code_spans` are character positions; keep the texts ASCII.",
+  "references": [
+    ["Before ![The relayed session](evidence:57) after", [57]],
+    ["![t](evidence:57 \"a title\")", [57]],
+    ["![a \\] bracket](evidence:57)", [57]],
+    ["![x](evidence:57){.c onerror=alert(1)}", [57]],
+    ["![]( evidence:57 )", [57]],
+    ["![a](<evidence:57>)", []],
+    ["![a](evidence:57 'single quotes')", []],
+    ["![a](evidence:57 (parentheses))", []],
+    ["![two\nlines](evidence:57)", []],
+    ["![a [nested] b](evidence:57)", []],
+    ["![a][shot]\n\n[shot]: evidence:57", []],
+    ["![shot][]\n\n[shot]: evidence:57", []],
+    ["![shot]\n\n[shot]: evidence:57", []],
+    ["![a](evidence:57 \"t\" extra)", []],
+    ["![a](EVIDENCE:57)", []],
+    ["`![Example](evidence:57)`", []],
+    ["Write ``![Example](evidence:57)`` to place it.", []],
+    ["```\n![Example](evidence:57)\n```", []],
+    ["~~~markdown\n![Example](evidence:57)\n~~~\n\n![real](evidence:58)", [58]],
+    ["```\n![Example](evidence:57)", []],
+    ["`code` ![real](evidence:57) `more`", [57]],
+    ["Run `id` first. ![The session](evidence:57)", [57]],
+    ["``a ` tick ![x](evidence:57) ``", []],
+    ["`![typed](evidence:57)` and placed: ![shown](evidence:57)", [57]],
+    ["A lone ` tick, then ![shown](evidence:57)", [57]],
+    ["```\ncode\n```\n\n![after the fence](evidence:57)", [57]]
+  ],
+  "code_spans": [
+    ["no code", []],
+    ["a `b` c", [[2, 5]]],
+    ["a ``b ` c`` d", [[2, 11]]],
+    ["a ` b `` c", []],
+    ["`a\nb` c", [[0, 5]]],
+    ["```\nx\n```\nafter `y`", [[0, 10], [16, 19]]],
+    ["   ~~~~\nx\n~~~\n~~~~  \nz", [[0, 21]]],
+    ["    ```\nx", []],
+    ["```\nx\n``` not a close\ny", [[0, 23]]],
+    ["```\n`a`\n~~~\n```\n`b`", [[0, 16], [16, 19]]]
+  ]
+}

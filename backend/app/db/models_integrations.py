@@ -45,7 +45,7 @@ class IntegrationCredential(Base):
     """
     __tablename__ = "integration_credentials"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     created_by_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),

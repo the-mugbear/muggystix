@@ -76,7 +76,8 @@ describe('UserMembershipsDialog — the member rules of Project settings', () =>
       severity: 'danger',
       confirmLabel: 'Make them Viewer',
     }));
-    expect(mocked.listProjectMembers).toHaveBeenCalledWith(7);
+    // The admin count is a query: it hands the query's signal on (H-a).
+    expect(mocked.listProjectMembers).toHaveBeenCalledWith(7, expect.any(AbortSignal));
     expect(mocked.updateProjectMemberRole).not.toHaveBeenCalled();
   });
 

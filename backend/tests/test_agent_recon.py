@@ -127,6 +127,11 @@ def test_expired_key_rejected_both_tz_forms(client, db_session, test_agent, agen
     r = _subnets(client, aware)
     assert r.status_code == 401
     assert r.json()["detail"]["error"] == "key_expired"
+    # One active key per session (uq_api_key_agent_session_active): revoke,
+    # then mint, as the application does.
+    from app.db.models_auth import APIKey
+    db_session.query(APIKey).filter(APIKey.agent_session_id == agent_session.id).update({"is_active": False})
+    db_session.commit()
     naive = _mint(db_session, test_agent=test_agent, agent_session_id=agent_session.id,
                   raw="nm_agent_expired_naive_" + "n" * 24,
                   expires_at=(datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None))

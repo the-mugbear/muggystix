@@ -5,8 +5,8 @@
  * fails the build if frontend/package.json drifts from it (the exact bug this
  * was added for: package.json stuck at 5.10.0 while platform said 5.15.0, so
  * the version shown in the user menu's About item — stamped by
- * generate-build-info.js — reported a stale build).  Keep the three in sync: platform_version.json, package.json, and
- * the docker-compose FRONTEND_VERSION default.
+ * generate-build-info.js — reported a stale build).  Keep them in sync: platform_version.json, package.json, and
+ * the frontend image's two build-arg fallbacks in docker-compose (scripts/bump-version.py writes them all).
  *
  * Read via fs (not import) so vite's fs-allow guard doesn't block reading
  * platform_version.json from the repo root, and so a missing file is a clear
@@ -49,9 +49,17 @@ describe('version consistency', () => {
       return [...compose.matchAll(re)].map((m) => m[1]);
     };
 
-    it('declares at least one APP_VERSION and FRONTEND_VERSION fallback', () => {
-      expect(fallbacks('APP_VERSION').length).toBeGreaterThan(0);
-      expect(fallbacks('FRONTEND_VERSION').length).toBeGreaterThan(0);
+    // Only the frontend image needs a typed version: it is built from
+    // frontend/ alone and cannot read platform_version.json.  The backend,
+    // worker and report-worker read the mounted file (PLATFORM_VERSION_FILE);
+    // a fallback in their `environment:` would override the file and could
+    // drift from it (backlog R10 removed the four that were there).
+    it('has exactly the two frontend build-arg fallbacks, and no version in a service environment', () => {
+      expect(fallbacks('APP_VERSION')).toHaveLength(1);
+      expect(fallbacks('FRONTEND_VERSION')).toHaveLength(1);
+      expect(compose).toMatch(/^\s+BACKEND_VERSION: \$\{APP_VERSION:-[0-9.]+\}$/m);
+      expect(compose).toMatch(/^\s+FRONTEND_VERSION: \$\{FRONTEND_VERSION:-[0-9.]+\}$/m);
+      expect(compose).not.toMatch(/^\s+APP_VERSION:/m);
     });
 
     it('every APP_VERSION fallback equals platform_version.json "backend"', () => {

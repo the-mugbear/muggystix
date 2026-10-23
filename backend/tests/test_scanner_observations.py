@@ -267,7 +267,8 @@ def test_paging_through_issues_that_tie_lists_each_once(client, db_session, test
     db_session.commit()
     host = _host(db_session, test_project.id, "10.9.5.1")
     for n in range(30):
-        _vuln(db_session, host, scan.id, "Kernel update available", cve_id=f"CVE-2024-{1000 + n}")
+        _vuln(db_session, host, scan.id, "Kernel update available", cve_id=f"CVE-2024-{1000 + n}",
+              plugin_id=str(200000 + n))
 
     whole = client.get(_url(test_project), params={"limit": 100}).json()
     assert whole["total"] == 30

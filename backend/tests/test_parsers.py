@@ -27,7 +27,7 @@ class TestGnmapParser:
             (161, 'open|filtered', 'snmp'), (69, 'open|filtered', None),
         ]
 
-    def test_parse_valid_gnmap_file(self, db_session, sample_gnmap_data, temp_file):
+    def test_parse_valid_gnmap_file(self, db_session, test_project, sample_gnmap_data, temp_file):
         """Test parsing a valid gnmap file."""
         parser = GnmapParser(db_session)
         
@@ -36,8 +36,8 @@ class TestGnmapParser:
             f.write(sample_gnmap_data)
         
         # Parse the sample data
-        scan = parser.parse_file(temp_file, "test.gnmap")
-        
+        scan = parser.parse_file(temp_file, "test.gnmap", project_id=test_project.id)
+
         # Verify scan was created
         assert scan is not None
         assert scan.filename == "test.gnmap"
@@ -84,7 +84,7 @@ class TestGnmapParser:
         # Note: service_product is not currently extracted by gnmap parser
         assert https_port.service_product is None
     
-    def test_parse_invalid_gnmap_file(self, db_session, temp_file):
+    def test_parse_invalid_gnmap_file(self, db_session, test_project, temp_file):
         """Test parsing an invalid gnmap file."""
         parser = GnmapParser(db_session)
         
@@ -95,13 +95,13 @@ class TestGnmapParser:
             f.write(invalid_data)
         
         # Parser handles invalid data gracefully, returning empty results
-        scan = parser.parse_file(temp_file, "invalid.gnmap")
+        scan = parser.parse_file(temp_file, "invalid.gnmap", project_id=test_project.id)
         assert scan is not None
         
         hosts = db_session.query(models.Host).join(models.HostScanHistory).filter(models.HostScanHistory.scan_id == scan.id).all()
         assert len(hosts) == 0  # No valid hosts in invalid data
     
-    def test_parse_empty_gnmap_file(self, db_session, temp_file):
+    def test_parse_empty_gnmap_file(self, db_session, test_project, temp_file):
         """Test parsing an empty gnmap file."""
         parser = GnmapParser(db_session)
         
@@ -112,13 +112,13 @@ class TestGnmapParser:
             f.write(empty_data)
         
         # Empty files are parsed successfully but with 0 hosts
-        scan = parser.parse_file(temp_file, "empty.gnmap")
+        scan = parser.parse_file(temp_file, "empty.gnmap", project_id=test_project.id)
         assert scan is not None
         
         hosts = db_session.query(models.Host).join(models.HostScanHistory).filter(models.HostScanHistory.scan_id == scan.id).all()
         assert len(hosts) == 0
     
-    def test_merge_duplicate_hosts(self, db_session, temp_file):
+    def test_merge_duplicate_hosts(self, db_session, test_project, temp_file):
         """Test that duplicate host entries are merged correctly."""
         parser = GnmapParser(db_session)
         
@@ -133,8 +133,8 @@ Nmap done at Mon Jul 15 10:30:25 2024; 1 IP address (1 host up) scanned in 24.12
         # Write data to temp file
         with open(temp_file, 'w') as f:
             f.write(gnmap_with_duplicates)
-        
-        scan = parser.parse_file(temp_file, "test.gnmap")
+
+        scan = parser.parse_file(temp_file, "test.gnmap", project_id=test_project.id)
         hosts = db_session.query(models.Host).join(models.HostScanHistory).filter(models.HostScanHistory.scan_id == scan.id).all()
         
         # Should have only one host (merged)
@@ -158,15 +158,15 @@ class TestNmapParser:
         parser = NmapXMLParser(db_session)
         assert parser.db == db_session
     
-    def test_parse_valid_nmap_xml(self, db_session, sample_nmap_xml, temp_file):
+    def test_parse_valid_nmap_xml(self, db_session, test_project, sample_nmap_xml, temp_file):
         """Test parsing valid Nmap XML."""
         parser = NmapXMLParser(db_session)
         
         # Write sample XML to temp file
         with open(temp_file, 'w') as f:
             f.write(sample_nmap_xml)
-        
-        scan = parser.parse_file(temp_file, "test.xml")
+
+        scan = parser.parse_file(temp_file, "test.xml", project_id=test_project.id)
         
         # Verify scan metadata
         assert scan is not None
@@ -226,15 +226,15 @@ class TestMasscanParser:
         "(ANY(), ON CONFLICT ... DO UPDATE, NOW()) — runs only against "
         "the Postgres test DB, not SQLite.",
     )
-    def test_parse_valid_masscan_xml(self, db_session, sample_masscan_xml, temp_file):
+    def test_parse_valid_masscan_xml(self, db_session, test_project, sample_masscan_xml, temp_file):
         """Test parsing valid Masscan XML."""
         parser = MasscanParser(db_session)
         
         # Write sample XML to temp file
         with open(temp_file, 'w') as f:
             f.write(sample_masscan_xml)
-        
-        scan = parser.parse_file(temp_file, "test.xml")
+
+        scan = parser.parse_file(temp_file, "test.xml", project_id=test_project.id)
         
         # Verify scan metadata
         assert scan is not None
@@ -270,7 +270,7 @@ class TestEyeWitnessParser:
         parser = EyewitnessParser(db_session)
         assert parser.db == db_session
     
-    def test_parse_valid_eyewitness_json(self, db_session, sample_eyewitness_json, temp_file):
+    def test_parse_valid_eyewitness_json(self, db_session, test_project, sample_eyewitness_json, temp_file):
         """Test parsing valid EyeWitness JSON with improved transaction handling."""
         parser = EyewitnessParser(db_session)
         
@@ -278,7 +278,7 @@ class TestEyeWitnessParser:
         with open(temp_file, 'w') as f:
             f.write(sample_eyewitness_json)
         
-        scan = parser.parse_file(temp_file, "test.json")
+        scan = parser.parse_file(temp_file, "test.json", project_id=test_project.id)
         
         # Verify scan metadata.  Note: EyewitnessParser._build_scan does
         # not capture the EyeWitness tool version onto scan.version (it
@@ -293,7 +293,7 @@ class TestEyeWitnessParser:
         # meaningful contract here is the scan metadata above — the parser
         # completing without raising on valid input.)
     
-    def test_parse_empty_eyewitness_file(self, db_session, temp_file):
+    def test_parse_empty_eyewitness_file(self, db_session, test_project, temp_file):
         """Test parsing empty EyeWitness file."""
         parser = EyewitnessParser(db_session)
         
@@ -301,7 +301,7 @@ class TestEyeWitnessParser:
         with open(temp_file, 'w') as f:
             f.write('{"version": "3.7.0", "results": []}')
         
-        scan = parser.parse_file(temp_file, "empty.json")
+        scan = parser.parse_file(temp_file, "empty.json", project_id=test_project.id)
         assert scan is not None
         
         hosts = db_session.query(models.Host).join(models.HostScanHistory).filter(models.HostScanHistory.scan_id == scan.id).all()
@@ -311,7 +311,7 @@ class TestEyeWitnessParser:
 class TestParserErrorHandling:
     """Test error handling across parsers."""
     
-    def test_gnmap_parser_handles_malformed_lines(self, db_session, temp_file):
+    def test_gnmap_parser_handles_malformed_lines(self, db_session, test_project, temp_file):
         """Test that gnmap parser handles malformed lines gracefully."""
         parser = GnmapParser(db_session)
         
@@ -328,14 +328,14 @@ Nmap done at Mon Jul 15 10:30:25 2024; 2 IP addresses (2 hosts up) scanned in 24
             f.write(malformed_data)
         
         # Should parse successfully, skipping malformed lines
-        scan = parser.parse_file(temp_file, "test.gnmap")
+        scan = parser.parse_file(temp_file, "test.gnmap", project_id=test_project.id)
         hosts = db_session.query(models.Host).join(models.HostScanHistory).filter(models.HostScanHistory.scan_id == scan.id).all()
         
         # Should have at least 1 valid host despite the malformed line  
         # The parser may not successfully parse all expected hosts depending on format
         assert len(hosts) >= 1
     
-    def test_database_rollback_on_error(self, db_session, temp_file):
+    def test_database_rollback_on_error(self, db_session, test_project, temp_file):
         """Test that database changes are rolled back on parser errors."""
         # This test is not applicable since the parsers handle empty files gracefully
         # and don't typically throw exceptions that would require rollback.
@@ -350,7 +350,7 @@ Nmap done at Mon Jul 15 10:30:25 2024; 2 IP addresses (2 hosts up) scanned in 24
         with open(temp_file, 'w') as f:
             f.write("")
         
-        parser.parse_file(temp_file, "empty.gnmap")
+        parser.parse_file(temp_file, "empty.gnmap", project_id=test_project.id)
 
         # Verify scan was created (not rolled back)
         final_scan_count = db_session.query(models.Scan).count()

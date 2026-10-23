@@ -43,13 +43,12 @@ class Agent(Base):
     """
     __tablename__ = "agents"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
     project_id = Column(
         Integer,
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     owner_id = Column(
         Integer,
@@ -141,7 +140,7 @@ class AgentSession(Base):
     """
     __tablename__ = "agent_sessions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     workflow = Column(String(20), nullable=False)  # AgentSessionWorkflow; indexed via idx_agent_session_workflow_status
 
     project_id = Column(
@@ -224,7 +223,7 @@ class AgentFeedback(Base):
     """
     __tablename__ = "agent_feedback"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(
         Integer,
         ForeignKey("projects.id", ondelete="SET NULL"),
@@ -328,7 +327,6 @@ class AgentApiCall(Base):
         Integer,
         ForeignKey("agents.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     api_key_id = Column(
         Integer,
@@ -346,7 +344,6 @@ class AgentApiCall(Base):
         Integer,
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=True,
-        index=True,
     )
     # v2.337.0 — the session the key belongs to.  The one attribution every
     # authenticated call carries; the phase ids below are filled when the
@@ -457,14 +454,14 @@ class McpToolCall(Base):
     rpc_method = Column(String(64), nullable=True, index=True)
     # Populated for tools/call only — including calls naming a tool that does
     # not exist, which is exactly the signal we want to see.
-    tool_name = Column(String(64), nullable=True, index=True)
+    tool_name = Column(String(64), nullable=True)  # leads idx_mcp_tool_call_tool_created
 
     # ok            — the tool ran and returned success
     # tool_error    — the tool ran and the endpoint refused it (401/403/404/…)
     # protocol_error— malformed request, unknown tool, bad arguments (-326xx)
     # rejected      — refused by a transport guard before dispatch
     #                 (origin, body cap, batch cap, protocol version)
-    outcome = Column(String(16), nullable=False, index=True)
+    outcome = Column(String(16), nullable=False)  # leads idx_mcp_tool_call_outcome_created
     # JSON-RPC error code, or the HTTP status for transport rejections.
     error_code = Column(Integer, nullable=True)
     detail = Column(String(500), nullable=True)

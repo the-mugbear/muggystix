@@ -53,7 +53,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
 
 import * as api from '../../services/api';
 import FindingDetail from '../../pages/FindingDetail';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 import { createQueryClient } from '../../lib/query';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
@@ -85,7 +84,6 @@ const renderAt = (url: string) =>
 beforeEach(() => {
   vi.clearAllMocks();
   URL.createObjectURL = vi.fn(() => 'blob:img');
-  resetProjectMembersCache();
   mocked.getFinding.mockResolvedValue(finding());
   mocked.getFindingHistory.mockResolvedValue([]);
   mocked.getFindingNotes.mockResolvedValue({ items: [], total: 0 });

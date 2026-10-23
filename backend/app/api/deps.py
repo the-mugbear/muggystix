@@ -317,7 +317,6 @@ def _load_agent_key(db: Session, token: str) -> Optional[_AgentKeyContext]:
         .filter(
             APIKey.key_hash == key_hash,
             APIKey.is_active.is_(True),
-            APIKey.agent_id.isnot(None),
         )
         .first()
     )
@@ -632,25 +631,10 @@ def get_current_agent(
     if not agent:
         raise HTTPException(status_code=401, detail="Agent inactive or not found")
 
-    # The key's binding is its AgentSession.  Every agent key carries one —
-    # mint paths set it and a backfill guaranteed it — so a null binding on an
-    # agent key is an orphaned/corrupt credential.  Fail CLOSED rather than
-    # treat it as unscoped, which was historically the MOST-privileged outcome
-    # (unscoped global keys, abolished v2.295.0).
+    # The key's binding is its AgentSession: ``api_keys.agent_session_id`` is
+    # NOT NULL with a cascading foreign key (f4c8b2d0e6a1), so every key that
+    # authenticates has one.
     agent_session = ctx.session
-    if agent_session is None:
-        logger.warning(
-            "rejecting agent key %s (agent_id=%s) with no AgentSession binding — "
-            "start an agent session from the project UI to mint one",
-            api_key_obj.key_prefix, api_key_obj.agent_id,
-        )
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This agent key is not bound to a session. Start an agent "
-                "session from the project's Agent Sessions page to mint one."
-            ),
-        )
     if agent_session.status != "active":
         # An ended session's keys are revoked on the way out, so this is only
         # reachable for a session lapsed by the sweep between two requests.

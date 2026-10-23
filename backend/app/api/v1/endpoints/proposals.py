@@ -144,9 +144,9 @@ def _decide_locked(
         # Keep the reason on the proposal (it stays pending) — then refuse.
         db.commit()
         raise
-    # Built before the commit, which expires the row and what it points at
-    # (N8, as the host-test routes do).  The flush puts the decision where the
-    # lazy loads below read it.
+    # Built before the commit, while the row and what it points at are still
+    # loaded (after it, serialize_many reads them again together — never per
+    # row).  The flush puts the decision where the lazy loads below read it.
     db.flush()
     data = proposals.serialize_many(db, [proposal])[0] if serialize else None
     db.commit()

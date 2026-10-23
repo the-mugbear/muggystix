@@ -20,12 +20,14 @@ vocabulary can evolve without an ``ALTER TYPE`` migration; the enums below
 are the canonical value sets, enforced in application code.
 """
 import enum
+from typing import Optional
 
 from sqlalchemy import (
     CheckConstraint, Column, DateTime, Float, ForeignKey, Integer, String, Text,
-    UniqueConstraint, Index, text,
+    UniqueConstraint, Index, event, text, update,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Session, relationship
+from sqlalchemy.orm.util import identity_key
 from sqlalchemy.sql import func
 
 from app.db.session import Base
@@ -80,9 +82,9 @@ SCANNER_ISSUE_PREDICATE = (
 class Finding(Base):
     __tablename__ = "findings"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(
-        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True,
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False,
     )
     title = Column(String(500), nullable=False)
     severity = Column(String(20), nullable=False, index=True)   # FindingSeverity
@@ -136,6 +138,12 @@ class Finding(Base):
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # One more for every committed transaction that wrote the finding (revision
+    # f2b8d4a6c1e3): every write route answers with the whole finding AND this
+    # number, so a page holding two answers keeps the higher one — an answer
+    # that arrives late never puts an older finding back.  Counted by ONE
+    # listener (``_count_finding_revisions`` below), never by a caller.
+    revision = Column(Integer, nullable=False, default=1, server_default=text("1"))
 
     project = relationship("Project")
     owner = relationship("User", foreign_keys=[owner_id])
@@ -186,9 +194,9 @@ class FindingHost(Base):
     the truth, and retest deltas are per-host."""
     __tablename__ = "finding_hosts"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     finding_id = Column(
-        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True,
+        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False,
     )
     host_id = Column(
         Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True,
@@ -285,9 +293,9 @@ class FindingVulnerability(Base):
     """
     __tablename__ = "finding_vulnerabilities"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     finding_id = Column(
-        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True,
+        Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False,
     )
     vuln_id = Column(
         Integer, ForeignKey("vulnerabilities.id", ondelete="CASCADE"),
@@ -311,7 +319,7 @@ class FindingStatusHistory(Base):
     shared it, was dropped in v2.447.0."""
     __tablename__ = "finding_status_history"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     finding_id = Column(
         Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True,
     )
@@ -328,3 +336,79 @@ class FindingStatusHistory(Base):
 
     finding = relationship("Finding", back_populates="status_history")
     changed_by = relationship("User", foreign_keys=[changed_by_id])
+
+
+def _finding_id_of(endpoint: FindingHost) -> Optional[int]:
+    """The finding an endpoint row belongs to."""
+    if endpoint.finding_id is not None:
+        return endpoint.finding_id
+    parent = endpoint.finding
+    return parent.id if parent is not None else None
+
+
+#: ``Session.info`` key: the findings this transaction has written so far.
+_WRITTEN_FINDINGS = "bluestick_written_findings"
+
+
+@event.listens_for(Session, "after_flush")
+def _note_written_findings(session: Session, flush_context) -> None:
+    """Which findings this flush wrote: a change of the finding's row, or an
+    endpoint (``finding_hosts``) added, changed or removed.  (In
+    ``after_flush`` the session still shows the flush's own new / dirty /
+    deleted lists and attribute history.)  A finding the flush inserted
+    starts at 1 and one it deleted has no number left."""
+    written = set()
+    for obj in session.dirty:
+        if isinstance(obj, Finding) and session.is_modified(obj, include_collections=False):
+            written.add(obj.id)
+        elif isinstance(obj, FindingHost) and session.is_modified(obj, include_collections=False):
+            written.add(_finding_id_of(obj))
+    for obj in list(session.new) + list(session.deleted):
+        if isinstance(obj, FindingHost):
+            written.add(_finding_id_of(obj))
+    written.discard(None)
+    written -= {
+        obj.id for obj in list(session.new) + list(session.deleted) if isinstance(obj, Finding)
+    }
+    if written:
+        session.info.setdefault(_WRITTEN_FINDINGS, set()).update(written)
+
+
+@event.listens_for(Session, "before_commit")
+def _count_finding_revisions(session: Session) -> None:
+    """THE writer of ``findings.revision``: one more, at commit, for every
+    finding the transaction wrote — every route, bulk route, accepted
+    proposal and agent write goes through here, as none of them writes the
+    number itself.
+
+    ``revision + 1`` is computed by the database as the transaction's LAST
+    statement, so two transactions writing one finding number their commits
+    in the order they commit (the second waits for the first's row lock and
+    re-reads it), and the lock is taken after every other lock the
+    transaction holds — it adds no step to anyone's lock order.  A savepoint's
+    release is not the commit: the count waits for the outer one.
+
+    What changes an answer WITHOUT a write of either table — a host or name
+    deleted under an endpoint (the database cascades), a later retest result
+    on the host — is not counted: the next read shows it, and an answer is
+    put on a page only over a LOWER revision.
+    """
+    if session.in_nested_transaction():
+        return
+    session.flush()
+    written = session.info.pop(_WRITTEN_FINDINGS, None)
+    if not written:
+        return
+    table = Finding.__table__
+    session.connection().execute(
+        update(table).where(table.c.id.in_(sorted(written))).values(revision=table.c.revision + 1)
+    )
+    for finding_id in written:
+        held = session.identity_map.get(identity_key(Finding, finding_id))
+        if held is not None:
+            session.expire(held, ["revision"])
+
+
+@event.listens_for(Session, "after_rollback")
+def _forget_written_findings(session: Session) -> None:
+    session.info.pop(_WRITTEN_FINDINGS, None)

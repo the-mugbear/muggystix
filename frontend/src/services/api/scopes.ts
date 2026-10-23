@@ -8,14 +8,14 @@
 import { api, projectPath } from './client';
 
 /** The project's one scope.  No request takes its `id`: every scope route is
- *  keyed by the project alone (backend 2.489.0). */
+ *  keyed by the project alone. */
 export interface Scope {
   id: number;
   description: string | null;
   created_at: string;
   updated_at: string | null;
   subnets: Subnet[];
-  // v2.94.0 — server-paginated subnets.  subnets_total is the unpaginated
+  // Server-paginated subnets.  subnets_total is the unpaginated
   // count (under the search, when there is one); the /scopes editor pages by
   // it so 6000-subnet projects don't ship every subnet in one payload.
   subnets_total?: number;
@@ -30,10 +30,8 @@ export interface Subnet {
   // Physical/logical site this subnet belongs to (e.g. "London DC").
   site?: string | null;
   created_at: string;
-  // v2.86.0 — subnet labels attached to this row.  Optional in the
-  // type because older API responses (pre-2.86.0) don't include the
-  // field; the backend always sends an empty array once the field
-  // is wired so callers can treat it as never-null at runtime.
+  // Subnet labels attached to this row.  Optional in the type because
+  // not every answer that carries a subnet includes the field.
   labels?: SubnetLabelInfo[];
   // Hosts mapped to this subnet — sent by the scope-detail endpoints only.
   host_count?: number | null;
@@ -44,17 +42,9 @@ export interface Subnet {
 export interface SubnetFileUploadResponse {
   message: string;
   subnets_added: number;
-  /** Domain rows in the same file land in scope_domains (backend 2.326.0). */
+  /** Domain rows in the same file land in scope_domains. */
   domains_added?: number;
   filename: string;
-}
-
-export interface HostSubnetMapping {
-  id: number;
-  host_id: number;
-  subnet_id: number;
-  created_at: string;
-  subnet: Subnet;
 }
 
 export interface ScopeCoverageHost {
@@ -69,7 +59,7 @@ export interface ScopeCoverageHost {
 export interface ScopeCoverageSummary {
   total_scopes: number;
   total_subnets: number;
-  /** Domain-scope entries (backend 2.322.0). */
+  /** Domain-scope entries. */
   total_domains: number;
   /** Hosts with no subnet mapping that an in-scope name resolves to — the
    *  third coverage state; not in scoped_hosts, already subtracted from
@@ -83,21 +73,7 @@ export interface ScopeCoverageSummary {
   recent_out_of_scope_hosts: ScopeCoverageHost[];
 }
 
-export interface OutOfScopeHost {
-  id: number;
-  scan_id: number;
-  ip_address: string;
-  hostname: string | null;
-  // Backend stores this as a loose JSON column (out_of_scope_hosts.ports);
-  // no frontend consumer reads it, so keep it `unknown` rather than `any`
-  // — narrows must be explicit if it's ever used.
-  ports: unknown;
-  tool_source: string | null;
-  reason: string | null;
-  created_at: string;
-}
-
-// --- Subnet labels (v2.86.0) ---
+// --- Subnet labels ---
 // Project-scoped labels attached to one or more subnets, used by the Hosts
 // inventory page to filter by infrastructure boundary.  All routes are
 // mounted under /projects/{pid}/scopes/...
@@ -131,7 +107,7 @@ export interface SubnetEntry {
 // --- Scopes ---
 
 /**
- * Fetch the project's single scope (v2.9.4+).  A project now has
+ * Fetch the project's single scope.  A project has
  * exactly one conceptual scope; this endpoint creates it on the fly
  * if it doesn't exist yet so the flat subnet editor page has a
  * guaranteed target to append entries to.
@@ -199,7 +175,7 @@ export const getScopeCoverage = async (projectId: number, limit: number = 25, si
 
 /** `cidrs` and `domains` are one entry per line; `csv` is every entry with
  *  its labels, description and site.  Each is a scope file the upload reads
- *  back (backend 2.521.0). */
+ *  back. */
 export type ScopeExportFormat = 'cidrs' | 'domains' | 'csv';
 
 /** What the project's scope declares — its networks and domains, not the

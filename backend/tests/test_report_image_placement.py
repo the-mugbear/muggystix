@@ -192,42 +192,22 @@ def test_a_reference_is_a_markdown_image_whose_target_is_evidence_and_an_id():
     assert ids("![x](evidence:1){.c onerror=alert(1)}") == [1]
 
 
-# Review 2026-10-01 M1 — ONE grammar on every side.  The same table, row for
-# row, is frontend/src/tests/utils/reportImageCases.ts (REFERENCE_CASES):
-# change both together.  The second half are spellings pandoc reads as an
-# image; they are not placements (the Preview shows none, the report prints
-# none there) until `normalise_references` has rewritten them on save.
-REFERENCE_CASES = [
-    ("Before ![The relayed session](evidence:57) after", [57]),
-    ('![t](evidence:57 "a title")', [57]),
-    (r"![a \] bracket](evidence:57)", [57]),
-    ("![x](evidence:57){.c onerror=alert(1)}", [57]),
-    ("![]( evidence:57 )", [57]),
-    ("![a](<evidence:57>)", []),
-    ("![a](evidence:57 'single quotes')", []),
-    ("![a](evidence:57 (parentheses))", []),
-    ("![two\nlines](evidence:57)", []),
-    ("![a [nested] b](evidence:57)", []),
-    ("![a][shot]\n\n[shot]: evidence:57", []),
-    ("![shot][]\n\n[shot]: evidence:57", []),
-    ("![shot]\n\n[shot]: evidence:57", []),
-    ("![a](evidence:57 \"t\" extra)", []),
-    ("![a](EVIDENCE:57)", []),
-    # Review 2026-10-02 H5 — code is shown as typed, so a reference written
-    # in an inline code span or a fenced code block places nothing; one
-    # beside the code still does.
-    ("`![Example](evidence:57)`", []),
-    ("Write ``![Example](evidence:57)`` to place it.", []),
-    ("```\n![Example](evidence:57)\n```", []),
-    ("~~~markdown\n![Example](evidence:57)\n~~~\n\n![real](evidence:58)", [58]),
-    ("```\n![Example](evidence:57)", []),
-    ("`code` ![real](evidence:57) `more`", [57]),
-]
+# Review 2026-10-01 M1 — ONE grammar on every side.  The table is ONE file both
+# sides' tests read (backlog 2026-10-22, H-d): the frontend's
+# utils/reportImages.ts and its preview run the same rows.
+_TWIN = json.loads(
+    (Path(__file__).parent / "fixtures" / "twins" / "report_image_references.json").read_text()
+)
 
 
-@pytest.mark.parametrize("text,ids", REFERENCE_CASES)
+@pytest.mark.parametrize("text,ids", _TWIN["references"])
 def test_one_grammar_decides_what_places_an_image(text, ids):
     assert report_images.referenced_ids(text) == ids
+
+
+@pytest.mark.parametrize("text,spans", _TWIN["code_spans"])
+def test_code_spans_on_the_shared_table(text, spans):
+    assert [list(s) for s in report_images.code_spans(text)] == spans
 
 
 NORMALISED = [

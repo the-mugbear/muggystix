@@ -114,24 +114,9 @@ class SubnetCorrelationService:
     # ------------------------------------------------------------------
 
     def _scan_project_id(self, scan_id: int) -> int | None:
-        """The project a scan's hosts belong to.
-
-        ``Scan.project_id`` is authoritative; a legacy scan row without one
-        falls back to the project of the hosts the scan observed (a scan never
-        spans projects, so the first is the only one).
-        """
-        scan_project = (
-            self.db.query(Scan.project_id).filter(Scan.id == scan_id).scalar()
-        )
-        if scan_project is not None:
-            return scan_project
-        return (
-            self.db.query(Host.project_id)
-            .join(HostScanHistory, Host.id == HostScanHistory.host_id)
-            .filter(HostScanHistory.scan_id == scan_id, Host.project_id.isnot(None))
-            .limit(1)
-            .scalar()
-        )
+        """The project a scan's hosts belong to (``scans.project_id``, NOT
+        NULL since e3b7a1c9d5f0); None only for a scan id that does not exist."""
+        return self.db.query(Scan.project_id).filter(Scan.id == scan_id).scalar()
 
     def _batch_correlate_hosts(self, scan_id: int | None, project_id: int | None = None) -> int:
         """

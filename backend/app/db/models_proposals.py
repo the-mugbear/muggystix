@@ -41,8 +41,8 @@ class EvidenceRecord(Base):
     inline preview; it was a file until v2.439.0, which outlived deletion."""
     __tablename__ = "evidence_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     # Empty only for context about no single host (2.519.0): an ``info``
     # record that answers no test and names no endpoint (the check below).
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -118,8 +118,8 @@ class AgentProposal(Base):
     call a person's click makes, as the person who accepts it."""
     __tablename__ = "agent_proposals"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     kind = Column(String(30), nullable=False)
     status = Column(String(20), nullable=False, default=ProposalStatus.PENDING.value,
                     server_default=ProposalStatus.PENDING.value)

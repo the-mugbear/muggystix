@@ -1,7 +1,7 @@
 /**
- * The queue a host was opened from on Operations (v5.243.0).
+ * The queue a host was opened from on Operations.
  *
- * A host opened from My work offered "Back to my work" (v5.237.0) but its Next
+ * A host opened from My work offered "Back to my work" but its Next
  * went nowhere: the standalone page walks a server-side Hosts query by index,
  * and a My-work section is not a query — it is the short list the analyst was
  * looking at. So the section's host ids travel with the navigation, in display
@@ -19,12 +19,12 @@ export interface OperationsNavState {
    *  first part. A flag, not a number: the server's totals count ROWS, and a
    *  row is not always a host. */
   queuePartial?: boolean;
-  /** The tab of Operations it was opened from (5.331.0): "Back to my work"
+  /** The tab of Operations it was opened from: "Back to my work"
    *  returns to that tab, not to whichever opens by default. */
   operationsTab?: string;
 }
 
-// -- the exact Hosts list behind each Operations count (5.329.0) -------------
+// -- the exact Hosts list behind each Operations count ----------------------
 // Every count on the page opens the list it counted.  Each query below is the
 // predicate the server counted with; `backend/tests/test_operations_redesign.py`
 // pins count == list for every one of them.
@@ -48,14 +48,6 @@ export const TIER_QUERY: Record<number, string> = {
   3: 'has:untouched AND has:exploit AND NOT has:critical',
 };
 
-const HOST_PATH = /^\/hosts\/(\d+)(?:[/?#]|$)/;
-
-/** The host id a link points at, or null for anything that is not a host page. */
-export const hostIdOf = (to: string): number | null => {
-  const match = HOST_PATH.exec(to);
-  return match ? Number(match[1]) : null;
-};
-
 /** De-duplicated, order-preserving (a host can appear twice in one section —
  *  two reviewers' follow-ups, a note and a plan step). */
 export const uniqueHostIds = (ids: Array<number | null | undefined>): number[] => {
@@ -74,8 +66,8 @@ export const uniqueHostIds = (ids: Array<number | null | undefined>): number[] =
  *
  *  Pass the WHOLE section — every row Operations loaded for it — never the rows
  *  on screen. The cards preview three to five rows behind a "Show more", and a
- *  queue built from the preview silently dropped the rest (v5.243.0's first
- *  build: four hosts in review, Next walked three). */
+ *  queue built from the preview silently dropped the rest (the first build:
+ *  four hosts in review, Next walked three). */
 export const fromOperationsQueue = (
   hostIds: Array<number | null | undefined>,
   queueLabel: string,

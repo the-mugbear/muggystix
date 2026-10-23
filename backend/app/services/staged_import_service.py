@@ -9,7 +9,7 @@ touching the inventory:
   with its *basis*: ``structure`` when the file's content alone selects it,
   ``filename`` when only the name does, ``fallback`` when the dispatcher
   would merely TRY it without having recognised anything (the XML branch's
-  tail; marked at the source by ``ingestion_service.FallbackAttempt``).  No
+  tail; marked at the source by ``format_registry.FallbackAttempt``).  No
   detector was rewritten for this; the dispatcher is run twice, once with a
   neutral filename and once with the real one, and the difference is the
   basis.  Only ``structure`` may make a file ready without the operator.

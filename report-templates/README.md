@@ -217,6 +217,6 @@ Things to handle in every template:
   ```bash
   docker compose run --rm --no-deps -v "$PWD/backend:/app" -v "$PWD/backend/tests:/app/tests" \
     -v "$PWD/report-templates:/app/report-templates:ro" \
-    -e REPORT_TEMPLATES_DIR=/app/report-templates -e BLUESTICK_SKIP_DB_INIT=1 report-worker \
+    -e REPORT_TEMPLATES_DIR=/app/report-templates report-worker \
     sh -c "cd /tmp && python -m pytest /app/tests/test_quarto_render.py /app/tests/test_report_templates_shipped.py -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov -rs"
   ```

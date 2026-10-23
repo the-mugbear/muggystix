@@ -400,7 +400,7 @@ def test_dns_csv_header_still_routes_to_dns_parser():
     )
 
 
-def test_dns_csv_with_no_valid_rows_routes_then_fails_closed(db_session):
+def test_dns_csv_with_no_valid_rows_routes_then_fails_closed(db_session, test_project):
     """A CSV with the DNS-shaped header but every row invalid (bad IPs,
     missing fields) must:
       1. Route to ``dns_csv`` (the heuristic is header-based, fires here)
@@ -426,7 +426,7 @@ def test_dns_csv_with_no_valid_rows_routes_then_fails_closed(db_session):
 
     parser = DNSParser(db_session)
     with pytest.raises(ValueError, match="0 valid records"):
-        parser.parse_file(str(fixture_path), "dns_headers_no_valid_rows_sample.csv")
+        parser.parse_file(str(fixture_path), "dns_headers_no_valid_rows_sample.csv", project_id=test_project.id)
 
 
 def test_nikto_json_with_renamed_filename_still_avoids_naabu():
@@ -456,7 +456,7 @@ def test_nikto_json_with_renamed_filename_still_avoids_naabu():
     )
 
 
-def test_naabu_jsonl_routes_correctly_and_parses(db_session):
+def test_naabu_jsonl_routes_correctly_and_parses(db_session, test_project):
     """A ``.jsonl`` naabu export must:
       1. Route to ``naabu_json`` (dispatcher accepts both extensions).
       2. The NaabuParser must parse the JSONL records — not silently
@@ -482,7 +482,7 @@ def test_naabu_jsonl_routes_correctly_and_parses(db_session):
     )
 
     parser = NaabuParser(db_session)
-    scan = parser.parse_file(str(fixture_path), "naabu_sample.jsonl")
+    scan = parser.parse_file(str(fixture_path), "naabu_sample.jsonl", project_id=test_project.id)
     assert scan is not None
     # 4 records in the fixture → 3 unique IPs (192.168.0.10/11/12)
     from app.db import models

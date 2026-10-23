@@ -102,7 +102,7 @@ describe('navigation manifest', () => {
       ['/scopes', 'inventory'],
       ['/findings/37', 'findings'],
       ['/reports/4', 'findings'],
-      ['/agent-sessions/72', 'workflows'],
+      ['/agent-sessions/72', 'agents'],
       ['/activity', 'collaboration'],
       ['/settings/projects', 'administration'],
       ['/system-settings', 'administration'],
@@ -129,14 +129,14 @@ describe('navigation manifest', () => {
     // default.
     // 5.316.0 — Proposals: agents' proposed changes, decided by a person.
     // 5.320.0 — no Test Plans tab: tests live on each host's page.
-    expect(tabs('workflows')).toEqual(['Agent Sessions', 'Proposals', 'Tool Activity']);
+    expect(tabs('agents')).toEqual(['Agent Sessions', 'Proposals', 'Tool Activity']);
     expect(NAV_PAGES.map((p) => p.path)).not.toContain('/test-plans');
     expect(NAV_PAGES.map((p) => p.path)).not.toContain('/executions');
-    expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/agent-activity');
-    // U11 — the hub holds only agent surfaces, so it is labelled "Agents";
-    // its id and path are unchanged so `/workflows` links keep working.
-    expect(HUBS.find((h) => h.id === 'workflows')!.label).toBe('Agents');
-    expect(HUBS.find((h) => h.id === 'workflows')!.path).toBe('/workflows');
+    expect(HUBS.find((h) => h.id === 'agents')!.defaultChildPath).toBe('/agent-activity');
+    // U11 — the hub holds only agent surfaces, so it is "Agents"; its
+    // address is unchanged so `/workflows` links keep working.
+    expect(HUBS.find((h) => h.id === 'agents')!.label).toBe('Agents');
+    expect(HUBS.find((h) => h.id === 'agents')!.path).toBe('/workflows');
     expect(HUBS.map((h) => h.label)).not.toContain('Workflows');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);

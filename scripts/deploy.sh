@@ -964,14 +964,15 @@ predeploy_db_backup() {
 # ------------------------------------------------------------------
 # Waiting for the backend (review 2026-10-01 R31)
 #
-# The backend runs `alembic upgrade head` at import, before it serves
-# anything, so "not healthy yet" has two very different meanings:
+# The backend's command runs the migration step (`python -m app.db.migrate`)
+# before uvicorn starts, so "not healthy yet" has two very different meanings:
 #
 #   * still migrating — the container is running and a session holds the
 #     migration advisory lock.  The only correct action is to wait; rolling
 #     back the images now would point the OLD code at a half-migrated schema.
-#   * crashed — the container exited, or Docker keeps restarting it.  That
-#     is when option 7 is the answer.
+#   * crashed — the container exited, or Docker keeps restarting it (a failed
+#     migration step ends the container, and its restart policy runs it
+#     again).  That is when option 7 is the answer.
 #
 # The old wait was 90 s with one message for both ("the boot migration may
 # have failed … roll back"), and `up --build -d` under `set -e` could end the

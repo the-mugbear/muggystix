@@ -66,7 +66,6 @@ def _run_alembic(url, *args: str) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "DATABASE_URL": url.render_as_string(hide_password=False),
-        "BLUESTICK_SKIP_DB_INIT": "1",
     }
     return subprocess.run(
         [sys.executable, "-m", "alembic", *args],

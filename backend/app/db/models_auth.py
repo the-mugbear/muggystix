@@ -6,7 +6,7 @@ Models for user accounts, roles, and session management for security intelligenc
 
 from typing import Optional
 
-from sqlalchemy import BigInteger, Column, Index, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, event
+from sqlalchemy import BigInteger, Column, Index, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON, event, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -43,7 +43,7 @@ class User(Base):
     """User accounts for the security platform"""
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     username = Column(String(USERNAME_MAX), unique=True, nullable=False, index=True)
     email = Column(String(100), unique=True, nullable=True, index=True)
     hashed_password = Column(String(255), nullable=False)
@@ -128,7 +128,7 @@ class UserRecoveryCode(Base):
     """
     __tablename__ = "user_recovery_codes"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     code_hash = Column(String(64), nullable=False)  # sha256 hex
     used_at = Column(DateTime(timezone=True), nullable=True)
@@ -141,7 +141,7 @@ class UserSession(Base):
     """Active user sessions for token management"""
     __tablename__ = "user_sessions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     token_jti = Column(String(36), unique=True, nullable=False, index=True)  # JWT ID
 
@@ -164,7 +164,7 @@ class AuditLog(Base):
     """Security audit logging for compliance and monitoring"""
     __tablename__ = "audit_logs"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     # v2.86.2 — SET NULL so a deleted user's audit trail survives them.
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
 
@@ -219,28 +219,21 @@ def _username_from_details(mapper, connection, row: AuditLog) -> None:
 
 
 class APIKey(Base):
-    """API keys for service-to-service or agent authentication"""
+    """An agent session's API key — the only kind there is.
+
+    Every key belongs to an agent and is bound to exactly one AgentSession,
+    whose project and operator the key acts for (``agent_session_service``
+    mints them; revision f4c8b2d0e6a1 made both columns NOT NULL and dropped
+    the operator-key ``user_id`` and the unenforced ``scopes``).
+    """
     __tablename__ = "api_keys"
 
-    id = Column(Integer, primary_key=True, index=True)
-    # CASCADE — operator-owned API keys die with the operator; agent
-    # API keys carry agent_id (the other branch) and are independent.
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
-    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
-    # v2.116.0 — the key's scope binding: it points at exactly one AgentSession,
-    # whose ``workflow`` discriminator (plan_generation / execution / recon /
-    # assist) + ``plan_id`` / ``scope_id`` carry everything the four legacy
-    # per-workflow FK columns used to. Those four —
-    #   test_plan_id, scope_id, recon_session_id, assist_session_id
-    # — were DROPPED in the contract phase (migration d4e9f1c72a6b) once deps +
-    # minting resolved scope from this instead. ``get_current_agent`` now
-    # REQUIRES it for an agent key (a null binding on an agent key is refused);
-    # it stays nullable at the DB level only for operator/service keys
-    # (``agent_id`` NULL), which carry no workflow session.
+    id = Column(Integer, primary_key=True)
+    agent_id = Column(Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
     agent_session_id = Column(
         Integer,
         ForeignKey("agent_sessions.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
 
@@ -249,15 +242,6 @@ class APIKey(Base):
     key_hash = Column(String(255), nullable=False, unique=True)
     key_prefix = Column(String(20), nullable=False, index=True)  # First few chars for identification
 
-    # Permissions and scope
-    scopes = Column(JSON)  # List of allowed operations
-    # `allowed_ips` was removed in v2.240.4. It was declared here as an "IP
-    # whitelist" and appeared NOWHERE else in the backend — nothing set it,
-    # nothing read it, nothing enforced it. A security control that exists
-    # only as a column is worse than no column: it reads like key access is
-    # IP-pinned when it never was. If key IP-pinning is wanted, it needs an
-    # enforcement point in the auth dependency, not a field.
-
     # Lifecycle
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True))
@@ -265,9 +249,20 @@ class APIKey(Base):
     is_active = Column(Boolean, default=True)
 
     # Relationships
-    user = relationship("User")
     agent = relationship("Agent", foreign_keys=[agent_id])
     agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
+
+    __table_args__ = (
+        # At most one ACTIVE key per agent session (revision d4e9f1c72a6b): the
+        # DB backstop behind revoke-then-mint.
+        Index(
+            "uq_api_key_agent_session_active",
+            "agent_session_id",
+            unique=True,
+            postgresql_where=text("is_active AND agent_session_id IS NOT NULL"),
+            sqlite_where=text("is_active AND agent_session_id IS NOT NULL"),
+        ),
+    )
 
 
 class SystemIdentity(Base):

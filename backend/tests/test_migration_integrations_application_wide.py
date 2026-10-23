@@ -48,7 +48,6 @@ def _alembic(url, *args: str) -> None:
     env = {
         **os.environ,
         "DATABASE_URL": url.render_as_string(hide_password=False),
-        "BLUESTICK_SKIP_DB_INIT": "1",
     }
     done = subprocess.run(
         [sys.executable, "-m", "alembic", *args],
@@ -262,7 +261,6 @@ def test_the_downgrade_refuses_when_there_is_nobody_to_own_an_orphan(scratch):
     env = {
         **os.environ,
         "DATABASE_URL": url.render_as_string(hide_password=False),
-        "BLUESTICK_SKIP_DB_INIT": "1",
     }
     done = subprocess.run(
         [sys.executable, "-m", "alembic", "downgrade", BEFORE],

@@ -1,5 +1,5 @@
 /**
- * Remediation tracking (5.335.0): the page's vocabulary and the pure half of
+ * Remediation tracking: the page's vocabulary and the pure half of
  * its edit dialog.  Client-free — the page and its tests import this without
  * the API client.
  */
@@ -41,7 +41,7 @@ export const REMEDIATION_STATUSES: RemediationStatus[] = ['open', 'closed', 'def
  *  assessor's conclusion about the endpoint.  The stored value is unchanged. */
 export const REPORTED_FIXED = 'Reported fixed';
 export const REMEDIATION_STATUS_LABEL: Record<RemediationStatus, string> = {
-  // 5.395.0 — "Awaiting fix", never "Open": a finding's status, a host's
+  // "Awaiting fix", never "Open": a finding's status, a host's
   // state and this record each have their own words (owner, 2026-10-14).
   open: 'Awaiting fix',
   closed: REPORTED_FIXED,
@@ -75,7 +75,7 @@ export const isRemediationDefect = (v: string | null): v is RemediationDefect =>
 export const defectFilterLabel = (defects: readonly RemediationDefect[]): string => {
   if (REMEDIATION_DEFECTS.every((d) => defects.includes(d))) return 'Defects (not false positives)';
   const words: Record<RemediationDefect, string> = {
-    // "Outstanding", never "Open" (5.395.0): not remediated and not deferred —
+    // "Outstanding", never "Open": not remediated and not deferred —
     // still present or awaiting a retest.
     open: 'Outstanding defects', remediated: 'Remediated (retested fixed)', deferred: 'Deferred defects',
   };
@@ -157,17 +157,6 @@ export const isRemediationState = (v: string | null): v is RemediationState =>
   v != null && (REMEDIATION_STATES as string[]).includes(v);
 
 const days = (n: number): string => `${n.toLocaleString()} day${n === 1 ? '' : 's'}`;
-
-/** The second line of the Due cell: how far the deadline is, in words. */
-export const dueDistance = (row: Pick<RemediationRow, 'state' | 'days_left' | 'closed_days_late'>): string | null => {
-  if (row.state === 'closed') {
-    if (row.closed_days_late == null) return null;
-    return row.closed_days_late === 0 ? 'reported fixed on time' : `reported fixed ${days(row.closed_days_late)} late`;
-  }
-  if (row.days_left == null) return null;
-  if (row.days_left < 0) return `${days(-row.days_left)} overdue`;
-  return row.days_left === 0 ? 'due today' : `in ${days(row.days_left)}`;
-};
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info'];
 const SEVERITY_WORD: Record<string, string> = {
@@ -356,7 +345,7 @@ export const noteRequirement = (changes: RemediationFields): string | null => {
 
 /** Something worth a second look that does not stop the save: a fix dated
  *  before its contact was told is possible, and is left out of "average
- *  time to close" on Oversight (seen in the browser, 5.337.1). */
+ *  time to close" on Oversight (seen in the browser). */
 export const draftCaution = (draft: RemediationDraft): string | null =>
   (draft.status === 'closed' && draft.closed_on && draft.notified_on && draft.closed_on < draft.notified_on
     ? 'The “Reported fixed on” date is before the assigned date. It is saved as entered, and left out of the average time to a reported fix.'
@@ -487,7 +476,7 @@ export const hasChanges =(changes: RemediationFields, note: string): boolean =>
   Object.keys(changes).length > 0 || note.trim().length > 0;
 
 
-// --- one Deadline column (5.341.0) ---------------------------------------------
+// --- one Deadline column -------------------------------------------------------
 
 /** What the Deadline cell says: the state and the distance in ONE phrase, the
  *  date under it.  "Overdue" beside "65 days overdue" said it twice. */

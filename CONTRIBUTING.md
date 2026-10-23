@@ -16,7 +16,8 @@ code and that, if violated, cause subtle breakage. For system topology see
 ```bash
 # Backend (dev server, hot reload)
 cd backend && pip install -r requirements-dev.txt -c constraints.txt   # runtime + pytest/ruff
-export DATABASE_URL=... SECRET_KEY=...        # both required; see the warning below
+export DATABASE_URL=... SECRET_KEY=...        # both required; see the note below
+python -m app.db.migrate                      # the migration step (alembic upgrade head)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # Frontend (dev server)
@@ -30,9 +31,9 @@ cp .env.example .env                         # set SECRET_KEY first
 docker compose up --build -d
 ```
 
-> **Importing `app.main` migrates the database.** `initialize_database()` runs at import, i.e.
-> `alembic upgrade head` against `DATABASE_URL` — for the dev server above and for any script or
-> `python -c` probe that imports the app. Never point it at a database you do not want migrated.
+> **Only `python -m app.db.migrate` migrates the database** (`alembic upgrade head` against
+> `DATABASE_URL`). Importing `app.main` — the dev server above, a script, a `python -c` probe, the
+> test suite — touches no schema; the backend and worker containers run the step before they start.
 
 The deployed backend version surfaces at `GET /` and in startup logs; both versions are shown
 in the user menu (top-right) under **About BlueStick**. They must match
@@ -94,7 +95,7 @@ over `backend/` in the same image — any finding fails the gate (see "Lint" abo
 `tsc --noEmit`, `npm run lint -- --max-warnings 0` (ESLint, below) and `vitest run`; (4) `scripts/test-alembic-roundtrip.sh`, which ends with
 `alembic check` (`--fast` skips this step). Every step runs even when one fails, a one-screen summary ends the run, and
 the exit status is non-zero on any failure. It needs the stack up and the images built, builds
-and pulls nothing, and sets `BLUESTICK_SKIP_DB_INIT=1`. From a git worktree it tests the
+and pulls nothing, and cannot migrate the development database (nothing it runs is the migration step). From a git worktree it tests the
 worktree's source inside the main checkout's compose project.
 
 What each step is, for running one alone: **Migrations** —
@@ -135,11 +136,10 @@ test that greps the source.
   `--no-deps` starts no other service. The suite's DATA is isolated: when the compose `db` is
   reachable it creates and drops its own `<database>_test_<host>_<pid>` database, otherwise it falls
   back to in-memory SQLite (`tests/conftest.py`). It also does not migrate your dev database:
-  importing the app normally runs `alembic upgrade head` against `DATABASE_URL`, and the
-  harness turns that off with `BLUESTICK_SKIP_DB_INIT=1` (since v2.370.1 — before that, a test
-  run with an unmerged migration in the tree applied it to the real dev database). Anything
-  ELSE that imports `app.main` — a script, a `python -c` probe — still migrates; a data
-  migration gets applied the moment you do that, so export first.
+  importing the app runs no migration — only `python -m app.db.migrate` does, which the
+  containers' own commands run and a one-off `run … sh -c "…"` replaces. (Until the step existed,
+  importing `app.main` ran `alembic upgrade head` against `DATABASE_URL`, and a test run or probe
+  with an unmerged migration in the tree applied it to the real dev database.)
   Mounting the agent guide keeps the docs-contract tests from skipping.
 
 ## Versioning (keep four files in sync)
@@ -149,8 +149,9 @@ After any change that ships, bump the version so a rebuilt container visibly ref
 
 1. `platform_version.json` — source of truth (`backend`, `frontend`)
 2. `frontend/package.json` — `version`
-3. `docker-compose.yml` — EVERY `APP_VERSION` / `FRONTEND_VERSION` fallback and the
-   `BACKEND_VERSION` build arg (six occurrences today)
+3. `docker-compose.yml` — the frontend image's two build args, `BACKEND_VERSION: ${APP_VERSION:-…}`
+   and `FRONTEND_VERSION: ${FRONTEND_VERSION:-…}` (the backend services read the mounted
+   `platform_version.json` and carry no version of their own)
 4. `frontend/package-lock.json` — its two `version` fields (`npm install --package-lock-only`
    after bumping; the image build's `npm ci` fails when the lock disagrees with `package.json`)
 

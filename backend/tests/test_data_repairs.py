@@ -34,6 +34,17 @@ def _names(repairs):
     return [repair.name for repair in repairs]
 
 
+@pytest.fixture(autouse=True)
+def _ledger_of_an_upgraded_installation(db_session):
+    """These tests start from an EMPTY ledger: an installation that had hosts
+    when revision d4a7c1e3f6b8 ran. The test database is built by the chain
+    from nothing, which (like a new installation) records both repairs of
+    that revision as not needed — ``test_test_schema_is_the_chain.py`` pins
+    that; here the rows go, inside the test's own transaction."""
+    db_session.query(DataRepairRun).delete()
+    db_session.commit()  # a script's own rollback must not bring them back
+
+
 # --- the service -----------------------------------------------------------
 
 def test_every_known_repair_is_pending_on_an_empty_ledger(db_session):

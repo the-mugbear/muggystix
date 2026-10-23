@@ -125,7 +125,7 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     role = 'analyst';
     mocked.listNames.mockResolvedValue({ items: [resolved, wildcard, short], total: 3, skip: 0, limit: 100 });
     mocked.getNamesSummary.mockResolvedValue({
-      total: 3, unresolved: 2, resolved: 1, in_scope: 2, wildcards: 1, shared_addresses: 4, shared_names: 6,
+      total: 3, unresolved: 2, resolved: 1, in_scope: 2, wildcards: 1, shared_names: 6,
     });
   });
 

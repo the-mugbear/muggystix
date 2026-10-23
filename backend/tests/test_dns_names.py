@@ -219,7 +219,9 @@ class TestRelationships:
         listing = client.get(f"/api/v1/projects/{test_project.id}/names/?state=shared").json()
         assert summary["shared_names"] == 2
         assert summary["shared_names"] == listing["total"]
-        assert summary["shared_addresses"] == 1
+        # The count of ADDRESSES shared by names had no reader and a
+        # different rule from the chip's; it is gone (review 2026-10-10, R7).
+        assert "shared_addresses" not in summary
 
     def test_changing_address_gives_current_and_previous(self, db_session, test_project):
         t0 = datetime.now(timezone.utc) - timedelta(days=7)

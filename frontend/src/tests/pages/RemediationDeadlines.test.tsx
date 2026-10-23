@@ -50,7 +50,6 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 
 import RemediationDeadlines from '../../pages/RemediationDeadlines';
 import RemediationSettingsSection, { daysProblem, zoneProblem } from '../../components/remediation/RemediationSettingsSection';
-import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { notificationHref } from '../../utils/notificationLinks';
 import type { RemediationRow, RemediationState } from '../../services/api';
 import { asCapped } from '../helpers/cappedList';
@@ -93,7 +92,6 @@ beforeEach(() => {
   [getRemediationPolicy, updateRemediationPolicy, listRemediationProjects, listRemediationOverview, applyRemediation]
     .forEach((m) => m.mockReset());
   Object.values(toast).forEach((m) => m.mockReset());
-  resetRemediationPolicy();
   projectCtx.projects = [{ id: 4, name: 'Alpha' }];
   projectCtx.selectProject.mockReset();
   navigateMock.mockReset();

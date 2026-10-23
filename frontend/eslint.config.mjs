@@ -14,11 +14,26 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 import apiInQueryOnly from './eslint-rules/api-in-query-only.mjs';
+// A queryFn that calls an API function hands on the query's signal.
+import queryFnSignal from './eslint-rules/query-fn-signal.mjs';
 // State seeded from the address (a second owner of a filter) is refused.
 import stateFromAddress from './eslint-rules/state-from-address.mjs';
 
 // This repository's own rules (one object: a plugin is defined once).
-const bluestick = { rules: { 'api-in-query-only': apiInQueryOnly, 'state-from-address': stateFromAddress } };
+const bluestick = {
+  rules: {
+    'api-in-query-only': apiInQueryOnly,
+    'query-fn-signal': queryFnSignal,
+    'state-from-address': stateFromAddress,
+  },
+};
+
+// The barrel's exports that make no request (the client's own state; links
+// to a Hosts list built from data already in hand).
+const NOT_REQUESTS = [
+  'getCurrentProjectId', 'setCurrentProjectId',
+  'conditionHostsHref', 'subnetHostsHref', 'gridCellHostsHref', 'familyCellHostsHref',
+];
 
 // A file save goes through utils/download (`saveBlob`).
 const DOWNLOAD_NAME = {
@@ -110,13 +125,12 @@ export default [
     ignores: ['src/services/api/**', 'src/tests/**'],
     plugins: { bluestick },
     rules: {
-      'bluestick/api-in-query-only': ['error', {
-        allow: [
-          // the current project (the client's own state)
-          'getCurrentProjectId', 'setCurrentProjectId',
-          // links to a Hosts list, built from data already in hand
-          'conditionHostsHref', 'subnetHostsHref', 'gridCellHostsHref', 'familyCellHostsHref',
-        ],
+      'bluestick/api-in-query-only': ['error', { allow: NOT_REQUESTS }],
+      // …and a queryFn hands on the query's signal.  `noSignal` names the
+      // requests that take none: click-only downloads (frontend.md).
+      'bluestick/query-fn-signal': ['error', {
+        allow: NOT_REQUESTS,
+        noSignal: ['downloadInventoryCsv', 'downloadReportJob', 'fetchReportJobBlob', 'getToolReadyOutput'],
       }],
     },
   },

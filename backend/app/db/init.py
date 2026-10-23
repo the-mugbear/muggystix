@@ -1,9 +1,11 @@
-"""Database initialisation — shared by the API process and the ingestion worker.
+"""Database initialisation — the body of the migration step, ``app.db.migrate``.
 
 Schema management is owned by **Alembic** (see ``backend/alembic/``).  This
-module's only job is to bring a database up to the current Alembic head on
-process startup, retrying while the DB service boots and serializing the
-upgrade across the API + worker processes.
+module's only job is to bring a database up to the current Alembic head when
+the migration step runs (the backend's and the ingestion worker's container
+commands run it before they start), retrying while the DB service boots and
+serializing the upgrade across the containers that run it.  Nothing calls it
+at import: importing the application migrates nothing.
 
 History: the schema used to be built by ``Base.metadata.create_all`` plus a
 ~77-entry hand-rolled ``_MIGRATIONS`` list maintained right here.  That list
@@ -13,9 +15,9 @@ exact same schema (column-for-column) as the old create_all + migrations
 path — the migrations were pure "catch an old DB up to the models" steps and
 added nothing the models didn't already declare.
 
-Waiting for the migration lock (review 2026-10-01 B1).  Several processes
-start together (uvicorn workers, the ingestion worker, the report worker); one
-migrates, the rest wait.  A waiter must hold NO snapshot while it waits: it
+Waiting for the migration lock (review 2026-10-01 B1).  More than one
+process can run the step at once (the backend's and the ingestion worker's;
+before the step existed, every uvicorn worker too); one migrates, the rest wait.  A waiter must hold NO snapshot while it waits: it
 used to block inside ``SELECT pg_advisory_lock(...)``, an active statement,
 and a ``CREATE INDEX CONCURRENTLY`` in the migrating process waits for every
 older snapshot to end — while the waiters waited for the lock.  Postgres
@@ -381,9 +383,14 @@ def _current_db_revision() -> Optional[str]:
 def initialize_database() -> None:
     """Bring the database schema to Alembic head, retrying while the DB boots.
 
+    Called by the migration step (``python -m app.db.migrate``) only — never
+    at import (``app.main`` and ``app.worker`` used to call it at import, so
+    any script, probe or test run that imported the app migrated whatever
+    ``DATABASE_URL`` pointed at, unmerged revisions included).
+
     Safe to call multiple times (the ``_done`` guard makes every call after
-    the first a no-op) and safe to call concurrently from the API and worker
-    processes: on PostgreSQL a session-level advisory lock serializes the
+    the first a no-op) and safe to call concurrently from the backend's and
+    the worker's steps: on PostgreSQL a session-level advisory lock serializes the
     upgrade, so whichever process loses the race waits (idle, polling — see
     ``_migration_lock``) and then simply runs it as a no-op.
 
@@ -393,20 +400,6 @@ def initialize_database() -> None:
     """
     global _done
     if _done:
-        return
-
-    # v2.370.1 — ``app.main`` calls this at IMPORT time, so anything that
-    # imports the app migrates whatever DATABASE_URL points at. The test suite
-    # builds its own schema in its own ``<db>_test_<pid>`` database and never
-    # needed that — but it ran with the working tree mounted, so an unmerged
-    # revision was applied to the developer's real database (2026-09-20: a
-    # data migration deleted rows before they had been exported). The test
-    # harness sets this; nothing in a deployment should.
-    if os.getenv("BLUESTICK_SKIP_DB_INIT") == "1":
-        logger.warning(
-            "BLUESTICK_SKIP_DB_INIT=1 — not migrating %s. Test harness only; "
-            "a deployment must never set this.", engine.dialect.name,
-        )
         return
 
     max_attempts = int(os.getenv("DB_INIT_MAX_RETRIES", "10"))

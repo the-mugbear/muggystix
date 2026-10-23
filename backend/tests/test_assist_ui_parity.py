@@ -438,10 +438,10 @@ def test_web_interfaces_carry_what_the_web_panel_reads_from_the_tls_record(
 # MCP acceptance run 2 (2.429.1)
 # ---------------------------------------------------------------------------
 
-def _vuln(db_session, host, scan, severity, exploitable):
+def _vuln(db_session, host, scan, severity, exploitable, plugin_id=None):
     from app.db.models_vulnerability import Vulnerability, VulnerabilitySource
     db_session.add(Vulnerability(
-        host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.NESSUS,
+        host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.NESSUS, plugin_id=plugin_id,
         severity=severity, title=f"{severity.value} {exploitable}", exploitable=exploitable,
     ))
 
@@ -458,8 +458,8 @@ def test_an_exploitable_critical_is_one_vulnerability_not_two(client, db_session
     db_session.add_all([real, paired])
     db_session.flush()
     _vuln(db_session, real, scan, Sev.CRITICAL, True)
-    _vuln(db_session, paired, scan, Sev.CRITICAL, False)
-    _vuln(db_session, paired, scan, Sev.CRITICAL, False)
+    _vuln(db_session, paired, scan, Sev.CRITICAL, False, plugin_id="1")
+    _vuln(db_session, paired, scan, Sev.CRITICAL, False, plugin_id="2")
     _vuln(db_session, paired, scan, Sev.LOW, True)
     db_session.commit()
     headers = _assist(client, test_project.id)

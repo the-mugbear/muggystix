@@ -32,8 +32,9 @@
 # It follows the documented recipe: a one-off container started from the
 # repository root, the working tree's backend/ mounted over /app, the tests
 # mounted explicitly (so a git worktree tests ITS tests, not the main
-# checkout's), and BLUESTICK_SKIP_DB_INIT=1 so nothing here can migrate the
-# development database.  The stack must be up (the suite creates and drops
+# checkout's).  Nothing here can migrate the development database: importing
+# the app runs no migration (only `python -m app.db.migrate` does, and the
+# containers here replace the image's command).  The stack must be up (the suite creates and drops
 # its own databases on the running db container); nothing is built or pulled.
 #
 # Shards (step 1).  The suite's test FILES are split into CHECK_SHARDS groups
@@ -505,7 +506,7 @@ backend_suite() {
     # it the tests that read the shipped templates skip ("not mounted") even
     # though they are mounted.
     local -a suite_env=(
-        -e COVERAGE_FILE=/tmp/.coverage -e BLUESTICK_SKIP_DB_INIT=1 -e DB_POOL_SIZE=5
+        -e COVERAGE_FILE=/tmp/.coverage -e DB_POOL_SIZE=5
         -e REPORT_TEMPLATES_DIR=/app/report-templates -e BLUESTICK_REPO_ROOT=/repo
     )
 
@@ -676,7 +677,6 @@ backend_lint() {
     # are reported.  --no-cache: /app is the working tree, and a cache
     # directory written there would be root-owned.
     compose run --rm --no-deps -v "$SRC/backend:/app" \
-        -e BLUESTICK_SKIP_DB_INIT=1 \
         report-worker \
         sh -c "python -m ruff --version >/dev/null 2>&1 || { echo 'CHECK: ruff is not in this image (built with INSTALL_DEV=false?)'; exit 98; }
                cd /app && python -m ruff check . --no-cache --output-format concise" \

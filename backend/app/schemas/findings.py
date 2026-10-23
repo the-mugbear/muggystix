@@ -153,6 +153,9 @@ class FindingResponse(BaseModel):
     needs: Optional[List[FindingNeed]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # Rises with every write of the finding (``findings.revision``): of two
+    # answers about one finding, the higher revision is the newer.
+    revision: int = 1
     model_config = ConfigDict(from_attributes=True)
 
 

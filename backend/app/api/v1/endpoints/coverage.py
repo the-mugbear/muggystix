@@ -63,9 +63,9 @@ class ScopeCoverage(BaseModel):
     ``total_scoped_ips`` is the sum of /32 hosts across this scope's
     CIDR ranges — naive count, no exclusion for network/broadcast
     addresses.  ``discovered_in_scope`` is distinct hosts mapped to
-    any of the scope's subnets (via HostSubnetMapping).
+    any of the scope's subnets (via HostSubnetMapping).  It names no scope:
+    a project has exactly one, and no answer hands out a scope id.
     """
-    scope_id: int
     subnet_count: int = 0
     total_scoped_ips: int = 0
     discovered_in_scope: int = 0
@@ -228,7 +228,6 @@ def get_project_coverage(
 
         scopes_rows.append(
             ScopeCoverage(
-                scope_id=scope.id,
                 subnet_count=len(subnets),
                 total_scoped_ips=total_ips,
                 discovered_in_scope=discovered,

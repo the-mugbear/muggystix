@@ -146,10 +146,12 @@ backend_probe() {
 }
 
 # The migration's own failure line from the backend log of the last $1
-# seconds, or nothing.  A failed migration does NOT stop the container:
-# uvicorn's supervisor stays up and respawns the workers, each of which
-# re-runs the upgrade and fails again — status "running", restart count 0,
-# for as long as anyone waits (2026-10-02: a deploy waited on exactly that).
+# seconds, or nothing.  Read before the restart count: a failed migration
+# step ends the container and Docker's restart policy runs it again, so the
+# line is there long before BACKEND_RESTART_LIMIT restarts are.  (Before the
+# step, the migration ran at import in every uvicorn worker: the supervisor
+# stayed up and respawned them — status "running", restart count 0, for as
+# long as anyone waited; 2026-10-02.)
 backend_migration_failure() {
     $DC logs --since "${1:-300}s" backend 2>/dev/null | grep "DATABASE MIGRATION FAILED" | tail -n 1 | cut -c1-700
 }
@@ -205,15 +207,16 @@ wait_for_database() {
 # ------------------------------------------------------------------
 # Waiting for the backend (review 2026-10-01 R31)
 #
-# The backend runs `alembic upgrade head` at import, before it serves
-# anything, so "not healthy yet" has two very different meanings:
+# The backend's command runs the migration step (`python -m app.db.migrate`)
+# before uvicorn starts, so "not healthy yet" has two very different meanings:
 #
 #   * still migrating — the container is running and a session holds the
 #     migration advisory lock.  The only correct action is to wait; rolling
 #     back the images now would point the OLD code at a half-migrated schema.
 #   * crashed — the container exited, or Docker keeps restarting it;
-#   * the migration failed — the container stays "running" while its workers
-#     retry and fail (see backend_migration_failure).
+#   * the migration failed — the step said so in the log and ended the
+#     container, which the restart policy starts again to fail the same way
+#     (see backend_migration_failure).
 #
 # $1 = seconds to wait.  Returns 0 healthy, 2 crashed / crash-looping,
 # 1 still starting at the timeout.
@@ -262,8 +265,8 @@ wait_for_backend_healthy() {
 # Staged start (branch review S4).
 #
 # The backend ALONE first: ONE process migrates, and nothing else is
-# connected while it does.  Every process runs `alembic upgrade head` at
-# start under the migration advisory lock, so a worker started beside the
+# connected while it does.  The backend and the ingestion worker each run the
+# migration step first, under the migration advisory lock, so a worker started beside the
 # backend would either be the one that migrates (and the health wait below
 # watches the backend) or sit waiting for the lock.  The workers are
 # therefore stopped before the backend starts and started only after it is

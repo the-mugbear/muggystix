@@ -2,8 +2,9 @@
 
 Pins:
 
-* the format registry names every ``file_type`` the dispatcher can emit,
-  and every registry key resolves to an importable parser;
+* detection is built from the format registry: every ``file_type`` it can
+  emit is a registry key, every key is reachable, and every key resolves to
+  an importable parser;
 * an operator override is the WHOLE attempt list — exactly the chosen
   parser, no fallback — and an unknown override yields no attempt;
 * the worker records what it detected first and what actually parsed the
@@ -19,7 +20,7 @@ from types import SimpleNamespace
 
 from app.db import models
 from app.services import ingestion_service as ingestion_module
-from app.services.format_registry import FORMATS, format_label, resolve_parser
+from app.services.format_registry import FORMATS, detection_keys, format_label, resolve_parser
 from app.services.ingestion_service import IngestionService, ParseFailure
 
 SERVICE_SRC = Path(ingestion_module.__file__).read_text()
@@ -35,10 +36,16 @@ NMAP_XML = b"""<?xml version="1.0"?>
 
 
 def test_registry_covers_every_file_type_the_dispatcher_emits():
-    emitted = set(re.findall(r'attempts\.append\(\("([a-z_]+)"', SERVICE_SRC))
-    assert emitted, "could not find any attempts.append((...)) in the dispatcher"
-    missing = sorted(emitted - set(FORMATS))
-    assert not missing, f"dispatcher emits file_types the registry does not name: {missing}"
+    """Detection is built from the registry (H-g): every key its tables name
+    is a format, every format is reachable by some extension, and the
+    dispatcher's body names no format of its own."""
+    emitted = detection_keys()
+    missing = sorted(set(emitted) - set(FORMATS))
+    assert not missing, f"detection names file_types the registry does not: {missing}"
+    unreachable = sorted(set(FORMATS) - set(emitted))
+    assert not unreachable, f"formats no extension's detection order reaches: {unreachable}"
+    assert not re.findall(r'attempts\.append\(\("([a-z_]+)"', SERVICE_SRC), (
+        "the dispatcher appends a format by hand; add it to format_registry.DETECTION")
     for key in FORMATS:
         assert resolve_parser(key) is not None, f"registry key {key} does not resolve to a parser"
     assert format_label("nmap_xml") == "Nmap XML"

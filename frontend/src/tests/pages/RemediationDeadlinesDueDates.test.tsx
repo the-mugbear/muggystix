@@ -55,7 +55,6 @@ import RemediationSettingsSection, {
   PREVIEW_DELAY_MS, policyEffect,
 } from '../../components/remediation/RemediationSettingsSection';
 import { TooltipProvider } from '../../components/ui/tooltip';
-import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { formatDate } from '../../utils/relativeTime';
 import type { RemediationPage, RemediationRow, RemediationState } from '../../services/api';
 import { asCapped } from '../helpers/cappedList';
@@ -101,7 +100,6 @@ beforeEach(() => {
     prepareContactReport]
     .forEach((m) => m.mockReset());
   Object.values(toast).forEach((m) => m.mockReset());
-  resetRemediationPolicy();
   projectCtx.projects = [{ id: 4, name: 'Alpha' }];
   getRemediationPolicy.mockResolvedValue(POLICY);
   listRemediationProjects.mockResolvedValue({

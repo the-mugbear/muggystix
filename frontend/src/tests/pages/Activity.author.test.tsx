@@ -33,7 +33,6 @@ vi.mock('../../services/api', () => ({
 }));
 
 import Activity from '../../pages/Collaboration';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 let search = '';
 const Probe = () => {
@@ -45,7 +44,6 @@ const renderAt = (entry: string) => render(
 );
 
 beforeEach(() => {
-  resetProjectMembersCache();
   getNoteActivity.mockReset().mockResolvedValue({
     notes: [], total_notes: 0, status_counts: { open: 0, in_progress: 0, resolved: 0 },
     authors: [{ id: 2, name: 'alice' }, { id: 7, name: 'me' }],

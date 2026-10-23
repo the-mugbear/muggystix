@@ -30,7 +30,6 @@ vi.mock('../../services/api', () => ({
 }));
 
 import Activity from '../../pages/Collaboration';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const note = (over: Record<string, unknown>) => ({
   note_id: 1, host_id: 5, ip_address: '10.0.0.5', hostname: 'h5', body: 'a note', status: 'open',
@@ -51,7 +50,6 @@ const discussion = (over: Record<string, unknown>) => ({
 });
 
 beforeEach(() => {
-  resetProjectMembersCache();
   getNoteActivity.mockReset();
   getFindingDiscussions.mockReset().mockResolvedValue({ items: [], total: 0 });
 });

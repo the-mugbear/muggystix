@@ -9,25 +9,22 @@ import {
   unmatchedMentionTokens,
 } from '../../utils/mentions';
 
-// The same cases as backend/tests/test_mentions_and_discussion.py::test_find_mentions —
-// what the composer highlights must be what the server notifies.
-const NAMES = ['eval-ana', 'eval-ben', 'ana', 'j.smith', 'anabel', 'Bob_2'];
+import { twinCases } from '../helpers/twinCases';
+
+// ONE case table with the server (backend/tests/fixtures/twins/mentions.json,
+// which test_mentions_and_discussion.py runs against `scan_mentions`): what
+// the composer highlights must be what the server notifies (backlog
+// 2026-10-22, H-d).  Add a case there, never here.
+const TWIN = twinCases<{ names: string[]; cases: Array<{ text: string; matched: string[]; unmatched: string[] }> }>(
+  'mentions.json',
+);
+const NAMES = TWIN.names;
+const CASES = TWIN.cases.map((c) => [c.text, c.matched, c.unmatched] as const);
 const names = (text: string) => new Set(findMentionSpans(text, NAMES).map((s) => s.username));
 
 describe('findMentionSpans', () => {
-  it.each([
-    ['@eval-ana please look', ['eval-ana']],
-    ['ping @j.smith.', ['j.smith']],
-    ['@ana, and @anabel', ['ana', 'anabel']],
-    ['@anab is nobody', []],
-    ['@ana-maria is nobody either', []],
-    ['mail ana@example.com', []],
-    ['(@eval-ben) @BOB_2!', ['eval-ben', 'Bob_2']],
-    ['@eval-ana\n@eval-ana again', ['eval-ana']],
-    ['no mention here', []],
-    ['trailing @', []],
-  ])('%s', (text, expected) => {
-    expect(names(text)).toEqual(new Set(expected));
+  it.each(CASES)('%s', (text, matched) => {
+    expect(names(text)).toEqual(new Set(matched));
   });
 
   it('returns the exact span of each mention', () => {
@@ -35,19 +32,9 @@ describe('findMentionSpans', () => {
   });
 });
 
-// The same cases as backend test_scan_mentions_reports_what_matched_nobody.
 describe('unmatchedMentionTokens', () => {
-  it.each([
-    ['@eval-cy please retest', ['eval-cy']],
-    ['@eval-ben and @eval-anna, see', ['eval-anna']],
-    ['@ana and @nobody.', ['nobody']],
-    ['@anab and @ana-maria', ['anab', 'ana-maria']],
-    ['mail ana@example.com', []],
-    ['@Ghost then @ghost', ['Ghost']],
-    ['trailing @ and @!', []],
-    ['@j.smith.', []],
-  ])('%s', (text, expected) => {
-    expect(unmatchedMentionTokens(text, NAMES)).toEqual(expected);
+  it.each(CASES)('%s', (text, _matched, unmatched) => {
+    expect(unmatchedMentionTokens(text, NAMES)).toEqual(unmatched);
   });
 
   it('skips the mention still being typed', () => {

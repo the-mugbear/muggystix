@@ -1,23 +1,19 @@
 /**
  * Images in a finding's report text — the client's half of the rules.  The
  * reference pattern is the twin of `REFERENCE` in
- * backend/app/services/report_images.py (same cases as
- * tests/test_report_image_placement.py).
+ * backend/app/services/report_images.py; both run the ONE shared table
+ * (`reportImageCases`, backend/tests/fixtures/twins/).
  */
 import { describe, expect, it } from 'vitest';
 
 import {
-  EVIDENCE_REFERENCE, captionAsAlt, codeSpans, evidenceIdOf, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
+  EVIDENCE_REFERENCE, captionAsAlt, codeSpans, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
 } from '../../utils/reportImages';
 
-import { CODE_REFERENCE_CASES, REFERENCE_CASES } from './reportImageCases';
+import { CODE_SPAN_CASES, REFERENCE_CASES } from './reportImageCases';
 
 describe('one grammar decides what places an image', () => {
   it.each(REFERENCE_CASES)('%j → %j', (text, ids) => {
-    expect(referencedImageIds(text)).toEqual(ids);
-  });
-
-  it.each(CODE_REFERENCE_CASES)('code beside a reference: %j → %j', (text, ids) => {
     expect(referencedImageIds(text)).toEqual(ids);
   });
 
@@ -43,19 +39,8 @@ describe('one grammar decides what places an image', () => {
   });
 });
 
-describe('codeSpans — the server\'s `_code_spans`, rule for rule', () => {
-  it.each<[string, Array<[number, number]>]>([
-    ['no code', []],
-    ['a `b` c', [[2, 5]]],
-    ['a ``b ` c`` d', [[2, 11]]],
-    ['a ` b `` c', []],                               // no run of the same length
-    ['`a\nb` c', [[0, 5]]],                           // a span may cross a line break
-    ['```\nx\n```\nafter `y`', [[0, 10], [16, 19]]],
-    ['   ~~~~\nx\n~~~\n~~~~  \nz', [[0, 21]]],        // closes on at least as many, nothing after
-    ['    ```\nx', []],                               // four spaces: not a fence (and no pair of runs)
-    ['```\nx\n``` not a close\ny', [[0, 23]]],       // unclosed: to the end
-    ['```\n`a`\n~~~\n```\n`b`', [[0, 16], [16, 19]]], // the other fence character does not close
-  ])('%j → %j', (text, spans) => {
+describe('codeSpans — the server\'s `code_spans`, on the shared table', () => {
+  it.each(CODE_SPAN_CASES)('%j → %j', (text, spans) => {
     expect(codeSpans(text)).toEqual(spans);
   });
 });
@@ -76,13 +61,6 @@ describe('referencedImageIds — what places an image', () => {
       '![x](evidence:abc)', '![x](evidence:1.png)', '<img src="evidence:1">', 'evidence:1', '', null, undefined,
     ]) {
       expect(referencedImageIds(text)).toEqual([]);
-    }
-  });
-
-  it('reads the id from a target and nothing else', () => {
-    expect(evidenceIdOf('evidence:57')).toBe(57);
-    for (const t of ['evidence:', 'evidence:5x', 'https://x/evidence:5', 'javascript:alert(1)', 'data:image/png;base64,AA', '../5']) {
-      expect(evidenceIdOf(t)).toBeNull();
     }
   });
 });

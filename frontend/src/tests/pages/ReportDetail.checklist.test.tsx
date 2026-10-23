@@ -65,7 +65,6 @@ vi.mock('../../components/ui/info-tip', () => ({
 
 import * as api from '../../services/api';
 import ReportDetail from '../../pages/ReportDetail';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
@@ -110,7 +109,6 @@ const ISSUE = '/reports/5?section=issue';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resetProjectMembersCache();
   auth.user = { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' };
   mocked.listReportTemplates.mockResolvedValue([
     { name: 'pentest', title: 'Penetration test report', description: 'Findings-first client report.', formats: ['html', 'docx'] },

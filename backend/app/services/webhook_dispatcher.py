@@ -334,9 +334,6 @@ _RETRY_MAX_SECONDS = 3600
 # to exceed a realistic POST duration so a live sender is not undercut —
 # generous margin over _TIMEOUT_SECONDS to cover DNS + TLS + the response.
 _CLAIM_LEASE_SECONDS = 60
-# Back-compat alias: the old name described the pre-A6 design (hiding a row
-# from the sweeper). Kept so external references don't break.
-_FASTPATH_LEASE_SECONDS = _CLAIM_LEASE_SECONDS
 # Rows the sweeper will attempt per pass — bounded so a large backlog can't
 # monopolise the worker tick.
 _SWEEP_BATCH = 20
@@ -719,7 +716,7 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
     take the same row. That lock does NOT reach the API's fast-path threads —
     they hold no row lock while POSTing — so the fast path is kept out of the
     way by leasing instead: a row handed to the in-process queue is created
-    ``_FASTPATH_LEASE_SECONDS`` in the future, and ``_claim_for_send``
+    ``_CLAIM_LEASE_SECONDS`` in the future, and ``_claim_for_send``
     re-reads its status before any queued task actually sends. Delivery
     happens synchronously here, on the ingestion worker's one thread; the
     batch is bounded in rows AND in time (``_SWEEP_BUDGET_SECONDS``, each POST

@@ -142,7 +142,6 @@ def _attribution_from_key(db: Session, request: Request) -> Optional[dict]:
         .filter(
             APIKey.key_hash == hashlib.sha256(token.encode()).hexdigest(),
             APIKey.is_active.is_(True),
-            APIKey.agent_id.isnot(None),
         )
         .first()
     )

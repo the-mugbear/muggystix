@@ -101,7 +101,6 @@ docker run --rm \
     -e DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@${CONTAINER}:5432/${DB_NAME}" \
     -e JWT_SECRET_KEY=alembic-roundtrip-test-only \
     -e CREDENTIAL_ENCRYPTION_KEY=alembic-roundtrip-test-only \
-    -e BLUESTICK_SKIP_DB_INIT=1 \
     -e BASELINE_REVISION="${BASELINE_REVISION}" \
     --entrypoint sh \
     "${BACKEND_IMAGE}" -c '

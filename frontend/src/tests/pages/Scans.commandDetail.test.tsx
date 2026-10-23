@@ -9,7 +9,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createQueryClient } from '../../lib/query';
-import { ScanCommandDetail } from '../../pages/Scans';
+import { ScanCommandDetail } from '../../components/scans/ImportHistoryTable';
 import type { Scan } from '../../services/api';
 
 const { getScanCommandExplanation } = vi.hoisted(() => ({ getScanCommandExplanation: vi.fn() }));

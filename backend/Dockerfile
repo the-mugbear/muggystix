@@ -123,8 +123,8 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 # Expose port
 EXPOSE 8000
 
-# Health check.  The app serves /health only after `alembic upgrade head`
-# has finished, and a data migration on a large project takes minutes: with
+# Health check.  The app serves /health only after the migration step
+# (`python -m app.db.migrate`, in the CMD below) has finished, and a data migration on a large project takes minutes: with
 # the old 60 s start period the container read "unhealthy" after ~150 s, in
 # the middle of a healthy migration (review 2026-10-01 R31).  During the start
 # period a failing probe does not count and the first passing one flips the
@@ -149,7 +149,12 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=900s --retries=3 \
 # signals.  Without it SIGTERM went to `sh`, which does not forward it — the
 # workers never saw the shutdown, in-flight requests were cut off, and every
 # stop waited out the 10 s grace period before SIGKILL (review 2026-10-01 N7).
-CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue /app/uploads/note_attachments /app/uploads/report_artifacts 2>/dev/null; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}"]
+# `python -m app.db.migrate &&`: the migration step, once, before uvicorn — not
+# at import of app.main (a script or probe importing the app migrated the
+# database it pointed at).  A failed step ends the container (its one
+# "DATABASE MIGRATION FAILED" line is in the log) and the restart policy runs
+# it again; uvicorn never serves a schema behind head.
+CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue /app/uploads/note_attachments /app/uploads/report_artifacts 2>/dev/null; python -m app.db.migrate && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}"]
 
 # Report worker (v2.381.0) — the production image plus Quarto.  The backend
 # and ingestion worker build `target: production` and carry no Quarto; only

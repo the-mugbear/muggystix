@@ -82,10 +82,18 @@ files out of the working tree (the older `-w /app` form left them in `backend/`)
 
 **The suite does not touch your dev database's schema or data.** Data: it creates and drops its
 own `<database>_test_<host>_<pid>` database when the compose `db` is reachable, else uses in-memory
-SQLite. Schema: importing the app normally runs `alembic upgrade head` against `DATABASE_URL`,
-and `tests/conftest.py` sets `BLUESTICK_SKIP_DB_INIT=1` before that import (v2.370.1) — before
-then, a run with an unmerged migration in the tree applied it to the real dev database. Any
-OTHER command that imports `app.main` with the tree mounted still migrates.
+SQLite. Schema: importing the app runs no migration — only the step `python -m app.db.migrate`
+does, which the backend's and the worker's container commands run and a one-off
+`run … sh -c "…"` replaces (until that step existed, importing `app.main` migrated
+`DATABASE_URL`, and a run with an unmerged migration in the tree applied it to the real dev
+database). `test_db_init_migration.py::test_importing_the_app_runs_no_migration` pins it.
+
+**The test database's schema is built by the migration chain** (`alembic upgrade head` in a
+subprocess, `conftest.build_schema_from_chain`; 2026-10-22), not by `create_all()` from the models:
+every partial unique index, CHECK constraint, server default, extension index and enum value a
+revision creates is in the tests as it is in production. It costs about two seconds per pytest
+process. The SQLite fallback keeps `create_all()`. `test_test_schema_is_the_chain.py` pins the head
+and the constraints that used to exist in the migrations only.
 
 Mounting the agent guide keeps the docs-contract tests from skipping (they read it from disk).
 
@@ -128,7 +136,8 @@ mock of the barrel), no hand-set `.download =` (use `utils/download.saveBlob`) a
 `--max-warnings 0`. The last two were tests that searched the source; they are lint rules now,
 and those tests are gone. Since 5.351.0 it also carries `bluestick/api-in-query-only`
 (`frontend/eslint-rules/`, tested by `tests/lint/apiInQueryOnly.test.ts`): an API function is
-called only inside a `queryFn` or a `mutationFn`.
+called only inside a `queryFn` or a `mutationFn`; and `bluestick/query-fn-signal`
+(`tests/lint/queryFnSignal.test.ts`): a `queryFn` that calls one hands on the query's `signal`.
 
 ### Testing server state (TanStack Query, 5.351.0)
 
@@ -204,8 +213,10 @@ Update these WITH the change, never around it:
 
 | Test | What it pins |
 |---|---|
-| `test_schema_fk_ondelete_contract.py` | every `ForeignKey(ondelete=…)` against the ground-truth map (tests build the schema from the models, so a missing `ondelete` makes tests and prod diverge) |
-| `test_parser_dispatch_contract.py`, `test_ingestion_format_chain.py`, `test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface` | the three-place parser registration: detection → dispatch → `format_registry.FORMATS` |
+| `test_schema_fk_ondelete_contract.py` | every model `ForeignKey` (its table and `ondelete=…`) against the chain-built test database's catalog, both ways — no hand-kept map |
+| `test_test_schema_is_the_chain.py` | the test database is at the chain's head; the active-key, one-target and DNS-observation constraints exist there, refuse what they exist to refuse, and are declared on their models |
+| `test_parser_dispatch_contract.py`, `test_ingestion_format_chain.py`, `test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface` | detection, dispatch and the public sniffers are all built from the one parser registry, `format_registry.py` (every key reachable, every detected class dispatchable, the `looks_like_*` surface == the registry's sniffers) |
+| `test_parser_registry_old_equals_new.py` | every attempt list detection gave a corpus of samples before the registry became the one source (`fixtures/parser_attempts_before_registry.json`) |
 | `test_parser_coverage.py` | every format has an entry in `app/data/parser_coverage.json` (the "What BlueStick reads" page), and what it claims matches what the parsers write |
 | `test_host_list_query_budget.py`, `test_ingestion_query_budget.py`, `test_host_loading.py` | the /hosts list does not issue a query per host; ingestion dedup stays linear in host count; querying hosts is one statement |
 | `test_host_query_suggest.py::test_every_value_source_is_enumerable_or_deliberately_not` | every `/hosts` DSL field has a value source the autocomplete enumerates, or is `enum`/`window`/`free` on purpose |
@@ -225,7 +236,7 @@ Update these WITH the change, never around it:
 | `test_workbench.py::test_workbench_query_count_is_bounded` | the Operations surface's statement count (add grouped queries, never per-row ones) |
 | `test_note_serialization_loads.py`, `test_host_detail_loads.py` | serialising notes / opening a host costs a fixed number of queries; `note_load_options()` loads everything `_serialize_note` reads |
 | `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | the agent guide's section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
-| `test_db_init_migration.py` | boot-migration error handling, and that the harness runs with `BLUESTICK_SKIP_DB_INIT=1` |
+| `test_db_init_migration.py` | migration-step error handling; importing `app.main` / `app.worker` runs no migration; the backend's CMD and the worker's command run `python -m app.db.migrate` first, the report worker never |
 | `uploadFormats.test.ts`, `uploadFormatContract.test.ts` | the advertised upload formats against `documentation/UPLOAD_FORMATS.md`, and the dropzone allowlist against the backend's |
 | `versionConsistency.test.ts` | every version fallback in `docker-compose.yml` against `platform_version.json` |
 | `themeAlphaTokens.test.ts` | a theme token that carries its own alpha (`--muted`, `--accent`, `--border`, `--sidebar-accent`) is not wrapped with `/ <alpha-value>` in `tailwind.config.ts` |

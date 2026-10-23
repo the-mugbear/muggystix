@@ -35,18 +35,20 @@ Once queued, a background worker (`app/worker.py`) claims the job and runs
    `detected_file_type` → `format_override` → `final_file_type`.
 1. **Sample read** — `_read_sample()` reads the first **64 KB** of the file.
 2. **Attempt list** — `_build_parsing_attempts(job, sample)`
-   (`app/services/ingestion_service.py`) builds an **ordered** list of
-   `(file_type, ParserClass, description)` descriptors. `file_type` is a registry
-   key (`nmap_xml`, `masscan_list`, `dirbuster_csv`, …), not display text — the
-   label and family live in `format_registry.FORMATS`. The list is branched first
-   on the file **extension** (`.xml`/`.gnmap`/`.json`/`.jsonl`/`.ndjson`/`.zip`/
-   `.csv`/`.txt`; `.nessus`, or an `.xml` that `is_nessus_sample()` recognises, is
-   a pre-branch check) and then gated by per-tool **content detectors**
-   (`looks_like_*` in `app/parsers/content_detection.py`; httpx, whatweb and
-   testssl keep theirs in their own parser module). Ordering is by
-   structural specificity — e.g. for `.xml`, `looks_like_masscan_xml` (scanner
-   attr) is tried before nmap, OpenVAS before nmap, and Nessus is appended
-   last-ditch.
+   (`app/services/ingestion_service.py`) returns an **ordered** list of
+   `(file_type, ParserClass, description)` descriptors, built by
+   `format_registry.detect` from the one parser registry
+   (`app/services/format_registry.py`). `file_type` is a registry key
+   (`nmap_xml`, `masscan_list`, `dirbuster_csv`, …), not display text — the label
+   and family live in `FORMATS`. The list is branched first on the file
+   **extension** (`DETECTION`: `.gnmap`/`.json`/`.jsonl`/`.ndjson`/`.zip`/`.csv`/
+   `.txt`; `.xml` is the decision tree `XML_DECISIONS`; `.nessus`, or an `.xml`
+   that `is_nessus_sample()` recognises, is a pre-branch check) and then gated by
+   each format's **content detector** (its `sniffer`: a `looks_like_*` in
+   `app/parsers/content_detection.py`, or httpx's, whatweb's and testssl's in
+   their own parser module) or a filename `hint`. Ordering is by structural
+   specificity — e.g. for `.xml`, `looks_like_masscan_xml` (scanner attr) is
+   tried before nmap, OpenVAS before nmap, and Nessus is appended last-ditch.
 3. **First success wins** — each attempt's parser runs in turn; the first that
    parses without raising produces the `Scan` and the job completes. If the
    attempt list is **empty**, the job fails with an `Unsupported file type or
@@ -73,9 +75,9 @@ difference is each candidate's *basis*:
 | `filename` | only the name does — a hint | no — confirm or choose |
 | `fallback` | the dispatcher would merely *try* it, having recognised nothing | no — never even suggested |
 
-A try-anyway attempt must be marked at the source: wrap it in
-`ingestion_service._fallback(...)` (a `FallbackAttempt` — still a 3-tuple to
-every consumer). Surviving the neutral-filename pass is not evidence by itself:
+A try-anyway attempt is marked at the source: a `*` after its key in
+`format_registry.XML_DECISIONS` makes it a `FallbackAttempt` (still a 3-tuple
+to every consumer). Surviving the neutral-filename pass is not evidence by itself:
 before `fallback` existed, any unrelated `.xml` read "Nmap XML · recognised by
 structure".
 
@@ -84,16 +86,16 @@ Parsers also receive `source_tool=` (the tool the operator named at import) in
 named tool, then JSON shape, then filename hint, else the honest generic label.
 Never invent attribution from a filename alone.
 
-> **Four-place registration.** A parser is named in **four** places, and four
-> tests fail if they disagree: `_build_parsing_attempts` (routing),
-> `build_parser_dispatch_map()` (instantiation — the dispatcher raises
-> `Unsupported parser class` for a routed class that is not in the map; this is
-> exactly how RDAP and testssl once broke), and `FORMATS` in
-> `app/services/format_registry.py` (the `file_type` key with its label and
-> family, which the review, the format chooser and the job's format chain all
-> read), and the tool's entry in `app/data/parser_coverage.json` (the "What
-> BlueStick reads" page, pinned by `tests/test_parser_coverage.py`). (Details in
-> Part 2.)
+> **One registry.** A parser is registered in ONE place,
+> `app/services/format_registry.py`: its `FORMATS` row (the `file_type` key, label,
+> family, parser class, detector) and its key in the `DETECTION` order of the
+> extensions it arrives with. Routing (`detect`), instantiation
+> (`build_parser_dispatch_map()` — the classes the registry names, so a routed
+> class can no longer be missing from the map, which is how RDAP and testssl
+> once broke), the public sniffer surface, the review, the format chooser and
+> the job's format chain are all read from it. The tool's entry in
+> `app/data/parser_coverage.json` (the "What BlueStick reads" page) must name
+> every key (`tests/test_parser_coverage.py`). (Details in Part 2.)
 
 ### A file that was cut short
 
@@ -965,40 +967,41 @@ reads the column.
    needs; this gives up the dedup service's conflict-resolution and concurrency
    handling, so justify it.
 
-### Wire up detection + registration (the detector + FOUR places + the docs)
+### Wire up detection + registration (the detector + ONE registry + the docs)
 
 1. **Detector** — add `looks_like_mytool(sample: bytes, filename: str) -> bool`
-   to `app/parsers/content_detection.py`. Make the signature **specific** (a
-   distinctive key combo or root tag); filename substring matching is a cheap
-   tie-breaker but shouldn't be the only signal. Watch the
-   ordering caveats baked into `_build_parsing_attempts` (e.g. don't match a
-   string that also appears in another tool's nested output — that's the bug
-   the OpenVAS/nmap ordering comment documents).
-2. **Routing** — in `IngestionService._build_parsing_attempts`, under the right
-   extension branch, `attempts.append(("mytool_json", MyToolParser, "My Tool
-   output"))` gated by your detector. Order it by specificity relative to the
-   neighbours.
-   A parser the dispatcher would try WITHOUT having recognised anything must be
-   wrapped: `attempts.append(_fallback("mytool_json", MyToolParser, "…"))` — that
-   is what stops the review showing it as "recognised by structure".
-3. **Instantiation** — add the class to `build_parser_dispatch_map()` in
-   `ingestion_service.py`: the `dispatch` dict for an always-imported parser, or
-   the `(module_path, class_name)` tuple below it for a lazily/optionally imported
-   one. **If you skip this, the dispatcher raises `Unsupported parser class` at
-   runtime** — the routing and the map must agree.
-4. **Format registry** — add a `_spec("mytool_json", "My Tool JSON", family,
-   module, class_name, description)` row to `FORMATS` in
-   `app/services/format_registry.py`. `family` is one of `port | vuln | web | dns
-   | auth | other`. Every `file_type` the dispatcher can emit must be here: it is
-   the one list the staged review, the "parse this as…" chooser and the job's
-   format chain read, and it is how an operator's override resolves to your class.
-5. **Tests that pin all of the above** — update them with the change:
-   `tests/test_parser_dispatch_contract.py` (every detected class is
-   dispatchable), `tests/test_ingestion_format_chain.py` (every emitted
-   `file_type` is in the registry), and
-   `tests/test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface`
-   (the public `looks_like_*` list), and `tests/test_parser_coverage.py` (every
-   format has an entry in `app/data/parser_coverage.json`).
+   (or `(sample)` alone) to `app/parsers/content_detection.py`. Make the
+   signature **specific** (a distinctive key combo or root tag); filename
+   substring matching is a cheap tie-breaker but shouldn't be the only signal.
+   Watch the ordering caveats noted on `format_registry.DETECTION` and
+   `XML_DECISIONS` (e.g. don't match a string that also appears in another
+   tool's nested output — the OpenVAS/nmap bug).
+2. **Registry** — in `app/services/format_registry.py`, add a
+   `_spec("mytool_json", "My Tool JSON", family, module, class_name,
+   description, "looks_like_mytool")` row to `FORMATS` (`family` is one of
+   `port | vuln | web | dns | auth | other`; a sniffer beside its parser is
+   named `"app.parsers.mytool_parser:looks_like_mytool"`; filename tokens that
+   recognise it go in `hints`), and put `"mytool_json"` in the `DETECTION`
+   order of each extension it arrives with, by specificity relative to the
+   neighbours. That is all: routing, the dispatch map
+   (`build_parser_dispatch_map()`), the staged review, the "parse this as…"
+   chooser, the job's format chain and an operator's override all read it.
+   A parser tried WITHOUT having recognised anything is a fallback (`*` after
+   its key in `XML_DECISIONS`) — that is what stops the review showing it as
+   "recognised by structure".
+3. **Tests** — the guards read the registry rather than a list of their own:
+   `tests/test_parser_dispatch_contract.py` (detected classes are dispatchable,
+   the map is the registry's classes), `tests/test_ingestion_format_chain.py`
+   (every key detection names is a format, every format is reachable), the
+   content-detection surface test in `tests/test_phase1_regressions.py` (the
+   public `looks_like_*` predicates are exactly the registry's sniffers), and
+   `tests/test_parser_coverage.py` (every format has an entry in
+   `app/data/parser_coverage.json`). `tests/test_parser_registry_old_equals_new.py`
+   pins every attempt list for a corpus of samples: if your detector also fires
+   on one of them, the test names it — when that is intended, regenerate
+   `tests/fixtures/parser_attempts_before_registry.json`
+   (`python -m tests.test_parser_registry_old_equals_new` in the backend
+   container) and the diff shows what moved.
 6. **What users are told** — add the tool's entry to
    `app/data/parser_coverage.json` (the "What BlueStick reads" page: what the
    tool reports, the level BlueStick takes it to, where it is shown, the known

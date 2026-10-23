@@ -1,6 +1,6 @@
 /**
  * This installation's remediation settings — whether remediation tracking
- * exists here at all, and the timeline per severity (5.340.0).
+ * exists here at all, and the timeline per severity.
  *
  * One query for the session (`['getRemediationPolicy']`, lib/query),
  * shared by the navigation, the pages and the dialogs.  Until it answers — and
@@ -28,12 +28,6 @@ const KEY = ['getRemediationPolicy'];
 /** Replace the shared value (after a save): every reader follows. */
 export function setRemediationPolicy(policy: RemediationPolicy | null): void {
   queryClient.setQueryData<RemediationPolicy | null>(KEY, policy);
-}
-
-/** Forget what the app's client read.  Tests call it between cases; each of
- *  their renders has a client of its own, so there it changes nothing. */
-export function resetRemediationPolicy(): void {
-  queryClient.removeQueries({ queryKey: KEY });
 }
 
 export interface RemediationPolicyState {

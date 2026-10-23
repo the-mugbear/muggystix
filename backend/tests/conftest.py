@@ -1,6 +1,9 @@
 import os
+import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 # seed_default_admin (run by the app lifespan in TestClient-based tests) now
 # fails closed if it can't write the credential-recovery marker to /app/uploads
@@ -9,16 +12,6 @@ from datetime import datetime, timezone
 # operator-supplied path so seeding needs no marker write. MUST be set before
 # `from app.main import app` below triggers any startup wiring.
 os.environ.setdefault("DEFAULT_ADMIN_PASSWORD", "test-admin-password-not-used")
-
-# `from app.main import app` runs initialize_database() at import, i.e.
-# `alembic upgrade head` against DATABASE_URL — the developer's REAL database
-# when the suite runs in the compose network with the working tree mounted.
-# The suite creates its own schema in its own database (see
-# _resolve_test_engine), so it must not migrate that one: on 2026-09-20 a test
-# run applied an unmerged data migration to a dev database. MUST be set before
-# the import below. `tests/test_db_init_migration.py` calls the sync function
-# directly and is unaffected.
-os.environ.setdefault("BLUESTICK_SKIP_DB_INIT", "1")
 
 import pytest
 from sqlalchemy import create_engine, event, text
@@ -260,28 +253,53 @@ _OWNS_TEST_DB = USING_POSTGRES and not os.getenv("TEST_DATABASE_URL")
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def build_schema_from_chain(url) -> None:
+    """``alembic upgrade head`` against ``url``: the schema production runs.
+
+    In its own process: ``alembic/env.py`` takes the URL from the settings
+    (which this process has already loaded) and calls ``fileConfig``, which
+    would disable the loggers the tests capture. About two seconds.
+    """
+    env = {
+        **os.environ,
+        "DATABASE_URL": url.render_as_string(hide_password=False),
+    }
+    done = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=BACKEND_ROOT, env=env, capture_output=True, text=True,
+    )
+    if done.returncode != 0:
+        raise RuntimeError(
+            f"building the test schema from the migration chain failed:\n{done.stdout}\n{done.stderr}"
+        )
+
+
 @pytest.fixture(scope="session")
 def test_engine():
     """Build the test schema once per session.
 
-    create_all binds every table registered on ``models.Base`` — the
-    side-effect imports above ensure all model modules are loaded first.
+    On Postgres the schema is built by the MIGRATION CHAIN, exactly as a
+    deployment builds it: every partial unique index, CHECK constraint,
+    server default, extension index and enum value a revision creates is
+    there, which ``create_all`` from the models never gave the suite.  It
+    costs about two seconds per process over ``create_all`` (measured
+    2026-10-22).  The whole schema is dropped first, so a database a previous
+    run left (an explicit ``TEST_DATABASE_URL``) starts from nothing.
 
-    On Postgres we DROP THE WHOLE SCHEMA rather than ``metadata.drop_all``.
-    drop_all only knows the current model tables, so a table that a past
-    schema version created but the models no longer declare (e.g. the legacy
-    ``host_notes``, since renamed to ``annotations``) is left behind — and its
-    dangling FK to ``hosts_v2`` then makes drop_all fail with
-    ``DependentObjectsStillExist``, erroring every DB-backed test at setup.
-    Recreating ``public`` clears legacy + current tables in one shot so the
-    test DB always matches the live models.  SQLite is per-process in-memory,
-    so there's nothing to drop.
+    The SQLite fallback (no Postgres reachable) keeps ``create_all``: the
+    revisions are Postgres DDL.  The side-effect imports above load every
+    model module first.
     """
     if USING_POSTGRES:
         with engine.begin() as conn:
             conn.execute(text("DROP SCHEMA public CASCADE"))
             conn.execute(text("CREATE SCHEMA public"))
-    models.Base.metadata.create_all(bind=engine)
+        build_schema_from_chain(engine.url)
+    else:
+        models.Base.metadata.create_all(bind=engine)
     yield engine
     engine.dispose()
     if _OWNS_TEST_DB:

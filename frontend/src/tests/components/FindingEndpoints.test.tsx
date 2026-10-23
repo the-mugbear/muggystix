@@ -228,34 +228,36 @@ describe('FindingEndpoints — a host awaiting a retest', () => {
 // record.  The endpoint's answer is the WHOLE finding as it stood when the
 // endpoint change committed — laid over the record it put "Old title" back on
 // a page that had just shown the new one.
+// Every record carries the finding's revision (backlog 2026-10-22, H-f): of
+// two, the higher is the newer, so an older answer is dropped without a read.
 describe('FindingEndpoints — an answer that crosses another write of the finding', () => {
-  const renamed = (f: Finding): Finding => ({ ...f, title: 'New title' });
+  const at = (f: Finding, revision: number, title = f.title): Finding => ({ ...f, title, revision });
   const oldTitleWasPutBack = () => applied.mock.calls.some(([f]) => (f as Finding).title === 'F');
 
-  it('a single change: the newer title stays and the finding is read again', async () => {
-    const start = finding([endpoint(1), endpoint(2)]);
+  it('a single change: an older answer leaves the newer title, and nothing is read', async () => {
+    const start = at(finding([endpoint(1), endpoint(2)]), 1);
     const answer = deferred<Finding>();
     setFindingEndpointStatus.mockReturnValueOnce(answer.promise);
     render(<Harness initial={start} />);
     fireEvent.change(stateOf(1), { target: { value: 'retest' } });
     await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledTimes(1));
 
-    // The rename commits and is shown while the endpoint's answer is delayed.
-    act(() => setFromOutside(renamed(start)));
+    // The endpoint change committed (2), then a rename (3), whose answer —
+    // holding both — is shown while the endpoint's answer is delayed.
+    const renamed = at(withState(start, { 1: 'retest' }), 3, 'New title');
+    act(() => setFromOutside(renamed));
     applied.mockClear();
-    const held = withState(renamed(start), { 1: 'retest' });      // what the server holds
-    readFinding.mockResolvedValueOnce(held);
-    await act(async () => { answer.resolve(withState(start, { 1: 'retest' })); });   // the older snapshot
+    await act(async () => { answer.resolve(at(withState(start, { 1: 'retest' }), 2)); });   // the older snapshot
 
-    await waitFor(() => expect(cached()).toEqual(held));
-    expect(readFinding).toHaveBeenCalledTimes(1);
+    expect(cached()).toEqual(renamed);
+    expect(readFinding).not.toHaveBeenCalled();
     expect(oldTitleWasPutBack()).toBe(false);
     expect(stateOf(1).value).toBe('retest');
     expect(stateOf(1)).not.toBeDisabled();
   });
 
   it('a bulk change: the same', async () => {
-    const start = finding([endpoint(1), endpoint(2), endpoint(3)]);
+    const start = at(finding([endpoint(1), endpoint(2), endpoint(3)]), 1);
     const answer = deferred<Finding>();
     setFindingEndpointsStatus.mockReturnValueOnce(answer.promise);
     render(<Harness initial={start} />);
@@ -265,15 +267,34 @@ describe('FindingEndpoints — an answer that crosses another write of the findi
     fireEvent.click(screen.getByRole('button', { name: 'Set 2 endpoints' }));
     await waitFor(() => expect(setFindingEndpointsStatus).toHaveBeenCalledTimes(1));
 
-    act(() => setFromOutside(renamed(start)));
+    const renamed = at(withState(start, { 1: 'remediated', 2: 'remediated' }), 3, 'New title');
+    act(() => setFromOutside(renamed));
     applied.mockClear();
-    const held = withState(renamed(start), { 1: 'remediated', 2: 'remediated' });
-    readFinding.mockResolvedValueOnce(held);
-    await act(async () => { answer.resolve(withState(start, { 1: 'remediated', 2: 'remediated' })); });
+    await act(async () => { answer.resolve(at(withState(start, { 1: 'remediated', 2: 'remediated' }), 2)); });
 
-    await waitFor(() => expect(cached()).toEqual(held));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Setting/ })).not.toBeInTheDocument());
+    expect(cached()).toEqual(renamed);
+    expect(readFinding).not.toHaveBeenCalled();
     expect(oldTitleWasPutBack()).toBe(false);
     expect([1, 2, 3].map((id) => stateOf(id).value)).toEqual(['remediated', 'remediated', 'open']);
+  });
+
+  it('the other order: an answer newer than the rename goes on the record', async () => {
+    const start = at(finding([endpoint(1), endpoint(2)]), 1);
+    const answer = deferred<Finding>();
+    setFindingEndpointStatus.mockReturnValueOnce(answer.promise);
+    render(<Harness initial={start} />);
+    fireEvent.change(stateOf(1), { target: { value: 'retest' } });
+    await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledTimes(1));
+
+    // The rename committed first (2); the endpoint change after it (3).
+    act(() => setFromOutside(at(start, 2, 'New title')));
+    const newer = at(withState(start, { 1: 'retest' }), 3, 'New title');
+    await act(async () => { answer.resolve(newer); });
+
+    expect(cached()).toEqual(newer);
+    expect(readFinding).not.toHaveBeenCalled();
+    expect(stateOf(1).value).toBe('retest');
   });
 
   it('with nothing else writing the record, the answer goes on it and nothing is read', async () => {

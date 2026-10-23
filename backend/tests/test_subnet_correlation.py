@@ -61,21 +61,6 @@ def test_scan_correlation_stays_within_the_scans_project(db_session, test_projec
     assert got[only_in_other.id] == set()
 
 
-def test_scan_project_falls_back_to_its_hosts_when_the_scan_row_has_none(db_session, test_project):
-    other = _other_project(db_session)
-    _scope_with_subnets(db_session, other.id, ["0.0.0.0/0"])
-    mine = _scope_with_subnets(db_session, test_project.id, ["192.0.2.0/24"])
-
-    scan, (h,) = _scan_with_hosts(db_session, test_project.id, ["192.0.2.7"])
-    scan.project_id = None  # legacy row
-    db_session.commit()
-
-    SubnetCorrelationService(db_session).batch_correlate_scan_hosts_to_subnets(scan.id)
-
-    got = _mappings_by_host(db_session, [h.id], {v: k for k, v in mine.items()})
-    assert got[h.id] == {"192.0.2.0/24"}
-
-
 def test_project_without_subnets_clears_stale_mappings(db_session, test_project):
     """Re-correlating a project with no subnets must drop whatever its hosts
     still carry — previously the empty-subnet early return left stale (and
@@ -143,7 +128,8 @@ def test_correlation_maps_all_containing_subnets(db_session, test_project):
         "192.168.1.10": _host(db_session, test_project.id, "192.168.1.10"),  # /24
         "172.16.0.1": _host(db_session, test_project.id, "172.16.0.1"),   # none (NOT ::/0)
         "2001:db8::1": _host(db_session, test_project.id, "2001:db8::1"), # v6 /32 + ::/0
-        "bad-ip": _host(db_session, test_project.id, "not-an-ip"),        # skipped
+        # No "not-an-ip" host: the schema refuses one (idx_host_ip_inet casts
+        # every address); it was here only while the suite used create_all.
     }
     db_session.commit()
 
@@ -160,10 +146,9 @@ def test_correlation_maps_all_containing_subnets(db_session, test_project):
     # The cross-family fix: an IPv4 host must NOT match the IPv6 ::/0.
     assert got[hosts["172.16.0.1"].id] == set()
     assert got[hosts["2001:db8::1"].id] == {"2001:db8::/32", "::/0"}
-    assert got[hosts["bad-ip"].id] == set()
 
     # Return value is the total mapping count.
-    assert n == 2 + 1 + 1 + 0 + 2 + 0
+    assert n == 2 + 1 + 1 + 0 + 2
 
 
 def test_correlation_is_idempotent_and_drops_stale_mappings(db_session, test_project):

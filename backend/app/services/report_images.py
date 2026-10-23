@@ -12,7 +12,9 @@ A ticked image no section places prints in the trailing evidence block.
 This module decides, for every caller:
 
 * what counts as a reference (``REFERENCE`` — the frontend's twin is
-  ``utils/reportImages.ts``; change both together).  ONE grammar: other
+  ``utils/reportImages.ts``, which the editor's preview applies while the
+  author types; both sides' tests run ONE case table,
+  ``tests/fixtures/twins/report_image_references.json``).  ONE grammar: other
   Markdown spellings of the same image place nothing, and
   ``normalise_references`` rewrites them to it where a section is saved;
 * which of a finding's images a section may show (``placements``) — the

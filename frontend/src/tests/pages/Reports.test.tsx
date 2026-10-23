@@ -73,7 +73,6 @@ import * as api from '../../services/api';
 import Reports from '../../pages/Reports';
 import ReportDetail from '../../pages/ReportDetail';
 import ReportTemplates from '../../pages/ReportTemplates';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -101,7 +100,6 @@ const pdf = { format: 'pdf', filename: 'x-report-01.pdf', media_type: 'applicati
 
 beforeEach(() => {
   vi.clearAllMocks();
-  resetProjectMembersCache();
   auth.user = { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' };
   mocked.listReportTemplates.mockResolvedValue([{ name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] }]);
   mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });

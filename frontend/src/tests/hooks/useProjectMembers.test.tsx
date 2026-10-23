@@ -19,7 +19,7 @@ vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: project.id == null ? null : { id: project.id, name: 'P' } }),
 }));
 
-import { resetProjectMembersCache, useProjectMembers, useProjectRoster } from '../../hooks/useProjectMembers';
+import { useProjectMembers, useProjectRoster } from '../../hooks/useProjectMembers';
 
 /** A project switch: what `useProject` gives on the next render. */
 const switchTo = (id: number) => {
@@ -35,7 +35,6 @@ const NAMELESS = member(3, null, 'No Username');
 
 beforeEach(() => {
   listProjectMembers.mockReset();
-  resetProjectMembersCache();
   switchTo(1);
 });
 

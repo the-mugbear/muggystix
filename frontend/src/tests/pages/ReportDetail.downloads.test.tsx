@@ -49,7 +49,6 @@ vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentPr
 import * as api from '../../services/api';
 import Reports from '../../pages/Reports';
 import ReportDetail from '../../pages/ReportDetail';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -91,7 +90,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   delete project.my_role;
   signedIn.role = 'admin';
-  resetProjectMembersCache();
   mocked.listReportTemplates.mockResolvedValue([{ name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] }]);
   mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });
   mocked.listProjectMembers.mockResolvedValue([]);

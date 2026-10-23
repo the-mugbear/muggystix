@@ -100,13 +100,14 @@ All traffic goes through the nginx/frontend container on `443`, which proxies th
 cd backend
 pip install -r requirements-dev.txt -c constraints.txt   # runtime + pytest/ruff, every version fixed by constraints.txt
 export DATABASE_URL=... SECRET_KEY=...       # both required
+python -m app.db.migrate                     # the migration step: alembic upgrade head against DATABASE_URL
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**Importing `app.main` runs `alembic upgrade head` against `DATABASE_URL`** — so
-does any script or `python -c` probe that imports the app. Never point it at a
-database you do not want migrated. (The test suite is exempt: its harness sets
-`BLUESTICK_SKIP_DB_INIT=1`.) Without `SECRET_KEY` / `JWT_SECRET_KEY` the API
+**Only `python -m app.db.migrate` migrates.** Importing `app.main` (uvicorn, a
+script, a `python -c` probe, the test suite) touches no schema; the containers
+run the step before they start (the backend image's command, the worker's
+`command:`). Without `SECRET_KEY` / `JWT_SECRET_KEY` the API
 REFUSES TO START against Postgres; only a sqlite `DATABASE_URL` (dev/test) gets
 an ephemeral signing secret, with a warning.
 
@@ -157,9 +158,10 @@ docker compose exec backend python scripts/seed_acceptance_fixtures.py   # the "
 
 ## Schema & Migrations
 
-- Tables are owned by Alembic — migrations live in `backend/alembic/versions/`. Every startup runs `alembic upgrade head` before serving traffic.
+- Tables are owned by Alembic — migrations live in `backend/alembic/versions/`. The backend and the ingestion worker run the migration step, `python -m app.db.migrate` (`alembic upgrade head`), before they start; the report worker does not migrate. Importing the application migrates nothing.
 - Baseline revision: `b46cd59c17f5_baseline_schema.py`. Subsequent migrations layer on additive changes (ingestion-quality columns, the agent API call log, host tests, evidence records…).
-- `app/db/init.py` builds no schema itself — it takes an advisory lock and runs `alembic upgrade head` (skipped under `BLUESTICK_SKIP_DB_INIT=1`, test harness only). The old `create_all` + hand-rolled migration list is gone; the model is the schema, and Alembic enforces it.
+- `app/db/init.py` builds no schema itself — the step calls it; it takes an advisory lock and runs `alembic upgrade head`. The old `create_all` + hand-rolled migration list is gone; the model is the schema, and Alembic enforces it.
+- **Upgrading across v2.523.0.** No revision of its own; nothing to back up beyond the usual. **The migration is now a step of its own** (`python -m app.db.migrate`), run by the backend's and the ingestion worker's container command before the server or worker starts — no longer at import of the application by every uvicorn worker. What an operator sees: a migration that fails ends the backend container (its restart policy starts it again, to fail the same way) instead of leaving it "running" with workers that keep failing; the `DATABASE MIGRATION FAILED` line, `deploy.sh`'s wait, option 7 and `migration-failure-report.sh` are unchanged. A script or `python -c` probe run in a container no longer migrates the database, so `BLUESTICK_SKIP_DB_INIT` is gone: remove it from anything of your own that set it (it does nothing now). A `docker compose run backend …` with a command of your own does not migrate either; run `python -m app.db.migrate` first if it needs the new schema.
 - **Upgrading across v2.520.1** (frontend 5.415.0). No revision. Agents now send their key from `.bluestick.curl`, a curl config file the agent writes in its working directory (`curl -sS -K .bluestick.curl <url>`), not from a shell variable — they no longer ask the operator to quit, set an environment variable and restart them. Resume running agent sessions (prompt 4.46.0).
 - **Upgrading across v2.519.0** (frontend 5.413.0). Revisions `b8e4d2f6a0c3` and `c4f9e2a7b1d5` add columns (a finding's history, a proposal's replacement, an evidence record's SHA-256 — computed for every stored output during the upgrade, which on a large project takes a while) and let an `info` evidence record have no host; nothing is changed or removed, so there is nothing extra to back up (rolling back deletes the edit lines and any host-less evidence recorded since). Agents get compact proposal lists, a way to replace their own pending proposal, and the guide one section at a time: Resume running agent sessions (prompt 4.45.0). Backend and frontend go out together. Any project **analyst** may now rename a finding and edit its report text (and accept report-text proposals on it), not only its author; deleting it stays the author's or an admin's. Each direct edit of a finding's title, severity, owner or report text is now a line on its History, and the finding page shows what it was before and after.
   - **The new source goes in a folder with the SAME name (and path) as the one the stack was started from.** Move the running folder aside, extract the new source into a new folder of that name, and run `./scripts/upgrade-instance.sh` (or `deploy.sh`) there. Compose names the project — the containers and the database volume `<folder>_postgres_data` — after the folder, so a folder of any other name (an archive's `<repo>-main`, an extract nested one level down) is a different, empty installation.

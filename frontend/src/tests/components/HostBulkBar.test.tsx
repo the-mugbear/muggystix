@@ -25,7 +25,6 @@ vi.mock('../../components/StartAssistDialog', () => ({
 }));
 
 import * as api from '../../services/api';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -236,7 +235,6 @@ describe('HostBulkBar — Propose tests', () => {
 describe('HostBulkBar — the Assign menu when the members could not be loaded', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetProjectMembersCache();
     mocked.listHostTags.mockResolvedValue([]);
   });
 

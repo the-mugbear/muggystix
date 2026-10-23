@@ -21,6 +21,7 @@ interfaces, and ``/assist/hosts/{id}/web-interfaces`` (MCP
 import json
 
 import pytest
+from sqlalchemy.exc import DataError
 
 from app.db import models
 from app.db.models import HostScanHistory, Scan, Scope, Subnet, WebInterface
@@ -165,27 +166,17 @@ def test_hosts_sort_numerically_not_lexicographically(client, db_session, test_p
     assert resp.text.split() ==["10.99.1.2", "10.99.1.20", "10.99.1.100"]
 
 
-def test_an_unparseable_ip_address_does_not_take_down_the_download(
-    client, db_session, test_project, scope,
-):
-    """The ordering casts to inet guarded by pg_input_is_valid.  The column
-    has carried non-addresses (``localhost`` from httpx TLS-SAN expansion); a
-    bare cast would raise on that row and 500 the whole file."""
-    scan = _seed_hosts(db_session, test_project, scope, ["10.99.1.5"])
-    subnet = db_session.query(Subnet).filter(Subnet.scope_id == scope.id).first()
-    bad = models.Host(ip_address="localhost", state="up", project_id=test_project.id)
-    db_session.add(bad)
-    db_session.flush()
-    db_session.add(models.HostSubnetMapping(host_id=bad.id, subnet_id=subnet.id))
-    db_session.add(HostScanHistory(host_id=bad.id, scan_id=scan.id))
-    db_session.commit()
-
-    resp = _get(client, _key(client, test_project), "live-hosts.txt")
-    assert resp.status_code == 200, resp.text
-    lines = resp.text.split()
-    assert "10.99.1.5" in lines and "localhost" in lines
-    # Real addresses sort ahead of the unparseable bucket.
-    assert lines.index("10.99.1.5") < lines.index("localhost")
+def test_a_host_whose_address_is_not_an_address_cannot_be_stored(db_session, test_project):
+    """The download's ordering casts to inet guarded by pg_input_is_valid,
+    because the column once carried non-addresses (``localhost`` from httpx
+    TLS-SAN expansion). The schema production runs refuses such a row: the
+    expression index ``idx_host_ip_inet`` casts every address. This test used
+    to insert ``localhost`` and pass only because the suite's schema was
+    ``create_all()`` from the models, which never had that index (2026-10-22)."""
+    with pytest.raises(DataError, match="inet"):
+        with db_session.begin_nested():
+            db_session.add(models.Host(ip_address="localhost", state="up", project_id=test_project.id))
+            db_session.flush()
 
 
 # ---------------------------------------------------------------------------

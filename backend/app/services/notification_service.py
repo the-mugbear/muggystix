@@ -54,7 +54,9 @@ def scan_mentions(body: str, usernames: Iterable[str]) -> Tuple[Set[str], List[s
     written after it (see ``_mention_token``) as unmatched — conservatively:
     a bare ``@`` or ``@`` before punctuation reports nothing, and each word is
     reported once (case-insensitively), in order.  The frontend twin is
-    ``unmatchedMentionTokens`` in ``utils/mentions.ts``.
+    ``scanMentions`` in ``utils/mentions.ts`` (the composer applies it while
+    the author types); both sides' tests run ONE case table,
+    ``tests/fixtures/twins/mentions.json``.
     """
     if not body or "@" not in body:
         return set(), []

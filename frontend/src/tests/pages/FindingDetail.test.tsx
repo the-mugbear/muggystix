@@ -55,7 +55,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
 
 import * as api from '../../services/api';
 import FindingDetail from '../../pages/FindingDetail';
-import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -81,7 +80,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   // jsdom makes no object URLs: an image's bytes get this one.
   URL.createObjectURL = vi.fn(() => 'blob:img');
-  resetProjectMembersCache();
   projectRole.value = 'analyst';
   mocked.getFinding.mockResolvedValue(finding());
   mocked.getFindingHistory.mockResolvedValue([]);
@@ -581,8 +579,11 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
   // older finding; since plan B16 what lands late is the status route's own
   // ANSWER (the finding as it stood when the status committed), and the same
   // must hold: it is never laid over a record that was written meanwhile.
+  // Every record carries the finding's revision (backlog 2026-10-22, H-f):
+  // the late answer is the LOWER one, so it is dropped and nothing is read.
   it('a slow answer never lands over a newer finding', async () => {
     const user = userEvent.setup();
+    mocked.getFinding.mockResolvedValue(finding({ revision: 1 }));
     mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
     renderAt('/findings/7');
     const drafts = await screen.findByTestId('drafts-recommendation');
@@ -594,17 +595,19 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledTimes(1));
     expect(screen.getByLabelText('Saving status')).toBeInTheDocument();
 
-    mocked.getFinding.mockResolvedValue(finding({ title: 'After the accept', status: 'confirmed' }));
+    // The status committed (2), then the accept (3), which is read.
+    mocked.getFinding.mockResolvedValue(finding({ title: 'After the accept', status: 'confirmed', revision: 3 }));
     fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
     expect(await screen.findByText('After the accept')).toBeInTheDocument();
+    const reads = mocked.getFinding.mock.calls.length;
 
-    await act(async () => { landOlder(finding({ title: 'Before the accept', status: 'confirmed' })); });
+    await act(async () => { landOlder(finding({ title: 'Before the accept', status: 'confirmed', revision: 2 })); });
     expect(screen.getByText('After the accept')).toBeInTheDocument();
     expect(screen.queryByText('Before the accept')).not.toBeInTheDocument();
-    // Neither is known to be the newer, so the finding was read once more …
-    await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(3));
-    // … and that read releases the status control.
+    // The answer is known to be the older: the status control is released
+    // and the finding is not read again.
     await waitFor(() => expect(screen.queryByLabelText('Saving status')).not.toBeInTheDocument());
+    expect(mocked.getFinding).toHaveBeenCalledTimes(reads);
     expect(screen.getByText('After the accept')).toBeInTheDocument();
     expect(toastMock.warning).not.toHaveBeenCalled();
   });
@@ -613,6 +616,7 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
   // is still on its way.  That read must not then put the old status back.
   it('an answer that lands during a read of the finding is not overwritten by that read', async () => {
     const user = userEvent.setup();
+    mocked.getFinding.mockResolvedValue(finding({ revision: 1 }));
     mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
     renderAt('/findings/7');
     const drafts = await screen.findByTestId('drafts-recommendation');
@@ -629,11 +633,12 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
     await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(2));
 
-    mocked.getFinding.mockResolvedValue(finding({ title: 'Both changes', status: 'confirmed' }));
-    await act(async () => { answer(finding({ status: 'confirmed' })); });
+    // The accept committed (2) and the status after it (3): its answer holds both.
+    await act(async () => { answer(finding({ title: 'Both changes', status: 'confirmed', revision: 3 })); });
     expect(await screen.findByText('Both changes')).toBeInTheDocument();
-    await act(async () => { landOlderRead(finding({ title: 'Read before the status', status: 'open' })); });
+    await act(async () => { landOlderRead(finding({ title: 'Read before the status', status: 'open', revision: 2 })); });
     expect(screen.queryByText('Read before the status')).not.toBeInTheDocument();
+    expect(screen.getByText('Both changes')).toBeInTheDocument();
     expect(screen.getByLabelText('Finding status')).toHaveTextContent('Confirmed');
   });
 });
@@ -720,14 +725,17 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
   // stood when that write committed.  "Assign to me" answered late — after a
   // rename had been saved and shown — and its snapshot, taken before the
   // rename, was laid over the record: the page went back to the old title.
-  // Status and severity already checked what they were sent over; owner,
-  // rename and the others did not.
+  // Every answer now carries the finding's revision (backlog 2026-10-22,
+  // H-f): the owner's is the lower, so it is dropped and nothing is read.
   it('an owner answer that arrives after a rename does not put the old title back', async () => {
-    mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, revision: 1 }));
     let landOwner!: (f: unknown) => void;
+    // The owner change committed first (2); the rename after it (3) holds both.
     mocked.updateFinding
       .mockImplementationOnce(() => new Promise((resolve) => { landOwner = resolve; }))
-      .mockResolvedValueOnce(finding({ can_modify: true, title: 'New title' }));
+      .mockResolvedValueOnce(finding({
+        can_modify: true, title: 'New title', owner_id: 1, owner_name: 'tester', revision: 3,
+      }));
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');
 
@@ -741,13 +749,27 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
 
     // The owner change committed FIRST: its answer has the owner and the old title.
     const reads = mocked.getFinding.mock.calls.length;
-    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, title: 'New title', owner_id: 1, owner_name: 'tester' }));
-    await act(async () => { landOwner(finding({ can_modify: true, owner_id: 1, owner_name: 'tester' })); });
+    await act(async () => { landOwner(finding({ can_modify: true, owner_id: 1, owner_name: 'tester', revision: 2 })); });
 
-    // Which of the two is newer cannot be told from the answer, so the record is read again.
-    await waitFor(() => expect(mocked.getFinding.mock.calls.length).toBe(reads + 1));
+    // The lower revision is the older finding: it stays off the page, and
+    // nothing is read again.
     expect(screen.getByText('New title')).toBeInTheDocument();
     expect(screen.queryByText('Weak TLS on portal')).not.toBeInTheDocument();
+    expect(mocked.getFinding.mock.calls.length).toBe(reads);
+  });
+
+  // The other order: the rename's answer is the newer one and simply lands.
+  it('a rename answer newer than the record goes on it without a read', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, revision: 4 }));
+    mocked.updateFinding.mockResolvedValueOnce(finding({ can_modify: true, title: 'New title', revision: 5 }));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    const reads = mocked.getFinding.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: /Rename/ }));
+    fireEvent.change(screen.getByLabelText('Finding title'), { target: { value: 'New title' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('New title')).toBeInTheDocument();
+    expect(mocked.getFinding.mock.calls.length).toBe(reads);
   });
 
   it('deletes only after confirmation, then returns to the list', async () => {

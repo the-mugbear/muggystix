@@ -51,7 +51,7 @@ class RenderStatus:
 class ReportProfile(Base):
     __tablename__ = "report_profiles"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     project_id = Column(
         Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True, index=True,
     )
@@ -83,8 +83,8 @@ class ReportProfile(Base):
 class Report(Base):
     __tablename__ = "reports"
 
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     kind = Column(String(20), nullable=False, default=ReportKind.FULL)
     status = Column(String(20), nullable=False, default=ReportStatus.DRAFT)
     title = Column(String(255), nullable=False)
@@ -144,8 +144,8 @@ class Report(Base):
 class ReportFile(Base):
     __tablename__ = "report_files"
 
-    id = Column(Integer, primary_key=True, index=True)
-    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
     format = Column(String(10), nullable=False)          # html | docx | qmd (pdf: issued before v2.407.0)
     filename = Column(String(255), nullable=False)
     media_type = Column(String(100), nullable=False)
@@ -175,8 +175,8 @@ class ReportImage(Base):
     """
     __tablename__ = "report_images"
 
-    id = Column(Integer, primary_key=True, index=True)
-    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(Integer, primary_key=True)
+    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
     attachment_id = Column(Integer, nullable=False)
     content_type = Column(String(100), nullable=False)
     size_bytes = Column(BigInteger, nullable=False)

@@ -32,12 +32,14 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-# Indexes that exist only in the database, created by hand-written migrations
-# because they cannot be expressed in portable model metadata: partial (WHERE)
-# indexes, and expression / GIN / GiST indexes. Adding them to __table_args__
-# would break the metadata create_all() the SQLite/PG test backends use (no
-# pg_trgm, no inet_ops, etc.), so they live in migrations alone — and are
-# excluded here so a future --autogenerate never proposes to drop them.
+# Indexes that exist only in the database, created by hand-written migrations:
+# expression / GIN / GiST indexes over extension operator classes (pg_trgm,
+# inet_ops) and a few partial job-queue indexes. They are excluded here so a
+# future --autogenerate never proposes to drop them. The test suite builds its
+# schema from the migration chain (tests/conftest.py), so it has them too. A
+# partial UNIQUE index that the application relies on belongs in the model
+# (`postgresql_where`, `.ddl_if(dialect="postgresql")`), where `alembic check`
+# compares it — as the api-key and DNS-observation ones are.
 # (The pg_trgm evidence indexes are handled by the ix_trgm_ prefix rule below.)
 _UNMODELABLE_INDEXES = frozenset({
     "idx_host_ip_inet",                              # ((ip_address)::inet) expression
@@ -48,38 +50,27 @@ _UNMODELABLE_INDEXES = frozenset({
     "ix_ingestion_jobs_queued_created",              # partial WHERE status='queued'
     "ix_report_jobs_processing_heartbeat",           # partial WHERE status='processing'
     "ix_report_jobs_queued_created",                 # partial WHERE status='queued'
-    "uq_api_key_agent_session_active",               # partial UNIQUE WHERE is_active (rebased off test_plan_id in the contract phase)
-    "uq_dns_record_scan_observation",                # partial UNIQUE + COALESCE(resolver_name,'') WHERE scan_id IS NOT NULL
-    "uq_dns_record_import_observation",              # partial UNIQUE WHERE scan_id IS NULL AND record_type='IMPORT'
-    "uq_dns_record_evidence_observation",            # partial UNIQUE WHERE evidence_record_id IS NOT NULL
 })
 
 
 def _include_object(object_, name, type_, reflected, compare_to):
     """Exclude indexes that have no faithful model representation.
 
-    Three classes are ignored in BOTH directions (reflected DB + metadata) so
+    Two classes are ignored in BOTH directions (reflected DB + metadata) so
     autogenerate never proposes to add or drop them:
 
     * ``ix_trgm_*`` — the pg_trgm GIN evidence indexes (extension-dependent).
     * ``_UNMODELABLE_INDEXES`` — partial / expression / GIN / GiST indexes that
       live only in hand-written migrations.
-    * a single-column index on a primary-key ``id`` column — a PK already has a
-      unique btree, so ``ix_<table>_id`` is redundant. Older tables carry it
-      (from the historical create_all), newer ones don't (migration-built);
-      ignoring it stops that split from reading as drift and stops ``index=True``
-      on a PK proposing a fresh redundant index.
+
+    (A third, the ``ix_<table>_id`` index duplicating a primary key, went in
+    revision a5d9c3e1f7b2: no table carries one and no model declares one, so
+    a new ``index=True`` on a primary key is drift ``alembic check`` reports.)
     """
     if type_ == "index":
         if name and name.startswith("ix_trgm_"):
             return False
         if name in _UNMODELABLE_INDEXES:
-            return False
-        try:
-            cols = list(object_.columns)
-        except Exception:  # pragma: no cover - defensive
-            cols = []
-        if name and name.endswith("_id") and len(cols) == 1 and cols[0].name == "id":
             return False
     return True
 

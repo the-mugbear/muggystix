@@ -63,6 +63,9 @@ class MasscanParser:
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Dispatch to format-specific parsers based on file extension."""
         self._project_id = kwargs.get("project_id")
+        if self._project_id is None:
+            # Every scan and host belongs to a project (e3b7a1c9d5f0).
+            raise ValueError("MasscanParser.parse_file needs project_id")
         # v2.390.0 — `--banners` output: (ip, port, proto, kind) → the latest banner.
         self._banners: Dict[Tuple[str, int, str, str], str] = {}
         self._truncated_at: Optional[str] = None
@@ -521,87 +524,50 @@ class MasscanParser:
         created_ips: set = set()
 
         # Find existing hosts (scoped to project)
-        host_query = (
+        existing = (
             self.db.query(models.Host.id, models.Host.ip_address)
-            .filter(models.Host.ip_address.in_(ips))
+            .filter(models.Host.ip_address.in_(ips), models.Host.project_id == project_id)
+            .all()
         )
-        if project_id is not None:
-            host_query = host_query.filter(models.Host.project_id == project_id)
-        existing = host_query.all()
         existing_map = {row.ip_address: row.id for row in existing}
 
         # Update existing hosts: bump last_seen and scan_id
         if existing_map:
-            update_sql = (
-                "UPDATE hosts_v2 SET last_seen = NOW(), "
-                "last_updated_scan_id = :scan_id, state = 'up' "
-                "WHERE ip_address = ANY(:ips)"
+            self.db.execute(
+                text(
+                    "UPDATE hosts_v2 SET last_seen = NOW(), "
+                    "last_updated_scan_id = :scan_id, state = 'up' "
+                    "WHERE ip_address = ANY(:ips) AND project_id = :project_id"
+                ),
+                {"scan_id": scan_id, "ips": list(existing_map.keys()), "project_id": project_id},
             )
-            update_params: Dict[str, Any] = {"scan_id": scan_id, "ips": list(existing_map.keys())}
-            if project_id is not None:
-                update_sql += " AND project_id = :project_id"
-                update_params["project_id"] = project_id
-            self.db.execute(text(update_sql), update_params)
 
         # Insert new hosts
         new_ips = [ip for ip in ips if ip not in existing_map]
         if new_ips:
             values_clauses = []
-            params: Dict[str, Any] = {"scan_id": scan_id}
-            if project_id is not None:
-                params["project_id"] = project_id
+            params: Dict[str, Any] = {"scan_id": scan_id, "project_id": project_id}
             for idx, ip in enumerate(new_ips):
                 params[f"ip_{idx}"] = ip
-                if project_id is not None:
-                    values_clauses.append(
-                        f"(:ip_{idx}, 'up', :scan_id, :project_id)"
-                    )
-                else:
-                    values_clauses.append(
-                        f"(:ip_{idx}, 'up', :scan_id, NULL)"
-                    )
-            if project_id is not None:
-                # (xmax = 0) is true only for a row this INSERT created; a
-                # row the ON CONFLICT ... DO UPDATE branch touched carries the
-                # updating transaction's xid.  That is the insert-vs-update
-                # decision host_scan_history.host_created records.
-                sql = (
-                    "INSERT INTO hosts_v2 (ip_address, state, last_updated_scan_id, project_id) "
-                    "VALUES " + ", ".join(values_clauses) + " "
-                    "ON CONFLICT (project_id, ip_address) DO UPDATE SET "
-                    "last_seen = NOW(), last_updated_scan_id = :scan_id, state = 'up' "
-                    "RETURNING id, ip_address, (xmax = 0) AS inserted"
-                )
-            else:
-                # DO NOTHING returns only the rows it inserted.
-                sql = (
-                    "INSERT INTO hosts_v2 (ip_address, state, last_updated_scan_id, project_id) "
-                    "VALUES " + ", ".join(values_clauses) + " "
-                    "ON CONFLICT DO NOTHING "
-                    "RETURNING id, ip_address, true AS inserted"
-                )
+                values_clauses.append(f"(:ip_{idx}, 'up', :scan_id, :project_id)")
+            # (xmax = 0) is true only for a row this INSERT created; a row the
+            # ON CONFLICT ... DO UPDATE branch touched (a concurrent writer
+            # inserted it after our SELECT) carries the updating transaction's
+            # xid.  That is the insert-vs-update decision
+            # host_scan_history.host_created records.  DO UPDATE returns every
+            # row, so each new IP comes back with its id.
+            sql = (
+                "INSERT INTO hosts_v2 (ip_address, state, last_updated_scan_id, project_id) "
+                "VALUES " + ", ".join(values_clauses) + " "
+                "ON CONFLICT (project_id, ip_address) DO UPDATE SET "
+                "last_seen = NOW(), last_updated_scan_id = :scan_id, state = 'up' "
+                "RETURNING id, ip_address, (xmax = 0) AS inserted"
+            )
             result = self.db.execute(text(sql), params)
             for row in result:
                 existing_map[row.ip_address] = row.id
                 if row.inserted:
                     created_ips.add(row.ip_address)
-
-            # Backfill any IPs the RETURNING clause didn't yield.  The
-            # no-project branch uses ON CONFLICT DO NOTHING, which returns
-            # nothing for a row a concurrent writer inserted between our
-            # SELECT and this INSERT — without this re-select those IPs
-            # would be absent from existing_map and their ports silently
-            # dropped in _build_port_rows_for_hosts.
-            missing = [ip for ip in new_ips if ip not in existing_map]
-            if missing:
-                backfill_q = (
-                    self.db.query(models.Host.id, models.Host.ip_address)
-                    .filter(models.Host.ip_address.in_(missing))
-                )
-                if project_id is not None:
-                    backfill_q = backfill_q.filter(models.Host.project_id == project_id)
-                for row in backfill_q.all():
-                    existing_map[row.ip_address] = row.id
 
         # Insert host_scan_history for all hosts in this batch
         history_values = []

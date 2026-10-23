@@ -3,7 +3,7 @@
 Importing this module imports every ``models*.py`` module for its side effect:
 registering that module's tables on the shared ``Base.metadata``. It is the ONE
 place that lists every model module — Alembic autogenerate (alembic/env.py), the
-ingestion and report workers, and the test schema builder (tests/conftest.py)
+API (app.main), the ingestion and report workers, and the test schema builder (tests/conftest.py)
 all import THIS instead of each keeping their own copy of the list.
 
 Those copies had already drifted three different ways before this existed:

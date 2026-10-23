@@ -299,7 +299,7 @@ def test_a_stamped_port_a_person_or_another_scan_holds_is_kept(db_session, test_
 
     alone = _stamped_port(db_session, known_host, 9001, failed.id)
     noted = _stamped_port(db_session, known_host, 9002, failed.id)
-    db_session.add(models.Annotation(port_id=noted, project_id=pid, user_id=test_user.id, body="look at this"))
+    db_session.add(models.Annotation(port_id=noted, user_id=test_user.id, body="look at this"))
     endpoint = _stamped_port(db_session, known_host, 9003, failed.id)
     finding = Finding(project_id=pid, title="Exposed admin console", severity="high", status="open", source="manual")
     db_session.add(finding)

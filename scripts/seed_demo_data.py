@@ -178,12 +178,14 @@ def seed(db, name: str, host_count: int, owner: User):
                 port_id=p.id, scan_id=sc.id, state_at_scan="open",
                 discovered_at=h.first_seen,
             ))
-        # Vulnerabilities (severity-weighted)
-        for _ in range(RNG.randint(0, 6)):
+        # Vulnerabilities (severity-weighted).  Numbered: one host's rows are
+        # distinct scanner identities (uq_vulnerability_identity refuses two
+        # rows with one title on one host).
+        for n in range(RNG.randint(0, 6)):
             sev_enum, _sev_str, _w = RNG.choices(
                 SEVERITIES, weights=[w for *_x, w in SEVERITIES])[0]
             db.add(Vulnerability(
-                title=f"Synthetic {sev_enum.value} issue",
+                title=f"Synthetic {sev_enum.value} issue {n + 1}",
                 severity=sev_enum, source=VulnerabilitySource.MANUAL,
                 host_id=h.id, scan_id=sc.id,
                 cve_id=f"CVE-2023-{RNG.randint(1000, 9999)}" if RNG.random() < 0.5 else None,

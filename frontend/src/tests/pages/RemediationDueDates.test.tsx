@@ -55,7 +55,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
 
 import Remediation from '../../pages/Remediation';
 import { TooltipProvider } from '../../components/ui/tooltip';
-import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { formatDate } from '../../utils/relativeTime';
 import type { RemediationPage, RemediationRow } from '../../services/api';
 import { asCapped } from '../helpers/cappedList';
@@ -106,7 +105,6 @@ beforeEach(() => {
     recordRemediationFollowUp, recordRemediationFollowUpOverview, listClientReports, assignRemediationFromReport, saveBlob]
     .forEach((m) => m.mockReset());
   Object.values(toast).forEach((m) => m.mockReset());
-  resetRemediationPolicy();
   getRemediationTrend.mockReset().mockResolvedValue({ as_of: '2026-11-10', days: 90, daily: [], closed_by_month: [] });
   getRemediationPolicy.mockResolvedValue(POLICY);
   listRemediation.mockResolvedValue(page([row(1), row(2)]));

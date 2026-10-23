@@ -432,7 +432,7 @@ print_info "Collecting service versions and settings..."
         fi
         echo ""
         echo "--- ingestion settings ---"
-        # app.core.config only — importing app.main would run migrations.
+        # app.core.config only: the settings, nothing else of the app.
         compose exec -T backend python -c '
 from app.core.config import settings as s
 for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS_COMMIT_BATCH_SIZE",

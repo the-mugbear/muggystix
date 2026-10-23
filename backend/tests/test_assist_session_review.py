@@ -61,7 +61,6 @@ def _agent_note(db_session, *, session, host, body="vsftpd 2.3.4 on 21"):
     marked agent-authored, carrying the session id."""
     note = Annotation(
         host_id=host.id,
-        project_id=session.project_id,
         user_id=session.started_by_id,
         body=body,
         actor_type="agent",
