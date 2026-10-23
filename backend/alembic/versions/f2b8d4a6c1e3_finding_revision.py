@@ -15,13 +15,13 @@ existing finding starts at 1.  No data changes.
 **Downgrade**: drops the column.
 
 Revision ID: f2b8d4a6c1e3
-Revises: d5a1f3c7e9b2
+Revises: b6e0d4f2a8c3
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = "f2b8d4a6c1e3"
-down_revision = "d5a1f3c7e9b2"
+down_revision = "b6e0d4f2a8c3"
 branch_labels = None
 depends_on = None
 

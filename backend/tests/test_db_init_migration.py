@@ -243,9 +243,12 @@ def test_the_backend_and_the_worker_run_the_step_before_they_start():
     worker's compose command run the step, and only then their process; the
     report worker never migrates."""
     import re
+    from pathlib import Path
 
-    dockerfile = _repo_file("backend", "Dockerfile")
-    assert dockerfile is not None
+    # The backend folder is mounted at /app in every recipe, so its Dockerfile
+    # is beside the tests; the repo root (compose) is mounted only by check.sh.
+    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+    assert dockerfile.is_file(), dockerfile
     cmd = next(line for line in dockerfile.read_text().splitlines() if line.startswith("CMD "))
     assert re.search(r"python -m app\.db\.migrate && exec uvicorn app\.main:app", cmd), cmd
 
