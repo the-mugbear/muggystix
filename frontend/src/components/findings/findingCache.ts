@@ -43,6 +43,21 @@ export const keepNewerFinding = (cached: unknown, read: unknown): unknown => {
   return replaceEqualDeep(cached, read);
 };
 
+/** The answer rule: a write's answer replaces a held record only when that
+ *  record is not already at its revision or a later one. */
+const takesAnswer = (held: Finding | undefined, answer: Finding): boolean =>
+  !held || !(held.revision >= answer.revision);
+
+/**
+ * The same rule over a LIST's rows (the host inspector's Findings section):
+ * the row of the answer's finding takes the answer only over a lower
+ * revision, so two changes answering in the other order than they committed
+ * leave the newer one on the row (review 2026-10-23, H-FC3).
+ */
+export function putFindingAnswerInRows<F extends Finding>(rows: F[], answer: F): F[] {
+  return rows.map((f) => (f.id === answer.id && takesAnswer(f, answer) ? answer : f));
+}
+
 /**
  * Put a write's ANSWER on the cached finding — unless the cache already holds
  * that revision or a later one.  `history: true` when the write appended to
@@ -59,7 +74,7 @@ export function putFindingAnswer(
 ): boolean {
   let put = false;
   queryClient.setQueryData<Finding>(findingKey(projectId, updated.id), (cached) => {
-    if (cached && cached.revision >= updated.revision) return cached;
+    if (!takesAnswer(cached, updated)) return cached as Finding;
     put = true;
     return updated;
   });

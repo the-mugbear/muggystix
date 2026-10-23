@@ -8,7 +8,7 @@
  * (a promotion in the inspector, a test's result) and this reads again.
  */
 import React, { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL, SEVERITY_ORDER } from '../utils/severity';
 import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Plus } from 'lucide-react';
@@ -39,6 +39,7 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { FindingHistoryButton } from './FindingHistoryButton';
 import { StatusReasonDialog } from './findings/StatusReasonDialog';
+import { putFindingAnswerInRows } from './findings/findingCache';
 import { InspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
 import {
   Select,
@@ -207,15 +208,29 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
     void invalidateReads(queryClient, 'getFindingHistory');
     void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
   };
+  // The answer goes on its row only over a lower revision (the finding page's
+  // own rule, `findingCache`): answers may arrive in the other order than the
+  // writes committed, and a re-read of the list may already hold a newer one.
   const put = (updated: Finding) => {
     queryClient.setQueryData<HostFindings>(
       hostFindingsKey(projectId, hostId),
-      (prev) => prev && { ...prev, findings: prev.findings.map((f) => (f.id === updated.id ? updated : f)) },
+      (prev) => prev && { ...prev, findings: putFindingAnswerInRows(prev.findings, updated) },
     );
     findingChanged();
   };
 
+  // The findings whose status or state on this host is being changed: their
+  // pickers wait for the answer (a second pick would race the first).
+  const changing = new Set(useMutationState({
+    filters: { mutationKey: ['hostFindingChange', projectId, hostId], status: 'pending' },
+    select: (m) => {
+      const v = m.state.variables as { id?: number; f?: Finding } | undefined;
+      return v?.id ?? v?.f?.id;
+    },
+  }).filter((id): id is number => id != null));
+
   const statusChange = useMutation({
+    mutationKey: ['hostFindingChange', projectId, hostId],
     mutationFn: ({ id, status, summary }: { id: number; status: FindingStatus; summary?: string }) =>
       setFindingStatus(projectId, id, status, summary),
     onSuccess: put,
@@ -238,6 +253,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   // selector used to set the ISSUE's status for every host from inside one
   // host's inspector — the same reach the false-positive dismissal had.
   const endpointChange = useMutation({
+    mutationKey: ['hostFindingChange', projectId, hostId],
     mutationFn: async ({ f, rowIds, hostStatus }: { f: Finding; rowIds: number[]; hostStatus: FindingHostStatus }) => {
       // Every row's request carries the project this card was rendered in.
       let updated: Finding = f;
@@ -340,7 +356,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
                 // This host is the finding's only one: the issue's status IS
                 // this host's, so it is set here as before.
                 return canManage ? (
-                  <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)}>
+                  <Select value={f.status} onValueChange={(v) => handleStatus(f.id, v as FindingStatus)} disabled={changing.has(f.id)}>
                     <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Status for ${f.title}`}>
                       <SelectValue />
                     </SelectTrigger>
@@ -371,7 +387,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
                     </Badge>
                   </button>
                   {canManage && here.length > 0 ? (
-                    <Select value={state} onValueChange={(v) => handleEndpointStatus(f, v as FindingHostStatus)}>
+                    <Select value={state} onValueChange={(v) => handleEndpointStatus(f, v as FindingHostStatus)} disabled={changing.has(f.id)}>
                       <SelectTrigger className="h-7 w-[11rem] text-caption" aria-label={`State of ${f.title} on this host`}>
                         <SelectValue />
                       </SelectTrigger>
