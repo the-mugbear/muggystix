@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 from app.db import models
-from app.db.models_findings import ACTIVE_FINDING_STATUSES, Finding
+from app.db.models_findings import Finding, FindingSource
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.services.host_query_predicates import tested_predicate
 from app.services.attention_service import (
@@ -40,9 +40,8 @@ from app.services.attention_service import (
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.posture_focus import compute_focus
 from app.services.evidence_service import has_minimum_assessment
-from app.services.engagement_metrics_service import finding_is_a_result
+from app.services.engagement_metrics_service import finding_is_active
 
-_ACTIVE = ACTIVE_FINDING_STATUSES
 # Review-coverage floor below which the estate reads as under-assessed.
 _REVIEW_FLOOR = 0.5
 # Site criticality tiers that escalate a critical finding to "action required".
@@ -285,8 +284,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
             db.query(Finding.severity, func.count(Finding.id))
             .filter(
                 Finding.project_id == project_id,
-                Finding.status.in_(_ACTIVE),
-                finding_is_a_result(),
+                finding_is_active(),
                 Finding.owner_id.is_(None),
             )
             .group_by(Finding.severity)
@@ -363,11 +361,14 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
     for status, sev, c in disp_rows:
         by_status[status] = by_status.get(status, 0) + int(c)
         by_status_severity.setdefault(status, {})[sev] = int(c)
+    # The same selection as `active` (`finding_is_active`), narrowed to the
+    # scanner source — so scanner + non-scanner == active, and the link's list
+    # (`status=active&source=scanner`) is this count (review 2026-10-23, H-INV1).
     scanner_active = (
         db.query(func.count(Finding.id))
         .filter(
             Finding.project_id == project_id,
-            Finding.status.in_(_ACTIVE), Finding.source == "scanner",
+            finding_is_active(), Finding.source == FindingSource.SCANNER.value,
         )
         .scalar()
         or 0

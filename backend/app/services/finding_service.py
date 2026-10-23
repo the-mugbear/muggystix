@@ -19,10 +19,11 @@ from sqlalchemy.orm.attributes import set_committed_value
 from app.db.models import Annotation, Host
 from app.db.models_auth import User
 from app.db.models_findings import (
-    ACTIVE_FINDING_STATUSES, Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
+    Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
     FindingSource, FindingHostStatus,
 )
 from app.db.models_vulnerability import severity_rank
+from app.services.engagement_metrics_service import finding_is_active
 from app.services.host_query_common import escape_like
 from app.services.report_text import seed_report_text_from_vuln
 from app.services.status_history_service import record_status_transition
@@ -42,9 +43,10 @@ _TERMINAL_STATUSES = {
 # Status GROUPS the dashboards drill against. "active" is the working set an
 # analyst still owns; "resolved" is every terminal disposition. Passed as the
 # `status` filter value (status="active"/"resolved"); a real status filters
-# exactly. Kept here so posture's active counts and the Findings list it links
-# to share one definition.
-_ACTIVE_STATUSES = set(ACTIVE_FINDING_STATUSES)
+# exactly. "active" is `engagement_metrics_service.finding_is_active` — the
+# condition Posture's active counts use, so a count is its list's total
+# (review 2026-10-23, H-INV1: a finding false positive on every endpoint is
+# not active).
 
 #: What a promotion does to the status of a finding the issue already has
 #: (``FindingService.promote_vulnerability``).
@@ -53,7 +55,10 @@ _ON_JOIN = ("set", "confirm", "keep")
 #: Endpoints a findings LIST row carries (review 2026-10-01 C2).  The row's
 #: ``host_count`` is the true total; the finding's own page has them all.
 ENDPOINT_PREVIEW = 5
-_STATUS_GROUPS = {"active": _ACTIVE_STATUSES, "resolved": _TERMINAL_STATUSES}
+_STATUS_GROUPS = {
+    "active": finding_is_active,
+    "resolved": lambda: Finding.status.in_(_TERMINAL_STATUSES),
+}
 
 
 def load_retest_requests(db: Session, rows: Sequence[FindingHost]) -> None:
@@ -122,7 +127,7 @@ def _apply_status_filter(query, status: Optional[str]):
         return query
     group = _STATUS_GROUPS.get(status)
     if group is not None:
-        return query.filter(Finding.status.in_(group))
+        return query.filter(group())
     return query.filter(Finding.status == status)
 
 

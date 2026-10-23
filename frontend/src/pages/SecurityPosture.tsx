@@ -556,7 +556,7 @@ const PromotedFindings: React.FC<{ data: PostureResponse }> = ({ data }) => {
           passive: a plausible-but-wrong drill-down is worse than none (§26). */}
       <p className="mt-sm break-words text-caption text-muted-foreground">
         Of the active findings, <span className="font-medium tabular-nums text-foreground">{d.non_scanner_active}</span>{' '}
-        {d.non_scanner_active === 1 ? 'was' : 'were'} raised by an analyst (note / manual / execution) and{' '}
+        {d.non_scanner_active === 1 ? 'was' : 'were'} written directly, from a test result or from a note, and{' '}
         <Link to={buildFindingsUrl({ status: 'active', source: 'scanner' })} className="text-info hover:underline">
           <span className="tabular-nums">{d.scanner_active}</span> promoted from a scanner observation →
         </Link>

@@ -56,7 +56,7 @@ from app.db.models import (
 from app.db.models_host_tests import ACTIVE_TEST_STATUSES, HostTest
 from app.db.models_auth import User
 from app.db.models_findings import (
-    Finding, FindingHost, FindingHostStatus, FindingSource, FindingStatus,
+    ACTIVE_FINDING_STATUSES, Finding, FindingHost, FindingHostStatus, FindingSource, FindingStatus,
     FindingStatusHistory,
 )
 from app.db.models_project import ProjectMembership
@@ -256,6 +256,19 @@ def finding_is_a_result():
         Finding.status != _FP,
         or_(~has_endpoint, has_real_endpoint),
     )
+
+
+def finding_is_active():
+    """SQL condition on ``Finding``: an ACTIVE finding — the ONE definition.
+
+    Still being worked (``ACTIVE_FINDING_STATUSES``: under investigation or
+    confirmed) AND a result (``finding_is_a_result``: a finding judged a false
+    positive on every endpoint is not one, whatever its own status says).
+    Posture's active counts (``attention_service``, ``posture_service``) and
+    the Findings list's ``status=active`` group — the page's and the agents'
+    door — all filter with it, so each count is the total of the list it
+    opens (review 2026-10-23, H-INV1)."""
+    return and_(Finding.status.in_(ACTIVE_FINDING_STATUSES), finding_is_a_result())
 
 
 def tested_host_ids(tester_id: Optional[int] = None):
