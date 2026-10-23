@@ -205,7 +205,10 @@ def seed(db, name: str, host_count: int, owner: User):
             title=f"{sev.capitalize()} finding — {RNG.choice(['default creds', 'unpatched service', 'exposed admin panel', 'weak TLS', 'SMB signing disabled'])}",
             severity=sev,
             status=RNG.choice(["open", "open", "confirmed"]),  # all active
-            source="scanner",
+            # Written directly: a scanner finding is a promoted observation
+            # (one per issue, carrying its dedup key and vulnerabilities),
+            # which these made-up rows are not.
+            source="manual",
             owner_id=owner.id if owned else None,
         )
         db.add(f)

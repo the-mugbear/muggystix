@@ -536,8 +536,9 @@ seed edit (see `c9a4e70b5d18`).
 
 `suggest_tool` records a proposed addition; the row lands as `suggested` and an
 admin curates it from the Tool Reference page
-(`PATCH /references/tools/{name}` → `reference` or `rejected`). Declining keeps
-the row, so the next proposal of the same tool gets the same answer.
+(`PATCH /references/tools/{name}` → `reference` or `rejected`). Adding it to the
+catalogue needs a description a person wrote (`API_GUIDE.md` has the rule).
+Declining keeps the row, so the next proposal of the same tool gets the same answer.
 
 ---
 

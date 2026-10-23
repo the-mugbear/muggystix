@@ -69,6 +69,11 @@ export default function ToolReadyOutput({
     },
     onError: (err) => console.error('Error generating tool output:', err),
   });
+  // A query (`q`) or the search box chooses HOSTS and lists every open port
+  // of them; only the Ports filter narrows ports (the server's rule, pinned
+  // by test_a_query_chooses_hosts_and_narrows_no_port).  Said when it bites.
+  const hasValue = (v: unknown) => (Array.isArray(v) ? v.length > 0 : typeof v === 'string' ? v.trim() !== '' : v != null && v !== false);
+  const queryChoosesHosts = (hasValue(filters.q) || hasValue(filters.search)) && !hasValue(filters.ports);
 
   return (
     <GeneratedTextDialog<string, AskedResult>
@@ -157,6 +162,11 @@ export default function ToolReadyOutput({
         ) : null}
         {' '}A target list is a hand-off; it authorises no scan.
       </p>
+      {queryChoosesHosts && (
+        <p className="text-metadata text-muted-foreground break-words">
+          A query chooses hosts; every open port of those hosts is listed — use the Ports filter to list only some ports.
+        </p>
+      )}
     </GeneratedTextDialog>
   );
 }

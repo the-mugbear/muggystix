@@ -14,6 +14,8 @@ seeding never clobbers a curator's decisions.
 """
 from __future__ import annotations
 
+import pytest
+
 from app.db.models_tools import (
     TOOL_REFERENCE,
     TOOL_REJECTED,
@@ -167,6 +169,44 @@ def test_vetting_a_suggestion_is_a_status_change(client, db_session):
     row = db_session.query(ToolRegistryEntry).filter_by(name="ligolo-ng").one()
     assert row.description.startswith("Reverse tunneling")
     assert row.category == "Remote Access"
+    # The agent's own words stay where they were.
+    assert row.suggested_rationale == "Needed for pivoting."
+
+
+@pytest.mark.parametrize("description", [
+    None,                                                         # not sent
+    "   ",                                                        # blank
+    "Suggested by an agent. Rationale: Needed for pivoting.",     # the stand-in, unchanged
+    "  Suggested by an agent. Rationale: edited a little.",       # still the stand-in
+])
+def test_accepting_a_suggestion_needs_a_persons_description(client, db_session, description):
+    """Owner, 2026-10-22: taking a suggestion into the catalogue publishes its
+    description, so a person writes it in the same call — the agent's
+    stand-in ("Suggested by an agent. Rationale: …") cannot stand as it."""
+    _seed(db_session)
+    registry.record_suggestion(db_session, name="ligolo-ng", rationale="Needed for pivoting.")
+    body = {"status": TOOL_REFERENCE}
+    if description is not None:
+        body["description"] = description
+
+    resp = client.patch("/api/v1/references/tools/ligolo-ng", json=body)
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == registry.ACCEPT_NEEDS_DESCRIPTION
+    assert "a person's description" in resp.json()["detail"]
+    db_session.expire_all()
+    row = db_session.query(ToolRegistryEntry).filter_by(name="ligolo-ng").one()
+    assert row.status == "suggested"
+    assert row.description == "Suggested by an agent. Rationale: Needed for pivoting."
+
+
+def test_the_description_rule_is_for_accepting_a_suggestion_only(client, db_session):
+    """Declining a suggestion, or editing a catalogue row, asks for nothing new."""
+    _seed(db_session)
+    registry.record_suggestion(db_session, name="ligolo-ng", rationale="Needed for pivoting.")
+    assert client.patch("/api/v1/references/tools/ligolo-ng", json={"status": "rejected"}).status_code == 200
+    assert client.patch("/api/v1/references/tools/nmap", json={"status": TOOL_REFERENCE}).status_code == 200
+    assert client.patch("/api/v1/references/tools/nmap", json={"category": "Discovery"}).status_code == 200
 
 
 def test_declining_keeps_the_row(client, db_session):
@@ -299,22 +339,29 @@ def test_the_registry_row_carries_its_run_command(client, db_session):
 
 def test_an_upgraded_install_holds_the_seeds_run_commands():
     """Seeding never overwrites, so an existing deployment's rows were filled by
-    revision f5c2a0d7b4e6 and a fresh one's by the seed file: the two must say
+    revisions f5c2a0d7b4e6 and b3d9f1a7c5e2 (testssl's command, the Greenbone
+    notes — 2026-10-22) and a fresh one's by the seed file: the two must say
     the same thing.  A later correction of a shipped command is a NEW revision
-    (plus the seed); compare the seed with that revision's word then."""
+    (plus the seed); add that revision's word here then."""
     import importlib.util
     from pathlib import Path
 
-    path = next(
-        (Path(__file__).resolve().parent.parent / "alembic" / "versions").glob("f5c2a0d7b4e6_*.py")
-    )
-    spec = importlib.util.spec_from_file_location("rev_f5c2a0d7b4e6", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    def revision(rev_id: str):
+        path = next(
+            (Path(__file__).resolve().parent.parent / "alembic" / "versions").glob(f"{rev_id}_*.py")
+        )
+        spec = importlib.util.spec_from_file_location(f"rev_{rev_id}", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    upgraded = {name: [run, note] for name, (run, note) in revision("f5c2a0d7b4e6")._RUN_COMMANDS.items()}
+    for name, column, value in revision("b3d9f1a7c5e2")._WRITES:
+        upgraded.setdefault(name, [None, None])[0 if column == "run_command" else 1] = value
 
     seeded = {
-        row["name"]: (row["run_command"], row.get("run_note"))
+        row["name"]: [row.get("run_command"), row.get("run_note")]
         for row in registry.load_seed()
-        if row.get("run_command")
+        if row.get("run_command") or row.get("run_note")
     }
-    assert seeded == module._RUN_COMMANDS
+    assert seeded == upgraded

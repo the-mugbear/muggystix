@@ -996,7 +996,9 @@ def text_changed_since_proposed(proposal: AgentProposal, current_value: Optional
     ``None`` = not known: the proposal is of another kind, or was made before
     the field's text was recorded with it (``payload.base_value``, 2.454.0).
     Unknown is never "unchanged" and never "changed": a single proposal shows
-    no warning for it, and a bulk accept does not skip it."""
+    a caution for it (``base_recorded`` false), and a bulk accept leaves it
+    pending with its own reason (:data:`BASE_NOT_RECORDED`; owner,
+    2026-10-22)."""
     payload = proposal.payload or {}
     if proposal.kind != ProposalKind.FINDING_TEXT.value or "base_value" not in payload:
         return None
@@ -1009,12 +1011,11 @@ SUBNET_CHANGED_SINCE_PROPOSED_DETAIL = (
 )
 
 
-def left_pending_detail(proposal: AgentProposal) -> str:
-    """What a bulk accept says about a proposal it left pending by
-    :func:`rewritten_since_proposed`."""
-    if proposal.kind == ProposalKind.SUBNET_DETAILS.value:
-        return SUBNET_CHANGED_SINCE_PROPOSED_DETAIL
-    return REWRITTEN_SINCE_PROPOSED_DETAIL
+BASE_NOT_RECORDED = "base_not_recorded"
+BASE_NOT_RECORDED_DETAIL = (
+    "This draft was made before drafts recorded the text they replace — decide it on its own, "
+    "beside the current text."
+)
 
 
 def subnet_changed_since_proposed(
@@ -1033,30 +1034,39 @@ def subnet_changed_since_proposed(
     )
 
 
-def rewritten_since_proposed(db: Session, proposal: AgentProposal) -> bool:
-    """A PENDING report-text proposal whose section a person has rewritten
-    since the draft — read now, so call it with the decision's locks held
-    (``lock_for_decision``: the finding, then the proposal).  A bulk accept
-    leaves such a proposal pending (owner decision 2026-10-11): one click on
-    "Accept all shown" must not replace text nobody compared the draft with,
-    and report text has no history to get it back from.  A subnet-details
-    proposal whose subnet was edited since is left the same way (its subnet
-    is locked first)."""
+def left_for_one_at_a_time(db: Session, proposal: AgentProposal) -> Optional[Tuple[str, str]]:
+    """Why a bulk accept leaves this PENDING proposal for a person to decide
+    on its own — ``(reason, detail)`` as the bulk answer's ``skipped`` says
+    it — or None to decide it.  Read now, so call it with the decision's
+    locks held (``lock_for_decision``: the finding or subnet, then the
+    proposal).
+
+    - Report text a person rewrote since the draft (owner decision
+      2026-10-11): one click on "Accept all shown" must not replace text
+      nobody compared the draft with, and report text has no history to get
+      it back from.  A subnet-details proposal whose subnet was edited since
+      is left the same way (same reason, its own detail).
+    - Report text drafted before the base was recorded (2.454.0): whether it
+      was rewritten cannot be known, so it is not overwritten blind either
+      (owner, 2026-10-22) — :data:`BASE_NOT_RECORDED`."""
+    if proposal.status != ProposalStatus.PENDING.value:
+        return None
     if proposal.kind == ProposalKind.SUBNET_DETAILS.value:
-        if proposal.status != ProposalStatus.PENDING.value or proposal.subnet_id is None:
-            return False
+        if proposal.subnet_id is None:
+            return None
         row = (
             db.query(models.Subnet.description, models.Subnet.site)
             .filter(models.Subnet.id == proposal.subnet_id).first()
         )
-        return row is not None and subnet_changed_since_proposed(proposal, row.description, row.site) is True
+        if row is not None and subnet_changed_since_proposed(proposal, row.description, row.site) is True:
+            return REWRITTEN_SINCE_PROPOSED, SUBNET_CHANGED_SINCE_PROPOSED_DETAIL
+        return None
     if (
         proposal.kind != ProposalKind.FINDING_TEXT.value
-        or proposal.status != ProposalStatus.PENDING.value
         or proposal.finding_id is None
         or proposal.field not in TEXT_FIELDS
     ):
-        return False
+        return None
     # The column, not the entity: a Finding already in the session would be
     # answered from its pre-lock state.
     current = (
@@ -1064,7 +1074,12 @@ def rewritten_since_proposed(db: Session, proposal: AgentProposal) -> bool:
         .filter(Finding.id == proposal.finding_id, Finding.project_id == proposal.project_id)
         .scalar()
     )
-    return text_changed_since_proposed(proposal, current) is True
+    changed = text_changed_since_proposed(proposal, current)
+    if changed is None:
+        return BASE_NOT_RECORDED, BASE_NOT_RECORDED_DETAIL
+    if changed:
+        return REWRITTEN_SINCE_PROPOSED, REWRITTEN_SINCE_PROPOSED_DETAIL
+    return None
 
 
 def reject_proposal(db: Session, proposal: AgentProposal, user: User, *, note: Optional[str] = None) -> AgentProposal:

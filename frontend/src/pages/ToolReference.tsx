@@ -395,11 +395,14 @@ const ToolReference: React.FC = () => {
                                   No install command recorded
                                 </span>
                               )}
-                              {tool.run_command && (
+                              {/* A row may carry a note and no command (Greenbone's
+                                  report is exported, not run — 2026-10-22). */}
+                              {(tool.run_command || tool.run_note) && (
                                 <div className="space-y-xxs">
                                   <span className="block text-caption font-medium uppercase tracking-wider text-muted-foreground">
                                     Run for BlueStick
                                   </span>
+                                  {tool.run_command && (
                                   <Tooltip>
                                     <TooltipTrigger asChild>
                                       <button
@@ -415,6 +418,7 @@ const ToolReference: React.FC = () => {
                                     </TooltipTrigger>
                                     <TooltipContent>Click to copy — produces BlueStick-ingestible output</TooltipContent>
                                   </Tooltip>
+                                  )}
                                   {tool.run_note && (
                                     <span className="block text-caption text-muted-foreground break-words">
                                       {tool.run_note}

@@ -85,7 +85,7 @@ def _read(rel: str) -> Optional[str]:
 # nuclei/etc.  Input-file flags (-l, -f, -iL, --input-file, -d, -H) are
 # deliberately excluded so an input list (targets.txt, urls.txt) is never
 # mistaken for the output.
-_OUTPUT_FLAGS = {"-o", "-oX", "-oJ", "-oG", "-oL", "-je", "-json"}
+_OUTPUT_FLAGS = {"-o", "-oX", "-oJ", "-oG", "-oL", "-je", "-json", "--jsonfile", "--jsonfile-pretty"}
 _EXT_RE = re.compile(r"\.([A-Za-z0-9]+)$")
 
 

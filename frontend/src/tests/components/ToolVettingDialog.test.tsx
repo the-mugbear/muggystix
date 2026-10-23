@@ -122,6 +122,32 @@ describe('ToolVettingDialog — what it opens on', () => {
     expect(screen.getByText(/this is what the catalogue shows/)).toBeInTheDocument();
   });
 
+  // Owner, 2026-10-22: adding a suggestion to the catalogue needs a person's
+  // description; the field starts from the agent's text WITHOUT the server's
+  // stand-in prefix, and the status and description go in one PATCH.
+  it('a suggestion whose description is the server’s stand-in opens on the agent’s text without the prefix', async () => {
+    show(tool({ description: 'Suggested by an agent. Rationale: No listed tool pivots through a jump host.' }));
+    expect(screen.getByLabelText('Description')).toHaveValue('No listed tool pivots through a jump host.');
+    expect(screen.queryByText(/needs a description written by a person/)).toBeNull();
+    save();
+    await waitFor(() => expect(api.updateToolRegistryEntry).toHaveBeenCalledTimes(1));
+    expect(api.updateToolRegistryEntry).toHaveBeenCalledWith('ligolo-ng', expect.objectContaining({
+      status: 'reference', description: 'No listed tool pivots through a jump host.',
+    }));
+  });
+
+  it('adding it with no description, or with the stand-in typed back, is not offered; declining is', async () => {
+    show(tool({ description: 'Suggested by an agent. Rationale: ' }));
+    expect(screen.getByLabelText('Description')).toHaveValue('');
+    expect(screen.getByText('Adding it to the catalogue needs a description written by a person.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    type('Description', 'Suggested by an agent. Rationale: x');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await chooseStatus('Declined');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    expect(api.updateToolRegistryEntry).not.toHaveBeenCalled();
+  });
+
   it('with no tool, or closed, there is no dialog and nothing is sent', () => {
     const { unmount } = show(null);
     expect(screen.queryByRole('dialog')).toBeNull();

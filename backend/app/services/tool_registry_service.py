@@ -33,6 +33,26 @@ SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "tool_registry_see
 # unbounded column.
 _MAX_RATIONALE_CHARS = 20_000
 
+# How a suggested row's stand-in description begins (the agent's text, until
+# a person writes the catalogue's).  Accepting the suggestion needs a
+# description that does not begin so (owner, 2026-10-22).
+SUGGESTED_DESCRIPTION_PREFIX = "Suggested by an agent."
+ACCEPT_NEEDS_DESCRIPTION = (
+    "Adding a suggested tool to the catalogue needs a person's description: send `description` "
+    "with what the tool is for — the agent's text (\"Suggested by an agent. Rationale: …\") "
+    "cannot stand as the catalogue's."
+)
+
+
+def accept_description_problem(description: Optional[str]) -> Optional[str]:
+    """Why ``description`` cannot be the description a suggested tool is
+    accepted with — None when it can: present, not blank, and not the
+    agent's stand-in (:data:`SUGGESTED_DESCRIPTION_PREFIX`)."""
+    text = (description or "").strip()
+    if not text or text.startswith(SUGGESTED_DESCRIPTION_PREFIX):
+        return ACCEPT_NEEDS_DESCRIPTION
+    return None
+
 
 def load_seed() -> List[Dict[str, Any]]:
     if not SEED_PATH.exists():  # pragma: no cover - packaging guard
@@ -108,7 +128,7 @@ def record_suggestion(
         name=name,
         # A suggestion has no curated prose yet; the agent's rationale stands in
         # until a human writes one, rather than leaving the row blank.
-        description=description or f"Suggested by an agent. Rationale: {rationale}",
+        description=description or f"{SUGGESTED_DESCRIPTION_PREFIX} Rationale: {rationale}",
         category=category or "Uncategorised",
         status=TOOL_SUGGESTED,
         ingestible=False,

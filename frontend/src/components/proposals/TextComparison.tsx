@@ -32,6 +32,10 @@ interface Props {
   mono?: boolean;
   /** The text the proposal was written against, when the field has changed since. */
   staleBase?: { value: string | null } | null;
+  /** The proposal was made before drafts recorded the text they replace
+   *  (`base_recorded` false): whether the section changed since is unknown,
+   *  and a bulk accept leaves it to be decided here. */
+  baseUnknown?: boolean;
   /** The finding's placed images, where the page has them. */
   evidence?: EvidenceResolver;
   /** The panes' names, and what the left one says when empty — a history
@@ -66,8 +70,20 @@ export const ChangesText: React.FC<{ parts: DiffPart[]; mono?: boolean }> = ({ p
   </p>
 );
 
+/** The caution for a draft whose base was never recorded — the bulk accept's
+ *  `base_not_recorded` reason, in the same words. */
+export const BASE_UNKNOWN_TEXT =
+  'This draft was made before drafts recorded the text they replace — decide it on its own, beside the current text.';
+
+const BaseUnknownNote: React.FC = () => (
+  <div role="note" className="flex min-w-0 items-start gap-xs rounded-md border border-warning/40 bg-warning/10 p-xs text-caption">
+    <AlertTriangle className="mt-[2px] size-4 shrink-0 text-warning" aria-hidden />
+    <p className="min-w-0 break-words text-foreground">{BASE_UNKNOWN_TEXT}</p>
+  </div>
+);
+
 const TextComparison: React.FC<Props> = ({
-  current, proposed, mono = false, staleBase = null, evidence, labels = PROPOSAL_LABELS,
+  current, proposed, mono = false, staleBase = null, baseUnknown = false, evidence, labels = PROPOSAL_LABELS,
 }) => {
   const now = (current ?? '').trim();
   const [view, setView] = useState<View>('side');
@@ -82,14 +98,17 @@ const TextComparison: React.FC<Props> = ({
   // Side by side / Changes switch.
   if (!now) {
     return (
-      <div className="grid min-w-0 grid-cols-2 gap-md">
-        <div className="min-w-0 border-r border-border pr-md" data-testid="compare-current">
-          <PaneLabel>{labels.current}</PaneLabel>
-          <p className="text-body text-muted-foreground">{labels.empty}</p>
-        </div>
-        <div className="min-w-0" data-testid="compare-proposed">
-          <PaneLabel>{labels.proposed}</PaneLabel>
-          <Text text={proposed} mono={mono} evidence={evidence} />
+      <div className="min-w-0 space-y-xs">
+        {baseUnknown && <BaseUnknownNote />}
+        <div className="grid min-w-0 grid-cols-2 gap-md">
+          <div className="min-w-0 border-r border-border pr-md" data-testid="compare-current">
+            <PaneLabel>{labels.current}</PaneLabel>
+            <p className="text-body text-muted-foreground">{labels.empty}</p>
+          </div>
+          <div className="min-w-0" data-testid="compare-proposed">
+            <PaneLabel>{labels.proposed}</PaneLabel>
+            <Text text={proposed} mono={mono} evidence={evidence} />
+          </div>
         </div>
       </div>
     );
@@ -97,6 +116,7 @@ const TextComparison: React.FC<Props> = ({
 
   return (
     <div className="min-w-0 space-y-xs">
+      {baseUnknown && <BaseUnknownNote />}
       {staleBase && (
         <div role="note" className="flex min-w-0 items-start gap-xs rounded-md border border-warning/40 bg-warning/10 p-xs text-caption">
           <AlertTriangle className="mt-[2px] size-4 shrink-0 text-warning" aria-hidden />

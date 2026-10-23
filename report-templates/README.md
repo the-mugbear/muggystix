@@ -7,7 +7,7 @@ Each folder here is one client report template. BlueStick lists every valid fold
 | Folder | For | Formats |
 |---|---|---|
 | `pentest` | The full penetration test report: every finding with its affected systems, how it was confirmed, evidence and recommendation. The default. | HTML, Word, QMD source |
-| `executive-brief` | Leadership: the summary, findings at a glance and what to do, with no evidence or host lists. | Word, HTML |
+| `executive-brief` | Leadership: the summary, findings at a glance and what to do, with no evidence or host lists. Its `reference.docx` and `scripts/fix-docx-report.py` are copies of `pentest`'s, kept byte-identical by `backend/tests/test_report_template_copies.py`: change both. | Word, HTML |
 | `remediation-worklist` | The people who fix things: one section per system with its findings, then how to fix each finding once. **The starter template — copy this one.** | HTML, Word, QMD source |
 
 One more folder is not a client report and is never offered on the Reports page:

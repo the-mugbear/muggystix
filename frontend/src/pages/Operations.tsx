@@ -298,6 +298,9 @@ const Operations: React.FC = () => {
   // failed: nothing says the project is empty, the counts say they could not
   // be loaded (with Retry), and each list still answers for itself.
   const showWork = setup ? setup.has_hosts : summaryQuery.isError;
+  // A brand-new project: no scope entry and no host.  The welcome block
+  // stands in for the work, and the header has nothing to refresh.
+  const brandNew = setup != null && !setup.has_hosts && !setup.has_scopes;
 
   // With no `?tab=`, the first non-empty tab in bar order opens.  Decided
   // ONCE, when the counts first arrive (or fail): finishing the last finding
@@ -473,14 +476,19 @@ const Operations: React.FC = () => {
           </Button>
         )}
         {/* One freshness control for the page (v5.294.0): the OLDEST
-            load on it, and one refresh that reaches every section. */}
-        <LastUpdated
-          compact
-          lastFetched={lastFetched}
-          onRefresh={refreshAll}
-          isLoading={summaryQuery.isFetching}
-          label="Operations"
-        />
+            load on it, and one refresh that reaches every section.  Not on
+            a brand-new project (no scope entry, no host — the welcome
+            block below): there is nothing on the page to refresh (owner,
+            2026-10-22). */}
+        {!brandNew && (
+          <LastUpdated
+            compact
+            lastFetched={lastFetched}
+            onRefresh={refreshAll}
+            isLoading={summaryQuery.isFetching}
+            label="Operations"
+          />
+        )}
       </div>
 
       <StartAssistDialog
@@ -503,7 +511,7 @@ const Operations: React.FC = () => {
           project has its one (empty) scope from creation, and a new project
           was told "Scope is registered — scan your registered scope".
           (`setup.has_scopes` is exactly that: a scope with an entry.) */}
-      {setup && !setup.has_hosts && !setup.has_scopes && (
+      {brandNew && (
         <SetupBlock title="Welcome — let's set up this project">
           This project has no scope entries or scans yet. Start by registering the network ranges
           you're authorized to assess — everything else (coverage, triage, tests, agent

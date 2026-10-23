@@ -133,7 +133,9 @@ export interface BulkDecision {
   /** Left pending by rule, nothing having failed: a bulk ACCEPT does not
    *  replace report text a person rewrote after the draft was made
    *  (`reason: 'text_changed_since_proposed'` — the single proposal's
-   *  `changed_since_proposed`).  `detail` is the server's sentence for it.
+   *  `changed_since_proposed`), nor report text drafted before drafts
+   *  recorded the text they replace (`reason: 'base_not_recorded'` —
+   *  `base_recorded` false).  `detail` is the server's sentence for it.
    *  Those are decided one at a time. */
   skipped: Array<{ id: number; reason: string; detail: string }>;
 }

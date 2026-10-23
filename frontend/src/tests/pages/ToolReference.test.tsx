@@ -109,6 +109,18 @@ describe('ToolReference', () => {
     expect(screen.queryByText(/nmap -sV/)).not.toBeInTheDocument();
   });
 
+  // 2026-10-22 — gvm-cli / gvm-tools carry a note and no command: the
+  // report is exported from Greenbone, not run.
+  it('shows a run note that comes without a command', async () => {
+    getToolRegistry.mockResolvedValue({
+      count: 1,
+      tools: [tool({ name: 'gvm-cli', run_command: null, run_note: 'BlueStick reads the finished report exported as XML.' })],
+    });
+    renderPage();
+    expect(await screen.findByText('BlueStick reads the finished report exported as XML.')).toBeInTheDocument();
+    expect(screen.getAllByText('Run for BlueStick', { selector: 'span.block' })).toHaveLength(1);
+  });
+
   it('keeps its own sentence when the failure carries no reason', async () => {
     getToolRegistry.mockRejectedValueOnce({});
     renderPage();
