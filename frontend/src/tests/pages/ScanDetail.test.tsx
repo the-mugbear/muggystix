@@ -211,6 +211,9 @@ describe('ScanDetail', () => {
     expect(api.getHostsByScan).toHaveBeenCalledWith(1, 9, { skip: 100, limit: 50 }, expect.anything());
     expect(api.getHostsByScan).not.toHaveBeenCalledWith(1, 9, { skip: 0, limit: 50 }, expect.anything());
     expect(screen.getByTestId('address')).toHaveTextContent('page=3');
+    // Whatever the installation's remediation switch, the view's line names
+    // no remediation (review 2026-10-23: "later scans and remediation included").
+    expect(screen.getByText(/These hosts as they are today/)).not.toHaveTextContent(/remediation/i);
   });
 
   it('keeps the tab and the view in the address, each choice starting on page one', async () => {

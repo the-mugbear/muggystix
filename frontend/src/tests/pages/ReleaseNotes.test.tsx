@@ -89,4 +89,16 @@ describe('ReleaseNotes', () => {
     expect(scrolled).toEqual([releaseAnchor('2.524.0', '5.419.0')]);
     spy.mockRestore();
   });
+
+  it('a hash that is not valid percent-encoding opens on the running release, not an error (review 2026-10-23)', async () => {
+    mocked.getReleaseNotes.mockResolvedValue({ ...NOTES, kinds: [...NOTES.kinds] });
+    const scrolled: string[] = [];
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(function (this: HTMLElement) {
+      scrolled.push(this.id);
+    });
+    renderPage('/reference/release-notes#%zz');
+    expect(await screen.findByText('Release notes in Reference.')).toBeInTheDocument();
+    expect(scrolled).toEqual([releaseAnchor('2.525.0', '5.420.0')]);
+    spy.mockRestore();
+  });
 });

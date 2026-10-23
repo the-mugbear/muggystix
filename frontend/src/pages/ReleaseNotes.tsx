@@ -36,6 +36,17 @@ const KIND_LABEL: Record<ReleaseNoteKind, string> = {
 /** The element id of a release's section (a link may name it after `#`). */
 export const releaseAnchor = (backend: string, frontend: string): string => `release-${backend}-${frontend}`;
 
+/** The element id an address's hash names, or null (none, or not valid
+ *  percent-encoding — as `utils/observationsPath.issueFromWeaknessHash`). */
+export const anchorFromHash = (hash: string): string | null => {
+  if (hash.length < 2) return null;
+  try {
+    return decodeURIComponent(hash.slice(1));
+  } catch {
+    return null;
+  }
+};
+
 const ReleaseSection: React.FC<{ release: Release; running: boolean }> = ({ release, running }) => {
   // The server sends the lines in kind order: group the runs as they come.
   const groups = release.entries.reduce<Array<{ kind: ReleaseNoteKind; texts: string[] }>>((out, e) => {
@@ -87,9 +98,9 @@ const ReleaseNotes: React.FC = () => {
   const current = notes.data?.current;
 
   // Open on the release the address names, else on the one the server runs.
-  const target = hash
-    ? decodeURIComponent(hash.slice(1))
-    : current && releaseAnchor(current.backend, current.frontend);
+  // A hash that is not valid percent-encoding (`#%zz`) names nothing: it
+  // threw a URIError out of the render and the page was the error screen.
+  const target = anchorFromHash(hash) ?? (current && releaseAnchor(current.backend, current.frontend));
   const loaded = notes.data != null;
   useEffect(() => {
     if (!loaded || !target) return;

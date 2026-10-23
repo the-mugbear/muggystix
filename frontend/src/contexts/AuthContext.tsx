@@ -283,8 +283,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     mutationFn: () => api.post('/auth/logout'),
   });
 
-  const { mutateAsync: requestRenewal } = useMutation({
+  // Its answer is a new access token: a secret the mutation would otherwise
+  // keep in its state (review 2026-10-23), so the same rule as sign-in.
+  const { mutateAsync: requestRenewal, reset: forgetRenewal } = useMutation({
     mutationFn: () => api.post('/auth/session/renew'),
+    ...SECRET_MUTATION,
   });
   const renewing = useRef<Promise<void> | null>(null);
   const renewSession = useCallback((): Promise<void> => {
@@ -298,10 +301,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         localStorage.setItem('auth_token', data.access_token);
         setToken(data.access_token);
       })
-      .finally(() => { renewing.current = null; });
+      .finally(() => { renewing.current = null; forgetRenewal(); });
     renewing.current = run;
     return run;
-  }, [requestRenewal]);
+  }, [requestRenewal, forgetRenewal]);
 
   const verify2fa = useCallback(async (challengeToken: string, code: string) => {
     const timer = authLogger.timer('2FA verify');
