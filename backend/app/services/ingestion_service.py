@@ -361,23 +361,18 @@ def attempt_is_over(db: Session, job_id: int, claimed_at: Optional[datetime]) ->
 
 
 def _project_of_scan(db: Session, scan_id: int) -> Optional[int]:
-    """The project a partial scan belongs to.  NetExec and gnmap create their
-    scan with no project until the import succeeds, so the job that names the
-    scan — and, failing that, a host it observed — answers too."""
+    """The project a partial scan belongs to — its own column (``scans.project_id``
+    is NOT NULL since ``e3b7a1c9d5f0``, and every parser, NetExec and gnmap
+    included, sets it when it creates the scan).  None when the scan row is
+    gone."""
     from sqlalchemy import select
 
     from app.db import models
 
-    HH = models.HostScanHistory
-    for stmt in (
-        select(models.Scan.project_id).where(models.Scan.id == scan_id),
-        select(IngestionJob.project_id).where(IngestionJob.in_progress_scan_id == scan_id),
-        select(models.Host.project_id).join(HH, HH.host_id == models.Host.id).where(HH.scan_id == scan_id),
-    ):
-        project_id = db.execute(stmt.limit(1)).scalar()
-        if _real_id(project_id):
-            return project_id
-    return None
+    project_id = db.execute(
+        select(models.Scan.project_id).where(models.Scan.id == scan_id)
+    ).scalar()
+    return project_id if _real_id(project_id) else None
 
 
 def _seen_by_another_scan(vuln, scan_id: int):
@@ -1706,8 +1701,23 @@ class IngestionService:
         # it cleans up: the cleanup takes the exclusive one.
         was_paused = getattr(_import_lock, "paused", False)
         _import_lock.paused = True
+        # The cleanup of a large scan is one long step with no heartbeat
+        # (review 2026-10-23, R-ING1).  It is not a stalled PARSE: the
+        # watchdog's window starts again when it begins and when it ends, and
+        # its statements are not held to the stall window — a big DELETE
+        # cancelled at the window left the scan behind and, at the claim,
+        # failed the job.  Its lock waits stay bounded where they were
+        # (``lock_timeout_s``), and the watchdog still ends a cleanup that
+        # outlasts a whole window plus its grace.
+        watchdog = getattr(_active_job, "watchdog", None)
+        if watchdog is not None:
+            watchdog.progressed()
         try:
             db.rollback()
+            if _on_postgres(db):
+                # After the transaction's begin, where the stall listener set
+                # its timeout; SET LOCAL ends with this transaction.
+                db.execute(text("SET LOCAL statement_timeout = 0"))
             removed = delete_partial_scan(db, scan_id, lock_timeout_s=lock_timeout_s)
             db.commit()
         except Exception:  # noqa: BLE001
@@ -1716,6 +1726,8 @@ class IngestionService:
             return False
         finally:
             _import_lock.paused = was_paused
+            if watchdog is not None:
+                watchdog.progressed()
         logger.info(
             "Deleted partial scan %s (%s): %d host(s), %d port(s), %d scanner observation(s) "
             "that only it had created; %d row(s) a later scan had re-observed were kept and "
@@ -2368,7 +2380,6 @@ class IngestionService:
         options = job.options or {}
         storage_path = job.storage_path
         filename = job.original_filename
-        job_id = job.id
 
         # The job's own project (NOT NULL since e3b7a1c9d5f0) when the options
         # do not name one — the rule the two other readers of a job use.
@@ -2417,33 +2428,10 @@ class IngestionService:
                 )
             finally:
                 read_report = end_read(_reading)
-            if not result.get("success"):
-                # C1 — a failed Nessus import (an error, a truncated export,
-                # no host processed) used to leave the hosts and observations
-                # of its committed batches in a scan no job pointed at, and
-                # the re-upload the message asks for then made a second scan.
-                # A failed import leaves nothing behind, like the others.
-                removed = self._discard_attempt_scan(db, job_id)
-                nessus_error_msg = result.get("error") or result.get("message") or "Nessus processing failed"
-                user_msg = result.get("message") or result.get("error")
-                if removed and user_msg:
-                    # The service's message describes what it had written
-                    # ("only N hosts were ingested"); say what is left.
-                    user_msg = f"{user_msg} Nothing from this file was kept."
-                parse_error = log_parse_error(
-                    db=db,
-                    filename=filename,
-                    error_type="parsing_error",
-                    file_type="nessus_xml",
-                    custom_message=user_msg or nessus_error_msg,
-                    project_id=project_id,
-                )
-                raise ParseFailure(
-                    "Nessus processing failed",
-                    user_message=user_msg,
-                    error_id=parse_error.id,
-                    underlying_error=result.get("error"),
-                )
+            # A failed Nessus import RAISES, like every parser (review
+            # 2026-10-23, H-ING2), so it reaches the one failure path in
+            # ``_process_job``: the attempt's scan removed, the next format
+            # tried when Nessus did not read the file, one message.
             db.commit()
             scan_id = result.get("scan_id")
             message = result.get("message")

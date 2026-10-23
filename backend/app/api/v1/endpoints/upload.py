@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models import IngestionJob, ScanBatch
-from app.db.models_auth import User, UserRole
+from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
@@ -29,7 +29,15 @@ from app.services.job_transitions import JobNotTransitionable
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+# Who may act on an upload job is ONE rule, on the PROJECT role axis (owner,
+# 2026-10-23): a project analyst or above — whoever submitted the job, an
+# agent session included (``submitted_by_id`` NULL) — and a global admin.
+# Every route here, reads included: the job list, a job's detail and its
+# detection carry failure text, which the import history shows analysts and
+# above only.  The page's controls follow the same role (``useProjectRole``).
+router = APIRouter(dependencies=[
+    Depends(get_current_user), Depends(require_project_role(ProjectRole.ANALYST)),
+])
 
 # Single source of truth lives on the ingestion service (enforced in
 # create_job for every caller).  Kept here as an alias so this path can still
@@ -43,18 +51,9 @@ class CancelJobResponse(BaseModel):
     message: str
 
 
-def _require_job_access(job: IngestionJob, current_user: User) -> None:
-    """Ensure the current user owns the job or is an admin."""
-    if current_user.role == UserRole.ADMIN:
-        return
-    if job.submitted_by_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized for this job")
-
-
 @router.post(
     "/",
     response_model=FileUploadResponse,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     responses={
         401: {"description": "Not authenticated"},
         403: {"description": "Insufficient permissions — analyst role required"},
@@ -223,13 +222,13 @@ class StartJobRequest(BaseModel):
     source_tool: Optional[str] = Field(None, max_length=64)
 
 
-def _load_job(db: Session, job_id: int, project: Project, current_user: User) -> IngestionJob:
+def _load_job(db: Session, job_id: int, project: Project) -> IngestionJob:
+    """The project's job, or 404.  Who may act on it is the router's rule."""
     job = db.query(IngestionJob).filter(
         IngestionJob.id == job_id, IngestionJob.project_id == project.id,
     ).first()
     if not job:
         raise HTTPException(status_code=404, detail="Ingestion job not found")
-    _require_job_access(job, current_user)
     return job
 
 
@@ -256,7 +255,7 @@ def list_formats(
     "/jobs/{job_id}/detection",
     response_model=DetectionResponse,
     responses={
-        403: {"description": "Not authorized for this job"},
+        403: {"description": "Analyst role on the project required"},
         404: {"description": "Job not found"},
         409: {"description": "The uploaded file is no longer on disk"},
     },
@@ -271,7 +270,7 @@ def get_job_detection(
     """Runs the same detection the worker will run, and says whether each
     candidate came from the file's content or only its name.  Nothing is
     written; the real parsers are never run here."""
-    job = _load_job(db, job_id, project, current_user)
+    job = _load_job(db, job_id, project)
     try:
         return detect_for_job(job)
     except FileNotFoundError:
@@ -281,9 +280,8 @@ def get_job_detection(
 @router.post(
     "/jobs/{job_id}/start",
     response_model=IngestionJobSchema,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     responses={
-        403: {"description": "Not authorized for this job"},
+        403: {"description": "Analyst role on the project required"},
         404: {"description": "Job not found"},
         409: {"description": "Job is not staged or failed, or its file is gone"},
         422: {"description": "Unknown format"},
@@ -300,7 +298,7 @@ def start_ingestion_job(
     """With ``format_override`` the worker runs exactly that parser and no
     other; a wrong choice fails visibly.  From ``failed`` this is "review the
     format and retry" on the retained file."""
-    job = _load_job(db, job_id, project, current_user)
+    job = _load_job(db, job_id, project)
     if job.status not in ("staged", "failed"):
         raise HTTPException(
             status_code=409,
@@ -351,7 +349,6 @@ class DiscardStagedResponse(BaseModel):
 @router.post(
     "/jobs/discard-staged",
     response_model=DiscardStagedResponse,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     summary="Discard the named staged jobs (files removed, rows kept as dismissed)",
 )
 def discard_all_staged_jobs(
@@ -361,17 +358,14 @@ def discard_all_staged_jobs(
     project: Project = Depends(get_current_project),
 ):
     """Clears staged uploads nobody will start — exactly the ids given, and of
-    those only the ones still staged and visible to the caller (admins the
-    project's; everyone else their own).  An id that is no longer staged, or
-    not the caller's, is skipped, and the response says what was discarded.
-    Declared before ``/jobs/{job_id}`` routes so "discard-staged" is never
-    parsed as an id."""
+    those only the project's that are still staged.  An id that is no longer
+    staged, or not the project's, is skipped, and the response says what was
+    discarded.  Declared before ``/jobs/{job_id}`` routes so "discard-staged"
+    is never parsed as an id."""
     query = db.query(IngestionJob).filter(
         IngestionJob.project_id == project.id, IngestionJob.status == "staged",
         IngestionJob.id.in_(body.job_ids),
     )
-    if current_user.role != UserRole.ADMIN:
-        query = query.filter(IngestionJob.submitted_by_id == current_user.id)
     ids = []
     for job in query.all():
         discard_staged_job(db, job)
@@ -392,7 +386,6 @@ class DismissSupersededResponse(BaseModel):
 @router.post(
     "/jobs/dismiss-superseded",
     response_model=DismissSupersededResponse,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     summary="Dismiss the named superseded failures (a later job imported the same file)",
 )
 def dismiss_superseded_jobs(
@@ -404,16 +397,14 @@ def dismiss_superseded_jobs(
     """v2.403.0 — a failed or partial import whose file a later job of the
     project imported cleanly is SUPERSEDED: it no longer needs attention, but
     it still sat undismissed.  Dismisses exactly the ids given, and of those
-    only the ones still superseded, undismissed and visible to the caller
-    (admins the project's; everyone else their own) — each checked under its
-    row lock through ``job_transitions``.  The response says which."""
+    only the project's that are still superseded and undismissed — each
+    checked under its row lock through ``job_transitions``.  The response
+    says which."""
     query = db.query(IngestionJob.id).filter(
         IngestionJob.project_id == project.id,
         IngestionJob.id.in_(body.job_ids),
         IngestionJob.dismissed_at.is_(None),
     )
-    if current_user.role != UserRole.ADMIN:
-        query = query.filter(IngestionJob.submitted_by_id == current_user.id)
     candidate_ids = sorted(jid for (jid,) in query.all())
 
     def _still_superseded(job: IngestionJob) -> Optional[str]:
@@ -437,9 +428,8 @@ def dismiss_superseded_jobs(
 @router.post(
     "/jobs/{job_id}/discard",
     response_model=IngestionJobSchema,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     responses={
-        403: {"description": "Not authorized for this job"},
+        403: {"description": "Analyst role on the project required"},
         404: {"description": "Job not found"},
         409: {"description": "Only a staged job can be discarded"},
     },
@@ -451,7 +441,7 @@ def discard_ingestion_job(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    job = _load_job(db, job_id, project, current_user)
+    job = _load_job(db, job_id, project)
     try:
         return discard_staged_job(db, job)
     except ValueError as exc:
@@ -461,9 +451,8 @@ def discard_ingestion_job(
 @router.post(
     "/jobs/{job_id}/reprocess",
     response_model=IngestionJobSchema,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     responses={
-        403: {"description": "Not authorized for this job"},
+        403: {"description": "Analyst role on the project required"},
         404: {"description": "Job not found"},
         409: {"description": "Job is not finished, or its retained file is gone"},
         422: {"description": "Unknown format"},
@@ -480,7 +469,7 @@ def reprocess_ingestion_job(
     """v2.354.0 — a new job over the same bytes.  A new scan record is
     created when it parses; the prior scan and its contributions stay until
     that scan is deleted; the duplicate guard is bypassed on purpose."""
-    job = _load_job(db, job_id, project, current_user)
+    job = _load_job(db, job_id, project)
     if job.status not in ("completed", "failed"):
         raise HTTPException(
             status_code=409,
@@ -504,7 +493,7 @@ def reprocess_ingestion_job(
     response_model=CancelJobResponse,
     responses={
         401: {"description": "Not authenticated"},
-        403: {"description": "Not authorized for this job"},
+        403: {"description": "Analyst role on the project required"},
         404: {"description": "Job not found"},
         409: {"description": "Job cannot be cancelled in its current state"},
     },
@@ -516,14 +505,8 @@ def cancel_ingestion_job(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Cancel a queued or processing ingestion job. Only the job owner or an admin can cancel."""
-    job = db.query(IngestionJob).filter(
-        IngestionJob.id == job_id,
-        IngestionJob.project_id == project.id,
-    ).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Ingestion job not found")
-    _require_job_access(job, current_user)
+    """Cancel a queued or processing ingestion job of the project (analyst)."""
+    job = _load_job(db, job_id, project)
     if job.status not in ("queued", "processing"):
         raise HTTPException(
             status_code=409,
@@ -551,10 +534,9 @@ class RetryJobRequest(BaseModel):
 @router.post(
     "/jobs/{job_id}/retry",
     response_model=CancelJobResponse,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     responses={
         401: {"description": "Not authenticated"},
-        403: {"description": "Not authorized for this job"},
+        403: {"description": "Analyst role on the project required"},
         404: {"description": "Job not found"},
         409: {"description": "Job cannot be retried in its current state"},
     },
@@ -573,7 +555,7 @@ def retry_ingestion_job(
     retry a transient failure without re-uploading a large scan file.  A job
     whose file another job has since imported is refused as a duplicate
     (409, ``code: duplicate_scan``) unless it was uploaded with "import
-    anyway".  Owner or admin only; analyst role.
+    anyway".  Analyst role, whoever submitted the job.
 
     The body is optional.  ``{"keep_truncated": true}`` is the operator's
     "import what the file holds" for a file that was cut short
@@ -581,13 +563,7 @@ def retry_ingestion_job(
     ends, keeps the complete records before that point and finishes partial.
     It holds for this attempt only — a retry without it clears it.
     """
-    job = db.query(IngestionJob).filter(
-        IngestionJob.id == job_id,
-        IngestionJob.project_id == project.id,
-    ).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Ingestion job not found")
-    _require_job_access(job, current_user)
+    job = _load_job(db, job_id, project)
     if job.status != "failed":
         raise HTTPException(
             status_code=409,
@@ -620,7 +596,7 @@ def retry_ingestion_job(
     response_model=IngestionJobSchema,
     responses={
         401: {"description": "Not authenticated"},
-        403: {"description": "Not authorized for this job"},
+        403: {"description": "Analyst role on the project required"},
         404: {"description": "Job not found"},
     },
     summary="Get ingestion job details",
@@ -631,14 +607,8 @@ def get_ingestion_job(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Get details of an ingestion job. Only the job owner or an admin can view."""
-    job = db.query(IngestionJob).filter(
-        IngestionJob.id == job_id,
-        IngestionJob.project_id == project.id,
-    ).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Ingestion job not found")
-    _require_job_access(job, current_user)
+    """Get details of an ingestion job of the project (analyst)."""
+    job = _load_job(db, job_id, project)
     # As the lists do: why it failed, of what kind, and whether a later import
     # replaced it — the page following ONE job reads the same row.
     return annotate_jobs(db, [job])[0]
@@ -683,8 +653,8 @@ def list_ingestion_jobs(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """List ingestion jobs.  Admins see all jobs in the project; other
-    users see only their own.  Supports offset/limit pagination and an
+    """List the project's ingestion jobs, whoever submitted them (analyst).
+    Supports offset/limit pagination and an
     optional status filter so a future UI can expose a dead-letter
     view (``status=failed``) alongside the live queue.
 
@@ -695,8 +665,6 @@ def list_ingestion_jobs(
     that frontend work is queued, or the Scans page crashes.
     """
     query = db.query(IngestionJob).filter(IngestionJob.project_id == project.id)
-    if current_user.role != UserRole.ADMIN:
-        query = query.filter(IngestionJob.submitted_by_id == current_user.id)
     if ids is not None:
         try:
             wanted = sorted({int(part) for part in ids.split(",") if part.strip()})
@@ -706,8 +674,8 @@ def list_ingestion_jobs(
             raise HTTPException(status_code=422, detail="At most 200 ids per request")
         if not wanted:
             return []
-        # Same project + visibility rule as above; an id the caller may not
-        # see, or that no longer exists, is simply absent from the answer.
+        # The project's jobs only; an id of another project, or that no
+        # longer exists, is simply absent from the answer.
         return annotate_jobs(db, (
             query.filter(IngestionJob.id.in_(wanted))
             .order_by(desc(IngestionJob.created_at))
@@ -751,18 +719,10 @@ def dismiss_ingestion_job(
     clear is a permanent banner.  The row stays visibly partial everywhere —
     dismissal acknowledges it, it does not make it clean.  Queued/processing
     rows would be hiding live state, and a clean completed row has nothing
-    to dismiss.  Non-admins can only dismiss jobs they submitted, mirroring
-    the list endpoint's visibility rule above.
+    to dismiss.  Any project analyst may dismiss any of the project's jobs
+    (an agent's upload included).
     """
-    job = (
-        db.query(IngestionJob)
-        .filter(IngestionJob.id == job_id, IngestionJob.project_id == project.id)
-        .first()
-    )
-    if not job:
-        raise HTTPException(status_code=404, detail="Ingestion job not found")
-    if current_user.role != UserRole.ADMIN and job.submitted_by_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Cannot dismiss another user's job")
+    job = _load_job(db, job_id, project)
     # v2.403.0 — through job_transitions: the status is checked under the
     # row lock (a retry could be re-queuing it right now).
     try:

@@ -25,13 +25,13 @@ import ipaddress
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.cut_short import settle_cut
-from app.parsers.parser_utils import announce_scan, beat_while_reading
+from app.parsers.parser_utils import announce_scan, beat_while_reading, open_tool_lines
 from app.parsers.streaming_json import cut_document_records, is_cut_last_line, json_lines
 from app.services.instants import parse_instant
 from app.db.models_attribution import (
@@ -172,6 +172,19 @@ def _asn_from_record(rec: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+class _ReadTally:
+    """The lines the read skipped, and the first five warnings about them."""
+
+    def __init__(self) -> None:
+        self.skipped = 0
+        self.warnings: List[str] = []
+
+    def skip(self, warning: str) -> None:
+        self.skipped += 1
+        if len(self.warnings) < 5:
+            self.warnings.append(warning)
+
+
 class RdapParser:
     """Parse RDAP NDJSON into NetworkAttribution rows."""
 
@@ -192,51 +205,10 @@ class RdapParser:
         announce_scan(self.db, scan)
 
         written = 0
-        skipped = 0
+        # The read's rejects and warnings (invalid lines), then the write's:
+        # the warnings are the read's first, at most five in all.
+        read = _ReadTally()
         warnings: list[str] = []
-
-        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
-            content = fh.read()
-
-        # v2.387.0 — a whole-file JSON document first: an RDAP response saved
-        # as the server sends it (``curl … > ip.json``, pretty-printed) or an
-        # array of them.  It used to be read one line at a time, so a
-        # pretty-printed response became 189 "invalid JSON" lines, no
-        # netblock, and a job that still said it succeeded.  One object per
-        # line (the helper script's NDJSON) is the fallback.
-        entries: list[tuple[str, Any]] = []
-        try:
-            whole = json.loads(content)
-        except json.JSONDecodeError:
-            # A document that ENDS EARLY (an array of responses, or one
-            # response) is settled by the shared rule before anything is
-            # written: the import fails as cut short, or — asked to keep what
-            # the file holds — goes on with the complete responses, still in
-            # the one transaction below.  NDJSON and invalid content: None.
-            whole = self._document_before_the_cut(content)
-        if isinstance(whole, dict):
-            entries = [("document", whole)]
-        elif isinstance(whole, list):
-            entries = [(f"item {i}", item) for i, item in enumerate(whole, start=1)]
-        else:
-            # R6 — the read phase heartbeats (only the committed scan row
-            # exists so far).
-            lines = json_lines(content)
-            for lineno, raw_line in enumerate(beat_while_reading(lines, "lines read"), start=1):
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append((f"line {lineno}", json.loads(line)))
-                except json.JSONDecodeError as exc:
-                    # The file's LAST line, cut short (the shared rule): the
-                    # same question, with the complete lines before it.
-                    if is_cut_last_line(raw_line):
-                        settle_cut(len(entries), label="RDAP JSON", in_lines=True, cause=exc)
-                        break
-                    skipped += 1
-                    if len(warnings) < 5:
-                        warnings.append(f"line {lineno}: invalid JSON ({exc})")
 
         # R6 — one heartbeat before anything is written, so a cancel, timeout
         # or shutdown that arrived while the file was being read stops here.
@@ -244,10 +216,20 @@ class RdapParser:
         # row belongs to the project's address block, not to this scan, so
         # the cleanup of a cancelled import cannot find it — a heartbeat's
         # commit part-way would leave rows a cancelled import is promised not
-        # to leave.  It stays one transaction (a query and a flush per block).
+        # to leave.  It stays one transaction (a query and a flush per block),
+        # so a file found cut short at its last line leaves nothing either.
         from app.services.ingestion_service import report_progress
 
-        report_progress(f"{len(entries)} records read")
+        if self._is_json_lines(file_path):
+            # The helper script's NDJSON, read a line at a time INTO the
+            # write loop (review 2026-10-23, R-ING2: the whole file, and a
+            # list of its lines, were held in memory first).
+            report_progress("reading records")
+            entries: Iterable[tuple[str, Any]] = self._json_lines(file_path, read)
+        else:
+            entries = self._document_entries(file_path, read)
+            report_progress(f"{len(entries)} records read")
+        skipped = 0
         for where, record in entries:
             if not isinstance(record, dict):
                 skipped += 1
@@ -259,6 +241,8 @@ class RdapParser:
                 if len(warnings) < 5:
                     q = record.get("query") or record.get("handle") or "?"
                     warnings.append(f"{where}: no usable network range for {q}")
+        skipped += read.skipped
+        warnings = (read.warnings + warnings)[:5]
 
         if written == 0 and skipped:
             # Nothing attributed and something rejected: a failure, not an
@@ -282,6 +266,93 @@ class RdapParser:
             "partial": False,
         }
         return scan
+
+    @staticmethod
+    def _is_json_lines(file_path: str) -> bool:
+        """The helper script's NDJSON: the first non-blank line is a whole
+        JSON object, and another non-blank line follows.  Such a file is never
+        one JSON document (``json.loads`` refuses it as extra data) nor one cut
+        short (``_document_before_the_cut`` answers None for it), so it is
+        what the whole-file reading also ended up reading as lines — told from
+        its first two lines instead of the whole text."""
+        with open_tool_lines(file_path, errors="replace") as lines:
+            first = None
+            for line in lines:
+                if not line.strip():
+                    continue
+                if first is not None:
+                    return True
+                try:
+                    first = json.loads(line.strip())
+                except json.JSONDecodeError:
+                    return False
+                if not isinstance(first, dict):
+                    return False
+        return False
+
+    @staticmethod
+    def _json_lines(file_path: str, read: "_ReadTally") -> Iterator[tuple[str, Any]]:
+        """Each line's record, as the file is read.  A line that does not
+        decode is counted and skipped; the file's LAST line cut short asks the
+        shared question (``settle_cut``) with the complete lines before it —
+        raising ``TruncatedFile`` rolls back the uncommitted writes."""
+        decoded = 0
+        with open_tool_lines(file_path, errors="replace") as lines:
+            for lineno, raw_line in enumerate(lines, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    if is_cut_last_line(raw_line):
+                        settle_cut(decoded, label="RDAP JSON", in_lines=True, cause=exc)
+                        return
+                    read.skip(f"line {lineno}: invalid JSON ({exc})")
+                    continue
+                decoded += 1
+                yield f"line {lineno}", record
+
+    def _document_entries(self, file_path: str, read: "_ReadTally") -> List[tuple[str, Any]]:
+        """Anything but NDJSON, read whole as it always was.  v2.387.0 — a
+        whole-file JSON document first: an RDAP response saved as the server
+        sends it (``curl … > ip.json``, pretty-printed) or an array of them.
+        It used to be read one line at a time, so a pretty-printed response
+        became 189 "invalid JSON" lines, no netblock, and a job that still
+        said it succeeded.  Lines are the fallback (a file whose first line
+        does not decode)."""
+        with open_tool_lines(file_path, errors="replace") as lines:
+            content = "".join(lines)
+        try:
+            whole = json.loads(content)
+        except json.JSONDecodeError:
+            # A document that ENDS EARLY (an array of responses, or one
+            # response) is settled by the shared rule before anything is
+            # written: the import fails as cut short, or — asked to keep what
+            # the file holds — goes on with the complete responses, still in
+            # the one transaction.  NDJSON and invalid content: None.
+            whole = self._document_before_the_cut(content)
+        if isinstance(whole, dict):
+            return [("document", whole)]
+        if isinstance(whole, list):
+            return [(f"item {i}", item) for i, item in enumerate(whole, start=1)]
+        entries: List[tuple[str, Any]] = []
+        # R6 — the read phase heartbeats (only the committed scan row exists
+        # so far).
+        for lineno, raw_line in enumerate(beat_while_reading(json_lines(content), "lines read"), start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                entries.append((f"line {lineno}", json.loads(line)))
+            except json.JSONDecodeError as exc:
+                # The file's LAST line, cut short (the shared rule): the same
+                # question, with the complete lines before it.
+                if is_cut_last_line(raw_line):
+                    settle_cut(len(entries), label="RDAP JSON", in_lines=True, cause=exc)
+                    break
+                read.skip(f"line {lineno}: invalid JSON ({exc})")
+        return entries
 
     @staticmethod
     def _document_before_the_cut(content: str) -> Optional[list]:

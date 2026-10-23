@@ -1,5 +1,4 @@
 import csv
-import io
 import ipaddress
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -11,7 +10,7 @@ from app.parsers.parser_utils import (
     announce_scan,
     correlate_scan,
     dns_import_summary,
-    read_tool_text,
+    open_tool_lines,
     record_addressed_hosts,
     write_record,
 )
@@ -74,6 +73,24 @@ class DNSParser:
             logger.error(f"Error parsing DNS file {filename} after {elapsed_time:.2f} seconds: {str(e)}")
             raise
 
+    @staticmethod
+    def _delimiter(file_path: str) -> str:
+        """Tab, semicolon or comma, from the file's first 1024 characters as
+        the reader decodes them — read from its first lines, never the whole
+        file."""
+        sample = ''
+        with open_tool_lines(file_path, newline='') as lines:
+            for line in lines:
+                sample += line
+                if len(sample) >= 1024:
+                    break
+        sample = sample[:1024]
+        if '\t' in sample:
+            return '\t'
+        if ';' in sample:
+            return ';'
+        return ','
+
     def _parse_csv_file(self, file_path: str, filename: str) -> models.Scan:
         """Parse DNS CSV file with columns: record_type, name, address"""
         scan = models.Scan(
@@ -106,18 +123,12 @@ class DNSParser:
         # the whole file on a UTF-16 CSV, which the upload validator admits
         # (Excel's "Unicode text", a PowerShell redirect).
         # A UTF-8 byte-order mark (Excel's "CSV UTF-8") would otherwise become
-        # part of the first header name.
-        with io.StringIO(read_tool_text(file_path).text.lstrip('﻿'), newline='') as csvfile:
-            sample = csvfile.read(1024)
-            csvfile.seek(0)
-
-            delimiter = ','
-            if '\t' in sample:
-                delimiter = '\t'
-            elif ';' in sample:
-                delimiter = ';'
-
-            reader = csv.DictReader(csvfile, delimiter=delimiter)
+        # part of the first header name.  STREAMED (review 2026-10-23,
+        # R-ING2): a zone export of several hundred MB was read whole, twice
+        # over, into the worker's memory.
+        delimiter = self._delimiter(file_path)
+        with open_tool_lines(file_path, newline='') as lines:
+            reader = csv.DictReader(lines, delimiter=delimiter)
             if not reader.fieldnames:
                 raise ValueError("DNS CSV file is empty or has no header row (possibly truncated)")
 

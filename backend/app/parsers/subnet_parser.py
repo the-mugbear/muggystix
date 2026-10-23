@@ -2,16 +2,13 @@ import csv
 import io
 import ipaddress
 from typing import List, Tuple
-from sqlalchemy.orm import Session
 
 class SubnetParser:
     """Parses scope files. It used to carry a database-backed IP trie and a
     set of single-host lookup helpers as well; nothing called them (scope
     correlation lives in ``SubnetCorrelationService``), and the trie loaded
-    every project's subnets. Removed in v2.369.0."""
-
-    def __init__(self, db: Session):
-        self.db = db
+    every project's subnets. Removed in v2.369.0 — and with them its use of
+    a database session, so it takes none (review 2026-10-23)."""
 
     # ------------------------------------------------------------------
     # Scope-file parsing (v2.326.0).  A scope file is a mix of subnets and

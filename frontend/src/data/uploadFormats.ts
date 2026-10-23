@@ -147,7 +147,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'NetExec (NXC)',
     formats: '.json / .txt',
-    desc: 'Console output or the --log file: SMB and LDAP enumeration (SMB signing posture is recorded), the SMB --shares table, NFS exports (nfs --shares) with root escape, and logins; or spider_plus JSON.',
+    desc: 'Console output or the --log file: SMB and LDAP enumeration (SMB signing posture is recorded), the SMB --shares table, NFS exports (nfs --shares) with root escape, and logins; or spider_plus JSON. A file over 100 MB is refused (it is read whole): split the capture and upload the parts.',
     hint: 'nxc\'s result-line layout for any protocol; "netexec" or "nxc" in the filename is only a hint.',
   },
   {

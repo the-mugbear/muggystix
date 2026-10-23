@@ -286,14 +286,7 @@ def read_tool_text(file_path: str) -> ToolText:
     """
     with open(file_path, "rb") as fh:
         raw = fh.read()
-    encoding = "utf-8"
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        encoding = "utf-16"
-    else:
-        head = raw[:4096]
-        # UTF-16LE without a BOM: ASCII text with every odd byte NUL.
-        if len(head) >= 16 and head[1::2].count(0) > 0.9 * (len(head) // 2):
-            encoding = "utf-16-le"
+    encoding = tool_text_encoding(raw[:_ENCODING_HEAD_BYTES])
     text = raw.decode(encoding, errors="ignore")
     if encoding.startswith("utf-16"):
         text = text.lstrip("﻿")
@@ -301,6 +294,48 @@ def read_tool_text(file_path: str) -> ToolText:
     if nul_removed:
         text = text.replace("\x00", "")
     return ToolText(text=text, encoding=encoding, nul_removed=nul_removed)
+
+
+#: How much of a file decides its encoding (``tool_text_encoding``).
+_ENCODING_HEAD_BYTES = 4096
+
+
+def tool_text_encoding(head: bytes) -> str:
+    """The encoding of a tool's text output, from its first bytes — the ONE
+    rule ``read_tool_text`` and ``open_tool_lines`` read a file by: a UTF-16
+    byte-order mark, or UTF-16LE without one (ASCII text with every odd byte
+    NUL — a PowerShell redirect), else UTF-8."""
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    if len(head) >= 16 and head[1::2].count(0) > 0.9 * (len(head) // 2):
+        return "utf-16-le"
+    return "utf-8"
+
+
+@contextmanager
+def open_tool_lines(
+    file_path: str, *, newline: Optional[str] = None, errors: str = "ignore",
+) -> Iterator[Iterator[str]]:
+    """The lines of a tool's text output, STREAMED (review 2026-10-23,
+    R-ING2): decoded by ``tool_text_encoding`` (UTF-16 from PowerShell's
+    ``>``), a byte-order mark taken off the first line (Excel's "CSV UTF-8"),
+    NUL removed (``without_nul``).  For a parser whose reader takes lines, in
+    place of ``read_tool_text``, which holds the whole file — and a copy of it
+    for each split — in memory.  ``newline`` is ``open``'s (``''`` for a CSV
+    reader)."""
+    with open(file_path, "rb") as fh:
+        encoding = tool_text_encoding(fh.read(_ENCODING_HEAD_BYTES))
+    with open(file_path, "r", encoding=encoding, errors=errors, newline=newline) as handle:
+        yield without_nul(_without_leading_bom(handle))
+
+
+def _without_leading_bom(lines: Iterable[str]) -> Iterator[str]:
+    first = True
+    for line in lines:
+        if first:
+            first = False
+            line = line.lstrip("﻿")
+        yield line
 
 
 def without_nul(lines: Iterable[str]) -> Iterable[str]:

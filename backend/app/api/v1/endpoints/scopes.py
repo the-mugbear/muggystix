@@ -165,7 +165,7 @@ async def upload_subnet_file(
         is_csv = file.filename.lower().endswith('.csv')
         domain_rows_ignored_cols = 0
         try:
-            parser = SubnetParser(db)
+            parser = SubnetParser()
             if is_csv:
                 entries, domain_entries, domain_rows_ignored_cols = parser.parse_scope_csv(file_content)
             else:

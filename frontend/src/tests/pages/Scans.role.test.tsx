@@ -8,7 +8,7 @@
  * with its Retry and Dismiss (`UploadHistoryRow.test.tsx` covers them, the
  * refused Dismiss included).  The strip lists only what is still moving.
  */
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -74,11 +74,16 @@ beforeEach(() => {
 });
 
 describe('Scans — a project viewer reads the import history', () => {
-  it('shows the history and the queue without any write control, and nothing about failures', async () => {
+  // Every `/upload` route is a project analyst's (owner, 2026-10-23: any
+  // analyst acts on any of the project's upload jobs; below that, none), so
+  // a viewer's page does not read the queue and shows no strip.
+  it('shows the history without any write control, and neither the queue nor anything about failures', async () => {
     renderPage();
     await screen.findByText('newest.xml');
-    await screen.findByText('waiting.xml');
-    await screen.findByText('staged.xml');
+    expect(api.getRecentIngestionJobs).not.toHaveBeenCalled();
+    expect(api.getStagedIngestionJobs).not.toHaveBeenCalled();
+    expect(screen.queryByText('waiting.xml')).toBeNull();
+    expect(screen.queryByTestId('ingestion-queue')).toBeNull();
 
     expect(screen.queryByRole('button', { name: /Upload scans/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Review \d+ waiting/ })).toBeNull();
@@ -87,18 +92,16 @@ describe('Scans — a project viewer reads the import history', () => {
     expect(screen.queryByRole('button', { name: /Review format and import/ })).toBeNull();
     // Reading stays: comparing scans changes nothing.
     expect(screen.getByRole('button', { name: /Compare scans/ })).toBeInTheDocument();
-    // A failed upload is no queue row, and the strip says nothing of failures
-    // to someone who cannot open them.
-    const queue = screen.getByTestId('ingestion-queue');
-    expect(within(queue).queryByText('broken.xml')).toBeNull();
-    expect(within(queue).queryByTestId('queue-failed-line')).toBeNull();
-    expect(queue).not.toHaveTextContent(/failed/);
+    expect(screen.queryByText('broken.xml')).toBeNull();
+    expect(screen.queryByTestId('queue-failed-line')).toBeNull();
   });
 
   it('an auditor is a reader here too', async () => {
     role.value = 'auditor';
     renderPage();
-    await screen.findByText('waiting.xml');
+    await screen.findByText('newest.xml');
+    expect(api.getRecentIngestionJobs).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ingestion-queue')).toBeNull();
     expect(screen.queryByRole('button', { name: /Upload scans/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Cancel ingestion/ })).toBeNull();
     expect(screen.queryByTestId('queue-failed-line')).toBeNull();

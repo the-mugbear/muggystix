@@ -143,14 +143,10 @@ class NmapXMLParser:
                                 # stop pinning every host's and port's history
                                 # row for the rest of the file.
                                 self.dedup_service.release_committed_history()
-                            # Periodic commit so a 10k-host scan doesn't hold row locks
-                            # on hosts/ports/host_scan_history for the full parse
-                            # duration, which would block every other concurrent writer.
-                            if hosts_read % 500 == 0:
-                                self.db.commit()
-                                self.dedup_service.release_committed_history()
-                                if scan is not None:
-                                    self.db.refresh(scan)
+                            # (The heartbeat's commit every 100 hosts is what keeps
+                            # a 10k-host scan from holding row locks for the whole
+                            # parse; a second commit every 500 hosts was redundant
+                            # under a job and is gone — review 2026-10-23.)
                         else:
                             clear_element(elem)
                     elif tag == "finished" and scan is not None:
