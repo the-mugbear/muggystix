@@ -134,6 +134,19 @@ export interface HostCertStatus {
   subject_org?: string | null;
 }
 
+/** One Exposure chip of a Hosts list row (`ports_of_interest.exposure_chips`). */
+export interface ExposureChip {
+  /** Stable key for React. */
+  key: string;
+  /** What the chip says: the high-value label, or the probed service name. */
+  label: string;
+  port: number;
+  /** True when a service probe identified the service; false when the label
+   *  is a guess from the port number alone (no probe, or a table lookup). */
+  detected: boolean;
+  weight: number;
+}
+
 export interface Host {
   id: number;
   ip_address: string;
@@ -225,10 +238,18 @@ export interface Host {
   weakness_labels?: Record<string, string>;
   /** v2.423.0 — the misconfiguration checks recorded on the host; list rows. */
   check_ids?: string[];
+  /** List rows: of those flags and checks, the ones the active conditions
+   *  NAME — decided by the server from the filter's own parse of the query
+   *  (`host_query.matched_weakness_terms`). */
+  matched_weakness_flags?: string[];
+  matched_check_ids?: string[];
   /** List rows: the ids among `ports` that the active port / service /
    *  version conditions matched — decided by the server's own filter. A list
    *  row's `ports` are its open ones plus these, not every stored port. */
   matched_port_ids?: number[];
+  /** List rows: the Exposure column's chips, ranked by the server from its
+   *  one ports-of-interest table (`ports_of_interest.exposure_chips`). */
+  exposure?: ExposureChip[];
   /** The kinds of evidence that apply to the host and nothing imported so far
    *  provides (list rows): Evidence's gaps, per host. `key` is a `gap:` value. */
   evidence_gaps?: Array<{ key: string; label: string }>;
@@ -243,6 +264,10 @@ export interface Host {
   scope_membership?: HostScopeMembership | null;
   // v2.348.0 — per-domain evidence freshness (detail endpoint only).
   assessment?: HostAssessment | null;
+  /** Detail only: the open ports a later observation of the host did not
+   *  re-observe — the ports `assessment.open_ports_not_in_latest_scan`
+   *  counts; the port table marks them "not revalidated". */
+  not_revalidated_port_ids?: number[];
   // v2.71.0 — project tags on this host, and users it's assigned to.
   tags?: HostTagInfo[];
   assignees?: HostAssignee[];
@@ -1192,32 +1217,14 @@ export const getHostDnsRecords = async (
   hostId: number,
   signal?: AbortSignal,
 ): Promise<HostDnsRecordsResponse> => {
-  try {
-    const response = await api.get(`${projectPath(projectId)}/hosts/${hostId}/dns-records`, { signal });
-    return response.data;
-  } catch (error: any) {
-    // Older deployments don't expose this endpoint — fail closed to
-    // an empty result so HostInspector can still render the rest of
-    // the page.
-    if (error?.response?.status === 404) {
-      return { items: [], total: 0, resolvers: [], record_types: [], project_total: 0 };
-    }
-    throw error;
-  }
+  // A 404 is the host deleted since: an error its section says, never "0".
+  const response = await api.get(`${projectPath(projectId)}/hosts/${hostId}/dns-records`, { signal });
+  return response.data;
 };
 
 export const getHostConflicts = async (projectId: number, hostId: number, signal?: AbortSignal): Promise<HostConflictsResponse> => {
-  try {
-    const response = await api.get(`${projectPath(projectId)}/hosts/${hostId}/conflicts`, { signal });
-    return response.data;
-  } catch (error: any) {
-    // Only swallow 404 (endpoint not available in older deployments);
-    // let auth errors and server failures propagate.
-    if (error?.response?.status === 404) {
-      return { conflict_count: 0, confidence: [], conflict_history: [] };
-    }
-    throw error;
-  }
+  const response = await api.get(`${projectPath(projectId)}/hosts/${hostId}/conflicts`, { signal });
+  return response.data;
 };
 
 export interface ScanHostsQuery {

@@ -41,6 +41,7 @@ import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { formatTimestamp } from '../utils/relativeTime';
+import { plural } from '../utils/plural';
 
 export const COMPARE_PATH = '/scans/compare';
 /** The picker lists this many scans, newest first. */
@@ -51,7 +52,6 @@ export const PICKER_LIMIT = 200;
 export const hostsOnlyIn = (present: number, absent: number): string =>
   buildHostsUrl({ q: `scan:${present} AND NOT scan:${absent}` });
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 const scanLabel = (s: { id: number; filename: string; created_at?: string | null }): string => {
   const when = formatTimestamp(s.created_at, '');

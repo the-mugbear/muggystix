@@ -162,12 +162,17 @@ const ProjectSettings: React.FC = () => {
   const members: ProjectMember[] | null = membersQuery.data ?? null;
   const membersError = queryErrorText(membersQuery.error, 'Could not load the members.');
   const loadMembers = () => { void membersQuery.refetch(); };
-  /** Patch the roster on screen with what a write is known to have done. */
-  const setMembers = (update: (prev: ProjectMember[]) => ProjectMember[]) => {
-    queryClient.setQueryData<ProjectMember[]>(membersOptions.queryKey, (prev) => update(prev ?? []));
+  /** A member write shows at once by putting the server's ANSWER onto the
+   *  roster (never a guess at what it did), and the roster is read again.
+   *  The pickers of this project — owner, assignee, @mention — read this same
+   *  entry, so that is what they show too. */
+  const membersChanged = async (answer?: ProjectMember) => {
+    if (answer) {
+      queryClient.setQueryData<ProjectMember[]>(membersOptions.queryKey, (prev) =>
+        prev?.map((x) => (x.user_id === answer.user_id ? answer : x)));
+    }
+    await queryClient.invalidateQueries({ queryKey: membersOptions.queryKey });
   };
-  // (The pickers of this project — owner, assignee, @mention — read this same
-  // entry, so a patch here is what they show: nothing more to tell them.)
 
   const [addOpen, setAddOpen] = useState(false);
   const [newUser, setNewUser] = useState<string | null>(null);
@@ -215,8 +220,8 @@ const ProjectSettings: React.FC = () => {
   const roleChange = useMutation({
     mutationFn: (body: { projectId: number; member: ProjectMember; role: string; self: boolean }) =>
       updateProjectMemberRole(body.projectId, body.member.user_id, body.role),
-    onSuccess: async (_updated, { member, role, self }) => {
-      setMembers((prev) => prev.map((x) => (x.user_id === member.user_id ? { ...x, role } : x)));
+    onSuccess: async (updated, { member, role, self }) => {
+      await membersChanged(updated);
       if (self) await projectsChanged();
       toast.success(`${memberName(member)} is now ${roleLabel(role)}.`);
     },
@@ -225,8 +230,8 @@ const ProjectSettings: React.FC = () => {
   const removal = useMutation({
     mutationFn: (body: { projectId: number; member: ProjectMember }) =>
       removeProjectMember(body.projectId, body.member.user_id),
-    onSuccess: async (_void, { member }) => {
-      setMembers((prev) => prev.filter((x) => x.user_id !== member.user_id));
+    onSuccess: async () => {
+      await membersChanged();
       await projectsChanged();
       toast.success('Member removed.');
     },

@@ -24,15 +24,6 @@ export const SEVERITY_HSL: Record<Severity, string> = {
   info: 'hsl(var(--muted-foreground))',
 };
 
-/** Text on a filled severity mark: black or white by the step's luminance. */
-export const SEVERITY_FOREGROUND: Record<Severity, string> = {
-  critical: 'hsl(var(--sev-critical-foreground))',
-  high: 'hsl(var(--sev-high-foreground))',
-  medium: 'hsl(var(--sev-medium-foreground))',
-  low: 'hsl(var(--sev-low-foreground))',
-  info: 'hsl(var(--background))',
-};
-
 /** Severity → Badge `variant` (the shared severity-* badge styles). The
  *  canonical replacement for the per-page SEVERITY_VARIANT maps. */
 export const SEVERITY_BADGE_VARIANT: Record<Severity, string> = {

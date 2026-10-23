@@ -83,9 +83,11 @@ export interface NamesSummary {
   unresolved: number;
   resolved: number;
   in_scope: number;
+  /** Names the `out_of_scope` filter lists — that filter's own count. */
+  out_of_scope: number;
   wildcards: number;
   /** Names the `shared` filter lists. */
-  shared_names?: number;
+  shared_names: number;
 }
 
 export interface NameImportRequest {

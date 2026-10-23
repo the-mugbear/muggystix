@@ -84,9 +84,7 @@ import { IP_OR_CIDR_HINT, isIpOrCidr } from '../utils/ipAddress';
 import { formatDate, formatTimestamp } from '../utils/relativeTime';
 import { selectAllState } from '../utils/selection';
 import { inertWhen } from '../utils/uiStyles';
-
-const plural = (n: number, one: string, many = `${one}s`) =>
-  `${n.toLocaleString()} ${n === 1 ? one : many}`;
+import { plural } from '../utils/plural';
 
 /**
  * The page's lead (v5.269.0): where the discovered hosts stand against the
@@ -265,8 +263,7 @@ const Scopes: React.FC = () => {
         subnetsLimit: limit,
         subnetsSearch: subnetSearch,
       }, signal);
-      // A server that does not count has sent everything it has.
-      return { ...page, items: page.subnets, total: page.subnets_total ?? offset + page.subnets.length };
+      return { ...page, items: page.subnets, total: page.subnets_total };
     },
     [projectId, { subnetsSearch: subnetSearch }],
     { pageSize: SUBNET_PAGE_SIZE, page: useUrlPage(), within: projectId, errorMessage: 'The subnets could not be loaded.' },

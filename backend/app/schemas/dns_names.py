@@ -106,6 +106,9 @@ class NamesSummary(BaseModel):
     unresolved: int
     resolved: int
     in_scope: int
+    #: The names `?state=out_of_scope` lists, counted by that state's own
+    #: filter (it was `total - in_scope` in the browser).
+    out_of_scope: int
     wildcards: int
     # v2.402.0 — the NAMES the `shared` filter lists (a name whose current
     # address another name also currently resolves to), so the filter chip

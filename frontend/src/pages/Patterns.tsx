@@ -51,6 +51,7 @@ import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureEmpty from '../components/posture/PostureEmpty';
+import { plural } from '../utils/plural';
 
 type Spread = SystemicCondition['classification'];
 
@@ -92,7 +93,6 @@ function conditionName(key: string): string {
 }
 
 const pct = (fraction: number) => `${Math.round(fraction * 100)}%`;
-const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 /** Condition names as dot-separated text links (not a row of chips). */
 const ConditionLinks: React.FC<{ keys: string[]; cidr?: string | null }> = ({ keys, cidr }) => (

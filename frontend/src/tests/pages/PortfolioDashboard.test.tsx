@@ -61,6 +61,15 @@ describe('Portfolio', () => {
     dashboardMock.mockReset().mockResolvedValue({ summary, projects });
   });
 
+  // Review 2026-10-23b, FEP-7: the search was component state, so Back from a
+  // project restored the other filters but not it.
+  it('the search is read from the address', async () => {
+    render(<MemoryRouter initialEntries={['/portfolio?search=judged']}><PortfolioDashboard /></MemoryRouter>);
+    await screen.findByText('All judged');
+    expect(screen.getByRole('searchbox', { name: 'Search projects' })).toHaveValue('judged');
+    expect(screen.queryByText('Untriaged critical')).not.toBeInTheDocument();
+  });
+
   it('leads with a sentence and four measures, never a card per number', async () => {
     await renderPage();
     // A finding is already a judgement: only the scanner output is "not yet judged".

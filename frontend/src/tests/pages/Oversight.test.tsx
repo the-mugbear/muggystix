@@ -16,6 +16,10 @@ const projectCtx = vi.hoisted(() => ({ projects: [] as Array<{ id: number; name:
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => projectCtx,
 }));
+const toastWarning = vi.hoisted(() => vi.fn());
+vi.mock('../../contexts/ToastContext', () => ({
+  useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: toastWarning, info: vi.fn(), dismiss: vi.fn() }),
+}));
 const navigateMock = vi.hoisted(() => vi.fn());
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
@@ -460,5 +464,41 @@ describe('Oversight — overdue by severity and by how late (5.341.0)', () => {
     expect(late).toHaveTextContent('3');
     expect(late).toHaveAttribute('href', '/remediation-deadlines?band=31-90');
     expect(screen.getByText('1 of them over 90 days')).toBeInTheDocument();
+  });
+});
+
+// Review 2026-10-23b, FEP-2: an archived project is listed here but is not in
+// the reader's project list; clicking it opened the SELECTED project's
+// Operations under its name.  It goes through `useOpenInProject` now.
+describe('Oversight — opening a project', () => {
+  beforeEach(() => {
+    dashboardMock.mockReset().mockResolvedValue({
+      ...response,
+      projects: [project({ id: 8, name: 'Archived one', status: 'archived' }), project({ id: 2, name: 'Mine' })],
+    });
+    navigateMock.mockReset();
+    toastWarning.mockReset();
+    projectCtx.selectProject.mockReset();
+    projectCtx.projects = [{ id: 2, name: 'Mine' }];
+  });
+
+  const openTable = async () => {
+    render(<MemoryRouter initialEntries={['/oversight?tab=projects']}><Oversight /></MemoryRouter>);
+    return screen.findByRole('table', { name: 'All projects in the cohort' });
+  };
+
+  it('a project not in the reader’s list opens nothing and says why', async () => {
+    const table = await openTable();
+    fireEvent.click(within(table).getByRole('button', { name: 'Archived one' }));
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(projectCtx.selectProject).not.toHaveBeenCalled();
+    expect(toastWarning).toHaveBeenCalledWith(expect.stringMatching(/^Archived one is not in your project list/));
+  });
+
+  it('a project in the list is selected, then its Operations opens', async () => {
+    const table = await openTable();
+    fireEvent.click(within(table).getByRole('button', { name: 'Mine' }));
+    expect(projectCtx.selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: 2 }));
+    expect(navigateMock).toHaveBeenCalledWith('/operations');
   });
 });

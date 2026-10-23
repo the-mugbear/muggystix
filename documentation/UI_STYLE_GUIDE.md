@@ -1350,11 +1350,12 @@ const save = useMutation({
 - **A link to another project's page switches project first** —
   `hooks/useOpenInProject` (`openInProject(projectId, to)`): a project page
   takes its project from the selection, never from the link, so a row of a
-  cross-project page (Tool activity, Remediation deadlines) or a notification
-  of another project selects that project and then navigates, in one update.
+  cross-project page (Tool activity, Remediation deadlines, Oversight,
+  Portfolio, Agent feedback, All projects) or a notification of another
+  project selects that project and then navigates, in one update.
   A project not in the reader's list (no longer a member, archived) opens
-  nothing: the row stays text, or the reader is told and the notification
-  stays unread.  A notification row of another project names it ("In Beta").
+  nothing: the row stays text, or the reader is told (`cannotOpenProject`)
+  and the notification stays unread.  A notification row of another project names it ("In Beta").
 - **An async completion keeps the identity it started with — by
   construction.**  The `projectId` in a closure is the one the component
   rendered with: a save that answers after the reader switched project

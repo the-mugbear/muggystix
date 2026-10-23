@@ -31,7 +31,6 @@
 import { api, projectPath, setCurrentProjectId, getCurrentProjectId } from './api/client';
 import { serializeHostParams } from './api/hosts';
 import { fetchJobFileBlob } from './api/client-reports';
-import { asAxiosError } from '../utils/apiErrors';
 import { filenameFromContentDisposition, saveBlob } from '../utils/download';
 import type { Paginated } from './api/shared';  // local use; also re-exported via the barrel below
 
@@ -95,21 +94,14 @@ export interface DNSRecord {
 // the full answer set for a scan.  Returns a Paginated envelope so the UI can
 // show the TRUE total (CR5-C3); we request up to the server max in one page
 // (the tab is opt-in and most dnsx scans are far smaller) and the envelope's
-// `total`/`has_more` let the UI flag the rare truncation.  Empty page on
-// older deployments without the endpoint.
+// `total`/`has_more` let the UI flag the rare truncation.  A 404 (the scan
+// was deleted) is an error the tab says, never an empty page.
 const DNS_RECORDS_PAGE = 2000;
 export const getScanDnsRecords = async (projectId: number, scanId: number, signal?: AbortSignal): Promise<Paginated<DNSRecord>> => {
-  try {
-    const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/dns-records`, {
-      params: { skip: 0, limit: DNS_RECORDS_PAGE }, signal,
-    });
-    return response.data;
-  } catch (error) {
-    if (asAxiosError(error)?.response?.status === 404) {
-      return { items: [], total: 0, skip: 0, limit: DNS_RECORDS_PAGE, has_more: false };
-    }
-    throw error;
-  }
+  const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/dns-records`, {
+    params: { skip: 0, limit: DNS_RECORDS_PAGE }, signal,
+  });
+  return response.data;
 };
 
 // Hosts as a scan OBSERVED them (v5.184.0).  Distinct from getHostsByScan,
@@ -495,11 +487,6 @@ export const enqueueInventoryJson = async (projectId: number, filters: Inventory
   const query = new URLSearchParams(serializeHostParams(filters));
   query.set('format', 'json');
   const response = await api.post(`${projectPath(projectId)}/reports/jobs?${query}`);
-  return response.data as ReportJob;
-};
-
-export const getReportJob = async (projectId: number, jobId: number, signal?: AbortSignal): Promise<ReportJob> => {
-  const response = await api.get(`${projectPath(projectId)}/reports/jobs/${jobId}`, { signal });
   return response.data as ReportJob;
 };
 

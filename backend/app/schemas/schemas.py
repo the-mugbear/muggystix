@@ -1,4 +1,4 @@
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
@@ -570,10 +570,20 @@ class Host(HostBase):
     weakness_labels: Dict[str, str] = {}
     # The misconfiguration checks recorded on the host (list rows only).
     check_ids: List[str] = []
+    # List rows only: of those flags and checks, the ones the active
+    # conditions NAME (`host_query.matched_weakness_terms` — the structured
+    # filters and the query's own parse): the row's "Matched" line.
+    matched_weakness_flags: List[str] = []
+    matched_check_ids: List[str] = []
     # List rows only: the ids among `ports` that the active port / service /
     # version conditions matched (`host_query.matched_port_condition`).  A
     # list row's `ports` are its open ones plus those — not every stored port.
     matched_port_ids: List[int] = []
+    # List rows only: the Exposure column's chips, ranked
+    # (`ports_of_interest.exposure_chips`): `[{key, label, port, detected,
+    # weight}]` — a probed service by name, else a port of interest's number
+    # as a guess (`detected` false).
+    exposure: List[Dict[str, Any]] = []
     # The kinds of evidence that apply to the host and that nothing imported
     # so far provides — the Evidence page's gaps, per host (list rows only):
     # `[{key, label}]`, `key` being a value of the query's `gap:`.
@@ -594,6 +604,11 @@ class Host(HostBase):
     scope_membership: Optional["HostScopeMembership"] = None
     # v2.348.0 — per-domain evidence freshness (detail endpoint only).
     assessment: Optional["HostAssessment"] = None
+    # Detail only: the open ports a later observation of the host did not
+    # re-observe (`host_assessment_service.not_revalidated_port_ids`) — the
+    # ports `assessment.open_ports_not_in_latest_scan` counts, which the port
+    # table marks "not revalidated".
+    not_revalidated_port_ids: List[int] = []
     # v2.12.0: count of unique web interfaces (httpx / eyewitness /
     # nikto rows) observed on this host.  Used by HostDetail.tsx to
     # show/hide the "Web Interfaces" card and by the Hosts list (phase

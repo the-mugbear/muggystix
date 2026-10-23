@@ -18,7 +18,7 @@
  * its counts and the row's chip went); a finding's discussion shows the
  * finding's status.
  *
- * Behaviour kept: search (debounced), the author filter, paging via
+ * Behaviour kept: search (debounced, in the address), the author filter, paging via
  * Load more, and the unread notifications panel with the ?mentions=mine deep
  * link.  Opening the page writes nothing (review 2026-10-23: the "seen" cursor
  * it posted on mount had no reader and went, with its routes and table).
@@ -43,7 +43,7 @@ import { Badge } from '../components/ui/badge';
 import { useAuth } from '../contexts/AuthContext';
 import { queryErrorText } from '../lib/query';
 import { useProjectId } from '../hooks/useProjectId';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { useListCursor } from '../hooks/useListCursor';
 import { useListQuery, type ListPage } from '../hooks/useListQuery';
 import {
@@ -168,8 +168,18 @@ const Activity: React.FC = () => {
     else params.set('author', user?.id != null && next === String(user.id) ? 'me' : next);
     setSearchParams(params, { replace: true });
   }, [searchParams, setSearchParams, user?.id]);
-  const [search, setSearch] = useState('');
-  const debouncedSearch = useDebouncedValue(search, 300);
+  // The search is in the address too (`?search=`), so Back from a note
+  // restores it with the author.
+  const search = useUrlSearchDraft('search');
+  const debouncedSearch = search.value;
+  // ONE address write clears both filters; the box is emptied beside it.
+  const clearFilters = () => {
+    const params = new URLSearchParams(searchParams);
+    params.delete('author');
+    params.delete('search');
+    setSearchParams(params, { replace: true });
+    search.setDraft('');
+  };
   const [mentionsDismissed, setMentionsDismissed] = useState(false);
 
   // Host notes, a page at a time ("Load more"); a filter starts from the
@@ -409,8 +419,8 @@ const Activity: React.FC = () => {
       <div className="border-b border-border pb-sm">
         <ListFilterBar className="mb-0 border-b-0 pb-0">
           <ListFilterSearch
-            value={search}
-            onChange={setSearch}
+            value={search.draft}
+            onChange={search.setDraft}
             placeholder="Search by IP, hostname, finding or text…"
             label="Search discussions"
             className="w-80"
@@ -476,7 +486,7 @@ const Activity: React.FC = () => {
             </p>
             <div className="mt-sm">
               {filtered ? (
-                <Button size="sm" variant="outline" onClick={() => { setAuthorFilter(''); setSearch(''); }}>
+                <Button size="sm" variant="outline" onClick={clearFilters}>
                   Clear filters
                 </Button>
               ) : (

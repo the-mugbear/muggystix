@@ -16,6 +16,10 @@ import { useNavigate } from 'react-router-dom';
 
 import { useProject } from '../contexts/ProjectContext';
 
+/** What a caller says when `openInProject` answered `false` for a named project. */
+export const cannotOpenProject = (name: string): string =>
+  `${name} is not in your project list — it is archived, or you are not one of its members.`;
+
 export const useOpenInProject = () => {
   const { projects, currentProject, selectProject } = useProject();
   const navigate = useNavigate();

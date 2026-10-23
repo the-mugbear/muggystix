@@ -50,7 +50,7 @@ describe('Names page export', () => {
     vi.clearAllMocks();
     role = 'analyst';
     mocked.listNames.mockResolvedValue({ items: [row], total: 1, skip: 0, limit: 50 });
-    mocked.getNamesSummary.mockResolvedValue({ total: 1, unresolved: 1, resolved: 0, in_scope: 1, wildcards: 0 });
+    mocked.getNamesSummary.mockResolvedValue({ total: 1, unresolved: 1, resolved: 0, in_scope: 1, out_of_scope: 0, wildcards: 0, shared_names: 0 });
     mocked.exportNames.mockResolvedValue(undefined);
   });
 
@@ -125,8 +125,16 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     role = 'analyst';
     mocked.listNames.mockResolvedValue({ items: [resolved, wildcard, short], total: 3, skip: 0, limit: 100 });
     mocked.getNamesSummary.mockResolvedValue({
-      total: 3, unresolved: 2, resolved: 1, in_scope: 2, wildcards: 1, shared_names: 6,
+      total: 3, unresolved: 2, resolved: 1, in_scope: 2, out_of_scope: 4, wildcards: 1, shared_names: 6,
     });
+  });
+
+  // Review 2026-10-23b, FEP-10: it was `total - in_scope` in the browser
+  // (here 1); the chip now says the server's count of its own list.
+  it('puts the out-of-scope list’s own count in its chip', async () => {
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Out of scope\s*4$/ })).toBeInTheDocument());
   });
 
   it('never truncates an address; the previous/shared chips sit on their own line', async () => {
@@ -296,7 +304,7 @@ describe('Names — what an import did to the scope list', () => {
     vi.clearAllMocks();
     role = 'analyst';
     mocked.listNames.mockResolvedValue({ items: [row], total: 1, skip: 0, limit: 50 });
-    mocked.getNamesSummary.mockResolvedValue({ total: 1, unresolved: 1, resolved: 0, in_scope: 1, wildcards: 0 });
+    mocked.getNamesSummary.mockResolvedValue({ total: 1, unresolved: 1, resolved: 0, in_scope: 1, out_of_scope: 0, wildcards: 0, shared_names: 0 });
   });
 
   const importList = async () => {

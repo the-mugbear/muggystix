@@ -38,6 +38,7 @@ from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES, TESTED_OUTC
 from app.db.models_proposals import EvidenceRecord
 from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
 from app.services.note_attachment_service import require_readable_file
+from app.services.ports_of_interest import exposure_chips
 from app.services import host_query
 from app.services import host_query_predicates as P
 from app.services.scan_time import scan_time_for_api
@@ -658,6 +659,12 @@ def get_hosts_v2(
     # v2.423.0 — the weakness / access flags per host: the row names the one
     # a weakness condition matched.  One statement for the page.
     weakness_flag_map = host_weakness_flags(db, current_user, project.id, host_ids)
+    # The flags and checks the active conditions name (the filter's own parse
+    # of `q`, plus `weaknesses=` / `checks=`): a row's "Matched" line is the
+    # ones it carries (review 2026-10-23b, FEP-5).
+    named_flags, named_checks, every_check = host_query.matched_weakness_terms(
+        weaknesses=filters.weaknesses, checks=filters.checks, q=filters.q,
+    )
     check_id_map: Dict[int, List[str]] = {}
     if host_ids:
         for hid, cid in (
@@ -715,6 +722,9 @@ def get_hosts_v2(
         # RV-8 — list-weight payload: script-free ports, no host_scripts.
         serialized["ports"] = [_serialize_port_light(p) for p in ports_by_host.get(host.id, [])]
         serialized["matched_port_ids"] = matched_by_host.get(host.id, [])
+        # The Exposure column's ranked chips, from the one ports-of-interest
+        # table (FEP-4: the browser kept a hand-mirrored copy).
+        serialized["exposure"] = exposure_chips(ports_by_host.get(host.id, []))
 
         serialized["planned_test_count"] = tp_count_map.get(host.id, 0)
         serialized["tested_record_count"] = te_count_map.get(host.id, 0)
@@ -728,6 +738,10 @@ def get_hosts_v2(
         serialized["issue_counts"] = issue_count_map.get(host.id)
         serialized["weakness_flags"] = weakness_flag_map.get(host.id, [])
         serialized["check_ids"] = check_id_map.get(host.id, [])
+        serialized["matched_weakness_flags"] = [f for f in serialized["weakness_flags"] if f in named_flags]
+        serialized["matched_check_ids"] = [
+            c for c in serialized["check_ids"] if every_check or c in named_checks
+        ]
         serialized["evidence_gaps"] = [
             {"key": key, "label": DOMAIN_LABELS[key]} for key in evidence_gap_map.get(host.id, [])
         ]
@@ -1598,8 +1612,10 @@ def get_host_v2(
     # v2.348.0 — freshness per assessment domain, so the inspector can say
     # "observed yesterday, vulnerabilities not assessed, tested 3 months ago"
     # instead of one last-seen for everything.
-    from app.services.host_assessment_service import host_assessment
+    from app.services.host_assessment_service import host_assessment, not_revalidated_port_ids
     serialized["assessment"] = host_assessment(db, host)
+    # The ports that count makes up, so the port table marks exactly those.
+    serialized["not_revalidated_port_ids"] = not_revalidated_port_ids(host)
     # Owner/assignee enrichment — the base detail serializer leaves this []
     # (it needs a user join), so mirror the list endpoint here.  Without this
     # the inspector can't show or manage the host's owner. (1.2b)

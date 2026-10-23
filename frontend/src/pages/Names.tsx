@@ -738,11 +738,11 @@ const Names: React.FC = () => {
       case 'in_scope':
         return summary.in_scope;
       case 'out_of_scope':
-        return summary.total - summary.in_scope;
+        return summary.out_of_scope;
       case 'wildcard':
         return summary.wildcards;
       case 'shared':
-        return summary.shared_names ?? null;
+        return summary.shared_names;
       default:
         return null;
     }

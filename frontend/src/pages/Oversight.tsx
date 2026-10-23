@@ -24,7 +24,7 @@
  */
 import React, { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
 
 import {
@@ -36,7 +36,8 @@ import {
   OversightTesterRow,
   SeverityBasis,
 } from '../services/api';
-import { useProject } from '../contexts/ProjectContext';
+import { useToast } from '../contexts/ToastContext';
+import { cannotOpenProject, useOpenInProject } from '../hooks/useOpenInProject';
 import LastUpdated from '../components/LastUpdated';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
 import TimeAgo from '../components/TimeAgo';
@@ -72,6 +73,7 @@ import {
   DATE_PRESETS, DEFAULT_PRESET, DatePreset, customRangeError, presetRange,
 } from '../utils/oversightDates';
 import { SEVERITY_HSL } from '../utils/severity';
+import { plural } from '../utils/plural';
 
 const SEVS = ['critical', 'high', 'medium', 'low'] as const;
 type Sev = typeof SEVS[number];
@@ -137,7 +139,6 @@ const sortProjects = (rows: OversightProjectRow[], sort: ProjectSort): Oversight
 };
 
 const sum = (s: OversightSeverity) => s.critical + s.high + s.medium + s.low;
-const plural = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 ? one : many}`;
 
 // Every column says what it counts in its label; the (i) gives the exact rule.
 // Vocabulary (utils/findingStatus): findings are analysts' conclusions, one per
@@ -388,8 +389,8 @@ const overdueBySeverity = (r: OversightRemediation): string =>
     .join(' · ');
 
 const Oversight: React.FC = () => {
-  const navigate = useNavigate();
-  const { projects, selectProject } = useProject();
+  const { openInProject } = useOpenInProject();
+  const toast = useToast();
   const [params, setParams] = useSearchParams();
 
   const preset = (params.get('range') as DatePreset) || DEFAULT_PRESET;
@@ -468,10 +469,10 @@ const Oversight: React.FC = () => {
   // page; the box is emptied beside it, so it agrees and writes nothing.
   const reset = () => { setParams(new URLSearchParams(), { replace: true }); search.setDraft(''); };
 
+  // An archived project (listed here) is not in the reader's project list:
+  // nothing opens, rather than another project's Operations under its name.
   const openProject = (row: OversightProjectRow) => {
-    const proj = projects.find((p) => p.id === row.id);
-    if (proj) selectProject(proj);
-    navigate('/operations');
+    if (!openInProject(row.id, '/operations')) toast.warning(cannotOpenProject(row.name));
   };
 
   const filteredProjects = useMemo(() => {

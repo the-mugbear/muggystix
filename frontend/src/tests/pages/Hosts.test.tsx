@@ -189,6 +189,8 @@ const makeHost = (id: number, overrides: Record<string, any> = {}) => ({
     { id: id * 10 + 1, port_number: 22, protocol: 'tcp', state: 'open', service_name: 'ssh', service_product: null, service_version: null },
     { id: id * 10 + 2, port_number: 443, protocol: 'tcp', state: 'open', service_name: 'https', service_product: null, service_version: null },
   ],
+  // What `ports_of_interest.exposure_chips` answers for those (no probe recorded).
+  exposure: [{ key: 'SSH', label: 'SSH', port: 22, detected: false, weight: 5 }],
   vulnerability_summary: {
     total_vulnerabilities: id % 4,
     critical: id % 3 === 0 ? 2 : 0,
@@ -707,7 +709,7 @@ describe('Hosts', () => {
     });
     sessionStorage.setItem(
       projectScopedKey('hostFiltersState'),
-      JSON.stringify({ filters: { ports: ['443'] }, followFilter: 'all', onlyWithNotes: false }),
+      JSON.stringify({ filters: { ports: ['443'] } }),
     );
     sessionStorage.setItem(projectScopedKey('projectDefaultName'), 'Web tier');
     renderHosts();
@@ -730,7 +732,7 @@ describe('Hosts', () => {
     });
     sessionStorage.setItem(
       projectScopedKey('hostFiltersState'),
-      JSON.stringify({ filters: { ports: ['443'] }, followFilter: 'all', onlyWithNotes: false }),
+      JSON.stringify({ filters: { ports: ['443'] } }),
     );
     sessionStorage.setItem(projectScopedKey('projectDefaultName'), 'Web tier');
     routerState.search = '?q=has%3Acritical';
@@ -892,7 +894,7 @@ describe('Hosts', () => {
     it('a restored session is put into the address, and only the restored list is asked for', async () => {
       sessionStorage.setItem(
         projectScopedKey('hostFiltersState'),
-        JSON.stringify({ filters: { hasCriticalVulns: true }, followFilter: 'in_review', onlyWithNotes: false }),
+        JSON.stringify({ filters: { hasCriticalVulns: true, followFilter: 'in_review' } }),
       );
       renderHosts();
       await screen.findByTestId('hosts-restored-notice');

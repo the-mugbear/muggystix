@@ -35,6 +35,7 @@ import { webScheme, type WebPortLike } from '../utils/webPort';
 import { ScanTimeSourceNote } from '../components/scans/ScanTimeCells';
 import ScannedPorts from '../components/scans/ScannedPorts';
 import { describeScanRun, describeUpload } from '../utils/scanTime';
+import { routeId } from '../utils/routeId';
 
 type BadgeTone = 'success' | 'destructive' | 'warning' | 'muted';
 const hostStateVariant = (s: string | null): BadgeTone =>
@@ -104,8 +105,10 @@ const ScanDetail: React.FC = () => {
 
   // The page is the scan, the names it resolved and its summary row, shown
   // together; each tab's list is paged and read when it is open.
-  const id = scanId ? parseInt(scanId) : NaN;
-  const known = !Number.isNaN(id);
+  // Digits only (`/scans/12abc` is not scan 12); no id asks for nothing.
+  const parsedId = routeId(scanId);
+  const known = parsedId != null;
+  const id = parsedId ?? 0;
   const projectId = useProjectId();
   const scanQuery = useQuery({ queryKey: ['getScan', projectId, id], queryFn: ({ signal }) => getScan(projectId, id, signal), enabled: known });
   const dnsQuery = useQuery({ queryKey: ['getScanDnsRecords', projectId, id], queryFn: ({ signal }) => getScanDnsRecords(projectId, id, signal), enabled: known });
@@ -120,7 +123,8 @@ const ScanDetail: React.FC = () => {
   const failed = required.find((q) => q.isError);
   const error = queryErrorText(failed?.error, 'Failed to load scan details.');
   // The summary is waited for too, so the page appears whole.
-  const loading = !error && (required.some((q) => q.isPending) || summaryQuery.isPending);
+  // (A disabled query is pending for ever: with no id there is nothing to wait for.)
+  const loading = known && !error && (required.some((q) => q.isPending) || summaryQuery.isPending);
   const retry = () => {
     for (const q of [...required, summaryQuery]) void q.refetch();
   };

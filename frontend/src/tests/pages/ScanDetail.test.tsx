@@ -21,10 +21,10 @@ const api = vi.hoisted(() => {
   });
 });
 vi.mock('../../services/api', () => api);
-// setupTests stubs useParams with `{ id: '1' }`; this route's param is scanId.
+// setupTests stubs useParams; this page reads its scanId from the real route.
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return { ...actual, useNavigate: () => vi.fn(), useParams: () => ({ scanId: '9' }) };
+  return { ...actual, useNavigate: () => vi.fn() };
 });
 vi.mock('../../components/CommandExplanation', () => ({ default: () => null }));
 
@@ -65,6 +65,14 @@ beforeEach(() => {
 });
 
 describe('ScanDetail', () => {
+  // Review 2026-10-23b, FEP-11: `parseInt` read `/scans/12abc` as scan 12 (and
+  // with no id the page waited for ever on its disabled reads).
+  it('an address that names no scan asks for nothing and says so', async () => {
+    renderPage('/scans/12abc');
+    expect(await screen.findByText('Scan not found')).toBeInTheDocument();
+    expect(api.getScan).not.toHaveBeenCalled();
+  });
+
   it('says "No hostname", never "N/A"', async () => {
     renderPage();
     expect(await screen.findByText('No hostname')).toBeInTheDocument();

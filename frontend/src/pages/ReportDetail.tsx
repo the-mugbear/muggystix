@@ -57,6 +57,7 @@ import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { NEED_SECTION } from '../utils/findingNeeds';
 import { formatTimestamp } from '../utils/relativeTime';
 import { REPORT_FIELD_LABELS } from '../utils/reportImages';
+import { routeId } from '../utils/routeId';
 import { REPORT_FORMAT_LABEL, isClientTemplate } from '../utils/reportTemplates';
 import { safeFallback, stickyFlushBelowChrome } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
@@ -1047,7 +1048,18 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 /** Keyed on the report: "Revise" navigates to the new draft's id. */
 const ReportDetail: React.FC = () => {
   const { reportId } = useParams<{ reportId: string }>();
-  return <ReportDetailView key={reportId} id={Number(reportId)} />;
+  const navigate = useNavigate();
+  const id = routeId(reportId);
+  // Not an id: nothing is asked for.
+  if (id == null) {
+    return (
+      <div className="p-md md:p-lg">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/reports')}><ArrowLeft className="size-4" aria-hidden /> Reports</Button>
+        <p className="mt-md text-destructive">Report not found.</p>
+      </div>
+    );
+  }
+  return <ReportDetailView key={reportId} id={id} />;
 };
 
 export default ReportDetail;

@@ -18,7 +18,7 @@ export interface Scope {
   // Server-paginated subnets.  subnets_total is the unpaginated
   // count (under the search, when there is one); the /scopes editor pages by
   // it so 6000-subnet projects don't ship every subnet in one payload.
-  subnets_total?: number;
+  subnets_total: number;
   subnets_skip?: number | null;
   subnets_limit?: number | null;
 }

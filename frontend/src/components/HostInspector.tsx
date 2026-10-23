@@ -352,9 +352,8 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       // `conflicts.length` (per-field confidence records, host + port) — a
       // different number that disagreed with the list badge.
       conflictCount={conflictsQuery.data?.conflict_count ?? 0}
-      // getHostConflicts already swallows 404 (older deployments), so a
-      // failure here is a real one — said, instead of letting an empty list
-      // read as "no conflicts" (a data-quality false negative).
+      // A failure is said, instead of letting an empty list read as
+      // "no conflicts" (a data-quality false negative).
       conflictsError={conflictsQuery.isError}
       otherFollowers={(!followersError && followersQuery.data?.followers) || NO_FOLLOWERS}
       followersError={followersError}
@@ -1047,7 +1046,7 @@ const HostInspectorView: React.FC<HostInspectorViewProps> = ({
         hostId={host.id}
         hostIp={host.ip_address}
         hostname={host.hostname}
-        hostLastSeen={host.last_seen ?? null}
+        notRevalidatedPortIds={host.not_revalidated_port_ids}
         openPorts={openPorts}
         closedPorts={closedPorts}
         filteredPorts={filteredPorts}

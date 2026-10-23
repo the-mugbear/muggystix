@@ -149,7 +149,7 @@ describe('Hosts — the list is its address (real router)', () => {
   it('a restored session goes into the address first: the unfiltered list is never asked for', async () => {
     sessionStorage.setItem(
       projectScopedKey('hostFiltersState'),
-      JSON.stringify({ filters: { hasCriticalVulns: true, services: ['ssh'] }, followFilter: 'all', onlyWithNotes: false }),
+      JSON.stringify({ filters: { hasCriticalVulns: true, services: ['ssh'] } }),
     );
     const router = open('/hosts');
     await screen.findByTestId('hosts-restored-notice');

@@ -223,6 +223,26 @@ class TestRelationships:
         # different rule from the chip's; it is gone (review 2026-10-10, R7).
         assert "shared_addresses" not in summary
 
+    def test_every_summary_count_is_the_total_of_the_list_it_opens(self, client, db_session, test_project):
+        """Review 2026-10-23b, FEP-10: "Out of scope" was ``total - in_scope``
+        in the browser; each chip's count is now its own state's filter."""
+        scan = _scan(db_session, test_project)
+        for fqdn, ip in (("portal.example.com", "203.0.113.20"), ("api.example.com", "203.0.113.20"),
+                         ("solo.example.com", "203.0.113.99")):
+            svc.record_observation(db_session, project_id=test_project.id, name=fqdn, record_type="A",
+                                   value=ip, scan_id=scan.id)
+        svc.import_names(db_session, project_id=test_project.id, raw_names=["quiet.example.org"],
+                         created_by_id=None, declare_scope=False, include_subdomains=False, scope=None)
+        db_session.flush()
+        base = f"/api/v1/projects/{test_project.id}/names"
+        summary = client.get(f"{base}/summary").json()
+        for state, key in (("all", "total"), ("unresolved", "unresolved"), ("resolved", "resolved"),
+                           ("in_scope", "in_scope"), ("out_of_scope", "out_of_scope"),
+                           ("wildcard", "wildcards"), ("shared", "shared_names")):
+            listing = client.get(f"{base}/?state={state}").json()
+            assert summary[key] == listing["total"], state
+        assert summary["out_of_scope"] == 4 and summary["unresolved"] == 1
+
     def test_changing_address_gives_current_and_previous(self, db_session, test_project):
         t0 = datetime.now(timezone.utc) - timedelta(days=7)
         old = _scan(db_session, test_project, when=t0)

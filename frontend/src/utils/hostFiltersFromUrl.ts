@@ -19,21 +19,19 @@ export type HostSortOption =
   | 'ip_asc'
   | 'hostname_asc';
 
-/** The session blob, in the legacy 3-key shape older frontends also wrote. */
+/** The session blob: the conditions, whole (`Hosts.rememberFilters`). */
 export interface SavedHostFilterState {
   filters?: HostFilterOptions;
-  followFilter?: 'all' | 'none' | FollowStatus;
-  onlyWithNotes?: boolean;
 }
 
 export const HOST_URL_PARAMS = [
   'search', 'q', 'state', 'os_filter', 'subnets', 'ports', 'services',
   'port_states', 'scan_ids', 'tags', 'subnet_labels', 'sites', 'out_of_scope_only',
-  'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'renamed_in_scan', 'has_critical_vulns',
+  'has_open_ports', 'first_seen_in_scan', 'renamed_in_scan', 'has_critical_vulns',
   'has_high_vulns', 'has_medium_vulns', 'has_low_vulns',
   'has_exploit_available', 'has_test_execution',
-  'has_web_interface', 'tech', 'follow_status', 'follow',
-  'with_notes_only', 'with_notes', 'assigned_to', 'sort_by', 'sort_order',
+  'has_web_interface', 'tech', 'follow_status',
+  'with_notes_only', 'assigned_to', 'sort_by', 'sort_order',
   'orgs', 'asns', 'countries', 'weaknesses', 'checks',
 ];
 
@@ -72,18 +70,18 @@ const REPEATED_PARAMS: Array<[string, keyof HostFilterOptions]> = [
 
 // `false` is meaningful and kept (has_web_interface=false is "no recorded web
 // interface"), so a negative filter from an old link survives the restore.
-const BOOLEAN_PARAMS: Array<[string[], keyof HostFilterOptions]> = [
-  [['out_of_scope_only', 'out_of_scope'], 'outOfScopeOnly'],
-  [['has_open_ports'], 'hasOpenPorts'],
-  [['first_seen_in_scan'], 'firstSeenInSelectedScans'],
-  [['renamed_in_scan'], 'renamedInSelectedScans'],
-  [['has_critical_vulns'], 'hasCriticalVulns'],
-  [['has_high_vulns'], 'hasHighVulns'],
-  [['has_medium_vulns'], 'hasMediumVulns'],
-  [['has_low_vulns'], 'hasLowVulns'],
-  [['has_exploit_available'], 'hasExploitAvailable'],
-  [['has_test_execution'], 'hasTestExecution'],
-  [['has_web_interface'], 'hasWebInterface'],
+const BOOLEAN_PARAMS: Array<[string, keyof HostFilterOptions]> = [
+  ['out_of_scope_only', 'outOfScopeOnly'],
+  ['has_open_ports', 'hasOpenPorts'],
+  ['first_seen_in_scan', 'firstSeenInSelectedScans'],
+  ['renamed_in_scan', 'renamedInSelectedScans'],
+  ['has_critical_vulns', 'hasCriticalVulns'],
+  ['has_high_vulns', 'hasHighVulns'],
+  ['has_medium_vulns', 'hasMediumVulns'],
+  ['has_low_vulns', 'hasLowVulns'],
+  ['has_exploit_available', 'hasExploitAvailable'],
+  ['has_test_execution', 'hasTestExecution'],
+  ['has_web_interface', 'hasWebInterface'],
 ];
 
 // Reverse of the API-key map in buildHostQueryContext; direction is encoded in
@@ -138,24 +136,20 @@ export function hostFiltersFromUrl(
     if (values.length) set(key, values);
     else unset(key);
   }
-  for (const [params, key] of BOOLEAN_PARAMS) {
-    const param = params.find((p) => urlParams.has(p));
-    if (param) set(key, urlParams.get(param) === 'true');
+  for (const [param, key] of BOOLEAN_PARAMS) {
+    if (urlParams.has(param)) set(key, urlParams.get(param) === 'true');
   }
 
-  // v4.51.0 — followFilter + onlyWithNotes live inside `filters`; blobs saved
-  // before that stored them as top-level keys, and both shapes are honoured.
-  const followParam = urlParams.get('follow_status') ?? urlParams.get('follow');
-  if (followParam && ['watching', 'in_review', 'reviewed', 'none'].includes(followParam)) {
-    filters.followFilter = followParam as 'none' | FollowStatus;
-  } else if (saved?.followFilter && saved.followFilter !== 'all') {
-    filters.followFilter = saved.followFilter;
-  }
+  // Kept as written, whatever it says: the server knows the review states
+  // (`host_query.FOLLOW_STATUS_FILTERS`) and refuses one it does not with a
+  // 422 the page shows — a mistyped link (`reviewd`) used to open the whole
+  // list unfiltered, with no chip to say a condition was dropped.
+  const followParam = urlParams.get('follow_status');
+  if (followParam) filters.followFilter = followParam as 'none' | FollowStatus;
 
-  const notesParam = urlParams.get('with_notes_only') ?? urlParams.get('with_notes');
+  const notesParam = urlParams.get('with_notes_only');
   if (notesParam === 'true') filters.onlyWithNotes = true;
   else if (notesParam === 'false') delete filters.onlyWithNotes;
-  else if (saved?.onlyWithNotes === true) filters.onlyWithNotes = true;
 
   if (urlParams.get('assigned_to') === 'me') filters.assignedToMe = true;
 

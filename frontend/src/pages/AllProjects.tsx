@@ -14,6 +14,7 @@ import { Loader2, Plus } from 'lucide-react';
 import { useProject } from '../contexts/ProjectContext';
 import { createProject, type Project } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { cannotOpenProject, useOpenInProject } from '../hooks/useOpenInProject';
 import { formatApiError } from '../utils/apiErrors';
 import PostureSection from '../components/posture/PostureSection';
 import { Badge } from '../components/ui/badge';
@@ -33,7 +34,8 @@ const day = (s?: string | null) => (s ? formatDate(s.slice(0, 10)) : null);
 const statusLabel = (s: string) => PROJECT_STATUSES.find((x) => x.value === s)?.label ?? s;
 
 const AllProjects: React.FC = () => {
-  const { projects, currentProject, selectProject, adoptProject } = useProject();
+  const { projects, currentProject, adoptProject } = useProject();
+  const { openInProject } = useOpenInProject();
   const navigate = useNavigate();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -41,8 +43,7 @@ const AllProjects: React.FC = () => {
   const [description, setDescription] = useState('');
 
   const openSettings = (p: Project) => {
-    if (currentProject?.id !== p.id) selectProject(p);
-    navigate('/project-settings');
+    if (!openInProject(p.id, '/project-settings')) toast.warning(cannotOpenProject(p.name));
   };
 
   const creation = useMutation({

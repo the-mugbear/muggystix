@@ -5,7 +5,7 @@
  * everything from here so consumers can keep importing from
  * ``../services/api`` unchanged.
  */
-import { api, projectPath } from './client';
+import { api, handleAuthFailure, projectPath } from './client';
 
 
 
@@ -239,18 +239,6 @@ export const uploadFile = async (
     }
 
     xhr.onload = () => {
-      // Mirror axios's response-shape conventions for the auth
-      // interceptor (401 -> redirect to login, 403 with
-      // password_change_required detail -> /force-change-password).
-      if (xhr.status === 401) {
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('auth_user');
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login';
-        }
-        reject(new Error('Unauthorized'));
-        return;
-      }
       // Parse JSON body once; fall back to text for non-JSON
       // responses (rare on this endpoint but safer than throwing).
       let body: any = null;
@@ -259,6 +247,8 @@ export const uploadFile = async (
       } catch {
         body = xhr.responseText;
       }
+      // The same auth-failure rule as every axios request (client.ts).
+      handleAuthFailure(xhr.status, body?.detail, token);
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(body as FileUploadResponse);
       } else {
@@ -276,7 +266,11 @@ export const uploadFile = async (
     };
 
     xhr.onerror = () => {
-      reject(new Error('Network error during upload'));
+      // axios's code for "no answer at all", so `formatApiError` says the
+      // server could not be reached rather than a generic "Upload failed".
+      const err: any = new Error('Network error during upload');
+      err.code = 'ERR_NETWORK';
+      reject(err);
     };
     xhr.onabort = () => {
       const err = new Error('Upload cancelled');

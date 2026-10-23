@@ -6,9 +6,7 @@ const url = (search: string) => new URLSearchParams(search);
 describe('hostFiltersFromUrl', () => {
   it('a shared link is authoritative — the recipient\'s session filters are not blended in', () => {
     const { filters } = hostFiltersFromUrl(url('ports=443'), {
-      filters: { sites: ['3'], hasCriticalVulns: true },
-      followFilter: 'reviewed',
-      onlyWithNotes: true,
+      filters: { sites: ['3'], hasCriticalVulns: true, followFilter: 'reviewed', onlyWithNotes: true },
     });
     expect(filters).toEqual({ ports: ['443'] });
   });
@@ -23,11 +21,9 @@ describe('hostFiltersFromUrl', () => {
       .toEqual({ renamedInSelectedScans: true });
   });
 
-  it('falls back to the saved session on a bare visit, including the legacy top-level keys', () => {
+  it('falls back to the saved session on a bare visit', () => {
     const { filters, sortBy } = hostFiltersFromUrl(url(''), {
-      filters: { sites: ['3'], hasWebInterface: false },
-      followFilter: 'in_review',
-      onlyWithNotes: true,
+      filters: { sites: ['3'], hasWebInterface: false, followFilter: 'in_review', onlyWithNotes: true },
     });
     expect(filters).toEqual({
       sites: ['3'], hasWebInterface: false, followFilter: 'in_review', onlyWithNotes: true,
@@ -43,7 +39,7 @@ describe('hostFiltersFromUrl', () => {
     expect(hostFiltersFromUrl(url('ports=443'), saved).restoredFromSession).toBe(false);
     expect(hostFiltersFromUrl(url(''), null).restoredFromSession).toBe(false);
     // An empty saved session restores nothing worth announcing.
-    expect(hostFiltersFromUrl(url(''), { filters: {}, followFilter: 'all' }).restoredFromSession).toBe(false);
+    expect(hostFiltersFromUrl(url(''), { filters: {} }).restoredFromSession).toBe(false);
   });
 
   it('a parameter that is not a host filter does not make the URL authoritative', () => {
@@ -54,7 +50,7 @@ describe('hostFiltersFromUrl', () => {
   it('reads every parameter shape: strings, comma lists, repeated params, booleans', () => {
     const { filters } = hostFiltersFromUrl(
       url('q=tag:prod&os_filter=Linux&ports=22,%20443&tech=nginx&orgs=Acme,%20Inc.&orgs=Globex'
-        + '&has_high_vulns=true&assigned_to=me&follow=none&with_notes=true'),
+        + '&has_high_vulns=true&assigned_to=me&follow_status=none&with_notes_only=true'),
       null,
     );
     expect(filters).toEqual({
@@ -76,10 +72,17 @@ describe('hostFiltersFromUrl', () => {
       .toEqual({ hasWebInterface: false });
   });
 
-  it('accepts both spellings of out-of-scope and ignores an unknown follow value', () => {
-    expect(hostFiltersFromUrl(url('out_of_scope=true'), null).filters).toEqual({ outOfScopeOnly: true });
+  // Review 2026-10-23b, FEP-12: an unknown review state was dropped, so the
+  // link opened the whole list with no chip saying a condition was ignored.
+  // It is kept for the server to refuse (a 422 the page shows), and the
+  // legacy aliases nothing writes any more are not read.
+  it('keeps a review state it does not know for the server to refuse, and reads no legacy alias', () => {
+    expect(hostFiltersFromUrl(url('follow_status=reviewd'), null).filters).toEqual({ followFilter: 'reviewd' });
+    expect(hostFiltersFromUrl(url('follow_status=in_review_any'), null).filters).toEqual({ followFilter: 'in_review_any' });
     expect(hostFiltersFromUrl(url('out_of_scope_only=true'), null).filters).toEqual({ outOfScopeOnly: true });
-    expect(hostFiltersFromUrl(url('follow_status=bogus'), null).filters).toEqual({});
+    for (const alias of ['out_of_scope=true', 'follow=none', 'with_notes=true']) {
+      expect(hostFiltersFromUrl(url(alias), { filters: { sites: ['3'] } }).filters).toEqual({ sites: ['3'] });
+    }
   });
 
   it('restores the sort from sort_by, and only a sort it knows', () => {

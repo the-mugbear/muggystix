@@ -50,12 +50,12 @@ import { PagedFooter } from '../operations/QueueParts';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import IssueMeta from './IssueMeta';
 import ObservationInspector from './ObservationInspector';
+import { plural } from '../../utils/plural';
 
 const PAGE = 50;
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 const NO_ISSUES: ObservationIssue[] = [];
 
-const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
 /** The judged filter's choices (O3): the server's `judged` values. */
 const JUDGED_OPTIONS: [ObservationJudged, string][] = [

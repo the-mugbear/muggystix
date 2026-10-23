@@ -5,28 +5,15 @@
 import { describe, expect, it } from 'vitest';
 
 import type { HostAssessment } from '../services/api';
-import { changesSinceReview, freshnessFacts, portFreshness } from '../utils/evidenceFreshness';
+import { changesSinceReview, freshnessFacts } from '../utils/evidenceFreshness';
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
-describe('portFreshness', () => {
-  it('flags a port that newer host evidence did not revalidate', () => {
-    const f = portFreshness({ last_seen: daysAgo(10), first_seen: daysAgo(40) }, daysAgo(1));
-    expect(f.notRevalidated).toBe(true);
-    expect(f.seen).toBeTruthy();
-  });
-
-  it('a port seen in the same sweep as the host is current', () => {
-    const host = daysAgo(1);
-    const port = new Date(new Date(host).getTime() - 5 * 60_000).toISOString(); // 5 minutes earlier
-    expect(portFreshness({ last_seen: port, first_seen: port }, host).notRevalidated).toBe(false);
-  });
-
-  it('says nothing when either side is unknown', () => {
-    expect(portFreshness({ last_seen: null, first_seen: null }, daysAgo(1))).toEqual({ seen: null, notRevalidated: false });
-    expect(portFreshness({ last_seen: daysAgo(3), first_seen: null }, null).notRevalidated).toBe(false);
-  });
-});
+// "Not revalidated" per port is the server's (`not_revalidated_port_ids`,
+// review 2026-10-23b, FEP-8): its cases — a port missed by the latest sweep,
+// one seen in the same sweep, either side unknown — are pinned in
+// backend/tests/test_host_assessment_and_evidence_gaps.py, and the table's
+// marks in tests/components/PortDetailsCard.endpoints.test.tsx.
 
 const assessment = (over: Partial<HostAssessment> = {}): HostAssessment => ({
   last_observed_at: daysAgo(1),

@@ -23,6 +23,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
+import { cannotOpenProject, useOpenInProject } from '../hooks/useOpenInProject';
 import { useListQuery } from '../hooks/useListQuery';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { invalidateReads, queryErrorText } from '../lib/query';
@@ -48,6 +49,7 @@ import {
 } from '../components/ui/table';
 import { cn } from '../utils/cn';
 import { agentSessionPath } from '../utils/agentRuns';
+import { plural } from '../utils/plural';
 
 /** The session's page (with its API calls), or null when there is no session
  *  or it has no page (a recon / plan / execution row from before the unified
@@ -69,7 +71,6 @@ const STATUSES = [
 
 type Content = '' | 'critiques' | 'suggestions';
 
-const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
 const StarRating: React.FC<{ value: number | null | undefined }> = ({ value }) => {
   if (value == null) return <span className="text-muted-foreground">Unrated</span>;
@@ -99,7 +100,8 @@ const Feedback: React.FC = () => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { projects, currentProject, selectProject } = useProject();
+  const { projects } = useProject();
+  const { openInProject } = useOpenInProject();
   const [params, setParams] = useSearchParams();
 
   // Filters live in the URL, so the measures above the list are links to it.
@@ -206,15 +208,11 @@ const Feedback: React.FC = () => {
   const openSession = (r: AgentFeedbackEntry) => {
     const target = sessionPageOf(r);
     if (!target) return;
-    if (r.project_id != null && r.project_id !== currentProject?.id) {
-      const proj = projects.find((p) => p.id === r.project_id);
-      if (!proj) {
-        toast.error(`You are not a member of ${r.project_name ?? `project #${r.project_id}`}.`);
-        return;
-      }
-      selectProject(proj);
+    if (r.project_id == null) {
+      navigate(target);
+    } else if (!openInProject(r.project_id, target)) {
+      toast.error(cannotOpenProject(r.project_name ?? `Project #${r.project_id}`));
     }
-    navigate(target);
   };
 
   const toggle = (id: number) => setExpanded((prev) => {

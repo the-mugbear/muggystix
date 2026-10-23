@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import type { Scan } from '../../services/api';
 import { importResultsPath } from '../../utils/importResultsPath';
 import ScanContribution from './ScanContribution';
+import { plural } from '../../utils/plural';
 
 /**
  * The reconciliation summary at the end of an import (v5.222.0; design
@@ -29,7 +30,6 @@ export interface ImportResultPart {
 }
 
 const num = (n: number) => n.toLocaleString();
-const plural = (n: number, one: string, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 
 export function importResultParts(scan: Scan): ImportResultPart[] {
   const parts: ImportResultPart[] = [];

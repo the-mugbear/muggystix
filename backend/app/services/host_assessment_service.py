@@ -26,7 +26,7 @@ page agree on what "not applicable" means.
 from __future__ import annotations
 
 from datetime import timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -50,6 +50,26 @@ def _aware(dt):
     if dt is None:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def not_revalidated_port_ids(host: models.Host) -> List[int]:
+    """The host's OPEN ports that a later observation of the host did not
+    re-observe: the port's own ``last_seen`` is more than a sweep older than
+    the host's.  The ONE rule behind the inspector's "not revalidated" beside
+    a port and the assessment's ``open_ports_not_in_latest_scan`` count (the
+    browser had its own copy, with a ``first_seen`` fallback and every port
+    state — review 2026-10-23b, FEP-8).  Provenance, never "closed": the newer
+    observation may not have probed the port.  A port with no ``last_seen``
+    is not known to be older, so it is not marked."""
+    host_seen = _aware(host.last_seen)
+    if host_seen is None:
+        return []
+    out: List[int] = []
+    for p in host.ports:
+        ps = _aware(p.last_seen)
+        if p.state == "open" and ps is not None and ps < host_seen - _SAME_SWEEP:
+            out.append(p.id)
+    return out
 
 
 def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
@@ -111,13 +131,7 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
         .scalar()
     ) or 0
 
-    host_seen = _aware(host.last_seen)
-    stale_open = 0
-    if host_seen is not None:
-        for p in open_ports:
-            ps = _aware(p.last_seen)
-            if ps is not None and ps < host_seen - _SAME_SWEEP:
-                stale_open += 1
+    stale_open = len(not_revalidated_port_ids(host))
 
     return {
         "last_observed_at": host.last_seen,
