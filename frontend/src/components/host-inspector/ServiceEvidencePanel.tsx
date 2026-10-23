@@ -36,7 +36,6 @@ const linkButton =
   'rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 interface Props {
-  hostId: number;
   /** None for evidence that names no port the host has (v5.299.0). */
   port: Port | null;
   evidence: ServiceEvidence;
@@ -49,7 +48,7 @@ export const nothingBeyondIdentification = (port: Port | null, evidence: Service
   evidence.weaknesses.length + evidence.access.length + evidence.web.length
     + evidence.paths.length + (port?.scripts ?? []).length === 0;
 
-const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
+const ServiceEvidencePanel: React.FC<Props> = ({ port, evidence }) => {
   const [showFailed, setShowFailed] = useState(false);
   const [showAllPaths, setShowAllPaths] = useState(false);
   const access = summariseAccess(foldNetexecRows(evidence.access).map((o) => ({ ...o, auth_success: o.latest.auth_success })));
@@ -127,7 +126,7 @@ const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
 
       {evidence.web.length > 0 && (
         <Block title="Web">
-          <WebInterfacesCard hostId={hostId} count={evidence.web.length} rows={evidence.web} embedded />
+          <WebInterfacesCard rows={evidence.web} />
         </Block>
       )}
 

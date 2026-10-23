@@ -11,7 +11,7 @@
  * cmdk's built-in fuzzy match (already pulled in by the Combobox
  * primitive — no new dependency).
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Command as CommandPrimitive } from 'cmdk';
@@ -33,6 +33,7 @@ import { useRoleGate } from '../hooks/useProjectRole';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjectId } from '../hooks/useProjectId';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useOpeningKey } from '../hooks/useOpeningKey';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
 import {
   getFinding,
@@ -59,7 +60,14 @@ export interface CommandPaletteProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChange }) => {
+/** Every opening starts clean — no search, and no results of the last one
+ *  (whose debounced value an effect clearing the box left behind for 300 ms):
+ *  the body is keyed by the opening. */
+export const CommandPalette: React.FC<CommandPaletteProps> = (props) => (
+  <CommandPaletteBody key={useOpeningKey(props.open)} {...props} />
+);
+
+const CommandPaletteBody: React.FC<CommandPaletteProps> = ({ open, onOpenChange }) => {
   const navigate = useNavigate();
   const { logout } = useAuth();
   // Project-scoped entries follow the PROJECT role, admin ones the account's.
@@ -78,11 +86,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   // poorly at scale, hid failures behind "no results").  Per-group
   // error state surfaces backend failures inline instead of swallowing.
   const debouncedSearch = useDebouncedValue(search, 300);
-
-  // Reset search on close so the next open starts clean.
-  useEffect(() => {
-    if (!open) setSearch('');
-  }, [open]);
 
   const q = debouncedSearch.trim();
   // "#37" (or "37") is a finding number — searchable from one digit…

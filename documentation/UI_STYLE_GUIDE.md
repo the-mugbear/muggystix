@@ -633,7 +633,10 @@ the last answer:
   must not blink while the next list loads: filter chips and their counts, a
   filter's options.  (`response` is the current filter's, or `null`.)
 - **`loadMoreError`** — why the last "Show more" failed, for a page that says
-  it beside the list; `loadMore()` still rejects for one that toasts.
+  it beside the list; `loadMore()` still rejects for one that toasts (a page
+  that says it calls `loadMore().catch(() => undefined)` — never a mutation
+  around it, whose error outlives the list's next read).  It is gone once the
+  list is read again (`reload()`, a poll, a write's invalidation).
 - **`dedupeBy: (row) => id`** — a row an earlier page already gave is dropped
   (offset paging over a list that moves).  `total` stays the server's.
 - **`failure`** — the error as thrown, for a page that words it by what the
@@ -818,7 +821,12 @@ admins for that reason until 5.351.1.
 before a change is sent — the only project admin cannot be removed (the
 server refuses it); demoting the only admin, changing your own role and
 removing yourself are confirmed, in the same words on Project settings, the
-Portfolio members sheet and the administrators' memberships dialog.
+Portfolio members sheet and the administrators' memberships dialog.  What a
+change then reads again is one list too, `MEMBERSHIP_READS`
+(`hooks/useProjectMembers`): the roster, the project list (it carries the
+reader's own role, which the controls follow — changing or removing yourself
+shows at once, without a reload), Portfolio's counts and one person's
+memberships.
 
 - **Hidden, not disabled.**  A control the caller's role cannot use is not
   rendered.  A viewer or auditor gets a read-only page — rows, counts, links,

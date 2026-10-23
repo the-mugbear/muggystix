@@ -163,9 +163,10 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   }, [enabled, refetch]);
 
   // The page on screen no longer exists (its rows were dealt with, or the
-  // address named a page past the end).
+  // address named a page past the end).  A list emptied to nothing goes back
+  // to the first page (review 2026-10-23b, FEC-9: it stayed on its number).
   useEffect(() => {
-    if (rows !== null && rows.length === 0 && total > 0 && page > 0) {
+    if (rows !== null && rows.length === 0 && page > 0) {
       setPage(Math.max(0, Math.ceil(total / pageSize) - 1));
     }
   }, [rows, total, page, pageSize, setPage]);

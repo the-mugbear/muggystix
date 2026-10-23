@@ -9,13 +9,11 @@
  * (the reviewer's note), superseded.
  */
 import React from 'react';
-import { useMutation } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import { listProposals, type Proposal } from '../../services/api';
 import { useListQuery } from '../../hooks/useListQuery';
 import { useProjectId } from '../../hooks/useProjectId';
-import { queryErrorText } from '../../lib/query';
 import { describeProposal } from '../proposals/ProposalItem';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -70,9 +68,11 @@ export const SessionProposals: React.FC<{ sessionId: number; ended: boolean }> =
     [projectId, { agent_session_id: sessionId, status: 'any' }],
     { pageSize: PAGE, errorMessage: FAILED },
   );
-  const more = useMutation({ mutationFn: () => list.loadMore() });
+  // A failed "Show more" is the hook's `loadMoreError`, gone once the list is
+  // read again.
+  const showMore = () => { list.loadMore().catch(() => undefined); };
   const { total } = list;
-  const error = list.error ?? queryErrorText(more.error, FAILED);
+  const error = list.error ?? list.loadMoreError;
 
   if (!list.rows) {
     if (list.error) {
@@ -123,7 +123,7 @@ export const SessionProposals: React.FC<{ sessionId: number; ended: boolean }> =
       {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
       {rows.length < total && (
         <div>
-          <Button variant="ghost" size="sm" disabled={list.loading || list.loadingMore} onClick={() => more.mutate()}>
+          <Button variant="ghost" size="sm" disabled={list.loading || list.loadingMore} onClick={showMore}>
             Show more ({(total - rows.length).toLocaleString()} left)
           </Button>
         </div>

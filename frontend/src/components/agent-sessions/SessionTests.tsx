@@ -5,13 +5,11 @@
  * test, its status and its evidence live.
  */
 import React from 'react';
-import { useMutation } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import { listHostTests, type HostTest } from '../../services/api';
 import { useListQuery } from '../../hooks/useListQuery';
 import { useProjectId } from '../../hooks/useProjectId';
-import { queryErrorText } from '../../lib/query';
 import { hostTestStatusLabel, hostTestStatusVariant } from '../../utils/hostTests';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -28,10 +26,11 @@ export const SessionTests: React.FC<{ sessionId: number; ended: boolean }> = ({ 
     [projectId, { agent_session_id: sessionId }],
     { pageSize: PAGE, errorMessage: FAILED },
   );
-  // A failed "Show more" keeps the rows that are shown and says so under them.
-  const more = useMutation({ mutationFn: () => list.loadMore() });
+  // A failed "Show more" keeps the rows that are shown and says so under them
+  // (the hook's `loadMoreError`, gone once the list is read again).
+  const showMore = () => { list.loadMore().catch(() => undefined); };
   const { total } = list;
-  const error = list.error ?? queryErrorText(more.error, FAILED);
+  const error = list.error ?? list.loadMoreError;
 
   if (!list.rows) {
     if (list.error) {
@@ -92,7 +91,7 @@ export const SessionTests: React.FC<{ sessionId: number; ended: boolean }> = ({ 
       {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
       {rows.length < total && (
         <div>
-          <Button variant="ghost" size="sm" disabled={list.loading || list.loadingMore} onClick={() => more.mutate()}>
+          <Button variant="ghost" size="sm" disabled={list.loading || list.loadingMore} onClick={showMore}>
             Show more ({(total - rows.length).toLocaleString()} left)
           </Button>
         </div>

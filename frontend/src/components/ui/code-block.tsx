@@ -7,51 +7,67 @@
  * copied-state timer and clipboard call. Consolidated here so the copy
  * affordance looks and behaves the same everywhere it appears.
  *
- * Neither toasts: the check-icon swap is the feedback, matching the dialogs.
- * `copyToClipboard` falls back to execCommand on non-secure origins, and the
- * text is on screen if even that fails, so a silent no-op is acceptable.
+ * Neither toasts: the icon swap is the feedback, matching the dialogs — a
+ * check when the text was copied, a cross (and "Could not copy" on the
+ * tooltip) when even `copyToClipboard`'s execCommand fallback failed; the text
+ * is on screen to select by hand.
+ *
+ * `CopyButton` is the ONE copy icon button (review 2026-10-23b, FEC-7: the
+ * host tests had their own).
  */
 import React, { useState } from 'react';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, X } from 'lucide-react';
 
 import { Button } from './button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip';
+import { cn } from '../../utils/cn';
 import { copyToClipboard } from '../../utils/clipboard';
 
 interface CopyButtonProps {
   text: string;
   /** Accessible label + tooltip; defaults to a generic "Copy". */
   label?: string;
+  /** `compact`: the smaller button that sits on a row's line (a test's
+   *  command). */
+  size?: 'default' | 'compact';
   className?: string;
 }
 
-/** Ghost icon button that copies `text` and flips to a check for ~1.5s. */
-export const CopyButton: React.FC<CopyButtonProps> = ({ text, label, className }) => {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    if (await copyToClipboard(text)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }
+/** Ghost icon button that copies `text` and flips to a check (or, failing, a
+ *  cross) for ~1.5s.  The click goes no further: a copy on a row never also
+ *  opens the row. */
+export const CopyButton: React.FC<CopyButtonProps> = ({ text, label, size = 'default', className }) => {
+  const [outcome, setOutcome] = useState<'copied' | 'failed' | null>(null);
+  const copy = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const ok = await copyToClipboard(text);
+    setOutcome(ok ? 'copied' : 'failed');
+    setTimeout(() => setOutcome(null), 1500);
   };
+  const icon = size === 'compact' ? 'size-3.5' : 'size-4';
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
+          type="button"
           variant="ghost"
           size="icon"
           onClick={copy}
           aria-label={label ?? 'Copy to clipboard'}
-          className={className}
+          className={cn(size === 'compact' && 'size-7 shrink-0', className)}
         >
-          {copied ? (
-            <Check className="size-4 text-success" aria-hidden />
+          {outcome === 'copied' ? (
+            <Check className={cn(icon, 'text-success')} aria-hidden />
+          ) : outcome === 'failed' ? (
+            <X className={cn(icon, 'text-destructive')} aria-hidden />
           ) : (
-            <Copy className="size-4" aria-hidden />
+            <Copy className={icon} aria-hidden />
           )}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{copied ? 'Copied!' : label ?? 'Copy'}</TooltipContent>
+      <TooltipContent>
+        {outcome === 'copied' ? 'Copied!' : outcome === 'failed' ? 'Could not copy — select the text instead' : label ?? 'Copy'}
+      </TooltipContent>
     </Tooltip>
   );
 };

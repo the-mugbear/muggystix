@@ -146,7 +146,8 @@ export interface ListQuery<T, P extends AnyListPage<T> = ListPage<T>> {
   loadMore: () => Promise<void>;
   loadingMore: boolean;
   /** Why the last "Show more" of THIS list failed; cleared when the next one
-   *  is asked for, and by `reload()`. */
+   *  is asked for, and once the list is read again (`reload()`, a poll, an
+   *  invalidation). */
   loadMoreError: string | null;
   /** True when `rows` are not the current deps' (`keepPrevious`): the current
    *  list is still loading, or could not be loaded (`error`). */
@@ -222,8 +223,12 @@ export function useListQuery<T, P extends AnyListPage<T> = ListPage<T>>(
     });
   }, [shown, deduped]);
   const { refetch, fetchNextPage } = query;
-  // A failed "Show more", and the list it was asked of.
-  const [moreFailure, setMoreFailure] = useState<{ queryKey: unknown[]; error: unknown } | null>(null);
+  // A failed "Show more", the list it was asked of, and the reading of that
+  // list it failed on: once the list is read again — by `reload()`, the poll
+  // or a write elsewhere invalidating it — the failure is no longer said.
+  const [moreFailure, setMoreFailure] = useState<
+    { queryKey: unknown[]; error: unknown; readAt: number } | null
+  >(null);
   // The list on screen NOW, for a continuation that waited (see `loadMore`).
   const live = useRef({ queryKey, enabled });
   live.current = { queryKey, enabled };
@@ -251,7 +256,7 @@ export function useListQuery<T, P extends AnyListPage<T> = ListPage<T>>(
     }
     const result = await fetchNextPage();
     if (result.isFetchNextPageError) {
-      setMoreFailure({ queryKey, error: result.error });
+      setMoreFailure({ queryKey, error: result.error, readAt: result.dataUpdatedAt });
       throw result.error;
     }
   }, [enabled, queryClient, queryKey, refetch, fetchNextPage]);
@@ -278,6 +283,7 @@ export function useListQuery<T, P extends AnyListPage<T> = ListPage<T>>(
     reload, loadMore,
     loadingMore: query.isFetchingNextPage,
     loadMoreError: moreFailure && moreFailure.queryKey === queryKey
+      && moreFailure.readAt === query.dataUpdatedAt
       ? queryErrorText(moreFailure.error, errorMessage) : null,
     isPrevious,
     response: shown?.[0] ?? null,

@@ -35,6 +35,26 @@ describe('ScreenshotLightbox — caption', () => {
     expect(screen.getByRole('heading', { hidden: true }).textContent!.length).toBeLessThanOrEqual(120);
   });
 
+  // Review 2026-10-23b, FEC-6 — folded again for each opening and each image
+  // (its body is keyed by them; it was an effect on `src` / `open`).
+  it('opens the caption folded again for the next image and the next opening', () => {
+    const long = 'x '.repeat(400);
+    const at = (open: boolean, src: string | null) => (
+      <ScreenshotLightbox open={open} onClose={vi.fn()} src={src} caption={long} />
+    );
+    const { rerender } = render(at(true, 'blob:a'));
+    fireEvent.click(screen.getByRole('button', { name: 'Show the whole caption' }));
+    expect(screen.getByTestId('lightbox-caption').className).not.toContain('line-clamp-3');
+
+    rerender(at(true, 'blob:b'));
+    expect(screen.getByTestId('lightbox-caption').className).toContain('line-clamp-3');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show the whole caption' }));
+    rerender(at(false, 'blob:b'));
+    rerender(at(true, 'blob:b'));
+    expect(screen.getByTestId('lightbox-caption').className).toContain('line-clamp-3');
+  });
+
   it('names the dialog with a title, so the dialog library has nothing to complain of', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});

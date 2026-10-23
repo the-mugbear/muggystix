@@ -31,7 +31,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateReads, queryErrorText } from '../lib/query';
-import { projectMembersQuery } from '../hooks/useProjectMembers';
+import { MEMBERSHIP_READS, projectMembersQuery } from '../hooks/useProjectMembers';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -155,11 +155,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [memberships, projects]);
 
-  // A membership is shown here, on that project's roster and in its pickers.
-  // The projects are read again with it, as they always were.
-  const membershipsChanged = () => invalidateReads(
-    queryClient, 'getUserMemberships', 'getProjects', 'listProjectMembers',
-  );
+  const membershipsChanged = () => invalidateReads(queryClient, ...MEMBERSHIP_READS);
 
   const changingRole = useMutation({
     mutationFn: ({ row, role }: { row: MembershipRow; role: string }) =>

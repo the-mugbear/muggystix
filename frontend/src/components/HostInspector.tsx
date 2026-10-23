@@ -198,7 +198,8 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const queryClient = useQueryClient();
   // THE read of this host.  Its notes and the caller's follow state come with
   // it, so they are read from it — never copied out; a write puts the server's
-  // answer back in (`putHost`) or says the host is out of date (invalidating
+  // answer back in and reads the host again (`putHost`), or says the host is
+  // out of date (invalidating
   // `['getHost', projectId, hostId]`, which the assignee / tag controls, a
   // note's images and a test's result do from where they are written).  A
   // re-read that fails keeps what is on screen.
@@ -229,9 +230,20 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     onShow: () => setShowInformational(true),
     onRetry: () => void hostQuery.refetch(),
   };
+  // A write's answer goes onto EVERY cached reading of this host (with and
+  // without the informational rows: the one on screen may be the other key's
+  // while the wider read loads), and the host is read again.  A read already
+  // on its way may have been answered before the write, so it is cancelled
+  // first — `invalidateQueries` alone joins a FIRST read in flight rather than
+  // re-sending it, and the cancel's revert must not undo the answer just put
+  // on (review 2026-10-23b, FEC-1).
   const putHost = useCallback((update: (previous: Host) => Host) => {
-    queryClient.setQueryData<Host>(hostKey, (previous) => (previous ? update(previous) : previous));
-  }, [queryClient, hostKey]);
+    const record = ['getHost', projectId, hostId] as const;
+    void queryClient.cancelQueries({ queryKey: record }).then(() => {
+      queryClient.setQueriesData<Host>({ queryKey: record }, (previous) => (previous ? update(previous) : previous));
+      return queryClient.invalidateQueries({ queryKey: record });
+    });
+  }, [queryClient, projectId, hostId]);
 
   const conflictsQuery = useQuery({
     queryKey: ['getHostConflicts', projectId, hostId],
@@ -1066,7 +1078,7 @@ const HostInspectorView: React.FC<HostInspectorViewProps> = ({
       <HostNamesCard hostId={host.id} />
 
       {/* Nmap's host scripts (port scripts are in each service's panel). */}
-      <NseScriptsCard host={host} hostOnly />
+      <NseScriptsCard host={host} />
 
       {/* Where this host is registered and hosted — the outside world's answer
           to "is this the client's?", vs the scope's own CIDR list. A single

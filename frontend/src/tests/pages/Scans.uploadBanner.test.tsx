@@ -518,7 +518,9 @@ describe('Scans — the upload banner', () => {
     await importOne(B.name);
     await waitFor(() => expect(rowOf(B.name)).toHaveTextContent('Reading b'));
     expect(jobReads()).toHaveLength(before + 1);
-    expect(jobReads()[before]).toContain(2);
+    // Only the new file's job: the first is known to be finished, even
+    // though one more file is a new key (review 2026-10-23b, FEC-8).
+    expect(jobReads()[before]).toEqual([2]);
     expect(headingOf(A.name)).toBe('Imported: a.xml');
     expect(within(rowOf(A.name)).getByLabelText('Import result')).toHaveTextContent('+12 hosts added');
 

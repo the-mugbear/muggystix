@@ -11,7 +11,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const api = vi.hoisted(() => ({ getHostWebInterfaces: vi.fn(), fetchWebInterfaceScreenshot: vi.fn() }));
+const api = vi.hoisted(() => ({ fetchWebInterfaceScreenshot: vi.fn() }));
 vi.mock('../../services/api', () => api);
 
 import WebInterfacesCard from '../../components/WebInterfacesCard';
@@ -24,12 +24,9 @@ const row = (over: Record<string, unknown>) => ({
   has_screenshot: false, scan_id: 1, port_id: 72, ...over,
 });
 
-const renderCard = (rows: unknown[]) => {
-  api.getHostWebInterfaces.mockResolvedValue(rows);
-  return render(
-    <MemoryRouter><TooltipProvider><WebInterfacesCard hostId={1} count={rows.length} /></TooltipProvider></MemoryRouter>,
-  );
-};
+const renderCard = (rows: unknown[]) => render(
+  <MemoryRouter><TooltipProvider><WebInterfacesCard rows={rows as never} /></TooltipProvider></MemoryRouter>,
+);
 
 beforeEach(() => {
   vi.clearAllMocks();

@@ -627,7 +627,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                   {open && (
                     <TableRow className="hover:bg-transparent">
                       <TableCell colSpan={columnCount} className="bg-muted/20 pb-sm pl-lg">
-                        <ServiceEvidencePanel hostId={hostId} port={port} evidence={evidenceFor(port)} />
+                        <ServiceEvidencePanel port={port} evidence={evidenceFor(port)} />
                       </TableCell>
                     </TableRow>
                   )}
@@ -695,7 +695,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                   </>
                 )}
               </p>
-              <ServiceEvidencePanel hostId={hostId} port={g.port} evidence={g.evidence} />
+              <ServiceEvidencePanel port={g.port} evidence={g.evidence} />
             </div>
           ))}
         </div>

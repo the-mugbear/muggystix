@@ -16,7 +16,7 @@ import {
   updateProjectMemberRole,
   removeProjectMember,
 } from '../services/api';
-import { queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import {
   SideSheet,
@@ -33,7 +33,7 @@ import {
 } from './ui/select';
 import { useConfirm } from '../hooks/useConfirm';
 import { NO_PROJECT } from '../hooks/useProjectId';
-import { projectMembersQuery } from '../hooks/useProjectMembers';
+import { MEMBERSHIP_READS, projectMembersQuery } from '../hooks/useProjectMembers';
 import { useAuth } from '../contexts/AuthContext';
 import {
   DEFAULT_MEMBER_ROLE, PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
@@ -85,12 +85,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   const memberIds = new Set((members ?? []).map((m) => m.user_id));
   const available = (users.data ?? []).filter((u) => !memberIds.has(u.id));
 
-  // Who is on a project is shown here, in the pickers of that project
-  // (`listProjectMembers`, the roster hook's key) and as Portfolio's count.
-  const rosterChanged = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] }),
-    queryClient.invalidateQueries({ queryKey: ['getPortfolioDashboard'] }),
-  ]);
+  const rosterChanged = () => invalidateReads(queryClient, ...MEMBERSHIP_READS);
 
   const adding = useMutation({
     mutationFn: (body: { userId: number; role: string }) =>

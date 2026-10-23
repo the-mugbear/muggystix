@@ -1,13 +1,12 @@
 import React, { useCallback, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { ExternalLink, Globe, Image as ImageIcon, Loader2, Lock, Unlock } from 'lucide-react';
+import { ExternalLink, Image as ImageIcon, Loader2, Lock, Unlock } from 'lucide-react';
 
 import {
   TlsRecordFlag,
   TlsRecordSummary,
   WebInterface,
-  getHostWebInterfaces,
   getWebInterfaceRecord,
   fetchWebInterfaceScreenshot,
 } from '../services/api';
@@ -19,49 +18,25 @@ import { latestObservations } from '../utils/latestObservations';
 import { webObservedAt } from '../utils/portEndpoints';
 import { formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
 import ScreenshotLightbox from './ScreenshotLightbox';
-import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { InspectorSection } from './host-inspector/InspectorSection';
 import { safeHttpHref } from '../utils/safeHref';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 interface WebInterfacesCardProps {
-  hostId: number;
-  // Count from HostDetail, used to decide whether to mount + fetch
-  // at all.  If 0, the card renders nothing.
-  count: number;
-  /** v5.297.0 — rows already loaded (a service's own, from the Services
-   *  section); skips the fetch. */
-  rows?: WebInterface[];
-  /** v5.297.0 — inside a service panel: the list without its own section. */
-  embedded?: boolean;
+  /** A service's web interfaces, read by the Services section
+   *  (`PortDetailsCard`): this list reads none itself. */
+  rows: WebInterface[];
 }
 
 /**
- * Host-detail card rendering every web interface observed on a host
- * by any web-fingerprint tool (httpx, eyewitness, nikto, …).  Rows
- * come from the unified ``web_interfaces`` table via
- * ``GET /hosts/{id}/web-interfaces``.
- *
- * Lazy-loads: we don't fetch until the card actually mounts (i.e.
- * ``count > 0``).  Screenshots (when present) are fetched
- * on-demand when the user clicks the thumbnail trigger — the initial
- * list request stays cheap even for hosts with many interfaces.
+ * The web interfaces observed on one service by any web-fingerprint tool
+ * (httpx, eyewitness, nikto, …), inside its service panel
+ * (`ServiceEvidencePanel`).  Screenshots (when present) are fetched on demand
+ * when the user clicks the thumbnail trigger.
  */
-const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, rows: given, embedded = false }) => {
-  // The same key as the Services section's read (PortDetailsCard): one
-  // request for the host's web interfaces, whoever shows them.
+const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ rows }) => {
   const projectId = useProjectId();
-  const fetchOwn = count > 0 && !given;
-  const query = useQuery({
-    queryKey: ['getHostWebInterfaces', projectId, hostId],
-    queryFn: ({ signal }) => getHostWebInterfaces(projectId, hostId, signal),
-    enabled: fetchOwn,
-  });
-  const loading = fetchOwn && query.isPending;
-  const error = fetchOwn ? queryErrorText(query.error, 'Failed to load web interfaces.') : null;
-  const rows = given ?? query.data ?? null;
 
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxCaption, setLightboxCaption] = useState<string>('');
@@ -109,49 +84,30 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, ro
     setLightboxOpen(false);
   }, []);
 
-  if (count === 0) return null;
+  if (rows.length === 0) return null;
 
   // v5.241.0 — one row per scan is kept in the data; the same URL from the
   // same tool is ONE row here (the latest), saying how many scans saw it.
   const observed = latestObservations(
-    rows ?? [],
+    rows,
     (r) => `${r.source}|${r.url}`,
     // v5.244.0 — by when it was OBSERVED (the scan's own time), never by
     // `last_seen`, which is the row's write time (utils/portEndpoints).
     webObservedAt,
   );
 
-  const body = (
-      <div>
-        {loading && (
-          <div className="flex items-center gap-xs text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            <span className="text-metadata">Loading web interfaces…</span>
-          </div>
-        )}
-
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {!loading && !error && rows && rows.length === 0 && (
-          <p className="text-metadata text-muted-foreground">No web interfaces recorded.</p>
-        )}
-
-        {!loading && !error && rows && rows.length > 0 && (
-          <div className="divide-y divide-border">
-            {observed.map(({ latest, members }) => (
-              <WebInterfaceRow
-                key={latest.id}
-                row={latest}
-                earlier={members.filter((m) => m.id !== latest.id)}
-                onViewScreenshot={openScreenshot}
-              />
-            ))}
-          </div>
-        )}
+  return (
+    <div>
+      <div className="divide-y divide-border">
+        {observed.map(({ latest, members }) => (
+          <WebInterfaceRow
+            key={latest.id}
+            row={latest}
+            earlier={members.filter((m) => m.id !== latest.id)}
+            onViewScreenshot={openScreenshot}
+          />
+        ))}
+      </div>
 
       <ScreenshotLightbox
         open={lightboxOpen}
@@ -161,20 +117,7 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, ro
         error={lightboxError}
         caption={lightboxCaption}
       />
-      </div>
-  );
-
-  if (embedded) return body;
-  return (
-    <InspectorSection
-      id="host-detail-web"
-      title="Web interfaces"
-      icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
-      // Distinct interfaces once loaded (the prop counts per-scan rows).
-      count={rows ? observed.length : count}
-    >
-      {body}
-    </InspectorSection>
+    </div>
   );
 };
 

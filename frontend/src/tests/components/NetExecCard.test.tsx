@@ -103,7 +103,7 @@ describe('NetExecCard lines (v5.296.0)', () => {
       raw_output: 'VNC 10.0.0.9 5900 10.0.0.9 [*] RFB 3.8 (No Auth:True)' }] as unknown as NetexecResult[];
     render(
       <MemoryRouter>
-        <ServiceEvidencePanel hostId={1} port={port} evidence={{ weaknesses: [], access, web: [], paths: [] }} />
+        <ServiceEvidencePanel port={port} evidence={{ weaknesses: [], access, web: [], paths: [] }} />
       </MemoryRouter>,
     );
     expect(screen.getByRole('link', { name: 'What BlueStick reads from NetExec' }))

@@ -59,8 +59,8 @@ import { Textarea } from '../ui/textarea';
 import { EvidenceItem } from './HostEvidenceSection';
 import { InspectorSection, openInspectorSection } from './InspectorSection';
 import { openIssue } from './VulnerabilityGroup';
+import { CopyButton } from '../ui/code-block';
 import {
-  CopyButton,
   HOST_TESTS_LIMIT,
   HostTestsProvider,
   OPEN_HOST_TEST_EVENT,
@@ -425,7 +425,7 @@ export const HostTestRow: React.FC<{
           <code className="min-w-0 flex-1 truncate font-mono text-caption text-muted-foreground" title={command}>
             {command}
           </code>
-          <CopyButton text={command} />
+          <CopyButton text={command} label="Copy command" size="compact" />
         </div>
       )}
 
@@ -447,7 +447,7 @@ export const HostTestRow: React.FC<{
           {command && (
             <div className="flex min-w-0 items-start gap-xs rounded-control bg-accent p-xs">
               <pre className="m-0 min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-caption">{command}</pre>
-              <CopyButton text={command} />
+              <CopyButton text={command} label="Copy command" size="compact" />
             </div>
           )}
           {test.expected_result && (

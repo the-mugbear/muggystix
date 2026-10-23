@@ -24,7 +24,7 @@ const row = {
 const renderCard = () =>
   render(
     <MemoryRouter><TooltipProvider>
-      <WebInterfacesCard hostId={1} count={1} rows={[row] as never} embedded />
+      <WebInterfacesCard rows={[row] as never} />
     </TooltipProvider></MemoryRouter>,
   );
 
@@ -40,7 +40,7 @@ describe('WebInterfacesCard — a screenshot nobody is looking at', () => {
   const shot = { ...row, has_screenshot: true };
   const renderShot = () => render(
     <MemoryRouter><TooltipProvider>
-      <WebInterfacesCard hostId={1} count={1} rows={[shot] as never} embedded />
+      <WebInterfacesCard rows={[shot] as never} />
     </TooltipProvider></MemoryRouter>,
   );
 

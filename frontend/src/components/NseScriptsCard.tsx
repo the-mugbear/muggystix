@@ -18,9 +18,9 @@ import {
  *
  * NSE output is the richest free-form data nmap produces — SMB signing
  * posture, TLS cipher grades, anonymous-FTP checks, `vuln-*` CVE hits.
- * It is captured at two levels and shown in two sections here:
- *   - Host scripts  (Host.host_scripts) — host-wide, e.g. smb-os-discovery
- *   - Port scripts  (Port.scripts)      — grouped under their port
+ * It is captured at two levels: host scripts (Host.host_scripts —
+ * host-wide, e.g. smb-os-discovery) are this card's; port scripts
+ * (Port.scripts) are shown in their service's panel with `ScriptItem`.
  *
  * The card renders nothing when a host has no script output, so it
  * stays invisible for hosts scanned without `-sC`/`--script`.
@@ -166,34 +166,22 @@ export const ScriptItem: React.FC<ScriptItemProps> = ({ script, itemValue }) => 
 
 interface NseScriptsCardProps {
   host: Host;
-  /** v5.297.0 — port scripts live in each service's panel; the inspector
-   *  shows only the host scripts here. */
-  hostOnly?: boolean;
 }
 
-const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host, hostOnly = false }) => {
+/** The host's scripts.  Port scripts are not here: each is in its service's
+ *  panel (`ServiceEvidencePanel`, through `ScriptItem`, v5.297.0), which the
+ *  Services table bounds — a list of every port's scripts here was not. */
+const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
   const hostScripts = host.host_scripts ?? [];
-
-  // Ports that actually carry script output, sorted by port number so
-  // the section reads in the same order as the ports table.
-  const portsWithScripts = hostOnly ? [] : (host.ports ?? [])
-    .filter((p) => (p.scripts?.length ?? 0) > 0)
-    .slice()
-    .sort((a, b) => a.port_number - b.port_number);
-
-  const totalScripts =
-    hostScripts.length +
-    portsWithScripts.reduce((acc, p) => acc + (p.scripts?.length ?? 0), 0);
-
-  if (totalScripts === 0) return null;
+  if (hostScripts.length === 0) return null;
 
   return (
     <InspectorSection
       id="host-detail-nse"
-      title={hostOnly ? 'Host scripts' : 'NSE script output'}
+      title="Host scripts"
       titleHint="Free-form results from the Nmap Scripting Engine (-sC / --script), and banners masscan grabbed (--banners). Expand a row to read the raw output."
       icon={<ScrollText className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
-      count={totalScripts}
+      count={hostScripts.length}
     >
       <div className="space-y-md">
         {/* v5.296.0 — raw text is not a finding: say so where it is read. */}
@@ -204,59 +192,23 @@ const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host, hostOnly = false 
             What BlueStick reads from Nmap
           </Link>
         </p>
-        {hostScripts.length > 0 && (
-          <div>
-            <h3 className="mb-xs text-metadata font-semibold">
-              Host scripts
-              <span className="ml-xs font-normal text-muted-foreground">
-                ({hostScripts.length})
-              </span>
-            </h3>
-            <Accordion type="multiple" className="rounded-control border border-border px-sm">
-              {hostScripts.map((script) => (
-                <ScriptItem
-                  key={`host-${script.id}`}
-                  script={script}
-                  itemValue={`host-${script.id}`}
-                />
-              ))}
-            </Accordion>
-          </div>
-        )}
-
-        {portsWithScripts.length > 0 && (
-          <div className="space-y-sm">
-            <h3 className="text-metadata font-semibold">
-              Port scripts
-              <span className="ml-xs font-normal text-muted-foreground">
-                ({portsWithScripts.length} port{portsWithScripts.length === 1 ? '' : 's'})
-              </span>
-            </h3>
-            {portsWithScripts.map((port) => (
-              <div key={port.id}>
-                <div className="mb-xxs flex flex-wrap items-baseline gap-xs">
-                  <span className="font-mono text-metadata font-semibold">
-                    {port.port_number}/{port.protocol}
-                  </span>
-                  {port.service_name && (
-                    <span className="truncate text-caption text-muted-foreground">
-                      {port.service_name}
-                    </span>
-                  )}
-                </div>
-                <Accordion type="multiple" className="rounded-control border border-border px-sm">
-                  {(port.scripts ?? []).map((script) => (
-                    <ScriptItem
-                      key={`port-${port.id}-${script.id}`}
-                      script={script}
-                      itemValue={`port-${port.id}-${script.id}`}
-                    />
-                  ))}
-                </Accordion>
-              </div>
+        <div>
+          <h3 className="mb-xs text-metadata font-semibold">
+            Host scripts
+            <span className="ml-xs font-normal text-muted-foreground">
+              ({hostScripts.length})
+            </span>
+          </h3>
+          <Accordion type="multiple" className="rounded-control border border-border px-sm">
+            {hostScripts.map((script) => (
+              <ScriptItem
+                key={`host-${script.id}`}
+                script={script}
+                itemValue={`host-${script.id}`}
+              />
             ))}
-          </div>
-        )}
+          </Accordion>
+        </div>
       </div>
     </InspectorSection>
   );

@@ -1,12 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp, Loader2, RefreshCw } from 'lucide-react';
 import {
   AgentApiCallRow,
   AgentActivityFilters,
   getAgentSessionApiActivity,
 } from '../services/api';
-import { queryErrorText } from '../lib/query';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListQuery } from '../hooks/useListQuery';
 import { useProjectId } from '../hooks/useProjectId';
@@ -278,16 +276,14 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
     [projectId, sessionId, filters],
     { pageSize: PAGE_SIZE, errorMessage: FAILED },
   );
-  // A failed "Show more" keeps the calls that are shown and says so under them.
-  const more = useMutation({ mutationFn: () => list.loadMore() });
+  // A failed "Show more" keeps the calls that are shown and says so under them
+  // (the hook's `loadMoreError`, gone once the list is read again).
+  const showMore = () => { list.loadMore().catch(() => undefined); };
   const { rows, total, loading } = list;
   // Gone while the next read is in flight; it says so again if that fails too.
   const error = loading ? null : list.error;
-  const moreError = queryErrorText(more.error, 'Could not load more calls.');
-  const refresh = () => {
-    more.reset();
-    void list.reload();
-  };
+  const moreError = list.loadMoreError;
+  const refresh = () => { void list.reload(); };
 
   return (
     <PostureSection
@@ -446,7 +442,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
           <div className="mt-sm flex justify-center">
             <Button
               variant="outline"
-              onClick={() => more.mutate()}
+              onClick={showMore}
               disabled={loading || list.loadingMore}
             >
               {list.loadingMore ? 'Loading…' : `Show more (${(total - rows.length).toLocaleString()} left)`}

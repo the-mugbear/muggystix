@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp } from 'lucide-react';
@@ -51,10 +51,15 @@ export function useUploadBanner(
   // job is running it is DISABLED, not merely left unpolled, so nothing — an
   // invalidation included — asks again (`Scans.uploadBanner.test.tsx`).
   const bannerJobIds = useMemo(() => Array.from(new Set(uploadEntries.map((e) => e.jobId))), [uploadEntries]);
+  // The last settled reading, whichever key it was read under: one more file
+  // is a new key with nothing in it yet, and the jobs already known to be
+  // finished are still not asked about (review 2026-10-23b, FEC-8).
+  const lastReading = useRef<FollowedJobs | undefined>(undefined);
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- the last reading only spares asking about finished jobs again; the answer is the key's
   const followedQuery = useQuery({
     queryKey: ['getIngestionJobsByIds', projectId, bannerJobIds],
     queryFn: async ({ signal, client, queryKey }): Promise<FollowedJobs> => {
-      const known = client.getQueryData<FollowedJobs>(queryKey);
+      const known = client.getQueryData<FollowedJobs>(queryKey) ?? lastReading.current;
       const ask = jobIdsToAsk(bannerJobIds, known);
       return mergeFollowed(known, ask, await getIngestionJobsByIds(projectId, ask, signal));
     },
@@ -64,6 +69,7 @@ export function useUploadBanner(
   // While the read for one more file is on its way — or fails — the files
   // already on the banner keep what was last said about them.
   const followed = useLastSettled(followedQuery.data, { resetKey: projectId });
+  useEffect(() => { lastReading.current = followed; }, [followed]);
 
   // The import results of the finished files (the scan rows' summaries: the
   // same numbers the inventory shows), in ONE request for the files that
