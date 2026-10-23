@@ -350,7 +350,9 @@ describe('Proposals page — what a bulk accept left for one at a time', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accept all shown' }));
     const dialog = await screen.findByRole('dialog');
     // Said before the click, too.
-    expect(dialog).toHaveTextContent('rewritten after the draft was made is left pending too: decide those one at a time');
+    expect(dialog).toHaveTextContent(
+      'rewritten after the draft was made is left pending too, and so is a draft made before drafts recorded the text they replace: decide those one at a time',
+    );
     fireEvent.click(within(dialog).getByRole('button', { name: 'Accept all shown' }));
 
     const notice = await screen.findByTestId('bulk-left-pending');
