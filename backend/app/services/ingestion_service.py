@@ -361,23 +361,18 @@ def attempt_is_over(db: Session, job_id: int, claimed_at: Optional[datetime]) ->
 
 
 def _project_of_scan(db: Session, scan_id: int) -> Optional[int]:
-    """The project a partial scan belongs to.  NetExec and gnmap create their
-    scan with no project until the import succeeds, so the job that names the
-    scan — and, failing that, a host it observed — answers too."""
+    """The project a partial scan belongs to — its own column (``scans.project_id``
+    is NOT NULL since ``e3b7a1c9d5f0``, and every parser, NetExec and gnmap
+    included, sets it when it creates the scan).  None when the scan row is
+    gone."""
     from sqlalchemy import select
 
     from app.db import models
 
-    HH = models.HostScanHistory
-    for stmt in (
-        select(models.Scan.project_id).where(models.Scan.id == scan_id),
-        select(IngestionJob.project_id).where(IngestionJob.in_progress_scan_id == scan_id),
-        select(models.Host.project_id).join(HH, HH.host_id == models.Host.id).where(HH.scan_id == scan_id),
-    ):
-        project_id = db.execute(stmt.limit(1)).scalar()
-        if _real_id(project_id):
-            return project_id
-    return None
+    project_id = db.execute(
+        select(models.Scan.project_id).where(models.Scan.id == scan_id)
+    ).scalar()
+    return project_id if _real_id(project_id) else None
 
 
 def _seen_by_another_scan(vuln, scan_id: int):
