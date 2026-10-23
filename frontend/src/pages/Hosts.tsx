@@ -68,8 +68,6 @@ import { isPageShortcutEvent } from '../utils/keyboard';
 import { copyToClipboard } from '../utils/clipboard';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { inertWhen, stickyBelowChrome } from '../utils/uiStyles';
-import { exposureChips } from '../utils/portsOfInterest';
-import { weaknessMatchCriteria } from '../utils/weaknessMatch';
 import { useConfirm } from '../hooks/useConfirm';
 import { hostConditionChips } from '../utils/hostConditionChips';
 import { hostsInQueryPath } from '../utils/queryPath';
@@ -297,17 +295,10 @@ const sessionWrite = (name: SessionKey, value: string | null): void => {
     /* remembered for this visit only */
   }
 };
-/** The conditions, in the legacy 3-key shape so older sessions / older
- *  frontends still load these blobs cleanly (v4.51.0 folded followFilter and
- *  onlyWithNotes into the filters; they are split back out here, and at the
- *  saved-view boundary). */
+/** The conditions, whole (`SavedHostFilterState`), read back by
+ *  `hostFiltersFromUrl` on a bare /hosts visit. */
 const rememberFilters = (filters: HostFilterOptions): void => {
-  const { followFilter, onlyWithNotes, ...filtersOnly } = filters;
-  sessionWrite('hostFiltersState', JSON.stringify({
-    filters: filtersOnly,
-    followFilter: followFilter ?? 'all',
-    onlyWithNotes: onlyWithNotes === true,
-  }));
+  sessionWrite('hostFiltersState', JSON.stringify({ filters }));
 };
 
 /** The last view applied (saved or built-in) with how to apply it again.
@@ -1391,10 +1382,6 @@ export default function Hosts() {
     toast.info(`Filtered to ${pivot.kind === 'os' ? 'OS' : pivot.kind} "${pivot.value}"`, { autoHideMs: 2000 });
   }, [setFilters, setPage, toast]);
 
-  const weaknessMatch = useMemo(
-    () => weaknessMatchCriteria({ weaknesses: filters.weaknesses, checks: filters.checks, query: filters.query }),
-    [filters.weaknesses, filters.checks, filters.query],
-  );
   const weaknessLabels = useMemo(() => ({
     flag: (f: string) => filterData?.weaknesses?.find((w) => w.name === f)?.label,
     check: (id: string) => filterData?.checks?.find((c) => c.id === id)?.title,
@@ -1416,7 +1403,6 @@ export default function Hosts() {
     // Each row names the port(s) the server marked as matched (the Exposure
     // chips are a risk read and may not include them).
     matchByProduct: shown?.match_by_product ?? false,
-    weaknessMatch,
     weaknessLabels,
     // "New" on every row of a fresh engagement says nothing (UX review
     // 2026-09-25); it marks the rows that ARE new among older ones.
@@ -1467,7 +1453,7 @@ export default function Hosts() {
   // ---------------------------------------------------------------------------
 
   // Whether any row on this page shows a port-guessed service ("SSH?").
-  const hasGuessedServices = hosts.some((h) => exposureChips(h.ports).some((c) => !c.detected));
+  const hasGuessedServices = hosts.some((h) => (h.exposure ?? []).some((c) => !c.detected));
   const statesShown = new Set(hosts.map((h) => (h.state === 'up' || h.state === 'down' ? h.state : 'unknown')));
 
   return (

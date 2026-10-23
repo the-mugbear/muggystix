@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { FolderOpen, RefreshCw, Users } from 'lucide-react';
 import LastUpdated from '../components/LastUpdated';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
@@ -11,7 +11,9 @@ import {
   ProjectCard,
 } from '../services/api';
 import { queryErrorText } from '../lib/query';
-import { useProject } from '../contexts/ProjectContext';
+import { useToast } from '../contexts/ToastContext';
+import { cannotOpenProject, useOpenInProject } from '../hooks/useOpenInProject';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { useAuth } from '../contexts/AuthContext';
 import { formatStatusLabel } from '../utils/statusMeta';
 import TimeAgo from '../components/TimeAgo';
@@ -34,6 +36,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
 import { cn } from '../utils/cn';
+import { plural } from '../utils/plural';
 
 /**
  * Portfolio (v5.275.0) — the members' cross-project view, on the Posture
@@ -64,7 +67,6 @@ const HEALTH_TEXT: Record<string, string> = {
 };
 
 const n = (v: number) => v.toLocaleString();
-const plural = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 ? one : many}`;
 const SEVS = ['critical', 'high', 'medium', 'low'] as const;
 
 /** Which representation drove a critical/high label, in words. */
@@ -232,8 +234,8 @@ const ProjectsTable: React.FC<{
 );
 
 const PortfolioDashboard: React.FC = () => {
-  const navigate = useNavigate();
-  const { projects, selectProject } = useProject();
+  const { openInProject } = useOpenInProject();
+  const toast = useToast();
   const { hasRole } = useAuth();
 
   const query = useQuery({
@@ -247,7 +249,8 @@ const PortfolioDashboard: React.FC = () => {
   // while the next attempt is in flight.
   const error = loading ? null : queryErrorText(query.error, 'Failed to load portfolio.');
   const reload = () => { void query.refetch(); };
-  const [search, setSearch] = useState('');
+  // The search is in the address too, so Back from a project restores it.
+  const search = useUrlSearchDraft('search');
   // SOC-P1/P2 — project whose members sheet is open.
   const [membersCard, setMembersCard] = useState<ProjectCard | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -263,17 +266,16 @@ const PortfolioDashboard: React.FC = () => {
   };
 
   // Row actions switch the active project BEFORE navigating so the
-  // destination opens scoped to it.
+  // destination opens scoped to it; a project the cached list no longer
+  // holds (archived, or the membership removed since) opens nothing.
   const openProject = (card: ProjectCard) => {
-    const proj = projects.find((p) => p.id === card.id);
-    if (proj) selectProject(proj);
-    navigate('/operations');
+    if (!openInProject(card.id, '/operations')) toast.warning(cannotOpenProject(card.name));
   };
 
   const showPred = SHOW_OPTIONS.find((o) => o.key === show)?.pred;
   const rows = useMemo(() => {
     if (!data) return [];
-    const q = search.trim().toLowerCase();
+    const q = search.value.toLowerCase();
     let list = data.projects;
     if (statusFilter) list = list.filter((p) => p.status === statusFilter);
     if (showPred) list = list.filter(showPred);
@@ -284,7 +286,7 @@ const PortfolioDashboard: React.FC = () => {
     return [...list].sort((a, b) =>
       (HEALTH_RANK[a.health] ?? 9) - (HEALTH_RANK[b.health] ?? 9)
       || crit(b) - crit(a) || high(b) - high(a) || a.name.localeCompare(b.name));
-  }, [data, statusFilter, showPred, search]);
+  }, [data, statusFilter, showPred, search.value]);
 
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -333,7 +335,7 @@ const PortfolioDashboard: React.FC = () => {
   const notStartedTotal = s ? Math.max(0, s.total_hosts - s.total_reviewed - s.total_in_review) : 0;
   // Portfolio lists non-archived projects only, so every one not in progress is completed.
   const completedProjects = s ? Math.max(0, s.total_projects - s.active_projects) : 0;
-  const filtered = !!(statusFilter || show || search.trim());
+  const filtered = !!(statusFilter || show || search.value);
 
   return (
     <div className="space-y-md p-md md:p-lg">
@@ -349,7 +351,7 @@ const PortfolioDashboard: React.FC = () => {
 
       {/* Filters: one row above everything they scope, closed by a rule. */}
       <ListFilterBar>
-        <ListFilterSearch value={search} onChange={setSearch} placeholder="Search projects…" label="Search projects" />
+        <ListFilterSearch value={search.draft} onChange={search.setDraft} placeholder="Search projects…" label="Search projects" />
         <Select value={show || 'all'} onValueChange={(v) => setParam('show', v === 'all' ? '' : v)}>
           <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-56`} aria-label="Show projects"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -369,7 +371,7 @@ const PortfolioDashboard: React.FC = () => {
           </SelectContent>
         </Select>
         {filtered && (
-          <Button size="sm" variant="ghost" onClick={() => { setSearch(''); setSearchParams(new URLSearchParams(), { replace: true }); }}>
+          <Button size="sm" variant="ghost" onClick={() => { setSearchParams(new URLSearchParams(), { replace: true }); search.setDraft(''); }}>
             Reset
           </Button>
         )}
@@ -435,7 +437,7 @@ const PortfolioDashboard: React.FC = () => {
                   <p className="py-sm text-metadata text-muted-foreground">
                     No project matches these filters.{' '}
                     <button type="button" className="text-info hover:underline"
-                      onClick={() => { setSearch(''); setSearchParams(new URLSearchParams(), { replace: true }); }}>
+                      onClick={() => { setSearchParams(new URLSearchParams(), { replace: true }); search.setDraft(''); }}>
                       Show all projects
                     </button>
                   </p>

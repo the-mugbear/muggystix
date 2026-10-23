@@ -10,6 +10,9 @@ import { focusManager } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// The real router: the page reads its report id from the route (setupTests
+// stubs `useParams`, and a page with no id asks for nothing).
+vi.mock('react-router-dom', async () => vi.importActual('react-router-dom'));
 vi.mock('../../services/api', () => ({
   listClientReports: vi.fn(),
   getClientReport: vi.fn(),

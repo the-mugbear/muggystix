@@ -12,9 +12,6 @@
  * notification links.
  */
 
-/** The value of `view` that named Ingestion results; read only to redirect it. */
-export const IMPORT_RESULTS_VIEW = 'results';
-
 export type ImportResultsParams =
   | URLSearchParams
   | Readonly<Record<string, string | number | null | undefined>>;

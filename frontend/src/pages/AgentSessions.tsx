@@ -30,6 +30,7 @@ import { useListQuery, type ListPage } from '../hooks/useListQuery';
 import { useProjectId } from '../hooks/useProjectId';
 import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
+import { plural } from '../utils/plural';
 import { InfoTip } from '../components/ui/info-tip';
 import PostureLead, { LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -102,8 +103,6 @@ export const HISTORY_COLUMN_WIDTHS = {
   actions: 'w-20',
 } as const;
 
-const plural = (n: number, one: string, many = `${one}s`) =>
-  `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 
 /** v5.267.0 — the per-(model, tool) breakdown, as a section and only when an

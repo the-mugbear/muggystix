@@ -41,11 +41,11 @@ import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { SideSheet, SideSheetBody, SideSheetContent, SideSheetHeader, SideSheetTitle } from '../ui/side-sheet';
 import IssueMeta from './IssueMeta';
+import { plural } from '../../utils/plural';
 
 /** Hosts listed under an issue; one more is requested to know the list is cut. */
 export const HOST_CAP = 100;
 
-const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
 /** Where testing of the issue stands on one of its hosts, in the words the
  *  Hosts row uses (`testWorkState`): tested, tested with more to do, planned. */

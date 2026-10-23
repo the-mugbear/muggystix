@@ -45,6 +45,7 @@ import ImportHistoryTable, {
 } from '../components/scans/ImportHistoryTable';
 import { hydrateHistoryRows, orderHistoryRows } from '../utils/importHistory';
 import { importResultsPath } from '../utils/importResultsPath';
+import { routeId } from '../utils/routeId';
 import type { ScanTimeColumn } from '../components/scans/ScanTimeCells';
 import { ListFilterBar, ListFilterSearch } from '../components/ListFilterBar';
 import { InfoTip } from '../components/ui/info-tip';
@@ -108,9 +109,6 @@ const statusChanges = (status: ImportHistoryStatus | null): Record<string, strin
   { status, job_id: null, error_id: null, batch_files: null }
 );
 
-/** A positive whole number from the address, else null. */
-const idParam = (raw: string | null): number | null => (raw && /^\d+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null);
-
 function useScansAddress() {
   const [urlParams, setUrlParams] = useSearchParams();
   // The uploads' filters (5.418.0; they were the Ingestion results view's):
@@ -121,8 +119,8 @@ function useScansAddress() {
   const rawStatus = urlParams.get('status') as ImportHistoryStatus | null;
   const statusFilter: ImportHistoryStatus | null = readsUploads && rawStatus && IMPORT_HISTORY_STATUSES.includes(rawStatus)
     ? rawStatus : null;
-  const focusJobId = readsUploads ? idParam(urlParams.get('job_id')) : null;
-  const focusErrorId = readsUploads ? idParam(urlParams.get('error_id')) : null;
+  const focusJobId = readsUploads ? routeId(urlParams.get('job_id')) : null;
+  const focusErrorId = readsUploads ? routeId(urlParams.get('error_id')) : null;
   const toolFilter = urlParams.get('tool') || '';
   const dateRangeDays: number | null = (() => {
     const raw = urlParams.get('days');

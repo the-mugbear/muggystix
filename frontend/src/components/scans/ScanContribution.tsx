@@ -10,6 +10,7 @@
 import React from 'react';
 
 import type { Scan } from '../../services/api';
+import { plural } from '../../utils/plural';
 
 export type ToolFamily = 'port' | 'vuln' | 'web' | 'dns' | 'auth' | 'other';
 
@@ -81,7 +82,6 @@ export type ContributionScan = Pick<
 >;
 
 const num = (n: number) => n.toLocaleString();
-const plural = (n: number, one: string, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 const added = (n: number) => `${n > 0 ? '+' : ''}${num(n)} new`;
 
 // Observation kinds are not DNS answers — name them for what they are.

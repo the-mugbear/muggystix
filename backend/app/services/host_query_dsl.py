@@ -1035,6 +1035,44 @@ def positive_port_conditions(node: Node) -> Tuple[List[ColumnElement], bool]:
     return found, by_product
 
 
+def positive_weakness_terms(node: Node) -> Tuple[set, set, bool]:
+    """``(flags, check_ids, every_check)`` the query's POSITIVE weakness
+    leaves name, from the parse tree: ``has:<flag>``, ``check:<id>``,
+    ``issue:"check:<id>"`` and ``kind:misconfiguration`` (every check — each
+    check is a misconfiguration).  Aliases resolve through the registry.
+
+    The Hosts list names on each row the weaknesses that made it match
+    (``matched_weakness_flags`` / ``matched_check_ids``); the page read them
+    with a regex over the query text, which missed ``issue:`` and ``kind:``
+    (review 2026-10-23b, FEP-5).  A leaf under an odd number of ``NOT``
+    names nothing."""
+    flags: set = set()
+    checks: set = set()
+    every_check = False
+
+    def walk(n: Node, negated: bool) -> None:
+        nonlocal every_check
+        if isinstance(n, (And, Or)):
+            for child in n.children:
+                walk(child, negated)
+        elif isinstance(n, Not):
+            walk(n.child, not negated)
+        elif isinstance(n, FieldNode) and not negated:
+            field = FIELD_BUILDERS[n.name].name
+            values = [v.strip().lower() for v in n.values if v.strip()]
+            if field == "has":
+                flags.update(values)
+            elif field == "check":
+                checks.update(values)
+            elif field == "issue":
+                checks.update(v[len("check:"):] for v in values if v.startswith("check:"))
+            elif field == "kind" and "misconfiguration" in values:
+                every_check = True
+
+    walk(node, False)
+    return flags, checks, every_check
+
+
 def schema() -> dict:
     """Field + example catalogue for the frontend (autocomplete, help
     popover, template gallery).  Single source of truth = the registry."""

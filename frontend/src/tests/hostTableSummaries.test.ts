@@ -5,7 +5,9 @@
  *  - "out of scope" for every host without a subnet mapping, including one
  *    an approved name resolves to and every host on a project with no scope;
  *  - the Exposure chips from port numbers alone, with "no high-value
- *    services" hiding an admin service probed on an unusual port;
+ *    services" hiding an admin service probed on an unusual port (the chips
+ *    are the server's since review 2026-10-23b, FEP-4: their cases moved,
+ *    unchanged, to backend/tests/test_exposure_chips.py);
  *  - "N critical · exploit" from a critical count and a host-wide exploit
  *    count that were never joined on the same vulnerability.
  */
@@ -14,7 +16,6 @@ import { describe, expect, it } from 'vitest';
 import { HOST_COLUMN_SHARES, computeAttention, scopeCoverageText } from '../components/hosts/useHostColumns';
 import { columnWidth } from '../components/ui/data-table';
 import type { Host } from '../services/api/hosts';
-import { exposureChips } from '../utils/portsOfInterest';
 
 // UX walkthrough 2026-10-02 (U2 + U9): on a wide window the spare width went
 // to Host alone while Exposure and Attention wrapped to three or four lines.
@@ -68,61 +69,6 @@ describe('scope coverage label', () => {
 
   it('a row from an older backend (no coverage fields) keeps the old wording', () => {
     expect(scopeCoverageText({}).text).toBe('out of scope');
-  });
-});
-
-describe('exposure chips', () => {
-  it('a probed service on an unusual port is shown by name, as detected', () => {
-    const chips = exposureChips([
-      { port_number: 3390, state: 'open', service_name: 'ms-wbt-server', service_method: 'probed' },
-    ]);
-    expect(chips).toEqual([
-      { key: 'RDP', label: 'RDP', port: 3390, detected: true, weight: 7 },
-    ]);
-  });
-
-  it('a well-known port with no probe is a guess, marked as such', () => {
-    const chips = exposureChips([
-      { port_number: 445, state: 'open', service_name: 'microsoft-ds', service_method: 'table' },
-    ]);
-    expect(chips).toEqual([
-      { key: 'SMB', label: 'SMB', port: 445, detected: false, weight: 7 },
-    ]);
-  });
-
-  it('probed web services still show when no high-value port is open', () => {
-    const chips = exposureChips([
-      { port_number: 8443, state: 'open', service_name: 'https', service_method: 'probed' },
-      { port_number: 8080, state: 'open', service_name: 'http', service_method: 'probed' },
-    ]);
-    expect(chips.map((c) => c.label)).toEqual(['http', 'https']);
-    expect(chips.every((c) => c.detected && c.weight === 0)).toBe(true);
-  });
-
-  it('high-value services rank first, detected ahead of guessed, then other probes', () => {
-    const chips = exposureChips([
-      { port_number: 80, state: 'open', service_name: 'http', service_method: 'probed' },
-      { port_number: 22, state: 'open', service_name: 'ssh', service_method: 'table' },
-      { port_number: 3389, state: 'open', service_name: 'ms-wbt-server', service_method: 'probed' },
-      { port_number: 445, state: 'open', service_name: null, service_method: null },
-    ]);
-    expect(chips.map((c) => `${c.label}${c.detected ? '' : '?'}`)).toEqual(['RDP', 'SMB?', 'SSH?', 'http']);
-  });
-
-  it('closed ports and unprobed unknown ports produce nothing', () => {
-    expect(exposureChips([
-      { port_number: 3389, state: 'closed', service_name: 'ms-wbt-server', service_method: 'probed' },
-      { port_number: 9999, state: 'open', service_name: null, service_method: null },
-      { port_number: 9998, state: 'open', service_name: 'unknown-svc', service_method: 'table' },
-    ])).toEqual([]);
-  });
-
-  it('the same service on two ports is one chip, and a detection beats a guess', () => {
-    const chips = exposureChips([
-      { port_number: 22, state: 'open', service_name: 'ssh', service_method: 'table' },
-      { port_number: 2222, state: 'open', service_name: 'ssh', service_method: 'probed' },
-    ]);
-    expect(chips).toEqual([{ key: 'SSH', label: 'SSH', port: 2222, detected: true, weight: 5 }]);
   });
 });
 

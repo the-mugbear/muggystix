@@ -183,6 +183,22 @@ describe('Project settings', () => {
     await waitFor(() => expect(apiMock.delete).toHaveBeenCalledWith('/projects/3/members/2'));
   });
 
+  // Handed over by the components review (2026-10-23b): the page patched the
+  // roster with its own guess at what a write did.  It reads it again now, so
+  // what is shown is the server's roster.
+  it('after a removal the roster on screen is the server’s, read again', async () => {
+    confirmMock.mockResolvedValue(true);
+    apiMock.delete.mockResolvedValue({});
+    renderPage();
+    await screen.findByText('Ana');
+    const reads = () => apiMock.get.mock.calls.filter(([url]) => url === '/projects/3/members').length;
+    const before = reads();
+    apiMock.get.mockResolvedValue({ data: [members[0]] });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove ben from the project' }));
+    await waitFor(() => expect(reads()).toBe(before + 1));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove ben from the project' })).toBeNull());
+  });
+
   it('counts the name\'s characters near the API limit (v5.290.0)', async () => {
     const { container } = renderPage();
     await screen.findByText('Ana');

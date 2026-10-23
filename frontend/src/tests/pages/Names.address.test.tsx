@@ -69,7 +69,7 @@ describe('Names — the filters are the address (real router)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocked.listNames.mockResolvedValue({ items: [row], total: 250, skip: 0, limit: 100 });
-    mocked.getNamesSummary.mockResolvedValue({ total: 250, unresolved: 9, resolved: 0, in_scope: 1, wildcards: 0 });
+    mocked.getNamesSummary.mockResolvedValue({ total: 250, unresolved: 9, resolved: 0, in_scope: 1, out_of_scope: 0, wildcards: 0, shared_names: 0 });
   });
 
   it('opens on what the address says: the chip, the box and the request', async () => {

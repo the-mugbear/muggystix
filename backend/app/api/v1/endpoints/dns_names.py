@@ -53,7 +53,7 @@ from app.schemas.dns_names import (
 from app.schemas.pagination import Paginated
 from app.services import dns_name_service as svc
 from app.services.csv_utils import safe_csv_row
-from app.services.names_list_service import NameSort, NameState, SortOrder, names_query
+from app.services.names_list_service import NameSort, NameState, SortOrder, apply_name_state, names_query
 
 logger = logging.getLogger(__name__)
 
@@ -205,16 +205,17 @@ def names_summary(
 ):
     n = models.DNSName
     base = db.query(func.count(n.id)).filter(n.project_id == project.id)
-    total = base.scalar() or 0
-    resolved = base.filter(svc.resolving_exists_condition()).scalar() or 0
-    in_scope = base.filter(svc.name_in_scope_condition(project.id)).scalar() or 0
-    wildcards = base.filter(n.kind == "wildcard").scalar() or 0
-    # v2.402.0 — the same predicate as `?state=shared`, so the chip's count is
-    # exactly the rows the chip lists.
-    shared_names = base.filter(svc.shared_address_condition(project.id)).scalar() or 0
+
+    def count(state: str) -> int:
+        # Each chip's count is its list's own state filter
+        # (`apply_name_state`, the `?state=` of `GET /names/`), never
+        # arithmetic over the others (review 2026-10-23b, FEP-10).
+        return apply_name_state(base, state, project.id).scalar() or 0
+
     return NamesSummary(
-        total=total, unresolved=max(total - resolved, 0), resolved=resolved,
-        in_scope=in_scope, wildcards=wildcards, shared_names=shared_names,
+        total=count("all"), unresolved=count("unresolved"), resolved=count("resolved"),
+        in_scope=count("in_scope"), out_of_scope=count("out_of_scope"),
+        wildcards=count("wildcard"), shared_names=count("shared"),
     )
 
 

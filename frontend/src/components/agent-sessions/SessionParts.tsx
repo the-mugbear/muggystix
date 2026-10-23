@@ -22,6 +22,7 @@ import { cn } from '../../utils/cn';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
+import { plural } from '../../utils/plural';
 
 /** Where a session is started: the Operations page's "Start Agent Session"
  *  button — the param opens its dialog on arrival. */
@@ -98,8 +99,6 @@ export const AuthorityBadge: React.FC<{ role: string | null | undefined; operato
   );
 };
 
-const plural = (n: number, one: string, many: string): string =>
-  `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 /** What a session did (5.320.0; it listed the runs and plans a session
  *  opened): the host tests it proposed and the evidence records it wrote.

@@ -74,7 +74,7 @@ from app.services import dns_name_service, finding_needs, host_access_service, h
 from app.services.host_access_service import HostAccessResult
 from app.services.cert_fields import tls_summary
 from app.services.attribution_correlation import attributions_for_host
-from app.services.host_assessment_service import host_assessment
+from app.services.host_assessment_service import host_assessment, not_revalidated_port_ids
 from app.services.host_query import (
     HOST_SORT_FIELDS,
     WEAKNESS_LABELS,
@@ -779,6 +779,11 @@ class AssistHostDetail(HostDetail):
         "(null when not assessed) — a clean result from a scan that did not log in is "
         "weaker evidence; it does not change vuln_assessed."
     ))
+    not_revalidated_port_ids: List[int] = Field(default_factory=list, description=(
+        "The open ports (ids in `ports`) a later observation of the host did not re-observe — "
+        "the ports assessment.open_ports_not_in_latest_scan counts. Not revalidated, never "
+        "\"closed\": the newer scan may not have probed them."
+    ))
     weakness_flags: List[str] = Field(default_factory=list, description="The has: weakness flags this host matches (smb_unsigned, weak_tls, eol_os…).")
     weakness_labels: Dict[str, str] = Field(default_factory=dict, description="Human label per weakness flag.")
     cert_orgs: List[Dict[str, Any]] = Field(default_factory=list, description="Certificate subject organisations seen on its web services: {org, issuer, url}.")
@@ -1178,6 +1183,7 @@ def get_assist_host(
         assignees=host_detail_service.host_assignees(db, host.id),
         scope_membership=host_scope_membership(db, host),
         assessment=host_assessment(db, host),
+        not_revalidated_port_ids=not_revalidated_port_ids(host),
         weakness_flags=weakness_flags,
         weakness_labels={f: WEAKNESS_LABELS[f] for f in weakness_flags},
         **serialize_cert_facts(host_detail_service.cert_web_interfaces(db, host.id)),

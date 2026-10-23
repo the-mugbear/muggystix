@@ -13,7 +13,7 @@ from app.db import models
 from app.db.models_proposals import EvidenceRecord
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
 from app.services.evidence_service import evidence_gap_hosts
-from app.services.host_assessment_service import host_assessment
+from app.services.host_assessment_service import host_assessment, not_revalidated_port_ids
 
 
 def _host(db, project_id, ip, last_seen, ports=()):
@@ -47,6 +47,33 @@ def test_assessment_says_not_assessed_and_counts_ports_missed_by_the_latest_swee
     assert a["tests_executed"] == 0 and a["last_tested_at"] is None
     assert a["conflicts"] == 0
     assert a["open_ports_not_in_latest_scan"] == 1
+
+
+def test_the_ports_marked_not_revalidated_are_the_ports_the_count_counts(client, db_session, test_project):
+    """Review 2026-10-23b, FEP-8: the browser marked ports by its own copy of
+    the rule (falling back to `first_seen`, any state), beside the server's
+    count.  The host detail now names the ports, from the count's function."""
+    now = datetime.now(timezone.utc)
+    h = _host(db_session, test_project.id, "10.8.0.9", now, ports=[
+        (443, now), (8080, now - timedelta(days=12)), (445, now - timedelta(minutes=10)),
+    ])
+    old = now - timedelta(days=30)
+    closed = models.Port(host_id=h.id, port_number=23, protocol="tcp", state="closed")
+    closed.last_seen = old
+    never = models.Port(host_id=h.id, port_number=21, protocol="tcp", state="open")
+    never.first_seen = old           # no last_seen: not known to be older
+    db_session.add_all([closed, never])
+    db_session.commit()
+    db_session.refresh(h)
+
+    body = client.get(f"/api/v1/projects/{test_project.id}/hosts/{h.id}").json()
+    by_number = {p["port_number"]: p["id"] for p in body["ports"]}
+    assert body["not_revalidated_port_ids"] == [by_number[8080]]
+    assert len(body["not_revalidated_port_ids"]) == body["assessment"]["open_ports_not_in_latest_scan"]
+    # A host never observed has nothing to compare a port with.
+    h.last_seen = None
+    db_session.flush()
+    assert not_revalidated_port_ids(h) == []
 
 
 def test_assessment_dates_each_domain_from_its_own_evidence(db_session, test_project):

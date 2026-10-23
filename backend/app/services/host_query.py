@@ -421,6 +421,26 @@ def matched_port_condition(
     return (or_(*arms) if arms else None), by_product
 
 
+def matched_weakness_terms(
+    *, weaknesses: Optional[str] = None, checks: Optional[str] = None, q: Optional[str] = None,
+):
+    """``(flags, check_ids, every_check)`` the active conditions NAME: the
+    structured ``weaknesses=`` / ``checks=`` filters and the positive
+    weakness leaves of ``q`` (``host_query_dsl.positive_weakness_terms``).
+    The Hosts list row shows the ones it carries ("Matched SMB signing off")
+    — a host carries a named flag AND matched, however the query combines
+    them (review 2026-10-23b, FEP-5: the page read the query with a regex)."""
+    flags = {v.strip().lower() for v in (weaknesses or "").split(",") if v.strip()}
+    check_ids = {v.strip().lower() for v in (checks or "").split(",") if v.strip()}
+    every_check = False
+    if q and q.strip():
+        from app.services.host_query_dsl import parse_query, positive_weakness_terms
+        q_flags, q_checks, every_check = positive_weakness_terms(parse_query(q))
+        flags |= q_flags
+        check_ids |= q_checks
+    return flags, check_ids, every_check
+
+
 # ---------------------------------------------------------------------------
 # The big one — filter assembly for /hosts/ + /hosts/filters/data
 # ---------------------------------------------------------------------------

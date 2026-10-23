@@ -20,12 +20,13 @@ import { useProjectId } from '../hooks/useProjectId';
 import { formatApiError } from '../utils/apiErrors';
 import { isPageShortcutEvent } from '../utils/keyboard';
 import { operationsBackPath } from '../utils/operationsQueue';
+import { routeId } from '../utils/routeId';
 
 export default function HostDetail() {
   const { hostId } = useParams<{ hostId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const numericHostId = hostId ? parseInt(hostId, 10) : null;
+  const numericHostId = routeId(hostId);
   const toast = useToast();
 
   const rawNavState = location.state as {

@@ -38,6 +38,7 @@ import { queryErrorText } from '../lib/query';
 import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
 import { SESSIONS_LIST_PATH } from '../utils/agentRuns';
+import { routeId } from '../utils/routeId';
 
 /** How long the session ran (to its end, or to now while it is active).
  *  Not `utils/scanTime`'s formatDuration, which takes seconds. */
@@ -79,8 +80,9 @@ const Fact: React.FC<{ label: string; title?: string; children: React.ReactNode 
 
 const AgentSessionDetail: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
-  const id = Number(sessionId);
-  const validId = Number.isFinite(id) && id > 0;
+  const parsedId = routeId(sessionId);
+  const validId = parsedId != null;
+  const id = parsedId ?? 0;
   const projectId = useProjectId();
   const session = useQuery({
     queryKey: ['getAgentSession', projectId, id],

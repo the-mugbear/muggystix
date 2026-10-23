@@ -74,6 +74,7 @@ import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import { SOURCE_LABEL, STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
+import { routeId } from '../utils/routeId';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 // Severity is an editable attribute (not a lifecycle transition, so it isn't
@@ -91,7 +92,11 @@ export const initialStatusLine = (f: Pick<Finding, 'status' | 'created_at' | 'cr
 
 const FindingDetail: React.FC = () => {
   const { findingId } = useParams<{ findingId: string }>();
-  const id = Number(findingId);
+  // Digits only; with no id nothing is asked for (`/findings/abc` asked for
+  // `/findings/NaN`) and the page says the finding was not found.
+  const parsedId = routeId(findingId);
+  const known = parsedId != null;
+  const id = parsedId ?? 0;
   const projectId = useProjectId();
   const toast = useToast();
   const navigate = useNavigate();
@@ -136,13 +141,14 @@ const FindingDetail: React.FC = () => {
     queryKey: findingKey(projectId, id),
     queryFn: ({ signal }) => getFinding(projectId, id, signal),
     structuralSharing: keepNewerFinding,
+    enabled: known,
   });
   const finding = findingQuery.data ?? null;
   // The finding's title leads the browser tab ("Finding · <project>" was
   // every finding's).
   usePageSubject(finding?.title);
   // M2 — history is ancillary: its own query, it never gates the finding.
-  const historyQuery = useQuery({ queryKey: findingHistoryKey(projectId, id), queryFn: ({ signal }) => getFindingHistory(projectId, id, signal) });
+  const historyQuery = useQuery({ queryKey: findingHistoryKey(projectId, id), queryFn: ({ signal }) => getFindingHistory(projectId, id, signal), enabled: known });
   const history = historyQuery.data ?? [];
   const historyLoading = historyQuery.isFetching;
   const historyError = queryErrorText(historyQuery.error, 'History unavailable.');
@@ -431,9 +437,11 @@ const FindingDetail: React.FC = () => {
         <p className="mt-md text-destructive">
           {queryErrorText(findingQuery.error, 'Failed to load finding.') || 'Finding not found.'}
         </p>
-        <Button variant="outline" size="sm" className="mt-sm" onClick={() => void findingQuery.refetch()}>
-          <RefreshCw className="size-4" aria-hidden /> Retry
-        </Button>
+        {known && (
+          <Button variant="outline" size="sm" className="mt-sm" onClick={() => void findingQuery.refetch()}>
+            <RefreshCw className="size-4" aria-hidden /> Retry
+          </Button>
+        )}
       </div>
     );
   }

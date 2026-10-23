@@ -39,7 +39,7 @@ import {
   type EndpointTls, type PortEndpoint,
 } from '../../utils/portEndpoints';
 import { formatDate, formatRelativeTime } from '../../utils/relativeTime';
-import { NOT_REVALIDATED_LABEL, NOT_REVALIDATED_TITLE, portFreshness } from '../../utils/evidenceFreshness';
+import { NOT_REVALIDATED_LABEL, NOT_REVALIDATED_TITLE, ago } from '../../utils/evidenceFreshness';
 import { useToast } from '../../contexts/ToastContext';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -255,9 +255,10 @@ interface PortDetailsCardProps {
   hostId: number;
   hostIp: string | null;
   hostname?: string | null;
-  /** The host's newest observation, so a port can say whether the latest
-   *  sweep saw it (v5.224.0). */
-  hostLastSeen?: string | null;
+  /** The server's answer to "which open ports did the latest observation of
+   *  the host not re-observe" (`not_revalidated_port_ids`): the ports the
+   *  inspector's count beside them counts.  The table only words it. */
+  notRevalidatedPortIds?: number[];
   openPorts: Port[];
   closedPorts: Port[];
   filteredPorts: Port[];
@@ -303,10 +304,11 @@ export const sortPortsBy = <T extends { port_number: number | null; protocol?: s
 };
 
 const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
-  hostId, hostIp, hostname = null, hostLastSeen = null, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
+  hostId, hostIp, hostname = null, notRevalidatedPortIds, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
   vulnerabilities = [], netexecCount = 0, webPathCount = 0,
 }) => {
   const toast = useToast();
+  const notRevalidated = useMemo(() => new Set(notRevalidatedPortIds ?? []), [notRevalidatedPortIds]);
   // Ascending port number by default (UX walkthrough 2026-10-02, U14): with
   // no sort the rows came in the order the server returned them — arrival
   // order, "80, 21, 53, 139, 23" — which is no order a reader can use.
@@ -461,7 +463,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                 const helpers = target && hostIp
                   ? getConnectionHelpers(hostIp, port, hostname, { vhost: target })
                   : connectionHelpersByPort.get(port.id) ?? [];
-                const fresh = portFreshness(port, hostLastSeen);
+                const seen = ago(port.last_seen ?? port.first_seen);
                 const detection = [
                   port.service_method ? `detected by ${port.service_method}` : null,
                   port.service_conf != null && String(port.service_conf) !== ''
@@ -529,11 +531,11 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                     {/* v5.224.0 — the port's own freshness, not the host's. */}
                     <TableCell className="min-w-0">
                       <div className="truncate text-caption" title={port.last_seen ?? port.first_seen ?? undefined}>
-                        {fresh.seen ?? '—'}
+                        {seen ?? '—'}
                       </div>
                       {/* Two short words in a 12% column: they wrap, never cut
                           ("not reval…" told nobody what the warning was). */}
-                      {fresh.notRevalidated && (
+                      {notRevalidated.has(port.id) && (
                         <div className="break-words text-caption text-warning" title={NOT_REVALIDATED_TITLE}>
                           {NOT_REVALIDATED_LABEL}
                         </div>

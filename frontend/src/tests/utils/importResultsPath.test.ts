@@ -11,11 +11,10 @@ import { join, relative } from 'node:path';
 
 import { describe, it, expect } from 'vitest';
 
-import { IMPORT_RESULTS_VIEW, importResultsPath } from '../../utils/importResultsPath';
+import { importResultsPath } from '../../utils/importResultsPath';
 
 describe('importResultsPath', () => {
   it('is the history, with the filters it was given', () => {
-    expect(IMPORT_RESULTS_VIEW).toBe('results');
     expect(importResultsPath()).toBe('/scans');
     expect(importResultsPath({ status: 'needs_attention' })).toBe('/scans?status=needs_attention');
     expect(importResultsPath({ job_id: 484 })).toBe('/scans?job_id=484');

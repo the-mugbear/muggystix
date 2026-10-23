@@ -23,11 +23,8 @@ import {
 import { cn } from '../../utils/cn';
 import { hostTestCounts } from '../../utils/hostTests';
 import { reviewerName } from '../../utils/people';
-import {
-  exposureChips,
-} from '../../utils/portsOfInterest';
 import { matchedEndpoints } from '../../utils/endpointMatch';
-import { matchedWeaknesses, type WeaknessMatchCriteria } from '../../utils/weaknessMatch';
+import { matchedWeaknesses } from '../../utils/weaknessMatch';
 
 /**
  * The Hosts table's width strategy: each sized column is a share of the table
@@ -461,9 +458,6 @@ export interface UseHostColumnsOptions {
    * `version:` condition matched.
    */
   matchByProduct?: boolean;
-  /** The weakness flags / checks the conditions name (`weaknessMatchCriteria`):
-   *  the Exposure cell names the ones the row carries. */
-  weaknessMatch?: WeaknessMatchCriteria | null;
   /** Readable names for flags and checks (from the filter data). */
   weaknessLabels?: { flag?: (f: string) => string | undefined; check?: (id: string) => string | undefined };
   /** Mark hosts first seen this week "New".  Off when every row is new —
@@ -509,7 +503,6 @@ export function useHostColumns({
   onOpen,
   onAddFilter,
   matchByProduct = false,
-  weaknessMatch = null,
   weaknessLabels,
   markNew = true,
 }: UseHostColumnsOptions): ColumnDef<Host>[] {
@@ -730,9 +723,10 @@ export function useHostColumns({
           // pivot.
           const host = row.original;
           const openCount = host.ports?.filter((port) => port.state === 'open').length ?? 0;
-          const chips = exposureChips(host.ports);
+          // Ranked by the server, from its one ports-of-interest table.
+          const chips = host.exposure ?? [];
           const matched = matchedEndpoints(host.ports, host.matched_port_ids, matchByProduct);
-          const weaknesses = matchedWeaknesses(host, weaknessMatch, weaknessLabels);
+          const weaknesses = matchedWeaknesses(host, weaknessLabels);
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
               {/* Why this row is in the list: the weakness a has: / check:
@@ -940,6 +934,6 @@ export function useHostColumns({
     // return to the inspector with stale list context that didn't
     // match the current filter set, while mouse row-click (which
     // uses the live callback) worked correctly.
-    [canWrite, updatingHostId, onFollowChange, onOpen, onAddFilter, matchByProduct, weaknessMatch, weaknessLabels, markNew],
+    [canWrite, updatingHostId, onFollowChange, onOpen, onAddFilter, matchByProduct, weaknessLabels, markNew],
   );
 }

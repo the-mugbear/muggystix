@@ -50,6 +50,7 @@ import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureEmpty from '../components/posture/PostureEmpty';
+import { plural } from '../utils/plural';
 
 type Lens = 'site' | 'subnet';
 type Exposure = { active_findings: number; by_severity: Partial<Record<'critical' | 'high' | 'medium' | 'low' | 'info', number>> };
@@ -57,7 +58,6 @@ type Exposure = { active_findings: number; by_severity: Partial<Record<'critical
 const PAGE_SIZE = 50;
 /** A page of subnets as the paged list reads it (`items` = its `subnets`). */
 type SubnetPage = SubnetInsightsResponse & ListPage<SubnetInsight>;
-const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 // Render the current page of subnets as a shareable Markdown table.
 function subnetsToMarkdown(data: SubnetInsightsResponse, projectName?: string): string {

@@ -30,6 +30,7 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { InfoTip } from './ui/info-tip';
+import { plural } from '../utils/plural';
 
 type Tone = 'default' | 'destructive' | 'success' | 'info' | 'muted' | 'warning' | 'outline';
 const roleTone = (role: string): Tone =>
@@ -42,7 +43,6 @@ const TESTS_INFO = 'Host tests assigned to the person that are still to do — p
 const REVIEW_INFO = 'Hosts the person has In Review, each host once, across the projects you can see. Archived projects are left out.';
 
 const count = (n: number) => n.toLocaleString();
-const plural = (n: number, word: string) => `${count(n)} ${word}${n === 1 ? '' : 's'}`;
 
 const MemberRow: React.FC<{ m: TeamMember }> = ({ m }) => {
   const name = m.full_name || m.username;

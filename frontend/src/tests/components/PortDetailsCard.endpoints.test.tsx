@@ -41,6 +41,34 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// Review 2026-10-23b, FEP-8: the table worked "not revalidated" out itself,
+// by a rule that differed from the count beside it; it marks the ports the
+// server names now, and only those.
+describe('PortDetailsCard — not revalidated', () => {
+  it('marks exactly the ports the server names, whatever their dates say', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    const old = { ...https, last_seen: iso(-30) } as Port;
+    const recent = { ...alt, last_seen: iso(-60) } as Port;
+    render(
+      <TooltipProvider>
+        <PortDetailsCard
+          hostId={1}
+          hostIp="10.0.0.5"
+          notRevalidatedPortIds={[old.id]}
+          openPorts={[old, recent]}
+          closedPorts={[]}
+          filteredPorts={[]}
+          connectionHelpersByPort={new Map()}
+        />
+      </TooltipProvider>,
+    );
+    const marks = await screen.findAllByText('not revalidated');
+    expect(marks).toHaveLength(1);
+    expect(marks[0].closest('tr')).toHaveTextContent('443/tcp');
+    expect(marks[0].closest('tr')).not.toHaveTextContent('8443');
+  });
+});
+
 describe('PortDetailsCard — named endpoints', () => {
   it('a shared-hosting port rolls up counts and keeps each website\'s TLS evidence separate', async () => {
     api.getHostWebInterfaces.mockResolvedValue([

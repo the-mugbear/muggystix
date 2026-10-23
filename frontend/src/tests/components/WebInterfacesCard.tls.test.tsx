@@ -23,7 +23,7 @@ const base = {
 const renderRow = (row: object) =>
   render(
     <MemoryRouter><TooltipProvider>
-      <WebInterfacesCard hostId={1} count={1} rows={[row] as never} embedded />
+      <WebInterfacesCard rows={[row] as never} />
     </TooltipProvider></MemoryRouter>,
   );
 

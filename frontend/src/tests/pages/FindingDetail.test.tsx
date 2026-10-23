@@ -89,6 +89,16 @@ beforeEach(() => {
   mocked.setFindingStatus.mockImplementation(async (_p: number, _id: number, status: string) => finding({ status }));
 });
 
+// Review 2026-10-23b, FEP-11: `/findings/abc` asked for `/findings/NaN`.
+describe('FindingDetail — an address that names no finding', () => {
+  it('asks for nothing and says the finding was not found', async () => {
+    renderAt('/findings/abc');
+    expect(await screen.findByText('Finding not found.')).toBeInTheDocument();
+    expect(mocked.getFinding).not.toHaveBeenCalled();
+    expect(mocked.getFindingHistory).not.toHaveBeenCalled();
+  });
+});
+
 describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
   it('a status change does not unmount the comment thread', async () => {
     const user = userEvent.setup();

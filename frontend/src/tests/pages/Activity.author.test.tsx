@@ -73,6 +73,19 @@ describe('Collaboration — author filter in the URL', () => {
     expect(getNoteActivity.mock.calls[0][1]).not.toHaveProperty('author_id');
   });
 
+  // Review 2026-10-23b, FEP-7: the search was component state, so Back from a
+  // note restored the author but dropped the search.
+  it('the search is read from the address, beside the author', async () => {
+    renderAt('/activity?author=2&search=smb');
+    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(
+      91, expect.objectContaining({ author_id: 2, search: 'smb' }), expect.any(AbortSignal),
+    ));
+    await waitFor(() => expect(getFindingDiscussions).toHaveBeenCalledWith(
+      91, expect.objectContaining({ search: 'smb' }), expect.anything(),
+    ));
+    expect(screen.getByRole('searchbox', { name: 'Search discussions' })).toHaveValue('smb');
+  });
+
   it('ignores a value that is neither "me" nor an id', async () => {
     renderAt('/activity?author=%27%3B--');
     await waitFor(() => expect(getNoteActivity).toHaveBeenCalled());

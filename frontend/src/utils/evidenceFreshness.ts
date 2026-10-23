@@ -8,8 +8,6 @@
 import type { HostAssessment, Port } from '../services/api';
 import { formatRelativeTime } from './relativeTime';
 
-const SAME_SWEEP_MS = 60 * 60 * 1000;
-
 const ts = (iso: string | null | undefined): number => {
   if (!iso) return 0;
   const t = new Date(iso).getTime();
@@ -19,33 +17,17 @@ const ts = (iso: string | null | undefined): number => {
 export const ago = (iso: string | null | undefined): string | null =>
   formatRelativeTime(iso, { fallback: null });
 
-export interface PortFreshness {
-  /** "3d ago" for the port's own last observation, or null when unknown. */
-  seen: string | null;
-  /** True when the host was observed more recently than this port, so "open"
-   *  is older than the host's date suggests.  This is inferred from two
-   *  timestamps and proves nothing about the port: the newer observation may
-   *  be a DNS import, a web probe of another port, an SMB run — none of which
-   *  looked here.  Say "not revalidated", never "closed" or "not seen". */
-  notRevalidated: boolean;
-}
-
+/** The words beside a port the SERVER names in `not_revalidated_port_ids`
+ *  (`host_assessment_service.not_revalidated_port_ids`, the rule behind the
+ *  "Open ports not in latest scan" count; the browser keeps no copy of it —
+ *  review 2026-10-23b, FEP-8).  Inferred from two timestamps, it proves
+ *  nothing about the port: the newer observation may be a DNS import, a web
+ *  probe of another port, an SMB run — none of which looked here.  Say "not
+ *  revalidated", never "closed" or "not seen". */
 export const NOT_REVALIDATED_LABEL = 'not revalidated';
 export const NOT_REVALIDATED_TITLE =
   'Newer evidence exists for this host, but none of it re-observed this port. '
   + 'That does not mean the port was checked and found closed — the newer scan may not have probed it.';
-
-export const portFreshness = (
-  port: { last_seen?: string | null; first_seen?: string | null },
-  hostLastSeen: string | null | undefined,
-): PortFreshness => {
-  const portSeen = ts(port.last_seen ?? port.first_seen);
-  const hostSeen = ts(hostLastSeen);
-  return {
-    seen: ago(port.last_seen ?? port.first_seen),
-    notRevalidated: portSeen > 0 && hostSeen > 0 && portSeen < hostSeen - SAME_SWEEP_MS,
-  };
-};
 
 export interface FreshnessFact {
   key: string;

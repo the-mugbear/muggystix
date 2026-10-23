@@ -38,6 +38,7 @@ import {
 import { readTerrainTokens, terrainPalette, type TerrainPalette } from '../../utils/terrainPalette';
 import { cn } from '../../utils/cn';
 import type { TerrainSceneHandle } from './TerrainScene';
+import { plural } from '../../utils/plural';
 
 const TerrainScene = lazy(() => import('./TerrainScene'));
 
@@ -100,7 +101,6 @@ const writeOpen = (open: boolean): void => {
 };
 
 const n = (v: number) => v.toLocaleString();
-const plural = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
 const Swatch: React.FC<{ colour: string; shape?: 'square' | 'diamond' }> = ({ colour, shape = 'square' }) => (
   <span
