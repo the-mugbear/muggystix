@@ -175,3 +175,35 @@ def test_reprocess_makes_a_new_queued_job_over_a_copy(client, db_session, test_p
     ).status_code == 422
     Path(src.storage_path).unlink()
     assert client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/reprocess", json={}).status_code == 409
+
+
+def test_a_failed_reprocess_can_be_started_again(client, db_session, test_project):
+    """review 2026-10-23b, ING-4: the re-process bypassed the duplicate guard
+    only on its first run; a start or retry after it failed found the
+    original's scan and answered 409 duplicate_scan."""
+    job_id = _upload(client, test_project, NMAP_XML, "a.xml", stage=True).json()["job_id"]
+    src = _finish(db_session, job_id)
+    db_session.add(models.Scan(
+        filename="a.xml", scan_type="port_scan", tool_name="nmap",
+        project_id=test_project.id, content_sha256=src.content_sha256,
+    ))
+    db_session.commit()
+
+    r = client.post(
+        f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/reprocess",
+        json={"format_override": "masscan_xml"},
+    )
+    assert r.status_code == 200, r.text
+    new_id = r.json()["id"]
+    assert db_session.get(models.IngestionJob, new_id).options["allow_duplicate"] is True
+    _finish(db_session, new_id, "failed")
+
+    r = client.post(
+        f"/api/v1/projects/{test_project.id}/upload/jobs/{new_id}/start",
+        json={"format_override": "nmap_xml"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "queued"
+    _finish(db_session, new_id, "failed")
+    r = client.post(f"/api/v1/projects/{test_project.id}/upload/jobs/{new_id}/retry")
+    assert r.status_code == 200, r.text
