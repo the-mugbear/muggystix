@@ -452,10 +452,12 @@ export default function Scans() {
   const historyStatusCounts = showBatchFiles ? flatViewCounts.data?.status_counts ?? null : statusCounts;
   // The queue strip's one line about failures (owner decision 2026-10-22: a
   // failed upload is a row of the history, not of the queue): the history's
-  // own Failed count under its filters, opening that exact list — the address
-  // the Failed chip writes.
-  const queueFailed = address.readsUploads && historyStatusCounts?.failed != null
-    ? { count: historyStatusCounts.failed, href: address.statusHref('failed') }
+  // own Needs-attention count under its filters — failed or partial, not
+  // dismissed, not superseded; the one "imports needing someone" — opening
+  // that exact list, the address its chip writes.  Not Failed: that count
+  // includes uploads someone already dismissed, which need no review.
+  const queueFailed = address.readsUploads && historyStatusCounts?.needs_attention != null
+    ? { count: historyStatusCounts.needs_attention, href: address.statusHref('needs_attention') }
     : null;
 
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);

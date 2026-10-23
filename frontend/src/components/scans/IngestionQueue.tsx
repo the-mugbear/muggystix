@@ -144,9 +144,9 @@ export function useIngestionQueue(projectId: number): IngestionQueueState {
 interface IngestionQueueProps {
   projectId: number;
   queue: IngestionQueueState;
-  /** The import history's Failed count under its current filters
-   *  (`status_counts.failed`), and the address of that exact list — the one
-   *  the history's own Failed chip writes.  Null below analyst, or while not
+  /** The import history's Needs-attention count under its current filters
+   *  (`status_counts.needs_attention`), and the address of that exact list —
+   *  the one the history's own chip writes.  Null below analyst, or while not
    *  known: then the strip says nothing about failures. */
   failed: { count: number; href: string } | null;
   canWrite: boolean;
@@ -295,12 +295,13 @@ export const IngestionQueue: React.FC<IngestionQueueProps> = ({
                   )}
                 </div>
                 {/* Failed uploads are rows of the import history, with their
-                    actions; the strip says how many — the history's own
-                    Failed count under its filters — and opens that list. */}
+                    actions; the strip says how many need someone — the
+                    history's own Needs-attention count under its filters —
+                    and opens that list. */}
                 {failed && failedCount > 0 && (
                   <p className="text-metadata" data-testid="queue-failed-line">
                     <Link to={failed.href} className="text-destructive underline-offset-2 hover:underline">
-                      {failedCount.toLocaleString()} upload{failedCount === 1 ? '' : 's'} failed — review {failedCount === 1 ? 'it' : 'them'} below
+                      {failedCount.toLocaleString()} import{failedCount === 1 ? ' needs' : 's need'} attention — review {failedCount === 1 ? 'it' : 'them'} below
                     </Link>
                   </p>
                 )}

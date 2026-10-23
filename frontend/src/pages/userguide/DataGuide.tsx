@@ -79,8 +79,8 @@ const sections: GuideSection[] = [
           parser did not read, <em>Dismiss</em> and, while the file is retained — 7 days by
           default — <em>Review the format and retry</em>. The <strong>ingestion queue</strong> above the
           history lists only uploads still on their way (queued, being imported, or waiting for a format
-          review); when uploads have failed it says how many in one line that opens the history&rsquo;s
-          <em> Failed</em> filter.
+          review); when imports need someone it says how many in one line that opens the history&rsquo;s
+          <em> Needs attention</em> filter.
         </Para>
       </div>
     ),

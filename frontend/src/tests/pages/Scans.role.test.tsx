@@ -112,7 +112,7 @@ describe('Scans — a project viewer reads the import history', () => {
     expect(screen.getByRole('button', { name: /Upload scans/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Cancel ingestion for waiting.xml/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Discard staged upload staged.xml/ })).toBeInTheDocument();
-    expect(await screen.findByTestId('queue-failed-line')).toHaveTextContent('1 upload failed — review it below');
+    expect(await screen.findByTestId('queue-failed-line')).toHaveTextContent('2 imports need attention — review them below');
     expect(screen.queryByRole('button', { name: /Retry failed ingestion/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Dismiss failed ingestion/ })).toBeNull();
   });

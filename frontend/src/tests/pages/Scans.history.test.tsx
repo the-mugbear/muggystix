@@ -338,7 +338,9 @@ describe('Scans — layout', () => {
   // the history's own Failed count under its filters, opening that list.
   // (Local Network, 2026-09-24: the strip once said "1 failed" from its 25
   // most recent jobs beside a lead saying 4 needed attention.)
-  it('lists no failed upload; one line gives the history\'s Failed count and opens that list', async () => {
+  // The line counts what needs someone (Needs attention: not dismissed, not
+  // superseded) — the Failed figure also counts uploads already dismissed.
+  it('lists no failed upload; one line gives the history\'s Needs-attention count and opens that list', async () => {
     api.getScansSummary.mockResolvedValue({
       total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
       imports_need_attention: 4, imports_not_imported: 0,
@@ -355,11 +357,11 @@ describe('Scans — layout', () => {
     renderPage('/scans?search=dmz');
     const queue = await screen.findByTestId('ingestion-queue');
     const line = await within(queue).findByTestId('queue-failed-line');
-    expect(line).toHaveTextContent('3 uploads failed — review them below');
-    // The address the history's own Failed chip writes: the other filters kept.
-    expect(within(line).getByRole('link')).toHaveAttribute('href', '/scans?search=dmz&status=failed');
-    // The strip's header gives no failure figure of its own.
-    expect(queue).not.toHaveTextContent(/needs? attention/);
+    expect(line).toHaveTextContent('4 imports need attention — review them below');
+    // The address the history's own chip writes: the other filters kept.
+    expect(within(line).getByRole('link')).toHaveAttribute('href', '/scans?search=dmz&status=needs_attention');
+    // The strip gives no failure figure but that line.
+    expect(queue.textContent?.match(/needs? attention/g)).toHaveLength(1);
     // Only what is moving is a row; the failed upload is not.
     fireEvent.click(within(queue).getByRole('button', { name: /show 1 recent job/i }));
     expect(within(queue).getByText('waiting.xml')).toBeInTheDocument();
