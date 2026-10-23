@@ -202,7 +202,7 @@ const sections: GuideSection[] = [
         </UnorderedList>
         <Subhead>Tool-ready lists and the inventory download (Hosts page)</Subhead>
         <UnorderedList>
-          <li><strong>Export targets</strong> — the filtered host/port list formatted for Nmap, Masscan, or custom scripts. Honours the full active filter + query.</li>
+          <li><strong>Export targets</strong> — the filtered host/port list formatted for Nmap, Masscan, or custom scripts. Honours the full active filter + query. A query or the search box chooses <em>hosts</em>: every open port of those hosts is listed, and only the Ports filter lists some ports — the dialog says so when it applies.</li>
           <li><strong>Download inventory</strong> — the filtered hosts as a file, every matching host in either: <em>CSV</em> (one row per host; downloads at once) or <em>JSON</em> (everything recorded per host — ports, scanner observations, findings, tests, notes — then the project&rsquo;s findings and roll-ups; prepared in the background, and you are notified when it is ready). It is not the client report, which is on the Reports page.</li>
           <li><strong>Scope and Names exports</strong> — the scope's declared networks and domains from the Scope page, as a scope file its upload reads back; names from the Names page. A list of hosts (in scope, out of scope, any filter) is the Hosts page's <em>Export targets</em>.</li>
         </UnorderedList>
