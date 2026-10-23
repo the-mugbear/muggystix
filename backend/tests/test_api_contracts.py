@@ -262,25 +262,12 @@ class TestExportEndpoints:
 
 class TestAuditEndpoints:
 
-    def test_create_audit_log(self, client):
-        # Client self-reported audit events are restricted to an allowlist of
-        # non-privileged UI telemetry (code-review R7); use one of those.
-        response = client.post(
-            "/api/v1/audit/log",
-            json={"action": "client_error", "resource_type": "test"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert "message" in data
-
-    def test_create_audit_log_rejects_privileged_action(self, client):
-        """R7 hardening: a client may not inject an arbitrary/privileged action
-        name into the admin-facing audit trail."""
-        response = client.post(
-            "/api/v1/audit/log",
-            json={"action": "login_success", "resource_type": "test"},
-        )
-        assert response.status_code == 400
+    def test_a_client_cannot_write_an_audit_row(self, client):
+        # R7 narrowed client self-reports to an allowlist; the route is gone
+        # since 2026-10-23 (no caller), so a client writes none at all.
+        for action in ("client_error", "login_success"):
+            response = client.post("/api/v1/audit/log", json={"action": action})
+            assert response.status_code in (404, 405)
 
     def test_get_audit_logs_paginated(self, client):
         response = client.get("/api/v1/audit/logs")

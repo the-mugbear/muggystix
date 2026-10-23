@@ -94,7 +94,7 @@ X-API-Key: nm_agent_<plaintext>
 │   └── /auth/2fa/*           # TOTP setup/enable/disable + recovery codes
 ├── /users                    # admin CRUD
 │   └── /users/directory      # minimal picker — open to any authenticated user
-├── /audit                    # admin: audit log browsing (newest first, ties by id); POST /audit/log: a client's own logout / session_expired / client_error (details ≤ 4 KB, stored under `client`)
+├── /audit                    # admin: audit log browsing (newest first, ties by id); every row is the server's own — there is no route for a client to write one (`POST /audit/log` removed 2026-10-23)
 ├── /system/queue-metrics     # admin: durable job-queue operational metrics
 ├── /projects                 # project list, create, update, delete
 │   ├── /{id}/members         # project membership (admin or project-admin)

@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import disable_statement_timeout, get_db
 from app.db.models import Site
-from app.db.models_project import Project, ProjectMembership, ProjectRole
+from app.db.models_project import PROJECT_STATUSES, Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User, UserRole
 from app.api.deps import (
     get_client_info,
@@ -96,7 +96,7 @@ class ProjectIngestSettingsUpdate(BaseModel):
     )
 
 
-_VALID_STATUSES = ("active", "completed", "archived")
+_VALID_STATUSES = PROJECT_STATUSES
 
 
 class ProjectResponse(BaseModel):

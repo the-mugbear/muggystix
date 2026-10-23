@@ -56,7 +56,7 @@ from app.services.cert_fields import (
     cert_issue_from_columns,
 )
 from app.services.os_eol import match_eol_os
-from app.services.ports_of_interest import ports_by_number
+from app.services.ports_of_interest import port_of_interest, port_of_interest_condition, ports_by_number
 from app.services.subnet_calculator import SubnetCalculator
 
 # Usernames netexec reports for an unauthenticated / guest / null session.
@@ -446,26 +446,25 @@ def compute_subnet_insights(
     weak_auth_hosts = hosts_by_subnet(weak_auth_condition())
 
     # --- Hygiene: risky exposed services (ports of interest) --------------
+    # The Hosts list's Exposure chips' rule (`port_of_interest`): a probed
+    # service name wherever it runs, else the port's number. A row of the
+    # breakdown is a port OF INTEREST (RDP), whatever port it was found on.
     poi_map = ports_by_number()
-    poi_numbers = list(poi_map.keys())
     risky_hosts: Dict[int, set] = defaultdict(set)
     risky_ports: Dict[int, Dict[int, set]] = defaultdict(lambda: defaultdict(set))
-    if poi_numbers:
-        for host_id, port_number in (
-            db.query(models.Port.host_id, models.Port.port_number)
-            .join(models.Host, models.Port.host_id == models.Host.id)
-            .filter(
-                models.Host.project_id == project_id,
-                models.Port.state == "open",
-                models.Port.port_number.in_(poi_numbers),
-            )
-            .all()
-        ):
-            sid = host_to_subnet.get(host_id)
-            if sid is None:
-                continue
-            risky_hosts[sid].add(host_id)
-            risky_ports[sid][port_number].add(host_id)
+    for row in (
+        db.query(models.Port.host_id, models.Port.port_number, models.Port.state,
+                 models.Port.service_name, models.Port.service_method)
+        .join(models.Host, models.Port.host_id == models.Host.id)
+        .filter(models.Host.project_id == project_id, port_of_interest_condition())
+        .all()
+    ):
+        sid = host_to_subnet.get(row.host_id)
+        poi = port_of_interest(row)
+        if sid is None or poi is None:
+            continue
+        risky_hosts[sid].add(row.host_id)
+        risky_ports[sid][poi.port].add(row.host_id)
 
     # --- Site tiers -------------------------------------------------------
     sites_by_id = {s.id: s for s in db.query(Site).filter(Site.project_id == project_id).all()}

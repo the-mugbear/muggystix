@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import FollowStatus, HostFollow
 from app.db.models_auth import User
-from app.db.models_project import Project
+from app.db.models_project import PROJECT_STATUSES, Project
 from app.db.session import get_db
 from app.services.engagement_metrics_service import (
     REMEDIATION_STATES, SEVERITIES, SeverityCounts, StateCounts, Window, growth_series,
@@ -38,7 +38,7 @@ from app.services.engagement_metrics_service import (
     remediation_counts, tester_rows,
 )
 from app.services import remediation_policy
-from app.services.project_signals_service import IN_PROGRESS_STATUSES, project_signals
+from app.services.project_signals_service import project_signals
 
 router = APIRouter()
 
@@ -384,9 +384,15 @@ def get_oversight_dashboard(
         wanted = set(project_id)
         cohort = [p for p in cohort if p.id in wanted]
     if status:
-        # 'in_progress' is the old name for 'active' (a saved link may carry it).
-        wanted_status = {"active" if s == "in_progress" else s for s in status}
-        cohort = [p for p in cohort if p.status in wanted_status]
+        # A status no project can hold is refused, naming it — never an empty
+        # cohort (the retired `in_progress` included; owner, 2026-10-23).
+        unknown = sorted(set(status) - set(PROJECT_STATUSES))
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown project status {', '.join(unknown)}; use {', '.join(PROJECT_STATUSES)}.",
+            )
+        cohort = [p for p in cohort if p.status in set(status)]
     if window_overlap and (window.start or window.end):
         cohort = [p for p in cohort if _overlaps(p, window)]
     if tester_id is not None:
@@ -470,7 +476,7 @@ def get_oversight_dashboard(
 
     summary = OversightSummary(
         projects_total=len(cohort),
-        projects_in_progress=sum(1 for p in cohort if p.status in IN_PROGRESS_STATUSES),
+        projects_in_progress=sum(1 for p in cohort if p.status == "active"),
         projects_complete=sum(1 for p in cohort if p.status in COMPLETE_STATUSES),
         targets_current=tot["current"], targets_through_end=tot["through_end"],
         targets_added=tot["added"], targets_tested=tot["tested"],

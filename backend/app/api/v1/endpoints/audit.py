@@ -1,51 +1,23 @@
 """
-Audit Logging API Endpoints
+Audit Log API Endpoints
 
-Endpoints for audit trail logging and retrieval.
+The admins' reads of the audit trail.
 """
 
-import json
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, Depends, Request, Query, HTTPException, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel
 
 from app.db.session import get_db
 from app.db.models_auth import User, UserRole
-from app.api.deps import get_client_info, get_current_user, require_role
-from app.core.security import log_audit_event
+from app.api.deps import get_current_user, require_role
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # --- Schemas ---
-
-#: The most a client-reported event's ``details`` may hold, serialized.  Audit
-#: rows are kept for ever by default (``AUDIT_LOG_RETENTION_DAYS=0``) and any
-#: signed-in member may report one.
-CLIENT_DETAILS_MAX_BYTES = 4096
-
-
-class AuditLogRequest(BaseModel):
-    action: str
-    # The columns' own widths: longer text was a 500 from the database.
-    resource_type: Optional[str] = Field(None, max_length=50)
-    resource_id: Optional[str] = Field(None, max_length=50)
-    details: Optional[Dict[str, Any]] = None
-
-    @field_validator("details")
-    @classmethod
-    def _bounded(cls, value):
-        if value is not None and len(json.dumps(value, default=str).encode()) > CLIENT_DETAILS_MAX_BYTES:
-            raise ValueError(f"details may hold at most {CLIENT_DETAILS_MAX_BYTES} bytes")
-        return value
-
-
-class AuditLogResponse(BaseModel):
-    message: str
-    audit_id: Optional[int] = None
-
 
 class AuditLogEntry(BaseModel):
     id: int
@@ -94,10 +66,6 @@ class AuditStatsResponse(BaseModel):
     top_users: List[UserCount]
 
 
-_AUTH_RESPONSES = {
-    401: {"description": "Not authenticated"},
-}
-
 _ADMIN_RESPONSES = {
     401: {"description": "Not authenticated"},
     403: {"description": "Insufficient permissions — admin role required"},
@@ -114,72 +82,11 @@ def _user_names(db: Session, user_ids) -> Dict[int, tuple]:
     return {uid: (username, full_name) for uid, username, full_name in rows}
 
 
-# Actions a client is permitted to self-report via /audit/log.  Deliberately
-# narrow + non-privileged: the authoritative security events (login_success,
-# password_changed, user_*, role_*, …) are written backend-side at the
-# operation boundary and must never originate from a client.  login_success was
-# removed from the frontend (R7); these remain as plausible UI telemetry.
-_CLIENT_ALLOWED_ACTIONS = {
-    "logout",
-    "session_expired",
-    "client_error",
-}
-
-
-@router.post(
-    "/log",
-    response_model=AuditLogResponse,
-    responses=_AUTH_RESPONSES,
-    summary="Create audit log entry",
-)
-def create_audit_log(
-    audit_data: AuditLogRequest,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Create an audit log entry for the current user's action.
-
-    Client-submitted: an authenticated client could previously inject ANY
-    ``action`` string into the admin-facing audit trail (code-review R7).  We
-    now (a) restrict client events to an allowlist of genuinely client-side
-    telemetry — privileged/backend action names are rejected — and (b) stamp
-    ``source=client`` so admins can distinguish trusted backend events (written
-    at the operation boundary) from client-reported ones.
-    """
-    if audit_data.action not in _CLIENT_ALLOWED_ACTIONS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This action is not permitted for client-submitted audit events.",
-        )
-    client_info = get_client_info(request)
-
-    # No inner try/except — the global handler in main.py:359-382 logs
-    # the traceback and returns the standard ``{"detail": "Internal
-    # server error", "error_class": ...}`` shape.  The old wrapper
-    # leaked raw exception text into the response body (ORM/driver
-    # internals), which both contradicted the global handler's
-    # sanitisation and made the failure harder to diagnose because
-    # ``str(e)`` rarely matches the logged traceback.
-    audit_id = log_audit_event(
-        db=db,
-        user_id=current_user.id,
-        action=audit_data.action,
-        resource_type=audit_data.resource_type,
-        resource_id=audit_data.resource_id,
-        # Mark the row as client-reported so it's never mistaken for a
-        # backend-authoritative event during audit review.  The client's own
-        # keys stay under ``client``: at the top level a ``username`` was
-        # copied into the typed ``audit_logs.username`` the sign-in limiter
-        # reads (``models_auth``'s ``before_insert`` listener).
-        details={"source": "client", "client": audit_data.details or {}},
-        **client_info
-    )
-
-    return AuditLogResponse(
-        message="Audit log created successfully",
-        audit_id=audit_id
-    )
+# Every audit row is written by the server, at the operation it records
+# (`security.log_audit_event`). There is no route for a client to add one:
+# `POST /audit/log` let any member write rows into the admins' trail and had
+# no caller since 5.247.0 (owner, 2026-10-23: removed). Rows it stored keep
+# `details.source = "client"`.
 
 
 @router.get(

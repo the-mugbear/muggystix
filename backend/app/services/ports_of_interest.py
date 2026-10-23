@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 
 @dataclass(frozen=True)
@@ -166,8 +166,8 @@ CHIP_LABELS: Dict[int, str] = {
 
 #: nmap service names that identify a port of interest WHEREVER it was found
 #: (lower-cased ``Port.service_name`` as nmap's probe engine reports it), so
-#: RDP probed on 3390 still reads "RDP".  Used only for the chips: the subnet
-#: and Operations risky-service counts go by port number (``ports_by_number``).
+#: RDP probed on 3390 still reads "RDP" — on the chips and in every
+#: risky-service count (``port_of_interest``, owner 2026-10-23).
 SERVICE_NAMES: Dict[str, int] = {
     "telnet": 23,
     "microsoft-ds": 445, "netbios-ssn": 445, "smb": 445,
@@ -186,6 +186,46 @@ SERVICE_NAMES: Dict[str, int] = {
 }
 
 
+def port_of_interest(port: Any) -> Optional[PortOfInterest]:
+    """The port of interest an OPEN port exposes, or None — the ONE rule
+    behind the Hosts list's Exposure chips, the subnet insight's risky
+    exposed services and the Operations queue's high-value ports (owner,
+    2026-10-23: "one rule everywhere").
+
+    A PROBED service name decides: a port-of-interest name gives that port of
+    interest wherever it runs (RDP on 3390), any other probed name gives none
+    (ssh probed on 3389 is not RDP).  Otherwise — no name, or nmap's table
+    guess — the port's number decides.  ``port_of_interest_condition`` is
+    its SQL form, pinned to it row by row."""
+    if port.state != "open":
+        return None
+    by_number = ports_by_number()
+    name = (port.service_name or "").strip().lower()
+    if port.service_method == "probed" and name:
+        return by_number.get(SERVICE_NAMES.get(name, -1))
+    return by_number.get(port.port_number)
+
+
+def port_of_interest_condition():
+    """``port_of_interest(port) is not None`` as a condition on ``Port`` —
+    for the reads that count or rank in SQL."""
+    from sqlalchemy import and_, func, not_, or_
+
+    from app.db import models
+
+    by_number = ports_by_number()
+    name = func.lower(func.trim(func.coalesce(models.Port.service_name, "")))
+    probed_named = and_(func.coalesce(models.Port.service_method, "") == "probed", name != "")
+    poi_names = sorted(n for n, number in SERVICE_NAMES.items() if number in by_number)
+    return and_(
+        models.Port.state == "open",
+        or_(
+            and_(probed_named, name.in_(poi_names)),
+            and_(not_(probed_named), models.Port.port_number.in_(sorted(by_number))),
+        ),
+    )
+
+
 def exposure_chips(ports: Iterable[Any]) -> List[Dict[str, Any]]:
     """A host's Exposure chips, ranked: ``[{key, label, port, detected,
     weight}]`` over its OPEN ports.
@@ -198,25 +238,19 @@ def exposure_chips(ports: Iterable[Any]) -> List[Dict[str, Any]]:
     number.  The same service on two ports is one chip, and a detection beats
     a guess.  Highest weight first, detected ahead of guessed, then by label.
     """
-    by_number = ports_by_number()
     by_key: Dict[str, Dict[str, Any]] = {}
     for p in ports:
         if p.state != "open":
             continue
-        probed = p.service_method == "probed"
         name = (p.service_name or "").strip().lower()
-        from_name = by_number.get(SERVICE_NAMES.get(name, -1)) if name else None
-        from_port = by_number.get(p.port_number)
-        chip = None
-        if probed and from_name is not None:
-            label = CHIP_LABELS[from_name.port]
-            chip = {"key": label, "label": label, "port": p.port_number, "detected": True, "weight": from_name.weight}
-        elif probed and name:
+        probed_named = p.service_method == "probed" and bool(name)
+        poi = port_of_interest(p)
+        if poi is not None:
+            label = CHIP_LABELS[poi.port]
+            chip = {"key": label, "label": label, "port": p.port_number, "detected": probed_named, "weight": poi.weight}
+        elif probed_named:
             chip = {"key": name, "label": name, "port": p.port_number, "detected": True, "weight": 0}
-        elif from_port is not None:
-            label = CHIP_LABELS[from_port.port]
-            chip = {"key": label, "label": label, "port": p.port_number, "detected": False, "weight": from_port.weight}
-        if chip is None:
+        else:
             continue
         existing = by_key.get(chip["key"])
         if existing is None or (chip["detected"] and not existing["detected"]):

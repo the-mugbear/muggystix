@@ -426,28 +426,23 @@ def test_site_counts_are_the_projects_own(client, db_session, test_project):
 
 # ---------------------------------------------------------------------- PLT-6
 
-def test_the_audit_log_reads_the_one_client_address():
+def test_the_audit_log_keeps_no_copy_of_the_client_address_reader():
     from app.api.v1.endpoints import audit
 
-    assert audit.get_client_info is deps.get_client_info
+    assert "def get_client_info" not in inspect.getsource(audit)
 
 
 # ---------------------------------------------------------------------- PLT-7
 
-def test_a_client_reported_event_is_bounded_and_kept_apart(client, db_session):
-    too_big = client.post("/api/v1/audit/log", json={"action": "client_error", "details": {"x": "y" * 5000}})
-    assert too_big.status_code == 422                                     # was 200
-    long_id = client.post("/api/v1/audit/log", json={"action": "client_error", "resource_id": "r" * 51})
-    assert long_id.status_code == 422                                     # was a 500 from the column
+def test_no_route_lets_a_client_write_an_audit_row(client):
+    """Owner, 2026-10-23: ``POST /audit/log`` is removed — it had no caller
+    since 5.247.0 and let any member write rows into the admins' trail (the
+    review had first bounded it). Every audit row is the server's own."""
+    from app.main import app
 
-    tag = uuid.uuid4().hex
-    r = client.post("/api/v1/audit/log", json={
-        "action": "client_error", "details": {"username": f"victim-{tag}", "where": "page"},
-    })
-    assert r.status_code == 200, r.text
-    row = db_session.get(AuditLog, r.json()["audit_id"])
-    assert row.username is None                                           # was "victim-…"
-    assert row.details == {"source": "client", "client": {"username": f"victim-{tag}", "where": "page"}}
+    assert "/api/v1/audit/log" not in app.openapi()["paths"]
+    r = client.post("/api/v1/audit/log", json={"action": "client_error"})
+    assert r.status_code in (404, 405), r.text
 
 
 # ---------------------------------------------------------------------- PLT-8

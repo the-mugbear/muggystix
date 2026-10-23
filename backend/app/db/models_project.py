@@ -18,6 +18,9 @@ from app.db.session import Base
 
 #: The ``projects.status`` value that archives a project.
 PROJECT_ARCHIVED = "archived"
+#: Every ``projects.status`` value — the ONE list (``ck_projects_status`` is
+#: built from it; the project routes and Oversight's filter check against it).
+PROJECT_STATUSES = ("active", "completed", PROJECT_ARCHIVED)
 
 
 class ProjectRole(str, Enum):
@@ -44,8 +47,7 @@ class Project(Base):
     name = Column(String(100), unique=True, nullable=False, index=True)
     slug = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(Text)
-    # active, completed, archived (``projects._VALID_STATUSES``;
-    # ``ck_projects_status``).  ``archived`` is the ONE fact that a project is
+    # One of ``PROJECT_STATUSES`` (``ck_projects_status``).  ``archived`` is the ONE fact that a project is
     # archived — see ``is_archived`` below.
     status = Column(String(20), nullable=False, default="active")
     is_default = Column(Boolean, default=False)
@@ -72,7 +74,10 @@ class Project(Base):
     # Revision ``47e5e79b90a9``: ``status`` takes the three values and nothing
     # else (``in_progress`` was merged into ``active`` by ``d9f1b3c5e7a2``).
     __table_args__ = (
-        CheckConstraint("status IN ('active', 'completed', 'archived')", name="ck_projects_status"),
+        CheckConstraint(
+            "status IN (" + ", ".join(f"'{s}'" for s in PROJECT_STATUSES) + ")",
+            name="ck_projects_status",
+        ),
     )
 
     @hybrid_property

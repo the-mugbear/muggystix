@@ -26,9 +26,6 @@ from app.db.models_host_tests import ACTIVE_TEST_STATUSES, HostTest
 from app.db.models_project import Project, ProjectMembership
 
 QUIET_AFTER_DAYS = 14
-# v2.399.0 — one status for a project under way ('in_progress' was merged
-# into 'active' by migration d9f1b3c5e7a2).
-IN_PROGRESS_STATUSES = ("active",)
 
 
 @dataclass
@@ -113,7 +110,7 @@ def project_signals(
             last = s.last_scan_at.replace(tzinfo=None) if s.last_scan_at.tzinfo else s.last_scan_at
             s.days_since_last_scan = (now_naive - last).days
             s.is_quiet = (
-                p.status in IN_PROGRESS_STATUSES
+                p.status == "active"
                 and s.days_since_last_scan >= QUIET_AFTER_DAYS
             )
     return out

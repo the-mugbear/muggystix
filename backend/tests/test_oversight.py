@@ -110,9 +110,12 @@ def test_every_registered_project_including_archived(client, db_session, test_pr
     assert {r["status"] for r in body["projects"]} == {"active", "completed", "archived"}
     only_done = client.get(URL, params={"status": ["completed", "archived"]}).json()
     assert only_done["summary"]["projects_total"] == 2
-    # A saved link with the old status name still means active.
-    old = client.get(URL, params={"status": ["in_progress"]}).json()
-    assert old["summary"]["projects_total"] == 2
+    # The retired status name is refused, naming it (owner, 2026-10-23) — it
+    # used to be read as active; any other status no project holds likewise.
+    for old in ("in_progress", "bogus"):
+        r = client.get(URL, params={"status": ["active", old]})
+        assert r.status_code == 422, r.text
+        assert old in r.json()["detail"]
 
 
 def test_testing_findings_and_defect_rate(client, db_session, test_project):

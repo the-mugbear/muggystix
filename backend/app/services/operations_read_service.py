@@ -414,7 +414,7 @@ def compute_investigation_queue(
     """
     from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
     from app.services.host_detail_service import conflicts_per_host
-    from app.services.ports_of_interest import ports_by_number
+    from app.services.ports_of_interest import port_of_interest, port_of_interest_condition
 
     # v2.374.4 — this ran ~1.4 s on a 42k-host project and was the whole of the
     # Operations "My work" delay, almost none of it in Postgres: every untouched
@@ -477,10 +477,9 @@ def compute_investigation_queue(
     # the same subquery, host and port rows (review 2026-10-23b, INV-1).
     conflict_sig = conflicts_per_host(db, project_id=project.id)
 
-    poi = ports_by_number()
-    high_value_open = and_(
-        models.Port.state == "open", models.Port.port_number.in_(list(poi.keys())),
-    )
+    # A high-value port is the Exposure chips' port of interest
+    # (`port_of_interest`: a probed name wherever it runs, else the number).
+    high_value_open = port_of_interest_condition()
     has_high_value_port = P.host_has_port(high_value_open)
 
     # Tier 4 — "changed at its latest scan" is asked only of hosts that could
@@ -591,13 +590,15 @@ def compute_investigation_queue(
     high_value: Dict[int, List[str]] = {}
     any_vuln: set = set()
     if chosen_ids:
-        for hid, port in (
-            db.query(models.Port.host_id, models.Port.port_number)
+        for row in (
+            db.query(models.Port.host_id, models.Port.port_number, models.Port.state,
+                     models.Port.service_name, models.Port.service_method)
             .filter(models.Port.host_id.in_(chosen_ids), high_value_open)
-            .distinct()
             .all()
         ):
-            high_value.setdefault(hid, []).append(poi[port].label)
+            label = port_of_interest(row).label
+            if label not in high_value.get(row.host_id, []):
+                high_value.setdefault(row.host_id, []).append(label)
         any_vuln = {
             hid for (hid,) in db.query(Vulnerability.host_id)
             .filter(Vulnerability.host_id.in_(chosen_ids)).distinct().all()
