@@ -345,30 +345,58 @@ def test_the_upgrade_merges_what_is_lossless_refuses_the_rest_and_comes_back(scr
         assert set(NEW_INDEXES) <= set(_indexes(conn))
 
 
-_DIAGNOSTIC_SCRIPTS = ("migration-failure-report.sh", "collect-logs.sh")
+# The ONE list of upgrade refusals and the scripts that read it (review
+# 2026-10-22, B2-1: the two diagnostics carried copies, which drifted).
+_REFUSALS_FILE = "upgrade-refusals.sql"
+_REFUSAL_READERS = ("migration-failure-report.sh", "collect-logs.sh", "deploy.sh")
 
 
 def _scripts_dir():
     here = Path(__file__).resolve()
     for candidate in (here.parents[1] / "scripts", here.parents[2] / "scripts"):
-        if all((candidate / name).is_file() for name in _DIAGNOSTIC_SCRIPTS):
+        if all((candidate / name).is_file() for name in (_REFUSALS_FILE, *_REFUSAL_READERS)):
             return candidate
     return None
 
 
 @pytest.mark.skipif(_scripts_dir() is None, reason="scripts/ is not mounted here")
-def test_the_diagnostics_count_every_clash_the_upgrade_refuses():
+def test_the_refusal_checks_count_every_clash_the_upgrade_refuses():
     """Review 2026-10-14, R7: the upgrade also refuses copies of one CIDR with
-    different ``site_id``s, and the two diagnostics' pre-checks did not count
-    it — a bundle said "0 refused" for an upgrade that then refused.  Every
-    aggregate the revision refuses on is in each script's query."""
+    different ``site_id``s, and the diagnostics' pre-checks did not count it —
+    a bundle said "0 refused" for an upgrade that then refused.  Every
+    aggregate the revision refuses on is in the one refusal list's query, and
+    that is what is counted as ``refused``."""
     revision = next((Path(__file__).resolve().parents[1] / "alembic" / "versions").glob("a4f8c2e6b0d1_*.py"))
     refused_on = {"count(DISTINCT site_id)", "count(DISTINCT {_NON_EMPTY_SITE})",
                   "count(DISTINCT {_NON_EMPTY_DESCRIPTION})"}
     assert all(part in revision.read_text() for part in refused_on)
-    for name in _DIAGNOSTIC_SCRIPTS:
-        text = (_scripts_dir() / name).read_text()
-        for part in ("count(DISTINCT site_id) AS site_ids", "count(DISTINCT nullif(btrim(site), '')) AS sites",
-                     "count(DISTINCT nullif(btrim(description), '')) AS descriptions",
-                     "descriptions > 1 OR sites > 1 OR site_ids > 1"):
-            assert part in text, (name, part)
+    text = (_scripts_dir() / _REFUSALS_FILE).read_text()
+    line = next(s for s in text.splitlines() if s.startswith("SELECT 'a4f8c2e6b0d1"))
+    for part in ("count(DISTINCT site_id) AS site_ids", "count(DISTINCT nullif(btrim(site), '')) AS sites",
+                 "count(DISTINCT nullif(btrim(description), '')) AS descriptions",
+                 "FILTER (WHERE descriptions > 1 OR sites > 1 OR site_ids > 1) AS refused"):
+        assert part in line, part
+
+
+@pytest.mark.skipif(_scripts_dir() is None, reason="scripts/ is not mounted here")
+def test_the_refusal_list_is_one_file_every_reader_runs():
+    """One statement per refusing revision, each one line of the shape
+    deploy.sh parses; the readers name the file and carry no copy of a query."""
+    text = (_scripts_dir() / _REFUSALS_FILE).read_text()
+    statements = [s for s in text.splitlines() if s.startswith("SELECT ")]
+    revisions = [s.split("'", 2)[1].split(" ", 1)[0] for s in statements]
+    assert revisions == ["b2e5a8c1d4f6", "e1b4c7d0a2f5", "a4f8c2e6b0d1",
+                         "e3b7a1c9d5f0", "f4c8b2d0e6a1", "b6e0d4f2a8c3"]
+    versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    for rev, statement in zip(revisions, statements):
+        assert next(versions.glob(f"{rev}_*.py"), None) is not None, rev
+        assert statement.endswith(";"), rev
+        assert statement.index(" AS revision, ") < statement.index(" AS refused, ") < statement.index(" AS detail"), rev
+    # The b2e5a8c1d4f6 count leaves out `row:` keys, as the revision does
+    # (the bundle's copy did not).
+    assert "substr(dedup_key, 1, 4) <> 'row:'" in statements[0]
+    for name in _REFUSAL_READERS:
+        reader = (_scripts_dir() / name).read_text()
+        assert _REFUSALS_FILE in reader, name
+        for fragment in ("agent_session_id IS NULL", "GROUP BY scope_id, cidr", "FROM scope_domains"):
+            assert fragment not in reader, (name, fragment)

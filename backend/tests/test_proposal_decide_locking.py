@@ -232,9 +232,12 @@ def test_an_endpoint_proposal_locks_its_endpoint_before_itself(two_sessions):
         event.remove(engine, "before_cursor_execute", record)
         db.rollback()
         db.close()
-    assert len(seen) == 2, seen
-    assert "FROM finding_hosts" in seen[0] and seen[0].endswith("FOR UPDATE")
-    assert "FROM agent_proposals" in seen[1]
+    # Since review 2026-10-22, A-R1: the finding first, as every endpoint
+    # write takes it (`FindingService.lock_finding`), then the endpoint.
+    assert len(seen) == 3, seen
+    assert "FROM findings" in seen[0] and seen[0].endswith("FOR NO KEY UPDATE")
+    assert "FROM finding_hosts" in seen[1] and seen[1].endswith("FOR UPDATE")
+    assert "FROM agent_proposals" in seen[2]
 
 
 def test_accepting_an_endpoint_proposal_while_its_endpoint_is_removed_never_fails_in_the_database(

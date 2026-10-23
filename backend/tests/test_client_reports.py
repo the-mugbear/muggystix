@@ -806,3 +806,34 @@ def test_an_addendum_writes_its_own_summary_of_changes(client, test_project):
                           "expected": {"executive_summary": "One new finding."}})
     assert r.status_code == 422
     assert client.get(f"{_base(test_project)}/profile").json()["executive_summary"] == "Project summary."
+
+
+def test_a_template_that_cannot_fill_the_report_refuses_the_issue_before_the_number(
+        client, db_session, test_project, monkeypatch):
+    """Review 2026-10-22, A-R2: ``_mark_printed`` swallowed the fill's
+    ``RenderError`` and the issue went on — number taken, snapshot and template
+    frozen — while every render of the frozen inputs failed the same way.
+    The issue now refuses (409) before anything is written."""
+    from app.services import quarto_render, report_template_service
+
+    host = _host(db_session, test_project, "10.40.9.1")
+    _finding(db_session, test_project, "SQL injection", "critical", hosts=[host],
+             description="d", impact="i", recommendation="r")
+    report = _create(client, test_project)
+
+    def cannot_fill(template, dataset):
+        raise quarto_render.RenderError("'dict object' has no attribute 'nothing'")
+
+    real_fill = report_template_service.printed_parts
+    monkeypatch.setattr(report_template_service, "printed_parts", cannot_fill)
+    r = client.post(f"{_base(test_project)}/{report['id']}/issue")
+    assert r.status_code == 409, r.text
+    assert "cannot be filled" in r.json()["detail"] and "has no attribute 'nothing'" in r.json()["detail"]
+    db_session.expire_all()
+    stored = db_session.get(Report, report["id"])
+    assert (stored.status.value if hasattr(stored.status, "value") else stored.status) == "draft"
+    assert stored.number is None and stored.snapshot is None
+
+    # Fixed, the same draft issues — as report 1: no number was burnt.
+    monkeypatch.setattr(report_template_service, "printed_parts", real_fill)
+    assert _issue(client, test_project, report["id"])["number"] == 1

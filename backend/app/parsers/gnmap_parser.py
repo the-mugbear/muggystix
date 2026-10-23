@@ -2,7 +2,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.db import models
-from app.parsers.parser_utils import announce_scan, without_nul
+from app.parsers.parser_utils import announce_scan, without_nul, write_record
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.subnet_correlation import SubnetCorrelationService
 import logging
@@ -73,33 +73,26 @@ class GnmapParser:
                 if not host_data:
                     continue
 
-                # Wrap each host in its own savepoint.  If the dedup
-                # service raises (or leaks a savepoint), rolling back
-                # this outer savepoint discards only the bad host's
-                # writes — the scan record and every previously-
-                # processed host stay intact.  A plain `self.db.rollback()`
-                # here would wipe the scan record (added + flushed
-                # before the loop), turning a one-row failure into a
-                # full-scan loss.
-                host_sp = self.db.begin_nested()
-                try:
-                    self._process_host_with_deduplication(host_data, scan_id)
-                    host_sp.commit()
-                    hosts_processed += 1
-                except Exception as e:
-                    # A cancel / timeout / shutdown is never a bad host.
-                    from app.services.ingestion_service import ParseFailure
-                    if isinstance(e, ParseFailure):
-                        raise
-                    logger.error(f"Error processing host {host_data.get('ip_address', 'unknown')}: {e}")
-                    try:
-                        host_sp.rollback()
-                        self.dedup_service.discard_rolled_back_state()
-                    except Exception:  # noqa: BLE001
-                        # Savepoint was already rolled back by an inner
-                        # frame — fine, parent transaction is clean.
-                        pass
+                # Each host is one record (``write_record``; review
+                # 2026-10-22, B1-1).  If the dedup service raises (or leaks
+                # a savepoint), rolling back the record's savepoint discards
+                # only the bad host's writes — the scan record and every
+                # previously-processed host stay intact.  A plain
+                # `self.db.rollback()` here would wipe the scan record (added
+                # + flushed before the loop), turning a one-row failure into
+                # a full-scan loss.  A cancel / timeout / shutdown is never a
+                # bad host: the helper raises it.
+                outcome = write_record(
+                    self.db,
+                    lambda: self._process_host_with_deduplication(host_data, scan_id),
+                    on_rollback=self.dedup_service.discard_rolled_back_state,
+                )
+                if outcome.error is not None:
+                    logger.error(
+                        f"Error processing host {host_data.get('ip_address', 'unknown')}: {outcome.error}"
+                    )
                     continue
+                hosts_processed += 1
 
                 # The heartbeat lives OUTSIDE the host's savepoint and its
                 # try: it commits, and a commit that fails must fail the

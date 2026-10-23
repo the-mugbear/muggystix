@@ -49,13 +49,14 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ProjectHostsByAddress,
     announce_scan,
     correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
-    record_savepoint,
     resolve_host_cached,
     resolve_port_cached,
+    write_record,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import ObservationCache, bind_url_name
@@ -104,22 +105,23 @@ class WhatwebParser:
     def __init__(self, db: Session):
         self.db = db
         self._project_id: Optional[int] = None
-        # Per-file host/port resolution caches — collapse the per-record Host
-        # and Port lookups (many records share a host) to a dict hit.
-        self._host_cache: dict = {}
+        # Per-file host/port resolution — collapse the per-record Host and
+        # Port lookups (many records share a host): the project's hosts by
+        # address, read once (B1-2), and a port memo.
+        self._hosts: Optional[ProjectHostsByAddress] = None
         self._observed = ScanHostObservations()
         self._port_cache: dict = {}
         self._name_cache = ObservationCache()
 
     def _reset_caches(self) -> None:
-        """After a record's savepoint rolled back (see record_savepoint)."""
-        self._host_cache.clear()
+        """After a record's savepoint rolled back (see record_savepoint); the
+        host map heals itself."""
         self._port_cache.clear()
         self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
-        self._host_cache.clear()
+        self._hosts = ProjectHostsByAddress(self.db, self._project_id)
         self._port_cache.clear()
         start = time.time()
         logger.info("Starting whatweb parse of %s", filename)
@@ -147,16 +149,18 @@ class WhatwebParser:
         )
         for record in records:
             beat.tick()
-            try:
-                # v2.419.0 (H3) — isolated, as httpx.
-                with record_savepoint(self.db, self._observed, self._reset_caches):
-                    host_id = self._upsert_record(record, scan)
-                if host_id:
-                    written += 1
-                else:
-                    skipped += 1
-            except Exception as exc:  # noqa: BLE001 — one bad record mustn't sink the upload
-                logger.warning("whatweb: skipping record due to %s", exc)
+            # v2.419.0 (H3) — isolated, as httpx: one bad record mustn't sink
+            # the upload.
+            outcome = write_record(
+                self.db, lambda: self._upsert_record(record, scan),
+                observed=self._observed, on_rollback=self._reset_caches,
+            )
+            if outcome.error is not None:
+                logger.warning("whatweb: skipping record due to %s", outcome.error)
+                skipped += 1
+            elif outcome.value:
+                written += 1
+            else:
                 skipped += 1
 
         # Write HostScanHistory rows so /agent/recon/summary's per-host
@@ -227,9 +231,7 @@ class WhatwebParser:
 
         # Resolve host (create on demand — whatweb hit it, it's real) and port,
         # both cached per-file.  Mirrors the httpx parser via the shared helper.
-        resolved = resolve_host_cached(
-            self.db, self._project_id, ip, self._host_cache, hostname=hostname,
-        )
+        resolved = resolve_host_cached(self.db, self._hosts, ip, hostname=hostname)
         host_row = resolved.host
         # A WhatWeb hit is an HTTP response: the host is up now (v2.332.1).
         self._observed.note(

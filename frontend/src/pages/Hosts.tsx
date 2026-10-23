@@ -42,7 +42,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
-import { LIST_CURSOR_CLASS } from '../hooks/useListCursor';
+import { LIST_CURSOR_CLASS, useListCursor } from '../hooks/useListCursor';
 import {
   HOST_BUILT_IN_VIEWS,
   HostFilterOptions,
@@ -1049,12 +1049,6 @@ export default function Hosts() {
     });
   };
 
-  // Keyboard row cursor for the list (1c).  -1 = no cursor yet.  j/k (and
-  // arrows) move it and Enter opens the host; when the inspector is already
-  // open, j/k advance IT instead (reusing stepInspector), so an operator can
-  // fly through hosts reviewing each in the side-sheet without the mouse.
-  const [cursorIndex, setCursorIndex] = useState(-1);
-
   // Stable, so the column definitions that hold it are not rebuilt on every
   // render — and it reads the filters through a ref set during render, so a
   // cell that kept an earlier copy still saves the list context of NOW (the
@@ -1066,6 +1060,24 @@ export default function Hosts() {
   // The table's rows are memoised; an inline arrow here would be a new prop
   // for every row on every render of the page.
   const openHostRow = useCallback((host: Host) => openInspector(host.id), [openInspector]);
+
+  // Keyboard row cursor for the list (1c): j/k (and arrows) move it and Enter
+  // opens the host; when the inspector is already open, j/k advance IT
+  // instead (the listener below, reusing stepInspector), so an operator can
+  // fly through hosts reviewing each in the side-sheet without the mouse.
+  // Anchored by host id (review 2026-10-22 A-R12): a filter or sort change on
+  // the same page, or a bulk action's re-read, keeps the cursor on its HOST —
+  // or the row that took its place — never on row N of a different list.  A
+  // page turn clears it; it does not act on rows of an address still loading.
+  const { cursor: cursorIndex } = useListCursor(
+    hosts.length,
+    (index) => { const host = hosts[index]; if (host) openInspector(host.id); },
+    {
+      enabled: inspectedHostId === null && !loading && !rowsArePrevious,
+      resetKey: page,
+      getId: (index) => hosts[index]?.id,
+    },
+  );
 
   // "Open standalone" inside the side-sheet — passes the same navState
   // that the old direct-navigate flow used, so the standalone page's
@@ -1221,11 +1233,6 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search, pageAnswer, pageReadFailed, loading]);
 
-  // A fresh result set (page turn) invalidates the row cursor.
-  useEffect(() => {
-    setCursorIndex(-1);
-  }, [page]);
-
   // Keep the cursor row in view as it moves below/above the fold.  The
   // cursor row carries a `host-cursor-row` marker class (see getRowClassName)
   // so we can find it without threading a ref through DataTableShell.
@@ -1234,7 +1241,7 @@ export default function Hosts() {
     document.querySelector('.host-cursor-row')?.scrollIntoView({ block: 'nearest' });
   }, [cursorIndex]);
 
-  // List keyboard navigation (1c).  Global listener with an input guard so
+  // Inspector keyboard navigation (1c).  Global listener with an input guard so
   // it never hijacks typing in the search / command bar / note composer, and
   // an Enter guard so it doesn't double-fire on a focused button/link.
   useEffect(() => {
@@ -1250,31 +1257,18 @@ export default function Hosts() {
       if (loading || hosts.length === 0) return;
 
       // Inspector open → j/k advance the side-sheet; arrows stay free to
-      // scroll its content.
-      if (inspectedHostId !== null) {
-        if (e.key === 'j') {
-          e.preventDefault();
-          stepInspector(1);
-        } else if (e.key === 'k') {
-          e.preventDefault();
-          stepInspector(-1);
-        } else if (e.key === 'n') {
-          e.preventDefault();
-          stepToNextUnreviewed();
-        }
-        return;
-      }
-
-      // List cursor.
-      if (e.key === 'j' || e.key === 'ArrowDown') {
+      // scroll its content.  With it closed, the list cursor (useListCursor)
+      // has the keys.
+      if (inspectedHostId === null) return;
+      if (e.key === 'j') {
         e.preventDefault();
-        setCursorIndex((c) => Math.min((c < 0 ? -1 : c) + 1, hosts.length - 1));
-      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        stepInspector(1);
+      } else if (e.key === 'k') {
         e.preventDefault();
-        setCursorIndex((c) => (c <= 0 ? 0 : c - 1));
-      } else if (e.key === 'Enter' && cursorIndex >= 0 && cursorIndex < hosts.length) {
+        stepInspector(-1);
+      } else if (e.key === 'n') {
         e.preventDefault();
-        openInspector(hosts[cursorIndex].id);
+        stepToNextUnreviewed();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1283,7 +1277,7 @@ export default function Hosts() {
     // inspectedHostId / page / totalHosts; re-attaching on those keeps the
     // cross-page queue stepping fresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hosts, inspectedHostId, loading, rowsArePrevious, cursorIndex, page, totalHosts, rowsPerPage]);
+  }, [hosts, inspectedHostId, loading, rowsArePrevious, page, totalHosts, rowsPerPage]);
 
   // A host's review status as the server just returned it, put into the rows
   // of the list on screen (no second read of the page).

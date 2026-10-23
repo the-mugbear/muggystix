@@ -247,7 +247,9 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
         strict_evidence=issued,
         asset_files=asset_files,
-        on_progress=worker_loop.touch_heartbeat,
+        # Liveness, and a stop between formats on SIGTERM (the job goes back
+        # to the queue; review 2026-10-22, N4).
+        on_progress=worker_loop.render_checkpoint,
         # Everything the render reads from the database is read once the
         # images are placed: end the transaction before Quarto runs (up to
         # REPORT_RENDER_TIMEOUT_SECONDS a format) instead of holding it open

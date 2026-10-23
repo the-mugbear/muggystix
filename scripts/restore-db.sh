@@ -38,6 +38,12 @@
 # pg_restore itself fails, the app is left STOPPED and the summary gives the
 # command that puts back the safety backup taken a moment earlier.
 #
+# Exit status: 0 = restored (database and uploads/); 1 = failed or refused
+# (the summary says what state that leaves); 4 = the database is restored but
+# extracting the uploads archive failed — the summary says PARTLY RESTORED and
+# prints the command that retries the files (deploy.sh option 7 reads 4 as
+# "database restored, files not").
+#
 # Flags:
 #   --yes                  Skip the typed RESTORE confirmation (deploy.sh
 #                          option 7 asks its own question first).
@@ -528,19 +534,20 @@ else
     # BACKUP_KEEP=0: no retention pass here.  The backup being restored may be
     # the oldest one in the directory, and pruning "older than the newest N"
     # after adding one more would delete it moments before it is read.
-    safety_marker="$(mktemp)"
-    if ! BACKUP_KEEP=0 "$SCRIPT_DIR/backup-db.sh"; then
-        rm -f "$safety_marker"
+    # The artifact that run wrote is backup-db.sh's own answer
+    # (BACKUP_RESULT_FILE, as deploy.sh's run_backup reads it) — never a
+    # search of the backup folder for the newest file (ops-and-deploy.md).
+    safety_result="$(mktemp)"
+    if ! BACKUP_KEEP=0 BACKUP_RESULT_FILE="$safety_result" "$SCRIPT_DIR/backup-db.sh"; then
+        rm -f "$safety_result"
         print_error "Safety backup failed — aborting restore. Nothing was changed."
         print_error "Re-run with --no-safety-backup to override (only do this if the"
         print_error "current database is already unrecoverable)."
         exit 1
     fi
-    # The artifact that run just wrote — named in every failure message below.
-    SAFETY_ARTIFACT="$(find "$BACKUP_DIR" -maxdepth 1 \
-        \( -name 'nm-pgdump-*.dump' -o -name 'nm-pgdata-*.tar.gz' \) -newer "$safety_marker" 2>/dev/null \
-        | xargs -r ls -t 2>/dev/null | head -1)"
-    rm -f "$safety_marker"
+    # Named in every failure message below.
+    SAFETY_ARTIFACT="$(sed -n 's/^artifact=//p' "$safety_result")"
+    rm -f "$safety_result"
     [[ -n "$SAFETY_ARTIFACT" ]] && print_info "Safety backup: $SAFETY_ARTIFACT"
 fi
 
@@ -661,17 +668,33 @@ esac
 # harmless, a deleted one is not).  ingestion_queue is never in the archive.
 # ($uploads_archive was read from the .meta, and the archive read back, before
 # anything was touched — see validate_backup.)
+#
+# A failed extraction is not a finished restore (review 2026-10-22, A-R14: it
+# printed an error and went on to "Restore complete", exit 0, and option 7
+# inherited that).  The flag carries it to every ending below: "PARTLY
+# RESTORED", the one command that retries the files, and a non-zero exit —
+# UPLOADS_PARTIAL_RC when the database itself is fine, so a caller (deploy.sh
+# option 7) can tell "database restored, files not" from a failed restore.
+UPLOADS_RESTORE_FAILED=0
+UPLOADS_PARTIAL_RC=4
+UPLOADS_RETRY_CMD=""
 if [[ -n "$uploads_archive" && -f "$BACKUP_FILE_DIR/$uploads_archive" ]]; then
     print_info "Restoring uploads/ (evidence images, issued reports, screenshots) from $uploads_archive..."
     mkdir -p "$PROJECT_ROOT/uploads"
-    if docker run --rm -i \
+    uploads_rc=0
+    docker run --rm -i \
         -v "$PROJECT_ROOT/uploads":/uploads \
         --entrypoint tar \
         "$HELPER_IMAGE" xzf - -C /uploads \
-        < "$BACKUP_FILE_DIR/$uploads_archive"; then
+        < "$BACKUP_FILE_DIR/$uploads_archive" || uploads_rc=$?
+    if [[ "$uploads_rc" -eq 0 ]]; then
         print_success "Uploads restored."
     else
-        print_error "Restoring uploads/ failed — evidence images and issued report files may be missing."
+        UPLOADS_RESTORE_FAILED=1
+        UPLOADS_RETRY_CMD="docker run --rm -i -v \"$PROJECT_ROOT/uploads\":/uploads --entrypoint tar $HELPER_IMAGE xzf - -C /uploads < \"$BACKUP_FILE_DIR/$uploads_archive\""
+        print_error "Restoring uploads/ FAILED (tar exit $uploads_rc; its message is above) — evidence images"
+        print_error "and issued report files may be missing.  The database restore goes on; the"
+        print_error "restore ends PARTLY RESTORED with the command that retries the files."
     fi
 elif [[ -n "$uploads_archive" ]]; then
     print_warning "The backup names $uploads_archive, but it is not in $BACKUP_FILE_DIR —"
@@ -681,8 +704,23 @@ else
     print_warning "images and issued report files in ./uploads are left as they are."
 fi
 
+# Printed under every summary from here on when the files did not come back.
+uploads_partial_note() {
+    [[ "$UPLOADS_RESTORE_FAILED" -eq 1 ]] || return 0
+    echo "  uploads/ is PARTLY RESTORED: extracting $uploads_archive failed (message above), so"
+    echo "  evidence images and issued report files may be missing. Fix the cause, then retry the files:"
+    echo "      $UPLOADS_RETRY_CMD"
+    echo ""
+}
+
 # --- Start the stack; the backend runs `alembic upgrade head` ---
 if [[ "$NO_START" -eq 1 ]]; then
+    if [[ "$UPLOADS_RESTORE_FAILED" -eq 1 ]]; then
+        restore_summary "STOPPED — PARTLY RESTORED (database restored, uploads/ not)" \
+            "'$PG_DB' holds the backup. The application containers are stopped (--no-start): the caller starts them."
+        uploads_partial_note
+        exit "$UPLOADS_PARTIAL_RC"
+    fi
     restore_summary "STOPPED — database restored" \
         "'$PG_DB' holds the backup. The application containers are stopped (--no-start): the caller starts them."
     exit 0
@@ -705,6 +743,12 @@ stack_start_staged "$RESTORE_HEALTH_TIMEOUT" || start_rc=$?
 
 case "$start_rc" in
     0)
+        if [[ "$UPLOADS_RESTORE_FAILED" -eq 1 ]]; then
+            restore_summary "RUNNING — PARTLY RESTORED (database restored, uploads/ not)" \
+                "The backend is healthy on the restored database, the schema is migrated to this build's head, and the workers and frontend are up — but the restore is NOT complete."
+            uploads_partial_note
+            exit "$UPLOADS_PARTIAL_RC"
+        fi
         restore_summary "RUNNING" \
             "Restore complete — the backend is healthy, the schema is migrated to this build's head, and the workers and frontend are up."
         ;;
@@ -712,6 +756,7 @@ case "$start_rc" in
         restore_summary "PARTLY UP — database restored" \
             "The backend is healthy on the restored database, but starting the workers or the frontend failed ('$DC up' output above)." \
             "Retry:  $DC up -d      and look at:  $DC ps"
+        uploads_partial_note
         exit 1
         ;;
     2)
@@ -721,6 +766,7 @@ case "$start_rc" in
             "If the backup's schema is NEWER than this build, alembic cannot migrate it (\"Can't locate revision\"): deploy the matching or a newer build, or restore an older backup."
         safety_recovery_line | sed 's/^/  /'
         echo ""
+        uploads_partial_note
         exit 1
         ;;
     *)
@@ -730,6 +776,7 @@ case "$start_rc" in
             "When it is healthy:  $DC up -d" \
             "Wait longer next time:  RESTORE_HEALTH_TIMEOUT=7200 ./scripts/restore-db.sh …"
         print_migration_stall_help
+        uploads_partial_note
         exit 1
         ;;
 esac

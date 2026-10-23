@@ -117,7 +117,9 @@ describe('Scans — "Load more" of the import history', () => {
     // The first page is asked with no `skip` at all.
     expect(api.getImportHistory.mock.calls[0][1]).not.toHaveProperty('skip');
     expect(api.getImportHistory.mock.calls[0][1]).toMatchObject({ limit: 100 });
-    expect(screen.getByText(/2 of 4 uploads · 1 batch, 1 single file · more below/)).toBeInTheDocument();
+    // The breakdown is the whole history's (the server's totals), not the
+    // loaded page's — 1 single file is loaded of 3 (review 2026-10-22, B3-2).
+    expect(screen.getByText(/2 of 4 uploads · 1 batch, 3 single files · more below/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Load 100 more uploads' }));
     expect(await screen.findByText('file-2.xml')).toBeInTheDocument();
@@ -130,6 +132,15 @@ describe('Scans — "Load more" of the import history', () => {
     await waitFor(() => expect(moreButton()).toBeNull());
     expect(screen.getByText(/4 uploads · 1 batch, 3 single files/)).toBeInTheDocument();
     expect(screen.queryByText(/more below/)).toBeNull();
+  });
+
+  it('names the uploads not imported from the server’s total, though none is on the loaded page', async () => {
+    api.getImportHistory.mockImplementation(async (_projectId: number, options: HistoryOptions = {}) => (
+      { ...historyPage(options.skip), total: 11, upload_total: 7 }
+    ));
+    renderPage();
+    await screen.findByText('file-9.xml');
+    expect(screen.getByText(/2 of 11 uploads · 1 batch, 3 single files, 7 not imported · more below/)).toBeInTheDocument();
   });
 
   it('a page that says "more" is believed even when the total says the list is whole', async () => {

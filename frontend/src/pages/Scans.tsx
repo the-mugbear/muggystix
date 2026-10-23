@@ -69,6 +69,10 @@ interface HistoryPage {
   hasMore: boolean;
   /** The status filter's counts (analysts and above; null otherwise). */
   statusCounts: ImportHistoryPage['status_counts'];
+  /** How many of each kind of row the whole history holds under its filters
+   *  — the server's totals, never the loaded pages' (review 2026-10-22,
+   *  B3-2).  `uploads` is null from a server that does not send it. */
+  kindTotals: { batches: number; scans: number; uploads: number | null } | null;
 }
 
 /** What lists or counts the imported files. */
@@ -313,7 +317,7 @@ export default function Scans() {
         });
         return {
           flat: true, items: files, entries: [], scans: files, batches: [], uploads: [], partial: false, total: null,
-          hasMore: files.length === limit, statusCounts: null,
+          hasMore: files.length === limit, statusCounts: null, kindTotals: null,
         };
       }
       // The ORDER of every kind at once — batches, single files and (for an
@@ -332,6 +336,9 @@ export default function Scans() {
         total: typeof page.total === 'number' ? page.total : null,
         hasMore: page.has_more,
         statusCounts: page.status_counts ?? null,
+        kindTotals: {
+          batches: page.batch_total, scans: page.scan_total, uploads: page.upload_total ?? null,
+        },
       };
     },
     showBatchFiles
@@ -355,6 +362,7 @@ export default function Scans() {
   const uploads = useMemo(() => historyPages?.flatMap((page) => page.uploads) ?? [], [historyPages]);
   const historyPartial = !!historyPages?.some((page) => page.partial);
   const historyTotal = historyPages?.[0]?.total ?? null;
+  const kindTotals = historyPages?.[0]?.kindTotals ?? null;
   // The status filter's counts, from the first page (the server states them
   // on every page, under the same filters).
   const statusCounts = historyPages?.[0]?.statusCounts ?? null;
@@ -567,9 +575,11 @@ export default function Scans() {
                 {showBatchFiles
                   ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
                   : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'}`
-                    + (uploadView ? '' : ` · ${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
-                      + `${scans.length} single file${scans.length === 1 ? '' : 's'}`
-                      + (uploads.length > 0 ? `, ${uploads.length} not imported` : ''))}
+                    // The whole history's breakdown, from the server's totals
+                    // — never the loaded pages' rows (review 2026-10-22, B3-2).
+                    + (uploadView || !kindTotals ? '' : ` · ${kindTotals.batches.toLocaleString()} batch${kindTotals.batches === 1 ? '' : 'es'}, `
+                      + `${kindTotals.scans.toLocaleString()} single file${kindTotals.scans === 1 ? '' : 's'}`
+                      + (kindTotals.uploads ? `, ${kindTotals.uploads.toLocaleString()} not imported` : ''))}
                 {historyList.hasMore ? ' · more below' : hasActiveFilters || uploadView ? ' (filtered)' : ''}
               </>
             )}
@@ -867,10 +877,11 @@ const HistoryFilterBar: React.FC<{
  * batch whose 31 files had all expired.  `failed` (the recent queue) is the
  * fallback when the summary did not carry the figures.
  *
- * Short and specific: "40 files imported · 31 never imported (31 expired
- * before review) · last import 55 minutes ago".  The never-imported figure
- * names the ACTUAL reasons with their counts (`byReason`, from the summary)
- * instead of listing every possible one; the explanation is an info tip.
+ * Short and specific: "40 files imported · 31 expired before review, not
+ * imported · last import 55 minutes ago".  The closed failures are named by
+ * their ACTUAL reasons with their counts (`byReason`, from the summary)
+ * instead of listing every possible one, and with no total of their own
+ * (review 2026-10-22, B3-3); the explanation is an info tip.
  */
 /** [key, singular, plural]: "(25 discarded, 1 dismissed failure)" read
  *  "(25 discarded, 1 failed, dismissed)". */
@@ -953,33 +964,29 @@ const ScansLead: React.FC<{
           {notImported > 0 && (
             <>
               {sep}
-              {/* One reason: its own status filter of the history; several:
-                  each reason links to its filter, and the total is no link
-                  (no one filter lists exactly them; it opened every upload). */}
-              {reasons.length === 1 ? (
-                <Link
-                  to={importResultsPath({ status: NOT_IMPORTED_VIEW[reasons[0].key] })}
-                  className="underline-offset-2 hover:underline"
-                >
-                  {notImported.toLocaleString()} never imported
-                </Link>
-              ) : (
-                <>{notImported.toLocaleString()} never imported</>
-              )}
-              {reasons.length === 1 && ` (${reasons[0].text})`}
-              {reasons.length > 1 && (
+              {/* Review 2026-10-22, B3-3: "1 never imported (1 dismissed
+                  failure)" read as the number of files never imported, while
+                  the history's Failed filter listed more (it holds the
+                  failures that need attention too).  These are failures
+                  someone already closed, so each reason is named with its
+                  count and opens its own status filter, and no figure claims
+                  to be every upload that was not imported. */}
+              {reasons.length > 0 ? (
                 <>
-                  {' ('}
                   {reasons.map((r, i) => (
                     <React.Fragment key={r.key}>
-                      {i > 0 && ', '}
+                      {i > 0 && (i === reasons.length - 1 ? ' and ' : ', ')}
                       <Link to={importResultsPath({ status: NOT_IMPORTED_VIEW[r.key] })} className="underline-offset-2 hover:underline">
                         {r.text}
                       </Link>
                     </React.Fragment>
                   ))}
-                  {')'}
+                  , not imported
                 </>
+              ) : (
+                // A server that sends no breakdown: no one filter lists
+                // exactly these, so the figure opens nothing.
+                <>{notImported.toLocaleString()} closed failure{notImported === 1 ? '' : 's'}, not imported</>
               )}
             </>
           )}
@@ -1000,7 +1007,7 @@ const ScansLead: React.FC<{
       <InfoTip
         label="About these figures"
         className="align-middle"
-        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — the history’s “Needs attention” filter — except those whose same file a later upload imported (“re-imported later”, superseded). “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
+        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — the history’s “Needs attention” filter — except those whose same file a later upload imported (“re-imported later”, superseded). “Not imported” names the failures someone already closed, by reason: files discarded at the format review, staged files nobody started within 24 hours (expired before review), and dismissed failures. The history’s Failed filter lists the dismissed failures together with those that need attention. A file refused at upload as a duplicate never becomes an import and is not counted."
       />
     </PostureLead>
   );

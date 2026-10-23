@@ -224,6 +224,39 @@ class FindingService:
 
         NotificationService(self.db).notify_retests_requested(list(pending.values()), actor_id)
 
+    def lock_finding(self, finding: Finding) -> Finding:
+        """Take the finding's row lock and re-read its status — the FIRST lock
+        of every write to an existing finding's endpoints or status (review
+        2026-10-22, A-R1).  One order: the finding, then its endpoints, then
+        what hangs on them (a remediation record, a proposal).
+
+        Without it, two promotions joining one finding each read the attached
+        hosts, then inserted the same endpoint (a unique-index 500, or a
+        deadlock when they inserted in different orders); a test result's
+        "confirm on join" decided on a status read before a person concluded
+        the finding and wrote ``confirmed`` over it; and a status change
+        (finding, then endpoint) against an endpoint change (endpoint, then
+        the commit-time revision UPDATE of the finding) deadlocked.
+
+        ``FOR NO KEY UPDATE``: the lock the revision UPDATE and any status
+        UPDATE take anyway, so it adds no step at commit, and it does not hold
+        up an insert that only references the finding (an endpoint, a comment,
+        a history row).  The caller's pending writes are flushed first; only
+        the status is re-read (the one column the writes decide on), so the
+        relationships a caller loaded stay loaded."""
+        if finding.id is None:
+            return finding
+        self.db.flush()
+        fresh = (
+            self.db.query(Finding.status)
+            .filter(Finding.id == finding.id)
+            .with_for_update(key_share=True)
+            .scalar()
+        )
+        if fresh is not None:
+            set_committed_value(finding, "status", fresh)
+        return finding
+
     # ------------------------------------------------------------------
     # Create / promote
     # ------------------------------------------------------------------
@@ -366,6 +399,10 @@ class FindingService:
             vuln, project_id, key, severity=sev, status=status,
             owner_id=owner_id, actor_id=actor_id,
         )
+        if not created:
+            # Joining: the finding's lock before its endpoints are read, and
+            # the status ``on_join`` decides on read under it (A-R1).
+            self.lock_finding(finding)
         # Record this scanner's row as evidence even when the finding already
         # existed (corroboration is the thing worth keeping); a second
         # scanner may also see the issue on hosts the first one missed.
@@ -442,6 +479,7 @@ class FindingService:
         positive go back to ``open``, each through the endpoint-status step
         (its history line).  Other hosts' rows are never touched.  Returns how
         many moved."""
+        self.lock_finding(finding)
         rows = (
             self.db.query(FindingHost)
             .options(selectinload(FindingHost.host), selectinload(FindingHost.name))
@@ -497,6 +535,8 @@ class FindingService:
             vuln, project_id, key, severity=sev, status=FindingStatus.FALSE_POSITIVE.value,
             owner_id=owner_id, actor_id=actor_id,
         )
+        if not created:
+            self.lock_finding(finding)
         self.attach_vulnerability(finding=finding, vuln=vuln)
         self._attach_hosts(finding, [vuln.host_id], names_by_host=self._vuln_names_by_host(vuln))
         self.db.flush()
@@ -616,46 +656,31 @@ class FindingService:
         return {vuln.host_id: name_id}
 
     def _issue_host_ids(self, vuln, project_id: int, key: Optional[str]) -> list:
-        """Every project host carrying this ISSUE.
+        """Every project host carrying this ISSUE: every host with a row whose
+        STORED ``issue_key`` is ``key`` — the Scanner observations list's own
+        condition (``scanner_observation_service.issue_rows_condition``), so
+        the preview, the click, an accepted proposal, the list and "judged"
+        name the same hosts.
 
-        "Promote once, cover every affected host" is the spine's whole point,
-        but this used to fan out on ``plugin_id`` — which is scanner-specific,
-        so a Nessus promotion covered only the hosts Nessus scanned and the
-        GreenBone-only hosts were silently left out of the finding. Fanning out
-        on the issue key covers both, and still falls back to plugin_id for
-        rows with no usable key (identical plugin id IS the same issue within
-        one scanner).
+        Review 2026-10-22, A-C2: this used to match a ``cve:`` key on
+        ``cve_id`` and anything else on the row's ``plugin_id``.  A ``check:``
+        or ``title:`` issue two tools reported was promoted on ONE tool's
+        hosts (the client report under-listed the affected systems), and a
+        ``cve:`` match took rows whose key is a ``check:`` (the check
+        outranks the CVE) — hosts of another issue.
         """
         from app.db.models_vulnerability import Vulnerability as _Vuln
+        # Imported here: scanner_observation_service imports this module.
+        from app.services.scanner_observation_service import issue_rows_condition
 
         host_ids = [vuln.host_id] if vuln.host_id else []
-        siblings = None
-
-        if key and key.startswith("cve:"):
-            cve = key.split(":", 1)[1]
-            # Plain comparisons so the `cve_id` index is usable — wrapping the
-            # column in upper() made this a scan of the project's rows.  The
-            # key is upper-case; parsers store a CVE as the tool wrote it,
-            # which is upper or (nuclei, nikto) lower.
+        if key:
             siblings = (
                 self.db.query(_Vuln.host_id)
                 .join(Host, _Vuln.host_id == Host.id)
-                .filter(Host.project_id == project_id,
-                        _Vuln.cve_id.in_(sorted({cve, cve.upper(), cve.lower()})))
+                .filter(Host.project_id == project_id, issue_rows_condition(key))
                 .distinct()
             )
-        elif vuln.plugin_id:
-            # Title-keyed matching is done in Python (normalisation has no SQL
-            # equivalent), so scope the scan to this scanner's plugin rather
-            # than loading every vulnerability in the project.
-            siblings = (
-                self.db.query(_Vuln.host_id)
-                .join(Host, _Vuln.host_id == Host.id)
-                .filter(Host.project_id == project_id, _Vuln.plugin_id == vuln.plugin_id)
-                .distinct()
-            )
-
-        if siblings is not None:
             host_ids = list(
                 dict.fromkeys(host_ids + [hid for (hid,) in siblings if hid is not None])
             )
@@ -828,6 +853,7 @@ class FindingService:
         which host moved.
         """
         self._validate_endpoint_status(host_status)
+        self.lock_finding(finding)
         # Locked and read fresh, as ``record_retest`` reads it: a move decided
         # on a row a concurrent retest result had just changed left it
         # Still present with a stale fixed date (third review 2026-10-15, S1).
@@ -858,6 +884,7 @@ class FindingService:
         once with their host and name; nothing is read per endpoint.  Returns
         how many moved; the caller commits."""
         self._validate_endpoint_status(host_status)
+        self.lock_finding(finding)
         wanted = list(dict.fromkeys(finding_host_ids))
         rows = (
             self.db.query(FindingHost)
@@ -924,6 +951,7 @@ class FindingService:
         record; the caller commits."""
         from app.services import agent_evidence_service
 
+        self.lock_finding(finding)
         row = (
             self.db.query(FindingHost)
             .filter(FindingHost.finding_id == finding.id, FindingHost.id == finding_host_id)
@@ -1051,6 +1079,7 @@ class FindingService:
         be a host of the finding's project or nothing is written
         (``_attach_hosts`` raises 422).  New rows start ``open``; one history
         entry names what was added.  Returns the host ids actually added."""
+        self.lock_finding(finding)
         attached = {
             hid for (hid,) in self.db.query(FindingHost.host_id)
             .filter(FindingHost.finding_id == finding.id).distinct()
@@ -1094,6 +1123,7 @@ class FindingService:
     ) -> Finding:
         """Detach EVERY endpoint row on ``host_id`` (named and unnamed).
         Callers that mean one named endpoint use ``remove_endpoint``."""
+        self.lock_finding(finding)
         self._before_endpoints_removed(
             finding, actor_id=actor_id, is_project_admin=is_project_admin, host_id=host_id,
         )
@@ -1125,6 +1155,7 @@ class FindingService:
         """v2.325.0 — detach exactly one affected-endpoint row.  Returns
         ``{host_id, name_id, host_status}`` (what an Undo must restore) or
         None when the row isn't on this finding."""
+        self.lock_finding(finding)
         row = (
             self.db.query(FindingHost)
             .filter(FindingHost.id == finding_host_id, FindingHost.finding_id == finding.id)
@@ -1167,6 +1198,7 @@ class FindingService:
         into ``retest`` stamps its own request."""
         if host_status:
             self._validate_endpoint_status(host_status)
+        self.lock_finding(finding)
         if name_id is not None:
             from app.db.models import DNSName
             ok = (
@@ -1214,6 +1246,7 @@ class FindingService:
         promotable again and the scanner rows go back to being untriaged
         observations.  Does not commit.  Returns the comment ids so the caller
         can purge their attachment files once the delete has committed."""
+        self.lock_finding(finding)
         self._before_endpoints_removed(
             finding, actor_id=actor_id, is_project_admin=is_project_admin, deleting_finding=True,
         )

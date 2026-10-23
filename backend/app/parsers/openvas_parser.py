@@ -36,6 +36,7 @@ from app.parsers.parser_utils import (
     parse_rfc3339,
     persist_host_observation,
     upsert_vulnerability,
+    write_record,
 )
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -118,39 +119,41 @@ class OpenVASParser:
                     continue
                 if tag == "host" and elem.find("ip") is not None:
                     # The report's own per-host block (never a result's
-                    # <host>, which holds the address as text).
-                    sp = self.db.begin_nested()
+                    # <host>, which holds the address as text): one record.
                     try:
-                        self._process_report_host(elem, scan.id, project_id)
-                        sp.commit()
-                    except Exception as exc:  # noqa: BLE001 — isolate one bad block
-                        sp.rollback()
-                        self.dedup_service.discard_rolled_back_state()
-                        logger.warning("Skipping malformed OpenVAS report host: %s", exc)
+                        outcome = write_record(
+                            self.db,
+                            lambda: self._process_report_host(elem, scan.id, project_id),
+                            on_rollback=self.dedup_service.discard_rolled_back_state,
+                        )
                     finally:
                         clear_element(elem)
+                    if outcome.error is not None:
+                        logger.warning("Skipping malformed OpenVAS report host: %s", outcome.error)
                     continue
                 if tag != "result":
                     continue
                 seen += 1
-                # Per-result savepoint so one malformed <result> (a dedup
-                # flush failure, over-long field, etc.) is skipped rather than
-                # rolling back the entire upload.  Mirrors nmap/gnmap/nessus.
-                sp = self.db.begin_nested()
+                # One record per result (``write_record``) so one malformed
+                # <result> (a dedup flush failure, over-long field, etc.) is
+                # skipped rather than rolling back the entire upload.
                 try:
-                    if self._process_result(elem, scan.id, project_id):
-                        recorded += 1
-                    sp.commit()
-                    processed += 1
-                except Exception as exc:  # noqa: BLE001 — isolate one bad row
-                    sp.rollback()
-                    self.dedup_service.discard_rolled_back_state()
-                    failed += 1
-                    logger.warning("Skipping malformed OpenVAS result: %s", exc)
+                    outcome = write_record(
+                        self.db,
+                        lambda: self._process_result(elem, scan.id, project_id),
+                        on_rollback=self.dedup_service.discard_rolled_back_state,
+                    )
                 finally:
                     # Free memory and prune predecessors so the document
                     # doesn't accumulate even after the per-result clear.
                     clear_element(elem)
+                if outcome.error is not None:
+                    failed += 1
+                    logger.warning("Skipping malformed OpenVAS result: %s", outcome.error)
+                else:
+                    if outcome.value:
+                        recorded += 1
+                    processed += 1
                 if processed and processed % _FLUSH_BATCH_SIZE == 0:
                     self.db.flush()
                 # R6 — heartbeat between results, outside the result's

@@ -330,8 +330,9 @@ class TestDashboardEndpoints:
         response = client.get(f"/api/v1/projects/{test_project.id}/dashboard/stats")
         assert response.status_code == 200
         data = response.json()
-        assert "total_scans" in data
-        assert "total_hosts" in data
-        assert "total_ports" in data
+        # Review 2026-10-22 (A-R7): only what the Posture page reads.
+        assert set(data) == {"vulnerability_stats"}
+        assert {"total_vulnerabilities", "critical", "high", "medium", "low", "info",
+                "hosts_with_vulnerabilities", "hosts_by_severity"} <= set(data["vulnerability_stats"])
 
 

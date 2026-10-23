@@ -40,13 +40,15 @@ from app.services.dns_name_service import ObservationCache, bind_url_name
 from app.db import models
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ProjectHostsByAddress,
     announce_scan,
     correlate_scan,
     ScanHostObservations,
+    normalize_ip,
     record_hosts_in_scan,
-    record_savepoint,
     resolve_host_cached,
     resolve_port_cached,
+    write_record,
 )
 from app.parsers.streaming_json import iter_json_records
 
@@ -160,8 +162,8 @@ class EyewitnessParser:
         self._name_cache = ObservationCache()
 
     def _reset_caches(self) -> None:
-        """After a record's savepoint rolled back (see record_savepoint)."""
-        self._host_cache.clear()
+        """After a record's savepoint rolled back (see record_savepoint); the
+        host map heals itself."""
         self._port_cache.clear()
         self._name_cache = ObservationCache()
 
@@ -171,9 +173,10 @@ class EyewitnessParser:
         # emits many URLs per host (http + https, several ports/paths), so the
         # same IP and (host, port) recur across records — without a cache each
         # record re-queries hosts_v2 / ports_v2 (the N+1 the parser was flagged
-        # for).  Streaming-safe: filled lazily, including the Host rows this
-        # parse creates.  Reset per upload (one parse_file == one scan).
-        self._host_cache: dict = {}   # ip -> Host (or None when unresolvable)
+        # for).  Hosts: the project's address map, read once (B1-2), including
+        # the hosts this parse creates.  Reset per upload (one parse_file ==
+        # one scan).
+        self._hosts = ProjectHostsByAddress(self.db, self._project_id)
         self._observed = ScanHostObservations()
         self._port_cache: dict = {}   # (host_id, port_number) -> Port or None
         start = time.time()
@@ -394,20 +397,22 @@ class EyewitnessParser:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for row in csv.DictReader(f):
                 beat.tick()
-                try:
-                    # v2.419.0 (H3) — isolated, as httpx.
-                    with record_savepoint(self.db, self._observed, self._reset_caches):
-                        host_id = self._write_row(
-                            row, scan, screenshot_dir_rel=screenshot_dir_rel,
-                            csv_mode=screenshot_dir_rel is None,
-                        )
-                    if host_id is None:
-                        skipped += 1
-                    else:
-                        written += 1
-                except Exception as exc:
-                    logger.warning("EyeWitness CSV row skipped: %s", exc)
+                # v2.419.0 (H3) — isolated, as httpx.
+                outcome = write_record(
+                    self.db,
+                    lambda: self._write_row(
+                        row, scan, screenshot_dir_rel=screenshot_dir_rel,
+                        csv_mode=screenshot_dir_rel is None,
+                    ),
+                    observed=self._observed, on_rollback=self._reset_caches,
+                )
+                if outcome.error is not None:
+                    logger.warning("EyeWitness CSV row skipped: %s", outcome.error)
                     skipped += 1
+                elif outcome.value is None:
+                    skipped += 1
+                else:
+                    written += 1
         # v2.12.2: write HostScanHistory rows so /agent/recon/summary
         # counts EyeWitness ingests against the per-session host total.
         record_hosts_in_scan(self.db, scan.id, self._observed)
@@ -429,16 +434,18 @@ class EyewitnessParser:
         beat = self._beat(scan)
         for record in records:
             beat.tick()
-            try:
-                with record_savepoint(self.db, self._observed, self._reset_caches):
-                    host_id = self._write_row(record, scan, screenshot_dir_rel=screenshot_dir_rel)
-                if host_id is None:
-                    skipped += 1
-                else:
-                    written += 1
-            except Exception as exc:
-                logger.warning("EyeWitness record skipped: %s", exc)
+            outcome = write_record(
+                self.db,
+                lambda: self._write_row(record, scan, screenshot_dir_rel=screenshot_dir_rel),
+                observed=self._observed, on_rollback=self._reset_caches,
+            )
+            if outcome.error is not None:
+                logger.warning("EyeWitness record skipped: %s", outcome.error)
                 skipped += 1
+            elif outcome.value is None:
+                skipped += 1
+            else:
+                written += 1
         # v2.12.2: same host_scan_history fix as httpx_parser.  Web-only
         # ingests must contribute to recon-session host counts.
         record_hosts_in_scan(self.db, scan.id, self._observed)
@@ -475,11 +482,14 @@ class EyewitnessParser:
             protocol = self._scheme_from_url(url)
 
         # Resolve host (create on demand) and port, both cached per-file via the
-        # shared helper (eyewitness creates hosts without a hostname).
+        # shared helper (eyewitness creates hosts without a hostname).  Only
+        # a value that IS an address names a host (B1-2: a column that held
+        # a name, or a dotted quad past 255, made one).
         host_row = None
         host_created = False
-        if ip:
-            resolved = resolve_host_cached(self.db, self._project_id, ip, self._host_cache)
+        address = normalize_ip(ip) if ip else None
+        if address:
+            resolved = resolve_host_cached(self.db, self._hosts, address)
             host_row, host_created = resolved.host, resolved.created
         port_row = resolve_port_cached(self.db, host_row, port, self._port_cache)
 

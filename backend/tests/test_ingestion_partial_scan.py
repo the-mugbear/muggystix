@@ -35,6 +35,7 @@ from app.services.ingestion_service import (
 from tests.ingestion_job_harness import (
     active_job,
     all_scan_ids,
+    cancel_from_the_api,
     host_ips,
     job_row,
     kill_worker,
@@ -160,7 +161,7 @@ def test_nessus_cancel_fails_the_job_and_removes_the_partial_scan(
     svc = IngestionService()
     job_id = queue_file(db_session, pid, nessus_file(tmp_path, THREE))
 
-    with on_heartbeat(svc, 2, lambda: svc.cancel_job(job_id)):
+    with on_heartbeat(svc, 2, lambda: cancel_from_the_api(job_id)):
         run_next(db_session, svc)
 
     job = job_row(db_session, job_id)
@@ -209,7 +210,7 @@ def test_a_cancelled_import_keeps_what_an_earlier_scan_recorded(
 
     svc = IngestionService()
     job_id = queue_file(db_session, pid, nessus_file(tmp_path, THREE, name="second.nessus"))
-    with on_heartbeat(svc, 3, lambda: svc.cancel_job(job_id)):
+    with on_heartbeat(svc, 3, lambda: cancel_from_the_api(job_id)):
         run_next(db_session, svc)
 
     assert job_row(db_session, job_id).status == "failed"
@@ -353,7 +354,10 @@ def test_the_scan_is_on_the_job_row_from_its_first_commit(
 
 def test_a_cancelled_waiting_job_drops_the_dead_attempts_scan(db_session, test_project, tmp_path):
     """Re-queued by the reaper, then cancelled before any worker claimed it:
-    nothing would ever parse it again, so the cancel removes the leftover."""
+    nothing would ever parse it again, so the leftover is removed — by the
+    reaper's sweep of failed jobs on the worker's next poll, not by the
+    cancel request (review 2026-10-22, A-R11: one cleanup, never inside the
+    request)."""
     pid = test_project.id
     svc = IngestionService()
     job_id = queue_file(db_session, pid, nmap_file(tmp_path, 250))
@@ -364,11 +368,14 @@ def test_a_cancelled_waiting_job_drops_the_dead_attempts_scan(db_session, test_p
     assert len(all_scan_ids(db_session)) == 1
 
     db_session.commit()
-    assert svc.cancel_job(job_id) is True
+    assert cancel_from_the_api(job_id) is True
 
     assert job_row(db_session, job_id).status == "failed"
+    assert len(all_scan_ids(db_session)) == 1      # the cancel removed nothing…
+    assert svc.reap_orphaned_jobs() == 0           # …the worker's next poll does
     assert all_scan_ids(db_session) == []
     assert host_ips(db_session, pid) == []
+    assert job_row(db_session, job_id).in_progress_scan_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +556,7 @@ def test_a_cancel_reaches_every_parser(db_session, test_project, tmp_path, monke
     path = _write(tmp_path, filename, content)
 
     with active_job(db_session, pid) as (job_id, svc):
-        with on_heartbeat(svc, 1, lambda: svc.cancel_job(job_id)) as beats:
+        with on_heartbeat(svc, 1, lambda: cancel_from_the_api(job_id)) as beats:
             with pytest.raises(ParseFailure, match="cancelled"):
                 getattr(mod, cls)(db_session).parse_file(str(path), filename, project_id=pid)
     assert beats, "the parser never heartbeated"
@@ -574,7 +581,7 @@ def test_a_cancelled_import_of_a_parser_that_now_commits_leaves_nothing(
     job_id = queue_file(db_session, pid, path)
 
     # Heartbeat 2: the first one's commit already holds two hosts.
-    with on_heartbeat(svc, 2, lambda: svc.cancel_job(job_id)) as beats:
+    with on_heartbeat(svc, 2, lambda: cancel_from_the_api(job_id)) as beats:
         run_next(db_session, svc)
 
     assert len(beats) == 2
@@ -612,7 +619,7 @@ def test_an_import_cancelled_after_its_last_heartbeat_keeps_its_upload_identity(
 
     def parse_then_cancel(db, job):
         result = parse(db, job)                   # every heartbeat of the run is behind it
-        assert svc.cancel_job(job_id) is True     # … and only now does the cancel land
+        assert cancel_from_the_api(job_id) is True     # … and only now does the cancel land
         return result
 
     svc._process_job = parse_then_cancel  # type: ignore[method-assign]

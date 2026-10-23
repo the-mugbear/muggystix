@@ -13,7 +13,7 @@ from app.parsers.parser_utils import (
     dns_import_summary,
     read_tool_text,
     record_addressed_hosts,
-    record_savepoint,
+    write_record,
 )
 from app.services.dns_name_service import (
     ObservationCache,
@@ -157,80 +157,30 @@ class DNSParser:
                     # project-scoped DNS reads and uncounted in the producing
                     # scan's dns_record_count.
                     ttl_raw = (normalized_row.get('ttl') or '').strip()
-                    # Review 2026-10-01 R5 — the row's writes are one unit.
-                    # The handler below "rejected" a row whose statement had
-                    # failed and carried on in a session that could no longer
-                    # flush, so every later row was rejected too and the
-                    # import failed (the record-isolation rule, v2.419.0).
-                    row_created_id = None
-                    self._row_created_address = None
-                    with record_savepoint(self.db, self._observed, self._reset_caches):
-                        record_observation(
-                            self.db,
-                            project_id=self._project_id,
-                            name=dns_name,
-                            record_type=record_type,
-                            value=ip_address,
-                            scan_id=scan.id,
-                            ttl=int(ttl_raw) if ttl_raw.isdigit() else None,
-                            cache=self._name_cache,
-                        )
-
-                        # For PTR records, also create/update the host.
-                        # Filter by project_id so a DNS upload in project A
-                        # cannot rewrite hostnames on a host owned by project
-                        # B (Host is unique by ``(project_id, ip_address)`` —
-                        # without the filter, ``.first()`` returns an
-                        # arbitrary cross-project row).
-                        if record_type == 'PTR':
-                            existing_host = self._known_host(ip_address)
-
-                            if existing_host:
-                                # PTR outranks scanner/forward names but never an
-                                # operator's correction (was: unconditional overwrite).
-                                renamed = apply_hostname_candidate(existing_host, dns_name, 'ptr')
-                                # Addressed by this scan whether or not the
-                                # name changed.  No state: a PTR row does not
-                                # say the host is up.
-                                self._observed.note(
-                                    existing_host, created=False, state=None, hostname=dns_name,
-                                    renamed=renamed,
-                                )
-                            else:
-                                host_data = {
-                                    'hostname': dns_name,
-                                    'hostname_source': 'ptr',
-                                    'names_recorded': True,  # record_observation above wrote it
-                                    'state': 'unknown',
-                                }
-                                created = self.dedup_service.find_or_create_host(
-                                    ip_address, scan.id, host_data, project_id=self._project_id
-                                )
-                                row_created_id = created.id
-                                # In the address map at once; out again if
-                                # the row rolls back (`_reset_caches`).
-                                self._hosts.add(created)
-                                self._row_created_address = ip_address
-                        elif record_type in ('A', 'AAAA'):
-                            # A forward row whose value is a KNOWN host's
-                            # address: the scan addressed that host, as dnsx
-                            # notes it for the same answer (owner decision
-                            # 2026-10-11).  Only the note: this row applies
-                            # no display name and creates no host.
-                            addressed_host = self._known_host(ip_address)
-                            if addressed_host:
-                                self._observed.note(
-                                    addressed_host, created=False, state=None, hostname=dns_name,
-                                )
-                    # Counted only once the row's savepoint is released.
-                    dns_records_processed += 1
-                    if row_created_id is not None:
-                        created_host_ids.add(row_created_id)
-
                 except Exception as e:
                     logger.warning(f"Error processing DNS record row {i}: {str(e)}")
                     self._reject(i, str(e)[:80])
                     continue
+
+                # Review 2026-10-01 R5 — the row's writes are one unit.  The
+                # handler "rejected" a row whose statement had failed and
+                # carried on in a session that could no longer flush, so every
+                # later row was rejected too and the import failed (the
+                # record-isolation rule, v2.419.0; ``write_record``, B1-1).
+                self._row_created_address = None
+                outcome = write_record(
+                    self.db,
+                    lambda: self._write_row(scan, record_type, dns_name, ip_address, ttl_raw),
+                    observed=self._observed, on_rollback=self._reset_caches,
+                )
+                if outcome.error is not None:
+                    logger.warning(f"Error processing DNS record row {i}: {outcome.error}")
+                    self._reject(i, str(outcome.error)[:80])
+                    continue
+                # Counted only once the row's savepoint is released.
+                dns_records_processed += 1
+                if outcome.value is not None:
+                    created_host_ids.add(outcome.value)
                 # Heartbeat OUTSIDE the row's savepoint and its handler: a
                 # cancel or timeout stops the import, it is not a bad row.
                 beat.tick()
@@ -299,6 +249,67 @@ class DNSParser:
             f"Processed: {dns_records_processed} DNS records"
         )
         return scan
+
+    def _write_row(
+        self, scan: models.Scan, record_type: str, dns_name: str, ip_address: str, ttl_raw: str,
+    ) -> Optional[int]:
+        """One CSV row's writes (inside its record savepoint).  Returns the
+        id of the host it created, if any."""
+        record_observation(
+            self.db,
+            project_id=self._project_id,
+            name=dns_name,
+            record_type=record_type,
+            value=ip_address,
+            scan_id=scan.id,
+            ttl=int(ttl_raw) if ttl_raw.isdigit() else None,
+            cache=self._name_cache,
+        )
+
+        # For PTR records, also create/update the host.  Filter by project_id
+        # so a DNS upload in project A cannot rewrite hostnames on a host
+        # owned by project B (Host is unique by ``(project_id, ip_address)``
+        # — without the filter, ``.first()`` returns an arbitrary
+        # cross-project row).
+        if record_type == 'PTR':
+            existing_host = self._known_host(ip_address)
+
+            if existing_host:
+                # PTR outranks scanner/forward names but never an operator's
+                # correction (was: unconditional overwrite).
+                renamed = apply_hostname_candidate(existing_host, dns_name, 'ptr')
+                # Addressed by this scan whether or not the name changed.  No
+                # state: a PTR row does not say the host is up.
+                self._observed.note(
+                    existing_host, created=False, state=None, hostname=dns_name,
+                    renamed=renamed,
+                )
+                return None
+            host_data = {
+                'hostname': dns_name,
+                'hostname_source': 'ptr',
+                'names_recorded': True,  # record_observation above wrote it
+                'state': 'unknown',
+            }
+            created = self.dedup_service.find_or_create_host(
+                ip_address, scan.id, host_data, project_id=self._project_id
+            )
+            # In the address map at once; out again if the row rolls back
+            # (`_reset_caches`).
+            self._hosts.add(created)
+            self._row_created_address = ip_address
+            return created.id
+        if record_type in ('A', 'AAAA'):
+            # A forward row whose value is a KNOWN host's address: the scan
+            # addressed that host, as dnsx notes it for the same answer
+            # (owner decision 2026-10-11).  Only the note: this row applies no
+            # display name and creates no host.
+            addressed_host = self._known_host(ip_address)
+            if addressed_host:
+                self._observed.note(
+                    addressed_host, created=False, state=None, hostname=dns_name,
+                )
+        return None
 
     def _reset_caches(self) -> None:
         """After a row's savepoint rolled back (see record_savepoint): the

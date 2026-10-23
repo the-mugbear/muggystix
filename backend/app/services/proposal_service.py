@@ -751,8 +751,9 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
     The kind and finding are read without a lock; neither changes after a
     proposal is created.  ``FOR NO KEY UPDATE``: deciders exclude each other,
     while a comment or history row referencing the finding is not held up.
-    An endpoint-status proposal locks its ENDPOINT row first, then itself
-    (comprehensive review 2026-10-16, A3): accepting it locks the endpoint in
+    An endpoint-status proposal locks its FINDING, then its ENDPOINT row,
+    then itself (comprehensive review 2026-10-16, A3; the finding since
+    2026-10-22, A-R1 — every endpoint write takes it first): accepting it locks the endpoint in
     ``set_endpoint_status``, and removing that endpoint holds the row while
     its DELETE cascades into the proposal row — proposal-then-endpoint
     against endpoint-then-proposal, a deadlock Postgres broke with a 500.
@@ -781,8 +782,14 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
             Finding.id == head.finding_id, Finding.project_id == project_id,
         ).with_for_update(key_share=True).first()
     if head is not None and head.kind == ProposalKind.ENDPOINT_STATUS.value and head.finding_host_id:
-        # FOR UPDATE: the lock `set_endpoint_status` takes, and the one a
-        # DELETE of the row needs.
+        # The finding first, as every endpoint write takes it
+        # (`FindingService.lock_finding`, review 2026-10-22, A-R1), then the
+        # endpoint — FOR UPDATE: the lock `set_endpoint_status` takes, and the
+        # one a DELETE of the row needs.
+        if head.finding_id:
+            db.query(Finding.id).filter(
+                Finding.id == head.finding_id, Finding.project_id == project_id,
+            ).with_for_update(key_share=True).first()
         db.query(FindingHost.id).filter(FindingHost.id == head.finding_host_id).with_for_update().first()
     return get_proposal(db, project_id, proposal_id, for_update=True)
 

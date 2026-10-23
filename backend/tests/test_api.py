@@ -539,38 +539,17 @@ class TestDashboardAPI:
         response = client.get(f"/api/v1/projects/{test_project.id}/dashboard/stats")
         assert response.status_code == 200
         
+        # Review 2026-10-22 (A-R7): the scanner observation counts are the
+        # whole answer; the retired dashboard's fields are gone.
         stats = response.json()
-        assert stats["total_scans"] == 0
-        assert stats["total_hosts"] == 0
-        assert stats["total_ports"] == 0
-        assert stats["total_subnets"] == 0
-        assert isinstance(stats["recent_scans"], list)
-        assert len(stats["recent_scans"]) == 0
-    
-    def test_dashboard_stats_with_data(self, client, db_session, sample_gnmap_data, temp_file, test_project):
-        """Test dashboard stats with sample data."""
-        from app.parsers.gnmap_parser import GnmapParser
-        
-        # Create sample data
-        parser = GnmapParser(db_session)
-        
-        # Write sample data to temp file
-        with open(temp_file, 'w') as f:
-            f.write(sample_gnmap_data)
-        
-        scan = parser.parse_file(temp_file, "test.gnmap", project_id=test_project.id)
-        scan.project_id = test_project.id
-        db_session.commit()
-        
-        # Test API
-        response = client.get(f"/api/v1/projects/{test_project.id}/dashboard/stats")
-        assert response.status_code == 200
+        assert set(stats) == {"vulnerability_stats"}
+        assert stats["vulnerability_stats"]["total_vulnerabilities"] == 0
+        assert stats["vulnerability_stats"]["hosts_with_vulnerabilities"] == 0
 
-        stats = response.json()
-        assert stats["total_scans"] == 1
-        assert stats["total_hosts"] == 2
-        assert stats["total_ports"] > 0  # Should have ports from parsed data
-    
+    # (``test_dashboard_stats_with_data`` checked the retired totals of a
+    # gnmap import; the counts with data are pinned by
+    # ``test_review_2026_10_22_read_paths.py`` and
+    # ``test_operations_ux_2026_09_26.py``.)
 
 
 class TestErrorHandling:

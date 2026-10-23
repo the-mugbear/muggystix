@@ -1203,3 +1203,33 @@ describe('FindingDetail — removing an endpoint from its row menu', () => {
     await waitFor(() => expect(document.querySelector('[data-endpoint-row="31"]')).not.toBeNull());
   });
 });
+
+// Review 2026-10-22, N1 — the source note's thread was read from the FIRST
+// endpoint's host (`finding.hosts[0]`), which need not be the note's host and
+// is gone once that endpoint is removed.  The server names the note's host.
+describe('FindingDetail — the evidence thread is read from the note’s own host', () => {
+  it('reads the notes of evidence_host_id, not of the first endpoint, and links there', async () => {
+    mocked.getFinding.mockResolvedValue(finding({
+      source: 'note', evidence_annotation_id: 50, evidence_host_id: 9, host_count: 1,
+      hosts: [{ id: 31, host_id: 1, ip_address: '10.0.0.1', hostname: null, host_status: 'open' }],
+    }));
+    mocked.getHostNotes.mockResolvedValue([
+      { id: 50, host_id: 9, parent_id: null, body: 'Anonymous FTP accepted', created_at: '2026-08-01T00:00:00Z', attachments: [] },
+    ]);
+    renderAt('/findings/7');
+    expect(await screen.findByText('Anonymous FTP accepted')).toBeInTheDocument();
+    expect(mocked.getHostNotes).toHaveBeenCalledWith(1, 9, expect.anything());
+    expect(mocked.getHostNotes).not.toHaveBeenCalledWith(1, 1, expect.anything());
+  });
+
+  it('reads no host’s notes when the server names none', async () => {
+    mocked.getFinding.mockResolvedValue(finding({
+      source: 'note', evidence_annotation_id: 50, evidence_host_id: null, host_count: 1,
+      hosts: [{ id: 31, host_id: 1, ip_address: '10.0.0.1', hostname: null, host_status: 'open' }],
+    }));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    await act(async () => { await Promise.resolve(); });
+    expect(mocked.getHostNotes).not.toHaveBeenCalled();
+  });
+});

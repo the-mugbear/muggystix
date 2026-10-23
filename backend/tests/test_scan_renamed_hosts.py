@@ -34,6 +34,7 @@ from app.db.models_project import Project
 from app.parsers.dns_parser import DNSParser
 from app.parsers.dnsx_parser import DnsxParser
 from app.parsers.parser_utils import (
+    ProjectHostsByAddress,
     ScanHostObservations,
     record_hosts_in_scan,
     resolve_host_cached,
@@ -192,22 +193,22 @@ def test_the_web_parsers_path_marks_a_host_it_named_and_not_one_it_created(db_se
     db_session.commit()
 
     scan = _scan(db_session, pid, "httpx.jsonl", tool="httpx")
-    observed, cache = ScanHostObservations(), {}
+    observed, hosts = ScanHostObservations(), ProjectHostsByAddress(db_session, pid)
 
     def record(address, name):
-        resolved = resolve_host_cached(db_session, pid, address, cache, hostname=name)
+        resolved = resolve_host_cached(db_session, hosts, address, hostname=name)
         observed.note(resolved.host, created=resolved.created, state="up", hostname=name, renamed=resolved.renamed)
         return resolved
 
     assert record("10.61.0.1", "web.example").renamed is True      # an empty name filled
     assert record("10.61.0.2", "vhost.example").renamed is False   # a PTR name stays
-    assert record("10.61.0.9", "new.example") == (cache["10.61.0.9"], True, False)
+    assert record("10.61.0.9", "new.example") == (hosts.get("10.61.0.9"), True, False)
     record_hosts_in_scan(db_session, scan.id, observed)   # ahead of a heartbeat…
     db_session.flush()                                     # …whose commit stores the rows
     # Later records of the same file: the name again, and the created host
     # named anew by a cache hit — neither changes what is recorded.
     assert record("10.61.0.1", "web.example").renamed is False
-    cache["10.61.0.9"].hostname = None
+    hosts.get("10.61.0.9").hostname = None
     assert record("10.61.0.9", "again.example").renamed is True    # the rule's answer…
     record_hosts_in_scan(db_session, scan.id, observed)
 
@@ -216,7 +217,7 @@ def test_the_web_parsers_path_marks_a_host_it_named_and_not_one_it_created(db_se
         "10.61.0.2": (False, False),
         "10.61.0.9": (True, False),                                 # …but the scan created it
     }
-    assert observed.renamed_host_ids == {cache["10.61.0.1"].id}
+    assert observed.renamed_host_ids == {hosts.get("10.61.0.1").id}
 
 
 # ----------------------------------------------------------- every format

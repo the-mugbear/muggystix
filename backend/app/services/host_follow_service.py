@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from sqlalchemy import func, or_, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models import (
@@ -447,81 +447,3 @@ class HostFollowService:
         # R6: the NoteAttachment rows cascaded with the note — drop their files too.
         from app.services.note_attachment_service import purge_note_files
         purge_note_files(nid)
-
-    def get_dashboard_activity(self, user_id: int, limit: int = 5, project_id: int = None) -> Dict[str, object]:
-        """Return recent note activity and follow counts for dashboard display,
-        optionally scoped to a project."""
-        note_query = self.db.query(func.count(Annotation.id)).filter(Annotation.user_id == user_id)
-        if project_id is not None:
-            note_query = note_query.join(models.Host, Annotation.host_id == models.Host.id).filter(models.Host.project_id == project_id)
-        total_notes = note_query.scalar() or 0
-
-        follow_query = self.db.query(func.count(HostFollow.id)).filter(HostFollow.user_id == user_id)
-        if project_id is not None:
-            follow_query = follow_query.join(models.Host, HostFollow.host_id == models.Host.id).filter(models.Host.project_id == project_id)
-        follows_count = follow_query.scalar() or 0
-
-        notes_query = (
-            self.db.query(Annotation)
-            .filter(Annotation.user_id == user_id)
-            .options(selectinload(Annotation.host))
-        )
-        if project_id is not None:
-            notes_query = notes_query.join(models.Host, Annotation.host_id == models.Host.id).filter(models.Host.project_id == project_id)
-        notes = (
-            notes_query
-            .order_by(func.coalesce(Annotation.updated_at, Annotation.created_at).desc())
-            .limit(limit)
-            .all()
-        )
-
-        active_host_ids = {note.host_id for note in notes}
-
-        recent_notes = []
-        for note in notes:
-            host = note.host
-            recent_notes.append(
-                {
-                    "note_id": note.id,
-                    "host_id": note.host_id,
-                    "ip_address": host.ip_address if host else "unknown",
-                    "hostname": host.hostname if host else None,
-                    "preview": (note.body[:140] + "…") if len(note.body) > 140 else note.body,
-                    "created_at": note.created_at,
-                    "updated_at": note.updated_at,
-                }
-            )
-
-        # Review progress: count hosts in each follow stage for this user,
-        # scoped to the current project.
-        host_count_query = self.db.query(func.count(models.Host.id))
-        if project_id is not None:
-            host_count_query = host_count_query.filter(models.Host.project_id == project_id)
-        total_hosts = host_count_query.scalar() or 0
-
-        status_query = (
-            self.db.query(HostFollow.status, func.count(HostFollow.id))
-            .filter(HostFollow.user_id == user_id)
-        )
-        if project_id is not None:
-            status_query = status_query.join(models.Host, HostFollow.host_id == models.Host.id).filter(models.Host.project_id == project_id)
-        status_rows = status_query.group_by(HostFollow.status).all()
-        status_counts = {row[0]: row[1] for row in status_rows}
-        watching = status_counts.get(FollowStatus.WATCHING, 0)
-        in_review = status_counts.get(FollowStatus.IN_REVIEW, 0)
-        reviewed = status_counts.get(FollowStatus.REVIEWED, 0)
-        not_reviewed = total_hosts - (watching + in_review + reviewed)
-
-        return {
-            "total_notes": total_notes,
-            "active_host_count": len(active_host_ids),
-            "following_count": follows_count,
-            "review_progress": {
-                "total_hosts": total_hosts,
-                "not_reviewed": not_reviewed,
-                "watching": watching,
-                "in_review": in_review,
-                "reviewed": reviewed,
-            },
-            "recent_notes": recent_notes,
-        }

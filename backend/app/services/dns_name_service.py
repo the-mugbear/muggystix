@@ -538,23 +538,34 @@ def current_binding_condition(r) -> ColumnElement:
     Host coverage (``host_reachable_via_in_scope_name_condition``), the
     by-host view and ``address_state_for_names`` all use this, so an address
     a name moved away from cannot linger as "reachable" anywhere.
+
+    One probe per record (review 2026-10-22, A-R8): the name's newest answer
+    — scan and timestamp together — is ONE row read from
+    ``ix_dns_records_name_latest_binding`` (the index is this ORDER BY under
+    this ``record_type`` predicate; change one, change the other).  It was
+    two top-1 subqueries, each sorting every record of the name.
+    ``tests/test_review_2026_10_22_read_paths.py`` keeps the two-subquery
+    form as the reference and pins old == new.
     """
     r2 = aliased(models.DNSRecord)
     latest = (
-        select(r2.scan_id, _obs_ts(r2).label("ts"))
+        select(r2.scan_id.label("scan_id"), _obs_ts(r2).label("ts"))
         .where(r2.name_id == r.name_id, r2.record_type.in_(DNS_RESOLVING_TYPES))
         .order_by(_obs_ts(r2).desc(), r2.id.desc())
         .limit(1)
         .correlate(r)
+        .subquery("latest_binding")
     )
-    latest_scan = latest.with_only_columns(r2.scan_id).scalar_subquery()
-    latest_ts = latest.with_only_columns(_obs_ts(r2)).scalar_subquery()
     return and_(
         r.record_type.in_(DNS_RESOLVING_TYPES),
-        or_(
-            and_(r.scan_id.isnot(None), r.scan_id == latest_scan),
-            and_(latest_scan.is_(None), _obs_ts(r) == latest_ts),
-        ),
+        select(literal(1))
+        .select_from(latest)
+        .where(or_(
+            and_(r.scan_id.isnot(None), r.scan_id == latest.c.scan_id),
+            and_(latest.c.scan_id.is_(None), _obs_ts(r) == latest.c.ts),
+        ))
+        .correlate(r)
+        .exists(),
     )
 
 

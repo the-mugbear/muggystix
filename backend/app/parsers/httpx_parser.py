@@ -54,15 +54,16 @@ from app.services.dns_name_service import (
 )
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ProjectHostsByAddress,
     announce_scan,
     correlate_scan,
     ScanClock,
     ScanHostObservations,
     parse_rfc3339,
     record_hosts_in_scan,
-    record_savepoint,
     resolve_host_cached,
     resolve_port_cached,
+    write_record,
 )
 from app.parsers.streaming_json import iter_json_records, json_lines
 
@@ -122,9 +123,10 @@ class HttpxParser:
     def __init__(self, db: Session):
         self.db = db
         self._project_id: Optional[int] = None
-        # Per-file host/port resolution caches — collapse the per-record Host
-        # and Port lookups (many records share a host) to a dict hit.
-        self._host_cache: dict = {}
+        # Per-file host/port resolution — collapse the per-record Host and
+        # Port lookups (many records share a host): the project's hosts by
+        # address, read once (B1-2), and a port memo.
+        self._hosts: Optional[ProjectHostsByAddress] = None
         self._observed = ScanHostObservations()
         self._port_cache: dict = {}
         # v2.322.0 — named-asset bookkeeping (see dns_name_service).
@@ -132,14 +134,14 @@ class HttpxParser:
 
     def _reset_caches(self) -> None:
         """After a record's savepoint rolled back: the caches may hold rows it
-        created.  Rebuilding them costs re-queries only."""
-        self._host_cache.clear()
+        created.  Rebuilding them costs re-queries only; the host map heals
+        itself (a host the record created is found gone)."""
         self._port_cache.clear()
         self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
-        self._host_cache.clear()
+        self._hosts = ProjectHostsByAddress(self.db, self._project_id)
         self._port_cache.clear()
         self._name_cache = ObservationCache()
         start = time.time()
@@ -175,17 +177,18 @@ class HttpxParser:
             beat.tick()
             if isinstance(record, dict):
                 clock.observe(parse_rfc3339(record.get("timestamp")))
-            try:
-                # v2.419.0 (H3) — isolated: a failed flush used to poison the
-                # session and fail the whole import after "skipping" one record.
-                with record_savepoint(self.db, self._observed, self._reset_caches):
-                    host_id = self._upsert_record(record, scan)
-                if host_id:
-                    written += 1
-                else:
-                    skipped += 1
-            except Exception as exc:
-                logger.warning("httpx: skipping record due to %s", exc)
+            # v2.419.0 (H3) — isolated: a failed flush used to poison the
+            # session and fail the whole import after "skipping" one record.
+            outcome = write_record(
+                self.db, lambda: self._upsert_record(record, scan),
+                observed=self._observed, on_rollback=self._reset_caches,
+            )
+            if outcome.error is not None:
+                logger.warning("httpx: skipping record due to %s", outcome.error)
+                skipped += 1
+            elif outcome.value:
+                written += 1
+            else:
                 skipped += 1
 
         # v2.12.2 — write HostScanHistory rows so the recon summary's
@@ -281,9 +284,7 @@ class HttpxParser:
         # Resolve host (create on demand — httpx hit it, it's real) and port,
         # both cached per-file.  Enriches a missing hostname on a cache/db hit
         # from the value httpx learned (TLS cert SAN, ``input``, etc.).
-        resolved = resolve_host_cached(
-            self.db, self._project_id, ip, self._host_cache, hostname=hostname,
-        )
+        resolved = resolve_host_cached(self.db, self._hosts, ip, hostname=hostname)
         host_row = resolved.host
         # An HTTP response is evidence the host is up NOW, whatever the
         # inventory row says (v2.332.1 — the snapshot used to copy Host.state).

@@ -703,7 +703,8 @@ const SystemSettings: React.FC = () => {
             <DialogTitle>Add New User</DialogTitle>
             <DialogDescription>
               Member accounts get project access via project membership; Admin accounts get full
-              system access. Role can be changed later from the users table.
+              system access. Role can be changed later from the users table. The password you set
+              works once: the new user chooses their own at first sign-in.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-md">

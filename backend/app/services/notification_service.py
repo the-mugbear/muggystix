@@ -9,12 +9,12 @@ import logging
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 
 from app.db.models_project import (
     Notification, NoteMention, Project, ProjectMembership,
 )
-from app.db.models_auth import User
+from app.db.models_auth import User, UserRole
 from app.db.models import Annotation
 from app.schemas.schemas import MentionNotified
 
@@ -737,8 +737,19 @@ class NotificationService:
             notifications.append(notification)
         return notifications
 
-    def _shown(self, query):
-        """``query`` narrowed to the notifications this installation shows.
+    def _shown(self, query, user_id: int):
+        """``query`` narrowed to the notifications this installation shows
+        ``user_id`` — the bell, its count and "mark all read" alike.
+
+        A project's notifications only while the person is a member of it
+        (review 2026-10-22, A-R3): a member removed from a project kept
+        paging through its finding titles, assignments and mentions — a
+        mention stores the first 200 characters of the note — although every
+        other read of the project refused them.  Re-added, they see them
+        again; nothing is deleted.  A global administrator sees every
+        project's (remediation alerts are written to global admins with no
+        membership); a notification with no project is everyone's it was
+        written to.
 
         With remediation tracking switched off nothing about remediation is
         shown (the two installation modes): the deadline alerts written while
@@ -746,6 +757,17 @@ class NotificationService:
         the bell, its count and "mark all read" leave them out."""
         from app.services import remediation_policy
 
+        is_global_admin = self.db.query(User.id).filter(
+            User.id == user_id, User.role == UserRole.ADMIN,
+        ).first() is not None
+        if not is_global_admin:
+            query = query.filter(or_(
+                Notification.project_id.is_(None),
+                exists().where(
+                    ProjectMembership.project_id == Notification.project_id,
+                    ProjectMembership.user_id == user_id,
+                ),
+            ))
         if remediation_policy.load(self.db).enabled:
             return query
         return query.filter(Notification.type != REMEDIATION_NOTIFICATION_TYPE)
@@ -758,7 +780,7 @@ class NotificationService:
         offset: int = 0,
     ) -> List[Notification]:
         """Fetch notifications for a user."""
-        query = self._shown(self.db.query(Notification).filter(Notification.user_id == user_id))
+        query = self._shown(self.db.query(Notification).filter(Notification.user_id == user_id), user_id)
         if unread_only:
             query = query.filter(Notification.is_read == False)
         # `id` breaks ties: rows written in one transaction share `created_at`,
@@ -771,7 +793,7 @@ class NotificationService:
         return self._shown(self.db.query(func.count(Notification.id)).filter(
             Notification.user_id == user_id,
             Notification.is_read == False,
-        )).scalar() or 0
+        ), user_id).scalar() or 0
 
     def mark_read(self, notification_ids: List[int], user_id: int) -> int:
         """Mark specific notifications as read. Returns count updated."""
@@ -792,7 +814,7 @@ class NotificationService:
         updated = self._shown(self.db.query(Notification).filter(
             Notification.user_id == user_id,
             Notification.is_read == False,
-        )).update(
+        ), user_id).update(
             {"is_read": True, "read_at": now},
             synchronize_session=False,
         )

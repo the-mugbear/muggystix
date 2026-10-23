@@ -25,8 +25,8 @@ from app.parsers.parser_utils import (
     map_text_severity,
     normalize_ip,
     persist_host_observation,
-    record_savepoint,
     upsert_vulnerability,
+    write_record,
 )
 from app.services.dns_name_service import ObservationCache, bind_hostname
 from app.services.misconfig_checks import nikto_header_check, record_misconfig
@@ -404,15 +404,17 @@ class NiktoParser:
         # One finding's writes are one unit: a finding that fails is skipped
         # and counted, never the whole file (comprehensive review 2026-10-16,
         # B-OPS-6).
-        try:
-            with record_savepoint(self.db, on_rollback=self._reset_caches):
-                self._write_finding(
-                    scan=scan, ip_address=ip_address, hostname=hostname, port=port, title=title,
-                    description=description, plugin_id=plugin_id, cve_id=cve_id, severity=severity,
-                    references=references, request=request,
-                )
-        except Exception as exc:  # noqa: BLE001 — one finding, counted
-            logger.warning("Nikto: skipping a finding on %s:%s: %s", ip_address, port, exc)
+        outcome = write_record(
+            self.db,
+            lambda: self._write_finding(
+                scan=scan, ip_address=ip_address, hostname=hostname, port=port, title=title,
+                description=description, plugin_id=plugin_id, cve_id=cve_id, severity=severity,
+                references=references, request=request,
+            ),
+            on_rollback=self._reset_caches,
+        )
+        if outcome.error is not None:
+            logger.warning("Nikto: skipping a finding on %s:%s: %s", ip_address, port, outcome.error)
             self._skipped += 1
 
     def _reset_caches(self) -> None:

@@ -65,6 +65,28 @@ def touch_heartbeat() -> None:
         write_heartbeat(_heartbeat_path, _heartbeat_logger)
 
 
+class WorkerStopping(BaseException):
+    """The worker was asked to stop between two steps of a job.
+
+    A ``BaseException``, like ``SystemExit``, on purpose: the job's code has
+    blanket ``except Exception`` handlers that turn an error into a FAILED job
+    or a FAILED issued report, and being stopped by a restart is neither.  Only
+    the job runner catches it, and hands the job back to the queue
+    (``job_transitions.release``)."""
+
+
+def render_checkpoint() -> None:
+    """A long job's step boundary (a report render's ``on_progress``: before
+    each format and each post-processor): refresh the liveness file, then stop
+    here if SIGTERM arrived.  A render is several Quarto runs of up to
+    ``REPORT_RENDER_TIMEOUT_SECONDS`` each, more than the container's stop
+    grace; stopping at the next boundary means the grace has to cover only
+    the ONE run in progress (review 2026-10-22, N4)."""
+    touch_heartbeat()
+    if _shutdown:
+        raise WorkerStopping("Worker shutting down")
+
+
 def write_heartbeat(path: str, logger: logging.Logger) -> None:
     """Rewrite the liveness file (mtime is what the healthcheck checks).
 

@@ -31,7 +31,6 @@ from app.services.format_registry import format_label
 from app.services.import_attention_service import superseded_import_condition
 from app.services import dns_name_service, host_work, scan_sightings
 from app.services import ingestion_service as imports
-from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services import ingestion_results_service
 from app.services.scan_inventory_filters import apply_job_inventory_filters, apply_scan_inventory_filters
@@ -914,30 +913,19 @@ def get_scans_summary(
         .order_by(func.count(models.Scan.id).desc(), User.username).all()
     ]
 
-    # The lead's failure figures, project-wide, in one statement: what needs
-    # someone (the ONE definition Ingestion Results and Operations use), and
-    # what failed but was already dismissed (discards, expiries included).
-    Job = models.IngestionJob
-    dismissed_failure = and_(Job.status == "failed", Job.dismissed_at.isnot(None))
-    discarded_job = Job.error_message == DISCARDED_MESSAGE
-    expired_job = Job.error_message.like(f"{EXPIRED_MESSAGE_PREFIX}%")
-    attention, superseded, not_imported, n_discarded, n_expired = (
-        db.query(
-            func.count(case((blocked_import_condition(), Job.id))),
-            func.count(case((and_(Job.dismissed_at.is_(None), superseded_import_condition()), Job.id))),
-            func.count(case((dismissed_failure, Job.id))),
-            func.count(case((and_(dismissed_failure, discarded_job), Job.id))),
-            func.count(case((and_(dismissed_failure, expired_job), Job.id))),
-        )
-        .filter(Job.project_id == project.id)
-        .one()
-    )
-    not_imported = int(not_imported or 0)
+    # The lead's failure figures, project-wide: the import history's own
+    # counts (``job_counts``, what its status chips count), so each reason the
+    # lead names is the size of the list its link opens (review 2026-10-22,
+    # B3-3).  An expiry nobody has dismissed is both "needs attention" and
+    # "expired" — each figure the size of its own list.
+    counts = ingestion_results_service.job_counts(db, project.id)
     by_reason = {
-        "discarded": int(n_discarded or 0),
-        "expired": int(n_expired or 0),
+        "discarded": counts["discarded"],
+        "expired": counts["expired"],
+        "dismissed": counts["failed_dismissed"],
     }
-    by_reason["dismissed"] = not_imported - by_reason["discarded"] - by_reason["expired"]
+    attention, superseded = counts["needs_attention"], counts["superseded"]
+    not_imported = sum(by_reason.values())
 
     return ScanInventorySummary(
         total_scans=host_row.total_scans or 0,
@@ -1715,6 +1703,10 @@ def get_scan(
     scan.up_hosts = int(host_row[1] or 0)
     scan.total_ports = int(port_row[0] or 0)
     scan.open_ports = int(port_row[1] or 0)
+    scan.batch_label = (
+        db.query(models.ScanBatch.label).filter(models.ScanBatch.id == scan.batch_id).scalar()
+        if scan.batch_id is not None else None
+    )
     return scan
 
 @router.get(

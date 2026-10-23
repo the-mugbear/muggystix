@@ -83,6 +83,33 @@ describe('ScanDetail', () => {
     expect(screen.getByRole('heading', { name: 'What this scan recorded' })).toBeInTheDocument();
   });
 
+  // Review 2026-10-22, B3-4 — the batch a file arrived in was sent and shown nowhere.
+  it('names the upload batch the file arrived in', async () => {
+    api.getScan.mockResolvedValue({
+      id: 9, filename: 'sweep.xml', tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
+      total_hosts: 2, up_hosts: 0, total_ports: 4, open_ports: 3, batch_id: 4, batch_label: 'Internal sweep, day 2',
+    });
+    renderPage();
+    expect(await screen.findByTestId('scan-batch')).toHaveTextContent('In upload batch: Internal sweep, day 2');
+  });
+
+  it('names an unlabelled batch by its number, and says nothing for a file that came alone', async () => {
+    api.getScan.mockResolvedValue({
+      id: 9, filename: 'sweep.xml', tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
+      total_hosts: 2, up_hosts: 0, total_ports: 4, open_ports: 3, batch_id: 4, batch_label: null,
+    });
+    const { unmount } = renderPage();
+    expect(await screen.findByTestId('scan-batch')).toHaveTextContent('In upload batch: #4');
+    unmount();
+    api.getScan.mockResolvedValue({
+      id: 9, filename: 'sweep.xml', tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
+      total_hosts: 2, up_hosts: 0, total_ports: 4, open_ports: 3, batch_id: null,
+    });
+    renderPage();
+    await screen.findByTestId('scan-measures');
+    expect(screen.queryByTestId('scan-batch')).toBeNull();
+  });
+
   // Review 2026-10-01 — host_scan_history.credentialed was stored and shown nowhere.
   it('has no Authenticated column when the scan said nothing about logging in', async () => {
     renderPage();

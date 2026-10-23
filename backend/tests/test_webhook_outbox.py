@@ -20,6 +20,9 @@ from app.db.models_project import (
 )
 from app.services import webhook_dispatcher as wd
 
+# The autouse fixture below replaces it; the A-R4 test needs the real one.
+_REAL_ATTEMPT = wd._attempt_delivery
+
 
 @pytest.fixture
 def webhook(db_session, test_project, test_user):
@@ -372,6 +375,26 @@ def test_delivery_history_is_reachable_over_the_api(
     assert rows[0]["attempts"] == 1
     assert rows[0]["last_error"]
     assert rows[0]["webhook_name"] == "outbox-fixture"
+
+
+def test_delivery_history_says_one_fixed_text_whatever_went_wrong(
+    client, db_session, test_project, webhook, monkeypatch
+):
+    """Review 2026-10-22, A-R4: the history stored the exception's own text —
+    refused / timed out / did not resolve per private address and port, the
+    probe the "send test" answer was closed against (N10)."""
+    def refused(*args, **kwargs):
+        raise ConnectionRefusedError("[Errno 111] Connection refused: 10.0.0.5:22")
+
+    monkeypatch.setattr(wd, "_attempt_delivery", _REAL_ATTEMPT)
+    monkeypatch.setattr(wd, "_post", refused)
+    _dispatch(db_session, test_project.id)
+    _expire_lease(db_session)
+    wd.sweep_pending_deliveries(db_session)
+
+    rows = client.get(f"/api/v1/projects/{test_project.id}/webhooks/deliveries").json()
+    assert [r["last_error"] for r in rows] == [wd.WEBHOOK_UNREACHABLE]
+    assert "10.0.0.5" not in rows[0]["last_error"] and "refused" not in rows[0]["last_error"]
 
 
 def test_a_settled_failure_can_be_requeued(

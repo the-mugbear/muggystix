@@ -13,6 +13,7 @@ deploy / docs": B1, S1–S7).  No database, no Docker.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -418,6 +419,73 @@ def test_deploy_reports_a_failed_final_up_instead_of_exiting_silently(project):
     assert result.returncode == 1
     assert "The deploy is NOT complete" in out
     assert "Deployment complete" not in out
+
+
+# ---------------------------------------------------------------------------
+# Option 1 and the OLD database (owner report 2026-10-22; review 2026-10-22,
+# B2-1): a db a reboot left down is started, alone; the rows a migration
+# would refuse stop the deploy before anything is backed up or built.
+# ---------------------------------------------------------------------------
+
+def test_deploy_starts_a_stopped_database_alone_and_takes_a_dump(project):
+    """Docker started the containers late after a reboot: option 1 used to
+    refuse at the pre-deploy backup ("Start the stack ($DC up -d db)")."""
+    project.state["containers"]["db"]["status"] = "exited"
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    calls = project.calls()
+    assert "starting the database ALONE" in out
+    start_db = calls.index("compose up -d db")
+    assert start_db < _index(calls, "pg_dump") < _index(calls, "compose build")
+    assert list(project.backups.glob("nm-pgdump-*.dump")) and not list(project.backups.glob("nm-pgdata-*"))
+    assert "PREDEPLOY_DB_DUMP|" in project.state_file()
+    assert "Deployment complete" in out
+
+
+def test_deploy_refuses_with_the_reason_when_the_database_will_not_start(project):
+    project.state["containers"]["db"]["status"] = "exited"
+    project.state["fail"] = [{"match": r"compose up -d db$", "rc": 1}]
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "Starting the database failed" in out and "scripted failure" in out
+    calls = project.calls()
+    assert _index(calls, "pg_dump") == -1 and _index(calls, "compose build") == -1
+
+
+def test_deploy_stops_before_the_backup_and_build_on_a_row_a_migration_refuses(project):
+    project.state["refusals"] = {"f4c8b2d0e6a1": 3}
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "REFUSED — f4c8b2d0e6a1 API keys not bound to an agent session: 3" in out
+    assert "Nothing was changed" in out and "DEPLOY_SKIP_REFUSAL_CHECK=1" in out
+    calls = project.calls()
+    assert _index(calls, "pg_dump") == -1 and _index(calls, "compose build") == -1
+    assert "DEPLOY_IN_PROGRESS" not in project.state_file()
+
+
+def test_deploy_stops_when_a_refusal_check_cannot_run_unless_told_to_skip(project):
+    project.state["refusal_errors"] = ["b6e0d4f2a8c3"]
+
+    refused = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(refused)
+    assert refused.returncode == 1
+    assert "1 of the 6 checks could not run" in out and "b6e0d4f2a8c3" in out
+    assert _index(project.calls(), "compose build") == -1
+
+    forced = project.run("deploy.sh", stdin="1\n", env={"DEPLOY_SKIP_REFUSAL_CHECK": "1"})
+
+    assert forced.returncode == 0, _output(forced)
+    assert "NOT counting the rows" in _output(forced)
 
 
 # Option 2 (first-time setup) — the same staged start, never a bare `up --build -d`
@@ -1349,6 +1417,57 @@ def test_restore_no_start_leaves_the_app_stopped(project):
     assert result.returncode == 0, _output(result)
     assert not any(c.startswith("compose up -d") and "backend" in c for c in project.calls())
     assert "instance state: STOPPED" in _output(result)
+
+
+def _dump_with_uploads(project) -> tuple[pathlib.Path, pathlib.Path]:
+    dump = project.make_dump()
+    archive = project.backups / "nm-uploads-20260101-000000.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("./evidence.txt")
+        info.size = 4
+        tar.addfile(info, io.BytesIO(b"data"))
+    meta = project.backups / (dump.name + ".meta")
+    meta.write_text(meta.read_text() + f"uploads_archive={archive.name}\n")
+    return dump, archive
+
+
+def test_restore_whose_uploads_fail_ends_partly_restored(project):
+    """Review 2026-10-22, A-R14: it printed an error, then "Restore complete"
+    and exit 0."""
+    dump, archive = _dump_with_uploads(project)
+    project.state["fail"] = [{"match": r"xzf - -C /uploads", "rc": 2}]
+
+    result = project.run("restore-db.sh", str(dump), stdin="RESTORE\n")
+
+    out = _output(result)
+    assert result.returncode == 4, out
+    assert "PARTLY RESTORED" in out and "Restore complete" not in out
+    assert "retry the files" in out and f'< "{archive}"' in out
+
+
+def test_restore_no_start_whose_uploads_fail_says_so(project):
+    dump, _ = _dump_with_uploads(project)
+    project.state["fail"] = [{"match": r"xzf - -C /uploads", "rc": 2}]
+
+    result = project.run("restore-db.sh", "--yes", "--no-start", str(dump))
+
+    out = _output(result)
+    assert result.returncode == 4, out
+    assert "STOPPED — PARTLY RESTORED" in out
+
+
+def test_rollback_whose_uploads_fail_starts_the_previous_build_and_says_partly_restored(project):
+    dump, _ = _dump_with_uploads(project)
+    project.rollback_state(dump, OLD_REV)
+    project.state["alembic_revision"] = NEW_REV
+    project.state["fail"] = [{"match": r"xzf - -C /uploads", "rc": 2}]
+
+    result = project.run("deploy.sh", stdin="7\n")
+
+    out = _output(result)
+    assert result.returncode == 1, out
+    assert "compose up -d --no-build db backend" in project.calls()
+    assert "Rollback — instance state: RUNNING — PARTLY RESTORED" in out
 
 
 def test_restore_without_the_typed_confirmation_changes_nothing(project):

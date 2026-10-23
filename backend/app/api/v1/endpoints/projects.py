@@ -18,6 +18,7 @@ from app.db.models_project import Project, ProjectMembership
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_client_info, get_current_user, require_role
 from app.core.security import log_audit_event
+from app.services.agent_session_service import end_sessions_of_operator
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -843,5 +844,11 @@ def remove_member(
                "old_role": membership.role, "new_role": None,
            })
     db.delete(membership)
+    # Their agents leave with them: a session renews on the operator being
+    # active alone, so it outlived the removal (review 2026-10-22).
+    end_sessions_of_operator(
+        db, user_id, ended_by=current_user, project_id=project_id,
+        reason="Ended: the operator was removed from the project.",
+    )
     db.commit()
     return {"message": "Member removed from project"}

@@ -23,17 +23,12 @@ export interface VulnerabilityStats {
   hosts_by_severity?: Partial<Record<'critical' | 'high' | 'medium' | 'low' | 'info', number>>;
 }
 
-// The response also carries recent_scans, subnet_stats and note_activity
-// (left from the old dashboard); nothing here reads them, so they are not
-// typed.
+/** `GET /dashboard/stats` — the scanner observation counts the Posture page's
+ *  "Scanner observations and scope" reads, and nothing else (2.524.0: the old
+ *  dashboard's totals, recent scans, subnet stats and note activity are gone).
+ *  A count that could not be taken is an error, never a missing field. */
 export interface DashboardStats {
-  total_scans: number;
-  total_hosts: number;
-  total_ports: number;
-  up_hosts: number;
-  open_ports: number;
-  total_subnets: number;
-  vulnerability_stats?: VulnerabilityStats;
+  vulnerability_stats: VulnerabilityStats;
 }
 
 export const getDashboardStats = async (projectId: number, signal?: AbortSignal): Promise<DashboardStats> => {

@@ -888,13 +888,20 @@ def _asks_for_retest(fh: FindingHost, changes) -> bool:
 def _lock_for_write(db, finding_host_ids: Sequence[int]) -> list[Remediation]:
     """Lock what a write to these findings on hosts touches and return their
     records.  ONE order for every writer (``apply``, a recorded follow-up, an
-    endpoint's removal): the ``finding_hosts`` rows in id order — which also
-    serialises two callers creating the same row's first record — then the
-    records in the same order.  Writers that locked different things, or the
-    same things in request order, could each hold what the other wanted."""
+    endpoint's removal): their FINDINGS in id order (``FOR NO KEY UPDATE``,
+    the lock ``FindingService.lock_finding`` takes first in every endpoint
+    write — review 2026-10-22, A-R1), then the ``finding_hosts`` rows in id
+    order — which also serialises two callers creating the same row's first
+    record — then the records in the same order.  Writers that locked
+    different things, or the same things in request order, could each hold
+    what the other wanted."""
     ids = sorted(set(finding_host_ids))
     if not ids:
         return []
+    finding_ids = sorted({fid for (fid,) in db.query(FindingHost.finding_id).filter(FindingHost.id.in_(ids))})
+    if finding_ids:
+        (db.query(Finding.id).filter(Finding.id.in_(finding_ids))
+         .order_by(Finding.id).with_for_update(key_share=True).all())
     # The rows themselves, re-read under the lock (``populate_existing``): a
     # caller that loaded them before (``apply``'s targets) then plans from
     # their state NOW — a retest result committed in between was planned over

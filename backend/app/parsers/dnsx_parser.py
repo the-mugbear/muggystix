@@ -62,7 +62,7 @@ from app.parsers.parser_utils import (
     ScanClock,
     parse_rfc3339,
     record_addressed_hosts,
-    record_savepoint,
+    write_record,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import (
@@ -351,9 +351,8 @@ class DnsxParser:
             # Per-record isolation: wrap each row's answer-persistence in a
             # SAVEPOINT so one malformed answer (a bad value, an unexpected
             # constraint violation) is skipped rather than poisoning the whole
-            # upload's transaction — the same resilience
-            # persist_host_observation(isolate=True) gives the other
-            # per-record parsers (naabu/amass/dirbuster).  The cheap pre-checks
+            # upload's transaction — the same resilience every per-record
+            # parser has (``write_record``).  The cheap pre-checks
             # above touch no DB state, so they stay outside the savepoint to
             # avoid a SAVEPOINT round-trip per resolution failure.
             journal: List[tuple] = []
@@ -376,16 +375,17 @@ class DnsxParser:
             # The one record isolation (it was written out here by hand —
             # review 2026-10-14, R5): a record that rolls back leaves no note
             # of the hosts it addressed, and the per-file caches forget it.
-            try:
-                with record_savepoint(self.db, self._observed, forget_the_row):
-                    row_records = self._persist_row_answers(
-                        journal, row, host, ttl, resolver, scan.id, observed_at,
-                    )
-                records_written += row_records
-                self._created_host_ids |= self._row_created
-            except Exception as exc:  # noqa: BLE001 — isolate one bad record
+            outcome = write_record(
+                self.db,
+                lambda: self._persist_row_answers(journal, row, host, ttl, resolver, scan.id, observed_at),
+                observed=self._observed, on_rollback=forget_the_row,
+            )
+            if outcome.error is not None:
                 skipped_records += 1
-                logger.warning("dnsx: skipping malformed record host=%r: %s", host, exc)
+                logger.warning("dnsx: skipping malformed record host=%r: %s", host, outcome.error)
+            else:
+                records_written += outcome.value
+                self._created_host_ids |= self._row_created
 
         record_addressed_hosts(self.db, scan.id, self._observed)
         clock.apply(scan)

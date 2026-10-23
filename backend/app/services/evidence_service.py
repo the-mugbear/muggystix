@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from sqlalchemy import and_, case, exists, func, or_, select, true
+from sqlalchemy import ARRAY, Integer, and_, any_, bindparam, case, exists, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -34,6 +34,7 @@ from app.db.models_proposals import EvidenceRecord
 from app.services.host_test_queries import tested_host_ids
 from app.schemas.metric import ratio_metric
 from app.services import scope_coverage
+from app.services.scope_targets_service import ip_order_by
 
 # Ports that make a host *eligible* for a domain's assessment.
 _WEB_PORTS = {80, 443, 8080, 8443, 8000, 8888, 8081, 4443, 9443, 8008}
@@ -532,13 +533,24 @@ def evidence_gap_hosts(
             f"{outside_scope} of these {total} hosts are outside the declared scope (no scoped "
             "subnet and no in-scope name). Confirm them before collecting anything against them."
         )
-    chosen = gap_ids[:limit]
+    # The first ``limit`` of the WHOLE gap by address, ordered and cut in SQL
+    # with the server's shared address order (``scope_targets_service.ip_order_by``:
+    # as ``inet``, IPv6 too, an unparseable address last, then id).  It was the first ``limit`` by id, then that cut sorted
+    # by an IPv4-only key that put every IPv6 host first as ``[0]`` (review
+    # 2026-10-22, nitpick).  The ids go as one array parameter, never an IN
+    # list of every gap host.
     hosts = (
         db.query(models.Host.id, models.Host.ip_address, models.Host.hostname)
-        .filter(models.Host.id.in_(chosen))
+        .filter(
+            models.Host.project_id == project_id,
+            models.Host.id == any_(bindparam("gap_ids", gap_ids, type_=ARRAY(Integer))),
+        )
+        .order_by(*ip_order_by(db))
+        .limit(limit)
         .all()
-        if chosen else []
+        if gap_ids else []
     )
+    chosen = [h.id for h in hosts]
     port_filter = None
     if domain == "web_tls":
         port_filter = or_(models.Port.port_number.in_(_WEB_PORTS), models.Port.service_name.ilike("http%"))
@@ -553,7 +565,6 @@ def evidence_gap_hosts(
             .all()
         ):
             ports_by_host.setdefault(hid, []).append(port)
-    by_ip = sorted(hosts, key=lambda h: [int(x) if x.isdigit() else 0 for x in h.ip_address.split(".")] if "." in h.ip_address else [0])
     return {
         "domain": domain,
         "label": DOMAIN_LABELS[domain],
@@ -567,7 +578,7 @@ def evidence_gap_hosts(
                 "hostname": h.hostname,
                 "ports": sorted(ports_by_host.get(h.id, [])),
             }
-            for h in by_ip
+            for h in hosts
         ],
         "action": action,
         # The scope facts behind the advice, for the page and for the plan it

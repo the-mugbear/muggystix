@@ -45,6 +45,7 @@ from app.services.ingestion_service import (
 from tests.conftest import engine
 from tests.ingestion_job_harness import (
     all_scan_ids,
+    cancel_from_the_api,
     host_ips,
     job_row,
     kill_worker,
@@ -360,7 +361,7 @@ def test_a_cancel_from_another_connection_stops_the_batch_before_it_is_committed
         beats.append(progress)
         if len(beats) == 2:
             # Another process: its own service object, its own connection.
-            assert IngestionService().cancel_job(job_id_) is True
+            assert cancel_from_the_api(job_id_) is True
         try:
             return real(db, job_id_, progress, **kwargs)
         except ParseFailure:
@@ -538,6 +539,10 @@ def test_a_parser_whose_partial_scan_cannot_be_removed_ends_the_fallback_chain(
 def test_cancelling_a_job_whose_worker_is_dead_removes_its_partial_scan(
     db_session, test_project, tmp_path,
 ):
+    """Nobody is left to see the cancel, so the scan is the reaper's sweep's
+    on the worker's next poll — never removed inside the cancel request
+    (review 2026-10-22, A-R11: it ran the cleanup on a second connection
+    with no statement timeout; the sweep is the one implementation)."""
     pid = test_project.id
     worker = IngestionService()
     job_id = queue_file(db_session, pid, nmap_file(tmp_path, 250))
@@ -547,10 +552,14 @@ def test_cancelling_a_job_whose_worker_is_dead_removes_its_partial_scan(
     _age_heartbeat(db_session, job_id)
 
     db_session.commit()
-    assert IngestionService().cancel_job(job_id) is True  # the API process
+    assert cancel_from_the_api(job_id) is True  # the API process
 
     job = job_row(db_session, job_id)
     assert job.status == "failed" and job.error_message == "Cancelled by user"
+    assert len(all_scan_ids(db_session)) == 1   # the request removed nothing
+
+    assert worker.reap_orphaned_jobs() == 0     # the worker's next poll
+    job = job_row(db_session, job_id)
     assert job.in_progress_scan_id is None
     assert all_scan_ids(db_session) == []
     assert host_ips(db_session, pid) == []
@@ -570,7 +579,7 @@ def test_the_reaper_cleans_a_cancelled_job_whose_worker_died_after_the_cancel(
         run_until_killed(db_session, worker)
     db_session.commit()
     with live_attempt(db_session, job_id):      # the worker, still alive for now
-        assert IngestionService().cancel_job(job_id) is True
+        assert cancel_from_the_api(job_id) is True
         assert job_row(db_session, job_id).status == "failed"
         assert len(all_scan_ids(db_session)) == 1  # a live attempt cleans this itself
 
@@ -601,7 +610,7 @@ def test_the_sweep_leaves_a_job_that_was_retried_and_claimed_after_it_was_listed
         run_until_killed(db_session, worker)
     db_session.commit()
     with live_attempt(db_session, job_id):      # cancelled while its worker lived…
-        assert IngestionService().cancel_job(job_id) is True
+        assert cancel_from_the_api(job_id) is True
     _age_heartbeat(db_session, job_id)          # …which then died
     scans = all_scan_ids(db_session)
     assert len(scans) == 1

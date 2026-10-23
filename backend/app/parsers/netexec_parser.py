@@ -20,7 +20,7 @@ from app.services.confidence_service import (
 )
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySource
-from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text, record_savepoint
+from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text, write_record
 from app.parsers.streaming_json import document_before_the_cut
 from app.services import smb_signing as smb_signing_states
 from app.services.misconfig_checks import record_misconfig
@@ -706,19 +706,14 @@ class NetexecParser:
     def _write_isolated(self, write, *args) -> None:
         """One host's writes as one unit: a host that fails is rolled back,
         skipped and counted, never the whole file (comprehensive review
-        2026-10-16, B-OPS-6).  A cancel or a shutdown still ends the parse."""
-        from app.services.ingestion_service import ParseFailure
-
+        2026-10-16, B-OPS-6).  A cancel or a shutdown still ends the parse
+        (``write_record`` raises it)."""
         recorded = self._hosts_recorded
-        try:
-            with record_savepoint(self.db, on_rollback=self._forget_rolled_back):
-                write(*args)
-        except ParseFailure:
-            raise
-        except Exception as exc:  # noqa: BLE001 — one host, counted
+        outcome = write_record(self.db, lambda: write(*args), on_rollback=self._forget_rolled_back)
+        if outcome.error is not None:
             self._hosts_recorded = recorded
             self._skipped += 1
-            logger.warning("NetExec: skipping a host: %s", exc)
+            logger.warning("NetExec: skipping a host: %s", outcome.error)
 
     def _forget_rolled_back(self) -> None:
         """After a host's savepoint rolled back: what this parse remembered

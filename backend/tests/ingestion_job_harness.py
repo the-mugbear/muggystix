@@ -13,7 +13,7 @@ happen at the N-th heartbeat of the run:
 
     svc = IngestionService()
     job_id = queue_file(db_session, test_project.id, path)
-    with on_heartbeat(svc, 2, lambda: svc.cancel_job(job_id)):
+    with on_heartbeat(svc, 2, lambda: cancel_from_the_api(job_id)):
         run_next(db_session, svc)
     job = job_row(db_session, job_id)
 
@@ -35,6 +35,16 @@ class WorkerKilled(BaseException):
     """A hard kill (SIGKILL / OOM) at a chosen point.  A ``BaseException`` on
     purpose: no ``except Exception`` cleanup runs, which is the whole point —
     the job is left ``processing`` exactly as a dead worker leaves it."""
+
+
+def cancel_from_the_api(job_id: int) -> bool:
+    """What ``POST /upload/jobs/{id}/cancel`` does: ``cancel_job`` on the
+    request's own session — another connection than the worker's (another
+    process in production)."""
+    from app.db import session as _session_module
+
+    with _session_module.SessionLocal() as db:
+        return IngestionService().cancel_job(db, job_id)
 
 
 def queue_file(

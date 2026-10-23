@@ -458,7 +458,9 @@ describe('Query page — history and richer suggestions (5.408.0)', () => {
     expect(mine).toHaveTextContent('3 runs');
     expect(within(mine).queryByText('Agent')).not.toBeInTheDocument();
     expect(within(agents).getByText('Agent')).toBeInTheDocument();
-    expect(agents).toHaveTextContent("Refused: Unknown column 'bogus' in hosts");
+    // Where it was refused, as the live error says it (review 2026-10-22, B3-4).
+    expect(agents).toHaveTextContent("Refused: Unknown column 'bogus' in hosts (at character 15)");
+    expect(mine).not.toHaveTextContent('at character');
     // The search is the address's, sent to the server.
     expect(api.listQueryHistory).toHaveBeenCalledWith(9, { contains: 'bogus', limit: 20, offset: 0 }, expect.any(AbortSignal));
     // A query runs it, and the history's own search stays in the address.

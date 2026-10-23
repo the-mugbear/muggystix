@@ -417,7 +417,7 @@ def run_job(db: Session, job: ReportJob) -> Tuple[bytes, str, str]:
             resolve_evidence=client_report_render.live_evidence_resolver(db, job.project_id, dataset),
             postprocess=template.postprocess, timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
             asset_files=templates.asset_files(template),
-            on_progress=worker_loop.touch_heartbeat,
+            on_progress=worker_loop.render_checkpoint,
             # Nothing is read after the images are placed: no transaction
             # stays open through Quarto (the job row is fenced, not locked).
             before_quarto=db.rollback,

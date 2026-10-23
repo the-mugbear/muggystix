@@ -810,7 +810,9 @@ def test_a_render_says_it_is_alive_before_each_format_and_post_processor(tmp_pat
 
 
 def test_the_report_renders_touch_the_workers_liveness_file(monkeypatch, tmp_path):
-    """Both callers hand the renderer the worker's heartbeat."""
+    """Both callers hand the renderer the worker's render checkpoint, which
+    touches the heartbeat and stops the render on SIGTERM (review 2026-10-22,
+    N4; `test_report_worker_stop.py`)."""
     from app import worker_loop
 
     seen = {}
@@ -828,7 +830,7 @@ def test_the_report_renders_touch_the_workers_liveness_file(monkeypatch, tmp_pat
     report = Report(id=1, project_id=1, template="pentest")
     with pytest.raises(quarto_render.RenderError):
         client_report_render._render(None, report, {"findings": []}, ["html"], tmp_path / "out", "x")
-    assert seen["on_progress"] is worker_loop.touch_heartbeat
+    assert seen["on_progress"] is worker_loop.render_checkpoint
 
 
 # =============================================================================

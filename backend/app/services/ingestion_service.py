@@ -454,8 +454,8 @@ def _port_is_only_this_attempts(port_id, scan_id: int, *, before_release: bool =
     ]
 
 
-# How long a cleanup started from an API request (a cancel) waits for the
-# project's import lock before giving up; the reaper's sweep finishes it.
+# How long an API request (a scan delete by hand) waits for the project's
+# import lock before giving up.
 _API_CLEANUP_LOCK_TIMEOUT_S = 15
 # How long the reaper's sweep leaves a failed job whose cleanup failed.
 _LEFTOVER_RETRY_SECONDS = 600
@@ -1228,50 +1228,45 @@ class IngestionService:
                 except Exception:
                     logger.debug("rollback after failed pg_notify also failed", exc_info=True)
 
-    def cancel_job(self, job_id: int) -> bool:
-        """Request cancellation of a queued or running job.
+    def cancel_job(self, db: Session, job_id: int) -> bool:
+        """Request cancellation of a queued or running job, on the caller's
+        session (the request's: one connection, under its statement timeout),
+        which it commits.
 
         The cancel IS the row: this runs in the API process, the parse in the
         worker's, and the worker sees ``failed`` on its next heartbeat.
         Returns True if the job was in a cancellable state.
+
+        It removes nothing (review 2026-10-22, A-R11).  A running parse
+        deletes its own scan when its next heartbeat sees the cancel; when
+        nobody will — the job WAITED with a dead attempt's scan on it (R1),
+        or its worker is dead (M5: nobody holds the attempt's liveness lock,
+        or its lease is past the reaper's window) — the scan is the reaper's
+        sweep of failed jobs' leftovers (``_discard_failed_jobs_leftovers``,
+        the worker's next poll), the ONE place a failed job's leftover is
+        removed.  The cancel used to run that cleanup itself, inside the
+        request, on a second pooled connection with no statement timeout and
+        without the sweep's ``only_if_failed`` re-check.
         """
-        with _session_module.SessionLocal() as db:
-            # Locked read-check-write (job_transitions.cancel): a worker's
-            # SKIP LOCKED claim cannot land between the status check and
-            # the write.  Ingestion has no 'cancelled' state — a cancel is a
-            # failure with a reason, and a running parse sees it on its next
-            # heartbeat.
-            try:
-                job = _transitions.cancel(
-                    db, job_id,
-                    allowed_from=("queued", "processing"),
-                    to_status="failed",
-                    error_message="Cancelled by user",
-                )
-            except JobNotTransitionable:
-                return False
-            if job is None:
-                return False
-            # R1 — a job cancelled while it WAITED (no claim token) will not
-            # be claimed again; if an earlier, dead attempt left a scan on it,
-            # nothing else would remove it.  A running parse (token set)
-            # deletes its own scan when its next heartbeat sees the cancel —
-            # unless its worker is dead (M5): an attempt whose liveness lock
-            # nobody holds, or whose lease is past the reaper's window, has
-            # nobody left to see the cancel, so the scan is removed here.  (A
-            # worker that dies later, between the cancel and its next
-            # heartbeat, is caught by the reaper's sweep of failed jobs —
-            # ``_discard_failed_jobs_leftovers``.)
-            has_leftover = isinstance(job.in_progress_scan_id, int)
-            nobody_will_clean = (
-                job.started_at is None or self._lease_is_dead(job)
-                or (has_leftover and attempt_is_over(db, job_id, job.started_at))
+        # Locked read-check-write (job_transitions.cancel): a worker's SKIP
+        # LOCKED claim cannot land between the status check and the write.
+        # Ingestion has no 'cancelled' state — a cancel is a failure with a
+        # reason, and a running parse sees it on its next heartbeat.
+        try:
+            job = _transitions.cancel(
+                db, job_id,
+                allowed_from=("queued", "processing"),
+                to_status="failed",
+                error_message="Cancelled by user",
             )
-            db.commit()
-            if has_leftover and nobody_will_clean:
-                # Bounded wait: this runs in an API request.
-                self._discard_dead_attempt_scan(db, job_id, lock_timeout_s=_API_CLEANUP_LOCK_TIMEOUT_S)
-            return True
+        except JobNotTransitionable:
+            db.rollback()
+            return False
+        if job is None:
+            db.rollback()
+            return False
+        db.commit()
+        return True
 
     @staticmethod
     def _orphan_cutoff() -> datetime:
@@ -1798,9 +1793,11 @@ class IngestionService:
         """Remove what a FAILED job still names as in progress (M5).
 
         Nothing claims a failed job again, so a scan left on one stays until
-        an operator retries it.  Two ways to get there: a ``processing`` job
-        cancelled while its worker was dead (the cancel leaves the cleanup to
-        the attempt's next heartbeat, which never comes), and a cleanup that
+        an operator retries it.  Three ways to get there: a job cancelled
+        while it waited with a dead attempt's scan on it, a ``processing``
+        job cancelled while its worker was dead (the cancel removes nothing
+        and the attempt's next heartbeat never comes; review 2026-10-22,
+        A-R11 — this sweep is the one cleanup of both), and a cleanup that
         itself failed.  Only an attempt that is over is touched — nobody holds
         its liveness lock, or its lease is past the reaper's window
         (``cutoff``): a live attempt that has not yet seen its cancel cleans

@@ -101,6 +101,10 @@ class MasscanParser:
                     return
                 counters["ips"] += len(buf)
                 counters["hosts"] += self._batch_persist(scan.id, buf)
+                # The banners whose ports are now stored, written with them
+                # (review 2026-10-22, A-R6): they were held for the whole file
+                # and written in one loop at its end, with no heartbeat.
+                self._store_banners(scan.id)
 
             if suffix == ".xml":
                 residual = self._collect_xml(file_path, scan, _flush)
@@ -111,7 +115,8 @@ class MasscanParser:
 
             _flush(residual)
             self._clock.apply(scan)
-            self._store_banners(scan.id)
+            # What is left names no port this import stored or found.
+            self._store_banners(scan.id, final=True)
 
             if counters["hosts"] == 0:
                 # Fail closed — pre-v2.55.0 this path committed an
@@ -775,12 +780,20 @@ class MasscanParser:
 
     _BANNER_CHUNK = 1000
 
-    def _store_banners(self, scan_id: int) -> None:
+    def _store_banners(self, scan_id: int, *, final: bool = False) -> None:
         """v2.390.0 — `--banners` output as script output on its port
         (``masscan-<kind>``: http.server, title, http, ssh …), shown in the
         inspector beside nmap's.  It was read past and dropped in all three
-        formats.  Runs after the ports are persisted; a port the bulk insert
-        did not create (not open) is skipped.
+        formats.  A banner is written once its port is stored; one whose
+        port is not (yet) in the project waits for the next flush — a list
+        file's ``banner`` line may come before its ``open`` line reaches the
+        database — and at the ``final`` call it is dropped (not open).
+
+        Called after every flush of the collected ports (review 2026-10-22,
+        A-R6): the banners were held for the whole file, unbounded by the
+        flush threshold the ports have, and written in one loop at the end
+        with no heartbeat.  Each chunk is followed by a heartbeat (the rows
+        carry their sightings, so the cleanup finds them by scan).
 
         Batched per 1,000 addresses: the ports in one query, their existing
         masscan scripts in one more, one flush.  It was a query per banner
@@ -791,6 +804,8 @@ class MasscanParser:
         by_ip: Dict[str, List[Tuple[int, str, str, str]]] = {}
         for (ip, port, proto, kind), banner in self._banners.items():
             by_ip.setdefault(ip, []).append((port, proto, kind, banner))
+        self._banners = {}
+        beat = ProgressBeat("banner addresses", every=self._BANNER_CHUNK)
         ips = list(by_ip)
         for start in range(0, len(ips), self._BANNER_CHUNK):
             chunk = ips[start:start + self._BANNER_CHUNK]
@@ -808,31 +823,41 @@ class MasscanParser:
                 for ip in chunk for port, proto, kind, banner in by_ip[ip]
                 if (ip, port, proto) in port_ids
             }
-            if not wanted:
-                continue
-            existing = {
-                (s.port_id, s.script_id): s
-                for s in self.db.query(models.Script).filter(
-                    models.Script.port_id.in_({pid for pid, _ in wanted}),
-                    models.Script.script_id.like("masscan-%"),
-                )
-            }
-            reported = []
-            for (pid, script_id), banner in wanted.items():
-                row = existing.get((pid, script_id))
-                if row is not None:
-                    # scan_id stays the first recorder; this scan's report of
-                    # the banner is a sighting, below.
-                    row.output = banner
-                    row.last_seen = func.now()
-                else:
-                    row = models.Script(port_id=pid, script_id=script_id, output=banner, scan_id=scan_id)
-                    self.db.add(row)
-                reported.append(row)
-            self.db.flush()
-            scan_sightings.see_many(
-                self.db, scan_sightings.SCRIPT, [(row.id, scan_id) for row in reported])
-        self._banners = {}
+            if not final:
+                # Its port may still come: kept for the next flush.
+                for ip in chunk:
+                    for port, proto, kind, banner in by_ip[ip]:
+                        if (ip, port, proto) not in port_ids:
+                            self._banners[(ip, port, proto, kind)] = banner
+            if wanted:
+                self._write_banner_scripts(scan_id, wanted)
+            beat.tick(len(chunk))
+
+    def _write_banner_scripts(self, scan_id: int, wanted: Dict[Tuple[int, str], str]) -> None:
+        """One chunk's banners as ``masscan-<kind>`` scripts on their ports,
+        with this scan's sightings."""
+        existing = {
+            (s.port_id, s.script_id): s
+            for s in self.db.query(models.Script).filter(
+                models.Script.port_id.in_({pid for pid, _ in wanted}),
+                models.Script.script_id.like("masscan-%"),
+            )
+        }
+        reported = []
+        for (pid, script_id), banner in wanted.items():
+            row = existing.get((pid, script_id))
+            if row is not None:
+                # scan_id stays the first recorder; this scan's report of
+                # the banner is a sighting, below.
+                row.output = banner
+                row.last_seen = func.now()
+            else:
+                row = models.Script(port_id=pid, script_id=script_id, output=banner, scan_id=scan_id)
+                self.db.add(row)
+            reported.append(row)
+        self.db.flush()
+        scan_sightings.see_many(
+            self.db, scan_sightings.SCRIPT, [(row.id, scan_id) for row in reported])
 
     def _extract_xml_host(self, host_elem: etree._Element) -> Optional[Dict[str, Any]]:
         address_elem = host_elem.find("address")
@@ -888,6 +913,9 @@ class MasscanParser:
     # comma, closed by this line — which is not JSON (the key is unquoted).
     _FINISHED_MARKER = re.compile(r'^\{\s*"?finished"?\s*:\s*\d+\s*\}$')
 
+    # What separates two records (and opens the array): skipped in place.
+    _JSON_SEPARATORS = re.compile(r"[, \n\r\t\[]*")
+
     def _iter_json_entries(self, file_path: str) -> Iterable[Dict[str, Any]]:
         """The records of ``masscan -oJ``, decoded one at a time.
 
@@ -916,6 +944,11 @@ class MasscanParser:
         from a complete one and is read as before."""
         decoder = json.JSONDecoder()
         buffer = ""
+        # Where the unread text of ``buffer`` starts.  The records are
+        # decoded in place (review 2026-10-22, nitpick): stripping the
+        # separators and slicing off each decoded record copied the rest of
+        # the buffer twice per record.  The buffer is cut once per read.
+        pos = 0
         read = 0
         opened_array: Optional[bool] = None
         closed_array = False
@@ -927,19 +960,20 @@ class MasscanParser:
                     break
                 # Append raw — do NOT strip(), which would eat significant
                 # whitespace inside a string literal split across two reads.
-                buffer += chunk
+                buffer = buffer[pos:] + chunk
+                pos = 0
                 if opened_array is None and buffer.strip():
                     opened_array = buffer.lstrip().startswith("[")
-                while buffer:
-                    buffer = buffer.lstrip(", \n\r\t[")
-                    if not buffer:
+                while pos < len(buffer):
+                    pos = self._JSON_SEPARATORS.match(buffer, pos).end()
+                    if pos >= len(buffer):
                         break
-                    if buffer.startswith("]"):
+                    if buffer[pos] == "]":
                         closed_array = True
-                        buffer = buffer[1:]
+                        pos += 1
                         continue
                     try:
-                        entry, index = decoder.raw_decode(buffer)
+                        entry, index = decoder.raw_decode(buffer, pos)
                     except json.JSONDecodeError:
                         # A whole line (masscan writes a record per line)
                         # that is not the beginning of a JSON value is text
@@ -949,14 +983,14 @@ class MasscanParser:
                         # kept depended on how much followed (review
                         # 2026-10-14, H7).  The end of the file says what it
                         # is (below).
-                        if "\n" in buffer and not ends_early(buffer):
+                        if buffer.find("\n", pos) != -1 and not ends_early(buffer[pos:]):
                             invalid = True
                             break
                         # Otherwise "need more data" — break and read the
                         # next chunk. But if the undecodable buffer is already
                         # huge, it's a single oversized record; fail instead
                         # of accumulating the whole file into memory.
-                        if len(buffer) > self._MAX_JSON_RECORD_BYTES:
+                        if len(buffer) - pos > self._MAX_JSON_RECORD_BYTES:
                             raise ValueError(
                                 "Masscan JSON record exceeds "
                                 f"{self._MAX_JSON_RECORD_BYTES} bytes or is malformed"
@@ -964,8 +998,8 @@ class MasscanParser:
                         break
                     read += 1
                     yield entry
-                    buffer = buffer[index:]
-        left = buffer.lstrip(", \n\r\t[")
+                    pos = index
+        left = buffer[pos:].lstrip(", \n\r\t[")
         if left.strip(", \n\r\t[]"):
             if self._FINISHED_MARKER.match(left.strip(", \n\r\t[]")):
                 return

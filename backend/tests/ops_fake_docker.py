@@ -28,6 +28,12 @@ no_recreate       [regex]  an `up` matching this "succeeds or fails" as
                   scripted but recreates nothing
 pending_repairs   text printed by data_repairs.py --pending
 dump_body         bytes pg_dump writes (default a complete fake dump)
+refusals          {revision: n}  what scripts/upgrade-refusals.sql counts
+                                 for that revision (default 0)
+refusal_errors    [revision, …]  checks that fail to run (an older schema)
+
+Nothing runs in the db container unless its status is "running"
+(`compose up` makes it so).
 
 A fake dump is ``PGDMP`` … ``END``.  ``pg_restore --list`` lists it whenever it
 starts with ``PGDMP`` — like the real one, which reads only the table of
@@ -98,6 +104,25 @@ def pg_restore(args: list[str], state: dict) -> int:
     # a real restore into a database
     state["alembic_revision"] = state.get("restored_revision", state.get("alembic_revision", ""))
     save(state)
+    return 0
+
+
+def psql_file(sql: str, state: dict) -> int:
+    """`psql -f -` with scripts/upgrade-refusals.sql on stdin: one unaligned
+    line per check (`revision|refused|detail`).  ``refusals`` {revision id:
+    count} scripts a non-zero count; a revision id in ``refusal_errors`` fails
+    as a check on an older schema does (an ERROR, no line)."""
+    if "bluestick:upgrade-refusals" not in sql:
+        return 0
+    for line in sql.splitlines():
+        if not line.startswith("SELECT "):
+            continue
+        label = line.split("'", 2)[1]
+        rev = label.split(" ", 1)[0]
+        if rev in state.get("refusal_errors", []):
+            sys.stderr.write(f'psql:<stdin>: ERROR:  column "x" does not exist ({rev})\n')
+            continue
+        out(f"{label}|{state.get('refusals', {}).get(rev, 0)}|counts\n")
     return 0
 
 
@@ -190,7 +215,8 @@ def compose(args: list[str], state: dict) -> int:
                 and backend["image"] in state.get("healthy_images", [])
             return 0 if healthy else 1
         if service == "db":
-            if "db" not in containers:
+            # Like the real one: nothing runs in a container that is not running.
+            if "db" not in containers or containers["db"].get("status", "running") != "running":
                 return 1
             tool = inner[0]
             if tool == "pg_isready":
@@ -202,6 +228,8 @@ def compose(args: list[str], state: dict) -> int:
                 return pg_restore(inner, state)
             if tool == "psql":
                 sql = " ".join(inner)
+                if "-f" in inner:
+                    return psql_file(sys.stdin.read(), state)
                 if "alembic_version" in sql:
                     out(state.get("alembic_revision", "") + "\n")
                 elif "pg_locks" in sql:

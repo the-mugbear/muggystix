@@ -529,10 +529,12 @@ def cancel_ingestion_job(
             status_code=409,
             detail=f"Job is already {job.status} and cannot be cancelled",
         )
-    cancelled = ingestion_service.cancel_job(job_id)
+    # On this request's session: one connection, under the API statement
+    # timeout.  A leftover scan of a dead attempt is the worker's sweep's,
+    # never this request's (review 2026-10-22, A-R11).
+    cancelled = ingestion_service.cancel_job(db, job_id)
     if not cancelled:
         raise HTTPException(status_code=409, detail="Job could not be cancelled")
-    # Re-query instead of refresh — cancel_job uses its own session
     job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
     return {"job_id": job.id, "status": job.status, "message": "Job cancelled"}
 

@@ -17,6 +17,7 @@ def _recent(seconds_ago: int = 30) -> datetime:
 
 from app.db import models
 from app.services.ingestion_service import IngestionService, ParseFailure
+from tests.ingestion_job_harness import cancel_from_the_api
 
 
 def _job(db, project_id, status="processing", started_at=None, heartbeat=None):
@@ -177,7 +178,7 @@ def test_a_job_cancelled_while_it_waited_is_never_claimed(db_session, test_proje
     not counted as an attempt."""
     job = _job(db_session, test_project.id, status="queued")
 
-    assert IngestionService().cancel_job(job.id) is True
+    assert cancel_from_the_api(job.id) is True
     assert IngestionService().poll_and_run_one() is False
 
     row = _fresh(db_session, job.id)
@@ -195,7 +196,7 @@ def test_a_cancel_reaches_a_running_parse_through_the_row(db_session, test_proje
     worker = IngestionService()
 
     worker.update_heartbeat(db_session, job.id, "10 hosts", claimed_at=claim)
-    assert IngestionService().cancel_job(job.id) is True
+    assert cancel_from_the_api(job.id) is True
     with pytest.raises(ParseFailure, match="cancelled"):
         worker.update_heartbeat(db_session, job.id, "20 hosts", claimed_at=claim)
     assert _fresh(db_session, job.id).progress == "10 hosts"

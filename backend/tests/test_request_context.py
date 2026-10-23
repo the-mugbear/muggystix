@@ -223,6 +223,30 @@ def test_a_request_can_lift_the_limit_for_itself(timeout_client):
     assert timeout_client.get("/exempt").status_code == 200
 
 
+def test_a_request_that_finds_no_free_connection_is_a_503_not_a_500(db_session, monkeypatch):
+    """Review 2026-10-22, A-R10: pool exhaustion was a DB_POOL_TIMEOUT hang,
+    then an anonymous 500 — nothing caught the pool's ``TimeoutError``."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db import session as session_module
+
+    if db_session.get_bind().dialect.name != "postgresql":
+        pytest.skip("a real pool is Postgres-only here")
+    tiny = create_engine(db_session.get_bind().engine.url, pool_size=1, max_overflow=0, pool_timeout=0.2)
+    monkeypatch.setattr(session_module, "SessionLocal", sessionmaker(bind=tiny))
+    held = tiny.connect()   # the one connection, checked out
+    try:
+        with TestClient(_timeout_app(), raise_server_exceptions=False) as mini_client:
+            r = mini_client.get("/slow", params={"seconds": 0.01})
+        assert r.status_code == 503, r.text
+        assert r.headers.get("retry-after") == "5"
+        assert "busy" in r.json()["detail"]
+    finally:
+        held.close()
+        tiny.dispose()
+
+
 def test_the_limit_can_be_turned_off(db_session, monkeypatch):
     from fastapi.testclient import TestClient
     from app.db import session as session_module

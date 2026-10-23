@@ -1375,6 +1375,31 @@ describe('Hosts', () => {
     });
   });
 
+  // Review 2026-10-22, A-R12 — the keyboard cursor was a bare row index reset
+  // only on a page turn: a sort or filter change on the same page left it on
+  // row N of a different list, and Enter opened whichever host was there.
+  it('the keyboard cursor stays on its host when the sort changes, and Enter opens that host', async () => {
+    renderHosts();
+    await findHostsTable();
+    await screen.findAllByText('10.0.0.20');
+    await waitFor(() => expect(mockedApi.getHostFilterData).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
+    // Critical-first: host 2, then host 3 (row index 1).
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'j' });
+    await waitFor(() => expect(document.querySelector('.host-cursor-row')).toHaveTextContent('10.0.0.3'));
+
+    // Sorted by address, host 3 is the first row and row index 1 is host 4.
+    act(() => { navigateSpy('/hosts?sort_by=ip_address&sort_order=asc'); });
+    await waitFor(() => {
+      const firstRow = screen.getAllByRole('row')[1];
+      expect(firstRow).toHaveTextContent('10.0.0.3');
+    });
+    await waitFor(() => expect(document.querySelector('.host-cursor-row')).toHaveTextContent('10.0.0.3'));
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(await screen.findByTestId('host-inspector')).toHaveTextContent('host 3');
+  });
+
   // Review 2026-10-10, H16 — the inspector's Next / Next unreviewed across a
   // page boundary opened a host from the rows ON SCREEN once the list stopped
   // loading.  When the next page's read failed those were still the page

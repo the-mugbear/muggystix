@@ -50,6 +50,17 @@ def test_register_answers_the_users_list_row(client, test_user):
     assert client.get(f"/api/v1/users/{row['id']}").json() == row
 
 
+def test_an_account_an_admin_creates_must_change_its_password(client, db_session):
+    """Review 2026-10-22, A-R5: the admin chose the password, so it is a
+    transit credential — the admin reset's rule (``users.reset_password``)."""
+    from app.db.models_auth import User
+
+    created = _register(client)
+    assert created.status_code == 200, created.text
+    db_session.expire_all()
+    assert db_session.get(User, created.json()["id"]).must_change_password is True
+
+
 def test_register_never_answers_a_secret(client):
     created = _register(client)
     assert created.status_code == 200, created.text

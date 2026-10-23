@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQueries } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -190,10 +190,60 @@ describe('HostFindingsCard', () => {
     await user.click(await screen.findByLabelText('Status for Weak TLS'));
     expect(historyReread).not.toHaveBeenCalled();   // nothing is read again before a change
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
-    await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(1, 7, 'confirmed'));
+    // An open status asks for no reason.
+    await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(1, 7, 'confirmed', undefined));
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(api.setFindingEndpointStatus).not.toHaveBeenCalled();
     // The status change is on the finding's history: that trail is read again.
     await waitFor(() => expect(historyReread).toHaveBeenCalledTimes(1));
+  });
+
+  // Review 2026-10-22, B3-1 — a closing status dropped the choice and sent the
+  // reader to the finding page; and a single-host finding's title led nowhere.
+  it('a closing status asks why here, in the list’s dialog, and sets the status chosen', async () => {
+    const user = userEvent.setup();
+    const own = finding({ status: 'confirmed' });
+    api.listFindings.mockResolvedValue({ items: [own] });
+    api.setFindingStatus.mockResolvedValue({ ...own, status: 'false_positive' });
+    renderCard();
+
+    await user.click(await screen.findByLabelText('Status for Weak TLS'));
+    await user.click(await screen.findByRole('option', { name: 'False positive' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Mark False positive' });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(api.setFindingStatus).not.toHaveBeenCalled();
+    await user.type(within(dialog).getByLabelText('Disposition reason'), '  backported fix ');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(1, 7, 'false_positive', 'backported fix'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('a closing status may be saved without a reason, and Cancel sets nothing', async () => {
+    const user = userEvent.setup();
+    const own = finding({ status: 'confirmed' });
+    api.listFindings.mockResolvedValue({ items: [own] });
+    api.setFindingStatus.mockResolvedValue({ ...own, status: 'remediated' });
+    renderCard();
+
+    await user.click(await screen.findByLabelText('Status for Weak TLS'));
+    await user.click(await screen.findByRole('option', { name: 'Remediated' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    expect(api.setFindingStatus).not.toHaveBeenCalled();
+
+    await user.click(screen.getByLabelText('Status for Weak TLS'));
+    await user.click(await screen.findByRole('option', { name: 'Remediated' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Save without a reason' }));
+    await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(1, 7, 'remediated', undefined));
+  });
+
+  it('every finding’s title opens the finding', async () => {
+    api.listFindings.mockResolvedValue({ items: [
+      finding({}),
+      finding({ id: 8, title: 'From a note', source: 'note', evidence_annotation_id: 90 }),
+    ] });
+    renderCard();
+    expect(await screen.findByRole('link', { name: 'Weak TLS' })).toHaveAttribute('href', '/findings/7');
+    expect(screen.getByRole('link', { name: 'From a note' })).toHaveAttribute('href', '/findings/8');
   });
 
   // The inspector shows, beside each scanner row, the state of the finding

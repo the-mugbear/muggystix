@@ -745,8 +745,11 @@ export const History: React.FC<{ onRun: (q: string) => void; onSave: (q: string)
                         </button>
                       </span>
                       {row.error !== null ? (
+                        // Where it went wrong, as the live error says it
+                        // (review 2026-10-22, B3-4).
                         <span className="mt-xxs line-clamp-2 break-words text-caption text-destructive" title={row.error}>
                           Refused: {row.error}
+                          {row.error_position !== null && ` (at character ${row.error_position + 1})`}
                         </span>
                       ) : (
                         <span className="mt-xxs block text-caption text-muted-foreground">

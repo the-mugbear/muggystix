@@ -321,29 +321,34 @@ def end_agent_session(
 
 def end_sessions_of_operator(
     db: Session, user_id: int, *, ended_by: Optional[User], reason: str,
+    project_id: Optional[int] = None,
 ) -> int:
-    """End every active session ``user_id`` started, in every project.
+    """End every active session ``user_id`` started, in every project — or in
+    ``project_id`` alone.
 
     For when the account's credentials are replaced (password change or reset,
     two-factor reset): a session opened under the old credentials may have been
-    opened by whoever had them.  Each session is ended like an operator's End,
-    so the Agent Sessions page shows it ended with ``reason``.  Any other live
-    key of the user's agents is revoked too.  Returns the number of sessions
-    ended; the caller commits.
+    opened by whoever had them.  With ``project_id``, for when the account
+    leaves that project (review 2026-10-22: a removed member's session stayed
+    renewable, and re-adding them within the key's life revived it).  Each
+    session is ended like an operator's End, so the Agent Sessions page shows
+    it ended with ``reason``.  Any other live key of the user's agents (in that
+    project) is revoked too.  Returns the number of sessions ended; the caller
+    commits.
     """
-    sessions = (
-        db.query(AgentSession)
-        .filter(
-            AgentSession.started_by_id == user_id,
-            AgentSession.status == SESSION_ACTIVE,
-        )
-        .all()
-    )
+    session_filter = [
+        AgentSession.started_by_id == user_id,
+        AgentSession.status == SESSION_ACTIVE,
+    ]
+    owned_agents = db.query(Agent.id).filter(Agent.owner_id == user_id)
+    if project_id is not None:
+        session_filter.append(AgentSession.project_id == project_id)
+        owned_agents = owned_agents.filter(Agent.project_id == project_id)
+    sessions = db.query(AgentSession).filter(*session_filter).all()
     for session in sessions:
         end_agent_session(
             db, session, ended_by=ended_by, reason=reason, end_reason=END_REASON_OPERATOR,
         )
-    owned_agents = db.query(Agent.id).filter(Agent.owner_id == user_id)
     db.query(APIKey).filter(
         APIKey.is_active.is_(True),
         APIKey.agent_id.in_(owned_agents),

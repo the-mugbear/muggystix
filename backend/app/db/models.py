@@ -917,6 +917,19 @@ class DNSRecord(Base):
         # "Which names bind to this address" — the join hosts_v2.ip_address =
         # dns_records.value filtered by project.
         Index("idx_dns_record_project_value", "project_id", "value"),
+        # "Currently resolves to" (dns_name_service.current_binding_condition)
+        # asks, per record, for its name's newest A/AAAA answer: this index
+        # gives that answer as the first entry under the name, in the rule's
+        # own order (review 2026-10-22, A-R8; revision c8e2a4f6b1d9).  The
+        # predicate must stay the rule's ``record_type IN ('A', 'AAAA')``
+        # (``DNS_RESOLVING_TYPES``) or the planner cannot use it.
+        Index(
+            "ix_dns_records_name_latest_binding",
+            "name_id",
+            func.coalesce(observed_at, created_at).desc(),
+            id.desc(),
+            postgresql_where=text("record_type IN ('A', 'AAAA')"),
+        ).ddl_if(dialect="postgresql"),
     )
 
 

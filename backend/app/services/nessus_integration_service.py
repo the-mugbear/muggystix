@@ -16,7 +16,7 @@ from app.services.vulnerability_service import VulnerabilityService
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.subnet_correlation import SubnetCorrelationService
 from app.core.config import settings
-from app.parsers.parser_utils import ScanClock, epoch_to_utc
+from app.parsers.parser_utils import ScanClock, epoch_to_utc, write_record
 
 
 def _observe_nessus_host_times(clock: ScanClock, props: Dict[str, str]) -> None:
@@ -325,43 +325,51 @@ class NessusIntegrationService:
     ) -> Optional[Tuple[Host, Dict[str, int]]]:
         """Process a single Nessus host using the dedup/history layer.
 
-        Uses a SAVEPOINT so that a per-host failure (e.g. deadlock) only
-        rolls back this host's work, not the entire scan transaction.
+        One record (``parser_utils.write_record``; review 2026-10-22, B1-1),
+        so that a per-host failure (e.g. deadlock) only rolls back this
+        host's work, not the entire scan transaction — the outer transaction
+        (and scan record) remain intact so subsequent hosts can still
+        proceed, and the history / name rows the savepoint added are
+        forgotten (record isolation rule, v2.419.0).  None when the host was
+        skipped.
         """
-
-        savepoint = self.db.begin_nested()
-        try:
-            # Build host data dict for the dedup service
-            host_data: Dict[str, Any] = {
-                'state': 'up',  # Nessus only scans live hosts
-            }
-            hostname = nessus_host.hostname or nessus_host.netbios_name
-            if hostname:
-                host_data['hostname'] = hostname
-            if nessus_host.operating_system:
-                host_data['os_name'] = nessus_host.operating_system
-
-            # Use dedup service — creates HostScanHistory automatically
-            host = self.dedup_service.find_or_create_host(
-                nessus_host.ip_address, scan.id, host_data, project_id=project_id
-            )
-            self._record_credentialed(host.id, scan.id, nessus_host.credentialed)
-
-            # Process vulnerabilities using vulnerability service
-            vuln_stats = self.vulnerability_service.process_nessus_vulnerabilities(
-                host, nessus_host, scan, skip_informational=skip_informational,
-            )
-            logger.debug("Processed %s vulnerabilities for host %s", vuln_stats['total'], host.ip_address)
-
-            savepoint.commit()
-            return host, vuln_stats
-
-        except Exception as e:
-            logger.error(f"Error processing Nessus host {nessus_host.ip_address}: {str(e)}")
-            # Rollback only the savepoint — the outer transaction (and scan
-            # record) remain intact so subsequent hosts can still proceed.
-            savepoint.rollback()
-            # The history / name rows the savepoint added are gone (record
-            # isolation rule, v2.419.0).
-            self.dedup_service.discard_rolled_back_state()
+        outcome = write_record(
+            self.db,
+            lambda: self._write_nessus_host(nessus_host, scan, project_id, skip_informational),
+            on_rollback=self.dedup_service.discard_rolled_back_state,
+        )
+        if outcome.error is not None:
+            logger.error(f"Error processing Nessus host {nessus_host.ip_address}: {str(outcome.error)}")
             return None
+        return outcome.value
+
+    def _write_nessus_host(
+        self,
+        nessus_host: NessusHost,
+        scan: Scan,
+        project_id: Optional[int],
+        skip_informational: bool,
+    ) -> Tuple[Host, Dict[str, int]]:
+        """One Nessus host's writes (inside its record savepoint)."""
+        # Build host data dict for the dedup service
+        host_data: Dict[str, Any] = {
+            'state': 'up',  # Nessus only scans live hosts
+        }
+        hostname = nessus_host.hostname or nessus_host.netbios_name
+        if hostname:
+            host_data['hostname'] = hostname
+        if nessus_host.operating_system:
+            host_data['os_name'] = nessus_host.operating_system
+
+        # Use dedup service — creates HostScanHistory automatically
+        host = self.dedup_service.find_or_create_host(
+            nessus_host.ip_address, scan.id, host_data, project_id=project_id
+        )
+        self._record_credentialed(host.id, scan.id, nessus_host.credentialed)
+
+        # Process vulnerabilities using vulnerability service
+        vuln_stats = self.vulnerability_service.process_nessus_vulnerabilities(
+            host, nessus_host, scan, skip_informational=skip_informational,
+        )
+        logger.debug("Processed %s vulnerabilities for host %s", vuln_stats['total'], host.ip_address)
+        return host, vuln_stats

@@ -44,6 +44,7 @@ from app.parsers.parser_utils import (
     parse_rfc3339,
     persist_host_observation,
     upsert_vulnerability,
+    write_record,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import ObservationCache, bind_hostname
@@ -155,6 +156,12 @@ class NucleiParser:
         self._project_id: Optional[int] = None
         self.last_parse_stats: Dict[str, Any] = {}
 
+    def _reset_caches(self) -> None:
+        """After a result's savepoint rolled back: the name memo and the
+        dedup service's caches may hold rows it created."""
+        self._name_cache = ObservationCache()
+        self.dedup_service.discard_rolled_back_state()
+
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
         records = iter_json_records(file_path, array_keys=("results",), tool_label="Nuclei JSON")
@@ -183,16 +190,16 @@ class NucleiParser:
                     scan_type="vulnerability_scan", project_id=self._project_id,
                 )
             clock.observe(parse_rfc3339(record.get("timestamp")))
-            # One SAVEPOINT per result: a malformed one is skipped and counted
-            # instead of rolling back every result before it.
-            sp = self.db.begin_nested()
-            try:
-                self._record(scan, record, ip, hostname, port, scheme)
-                sp.commit()
-            except Exception as exc:  # noqa: BLE001 — isolate one bad result
-                sp.rollback()
-                self._name_cache = ObservationCache()
-                self.dedup_service.discard_rolled_back_state()
+            # One record per result (``write_record``): a malformed one is
+            # skipped and counted instead of rolling back every result before
+            # it.
+            outcome = write_record(
+                self.db,
+                lambda: self._record(scan, record, ip, hostname, port, scheme),
+                on_rollback=self._reset_caches,
+            )
+            if outcome.error is not None:
+                exc = outcome.error
                 logger.warning("nuclei: skipping %s on %s: %s", record.get("template-id"), ip, exc)
                 failed.append(f"{record.get('template-id')} on {ip} ({exc})")
                 continue

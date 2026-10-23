@@ -216,15 +216,6 @@ def test_analyst_role_allowed_note_mutations(db_session, test_project):
     assert checker(project_id=test_project.id, db=db_session, current_user=analyst) is analyst
 
 
-def test_the_dashboard_still_reports_note_activity(client, db_session, test_project, test_user):
-    """The dashboard swallowed a KeyError on the note's status after the
-    column went (found in the backend log, v2.447.1) and answered
-    ``note_activity: null`` — an error nothing surfaced."""
-    host = _make_host(db_session, test_project.id, "10.5.11.1")
-    _make_note(db_session, host.id, test_user.id, body="who owns the backup job?")
-    db_session.commit()
-    stats = client.get(f"/api/v1/projects/{test_project.id}/dashboard/stats").json()
-    activity = stats["note_activity"]
-    assert activity is not None and activity["total_notes"] == 1
-    assert activity["recent_notes"][0]["preview"] == "who owns the backup job?"
-    assert "status" not in activity["recent_notes"][0]
+# (``test_the_dashboard_still_reports_note_activity`` went with the
+# dashboard's ``note_activity`` and ``HostFollowService.get_dashboard_activity``
+# — review 2026-10-22, A-R7; nothing read either.)

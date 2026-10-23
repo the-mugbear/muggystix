@@ -184,27 +184,31 @@ def export_names(
     q = _names_query(db, project.id, search=search, state=state, sort=sort, order=order)
     project_id = project.id
 
+    def _chunks(query):
+        """The list's query read ONCE, in its own order, ``_EXPORT_CHUNK`` rows
+        at a time from a server-side cursor (review 2026-10-22, A-R9).  It was
+        OFFSET paging with the timeout off: page N re-ran and re-sorted the
+        N-1 pages before it, quadratic at 50k names with nothing to bound it."""
+        chunk = _EXPORT_CHUNK
+        batch = []
+        for row in query.yield_per(chunk):
+            batch.append(row)
+            if len(batch) >= chunk:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
     def _txt():
-        offset = 0
-        while True:
-            rows = q.with_entities(models.DNSName.fqdn).offset(offset).limit(_EXPORT_CHUNK).all()
-            if not rows:
-                break
+        for rows in _chunks(q.with_entities(models.DNSName.fqdn)):
             yield "".join(f"{r[0]}\n" for r in rows)
-            offset += len(rows)
-            if len(rows) < _EXPORT_CHUNK:
-                break
 
     def _csv():
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["fqdn", "kind", "in_scope", "current_ips", "last_seen"])
         yield buf.getvalue()
-        offset = 0
-        while True:
-            rows = q.offset(offset).limit(_EXPORT_CHUNK).all()
-            if not rows:
-                break
+        for rows in _chunks(q):
             states = svc.address_state_for_names(db, project_id, [name.id for name, _ in rows])
             buf = io.StringIO()
             w = csv.writer(buf)
@@ -218,9 +222,6 @@ def export_names(
                     name.last_seen.isoformat() if name.last_seen else "",
                 ])
             yield buf.getvalue()
-            offset += len(rows)
-            if len(rows) < _EXPORT_CHUNK:
-                break
 
     if format == "csv":
         return StreamingResponse(

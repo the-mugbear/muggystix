@@ -81,6 +81,24 @@ def test_what_does_not_count_as_a_duplicate(client, db_session, test_project):
     assert _upload(client, test_project, NMAP_B).status_code == 200
 
 
+def test_the_scan_page_read_names_its_batch(client, db_session, test_project):
+    """Review 2026-10-22, B3-4 — found in the walkthrough: the scan page shows
+    its batch, but only the LIST rows carried it; ``GET /scans/{id}`` did not,
+    so the page never showed it (its test mocked the field)."""
+    batch = models.ScanBatch(project_id=test_project.id, label="nmap-tcp")
+    db_session.add(batch)
+    db_session.flush()
+    batched = models.Scan(project_id=test_project.id, filename="b.xml", batch_id=batch.id)
+    alone = models.Scan(project_id=test_project.id, filename="a.xml")
+    db_session.add_all([batched, alone])
+    db_session.commit()
+    base = f"/api/v1/projects/{test_project.id}/scans"
+    one = client.get(f"{base}/{batched.id}").json()
+    assert (one["batch_id"], one["batch_label"]) == (batch.id, "nmap-tcp")
+    other = client.get(f"{base}/{alone.id}").json()
+    assert (other["batch_id"], other["batch_label"]) == (None, None)
+
+
 def test_completed_job_stamps_batch_and_digest_onto_its_scan(db_session, test_project):
     batch = models.ScanBatch(project_id=test_project.id, label="nmap-tcp")
     scan = models.Scan(project_id=test_project.id, filename="c.xml")
@@ -424,6 +442,38 @@ def test_summary_counts_failed_imports_across_the_whole_project(client, db_sessi
     assert (s["imports_need_attention"], s["imports_not_imported"]) == (2, 2)
     # v2.402.0 — by reason, so the lead names what actually happened.
     assert s["imports_not_imported_by_reason"] == {"discarded": 1, "expired": 1}
+
+
+def test_each_reason_the_summary_names_is_the_list_its_link_opens(client, db_session, test_project):
+    """Review 2026-10-22, B3-3: the lead links each "not imported" reason to
+    the import history's status filter.  Its figures are that history's own
+    ``status_counts`` — an expiry nobody dismissed included (the summary used
+    to count only dismissed ones, while the Expired filter lists every one)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    for dismissed, error in (
+        (None, "Staged upload expired: not started within 24 hours."),   # not yet dismissed
+        (now, "Staged upload expired: not started within 24 hours."),
+        (now, "Discarded before import"),
+        (now, "bad xml"),
+        (None, "bad xml"),
+    ):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="f", original_filename="f", storage_path="/x",
+            status="failed", dismissed_at=dismissed, error_message=error,
+        ))
+    db_session.commit()
+    base = f"/api/v1/projects/{test_project.id}/scans"
+    s = client.get(f"{base}/summary").json()
+    counts = client.get(f"{base}/history").json()["status_counts"]
+    reasons = s["imports_not_imported_by_reason"]
+    assert reasons == {"expired": 2, "discarded": 1, "dismissed": 1}
+    assert (reasons["expired"], reasons["discarded"], reasons["dismissed"]) == (
+        counts["expired"], counts["discarded"], counts["failed_dismissed"],
+    )
+    assert s["imports_not_imported"] == 4
+    assert s["imports_need_attention"] == counts["needs_attention"]
 
 
 def test_batch_accounts_for_every_file_that_reached_the_server(client, db_session, test_project):

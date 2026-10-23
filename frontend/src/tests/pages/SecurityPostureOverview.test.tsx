@@ -129,10 +129,8 @@ const terrain = {
   total_hosts: 290, unplaced_hosts: 0, truncated: false,
 };
 const stats = {
-  total_scans: 9, total_hosts: 142, total_ports: 0, up_hosts: 0, open_ports: 0, total_subnets: 0,
-  recent_scans: [], subnet_stats: [],
   vulnerability_stats: {
-    critical: 9, high: 154, medium: 20, low: 4, info: 900, hosts_with_vulnerabilities: 130,
+    total_vulnerabilities: 1087, critical: 9, high: 154, medium: 20, low: 4, info: 900, hosts_with_vulnerabilities: 130,
     hosts_by_severity: { critical: 7, high: 122, medium: 15, low: 4 },
   },
 };

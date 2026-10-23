@@ -150,7 +150,7 @@ def test_one_webhook_attempt_ends_at_its_budget_and_is_a_retryable_failure(recei
 
     assert elapsed < 1.5, f"one attempt held its sender for {elapsed:.1f}s"
     assert (ok, status) == (False, None)
-    assert "receiver.invalid" in error
+    assert error == wd.WEBHOOK_UNREACHABLE
 
 
 @pytest.fixture
@@ -217,5 +217,5 @@ def test_a_dead_receiver_cannot_hold_the_sweep_past_its_budget(receiver, due_del
     db.expire_all()
     failed_once = [r for r in db.query(WebhookDelivery).all() if r.attempts == 1]
     assert len(failed_once) == attempted
-    assert all(r.status == WebhookDeliveryStatus.PENDING.value and "receiver.invalid" in r.last_error
+    assert all(r.status == WebhookDeliveryStatus.PENDING.value and r.last_error == wd.WEBHOOK_UNREACHABLE
                for r in failed_once)

@@ -291,6 +291,19 @@ WEBHOOK_UNREACHABLE = (
 )
 
 
+def _unreachable(exc: Exception, what: str) -> str:
+    """The one text a project admin sees when the receiver did not answer.
+
+    The exception's own text says refused / timed out / did not resolve for
+    any private host and port, so it goes to the server's log only. Both the
+    "send test" answer and a delivery's stored ``last_error`` (the history
+    page) use this — the history re-opened the probe the test had closed
+    (review 2026-10-16 N10, then 2026-10-22 A-R4).
+    """
+    logger.warning("%s could not be delivered: %s: %s", what, type(exc).__name__, exc)
+    return WEBHOOK_UNREACHABLE
+
+
 def _post(
     url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None,
 ) -> httpx.Response:
@@ -368,7 +381,7 @@ def _attempt_delivery(
     try:
         resp = _post(url, secret, payload, delivery_id=delivery_id)
     except Exception as exc:  # network error, timeout, DNS, size cap, …
-        return False, None, str(exc)[:1000]
+        return False, None, _unreachable(exc, f"Webhook delivery {delivery_id}")
     if 200 <= resp.status_code < 300:
         return True, resp.status_code, None
     return False, resp.status_code, f"receiver returned HTTP {resp.status_code}"
@@ -609,12 +622,7 @@ class WebhookDispatcher:
             resp = _post(config.url, secret, payload)
             return {"ok": resp.status_code < 400, "status_code": resp.status_code}
         except Exception as exc:
-            # One fixed text, the reason in the server's log: the exception's
-            # own text said refused / timed out / did not resolve for any
-            # private host and port — the probe the LLM provider test no
-            # longer offers (review 2026-10-16, N10).
-            logger.warning("Webhook %s test could not be delivered: %s: %s", config.id, type(exc).__name__, exc)
-            return {"ok": False, "error": WEBHOOK_UNREACHABLE}
+            return {"ok": False, "error": _unreachable(exc, f"Webhook {config.id} test")}
 
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.api.downloads import attachment
 from app.api.deps import identify_agent_if_present
-from app.api.deps import get_current_user, get_current_user_if_present, require_role
+from app.api.deps import get_current_user_if_present, require_password_changed, require_role
 from app.core.config import settings
 from app.db.models_auth import User, UserRole
 from app.db.session import get_db
@@ -52,7 +52,7 @@ router = APIRouter()
 
 
 @router.get("/references/sbom")
-def sbom(current_user: User = Depends(get_current_user)):
+def sbom(current_user: User = Depends(require_password_changed)):
     """Software bill of materials for the deployed app.
 
     Returns every package installed in the running backend venv plus every
@@ -274,7 +274,7 @@ class ToolRegistryUpdate(BaseModel):
     kali: Optional[bool] = None
 
 
-@router.patch("/references/tools/{name}")
+@router.patch("/references/tools/{name}", dependencies=[Depends(require_password_changed)])
 def update_tool_registry_entry(
     name: str,
     body: ToolRegistryUpdate,

@@ -226,6 +226,9 @@ const FindingReportTextCard: React.FC<Props> = ({
     onError: (err) => setError(formatApiError(err, 'Could not save the report text.')),
   });
   const saving = saver.isPending;
+  // The saved vector decides the score and the editor has not changed it.
+  const scoreFromVector = Boolean(text?.cvss_score_from_vector)
+    && draft !== null && draft.cvss_vector === (text?.cvss_vector ?? '');
 
   const save = () => {
     if (!draft) return;
@@ -338,13 +341,24 @@ const FindingReportTextCard: React.FC<Props> = ({
               </div>
               <div className="w-32 space-y-xxs">
                 <Label htmlFor="rt-cvss-score">Score</Label>
+                {/* Review 2026-10-22, A-R13 — a saved 3.x / 2.0 vector decides
+                    the score (the server recomputes it on save), so a typed
+                    one was silently replaced.  Read-only while that vector
+                    stands; editing the vector gives the field back. */}
                 <Input
                   id="rt-cvss-score"
                   inputMode="decimal"
                   value={draft.cvss_score}
                   onChange={(e) => setDraft({ ...draft, cvss_score: e.target.value })}
+                  readOnly={scoreFromVector}
+                  aria-describedby={scoreFromVector ? 'rt-cvss-score-from-vector' : undefined}
                   disabled={saving}
                 />
+                {scoreFromVector && (
+                  <p id="rt-cvss-score-from-vector" className="text-caption text-muted-foreground">
+                    Set by the vector.
+                  </p>
+                )}
               </div>
             </div>
             {error && <p className="text-caption text-destructive">{error}</p>}

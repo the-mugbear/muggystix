@@ -1937,6 +1937,24 @@ class ClientReportService:
         ) + 1
         now = datetime.now(timezone.utc)
         dataset, reported, summary = self.build(report, number=number, issued_at=now)
+        # The template must be able to fill THIS dataset before the number is
+        # taken (review 2026-10-22, A-R2): the issue render runs the same
+        # Jinja fill on the frozen template and dataset, so a fill that fails
+        # here fails every render of the issued report, and a re-render reads
+        # the same two inputs — a number burnt on a report that can never
+        # have files, with a revision the only way out.  ``template_problems``
+        # checks against sample data, which an operator's template can pass.
+        # (``_mark_printed`` answers None for a draft's summary; here it is a
+        # refusal.)  Quarto's own failures still only show at render.
+        template = self._template(report.template)
+        if template is not None:
+            try:
+                report_template_service.printed_parts(template, dataset)
+            except quarto_render.RenderError as exc:
+                raise ReportStateError(
+                    f"The template '{report.template}' cannot be filled with this report's data, so the "
+                    f"report was not issued: {exc}"
+                ) from exc
         # The report's own copies of its images, before anything is marked
         # issued: a missing file refuses the issue.  If the transaction does
         # not commit AFTER this method returns, the copies stay until the next

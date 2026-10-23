@@ -96,6 +96,58 @@ describe('nginx API locations', () => {
 });
 
 /**
+ * Review 2026-10-22, A-C1 — nginx must not read a large body before the
+ * backend can refuse it.  With `client_max_body_size 2G` server-wide and
+ * nginx's default request buffering, every body (2 GB per anonymous
+ * connection) was written to nginx's temp directory before the backend's
+ * "refused before the body is read" checks (app/core/body_limit.py,
+ * deps.large_upload_refusal) ever saw the request.  Only the two scan-upload
+ * routes take more than the backend's MAX_REQUEST_BODY_BYTES, and they are
+ * streamed to the backend unbuffered.
+ */
+describe('nginx request bodies', () => {
+  const backendBodyLimit = readFileSync(
+    join(repoRoot, 'backend', 'app', 'core', 'body_limit.py'),
+    'utf8',
+  );
+  const apiStart = active.indexOf('location ^~ /api/ {');
+  const apiBlock = active.slice(apiStart, active.indexOf('\n    }', apiStart));
+  const uploadMatch = /^\s*location ~ (\S+) \{$/m.exec(apiBlock);
+  const uploadStart = uploadMatch ? apiBlock.indexOf(uploadMatch[0]) : -1;
+  const uploadBlock = apiBlock.slice(uploadStart, apiBlock.indexOf('\n        }', uploadStart));
+
+  it('caps every body at the backend default (32m) at server level', () => {
+    const server = active.slice(0, active.search(/^\s*location\s/m));
+    expect(server).toContain('client_max_body_size 32m;');
+    const config = readFileSync(join(repoRoot, 'backend', 'app', 'core', 'config.py'), 'utf8');
+    expect(config).toContain('"MAX_REQUEST_BODY_BYTES", str(32 * 1024 * 1024)');
+  });
+
+  it('allows 2G only in the upload location, nested in /api/ (a top-level regex never runs under ^~)', () => {
+    const twoG = active.split('\n').filter((l) => l.includes('client_max_body_size 2G'));
+    expect(twoG).toHaveLength(1);
+    expect(uploadMatch).not.toBeNull();
+    expect(uploadBlock).toContain('client_max_body_size 2G;');
+  });
+
+  it('matches exactly the backend’s two large-body routes', () => {
+    const backendPattern = /_LARGE_BODY_PATHS = re\.compile\(\s*r"([^"]+)"/.exec(backendBodyLimit);
+    expect(backendPattern).not.toBeNull();
+    expect(uploadMatch?.[1]).toBe(backendPattern?.[1]);
+  });
+
+  it('streams the upload body to the backend instead of buffering it to disk', () => {
+    expect(uploadBlock).toContain('proxy_request_buffering off;');
+    expect(uploadBlock).toContain('proxy_http_version 1.1;');
+    // A nested location inherits neither `set` nor proxy_pass: without its own
+    // `set` the variable is empty and every upload fails.
+    expect(uploadBlock).toContain('set $backend_upstream http://backend:8000;');
+    expect(uploadBlock).toContain('proxy_pass $backend_upstream$request_uri;');
+    expect(uploadBlock).toContain('proxy_set_header X-Forwarded-For $remote_addr;');
+  });
+});
+
+/**
  * Branch review 2026-10-01 — a location that declares ANY add_header drops
  * every add_header it would have inherited (nginx's rule, for nested
  * locations too).  The static-asset location sent scripts and stylesheets

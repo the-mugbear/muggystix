@@ -110,6 +110,12 @@ def _key_is(issue_key: str):
     return _key_in([issue_key])
 
 
+def issue_rows_condition(issue_key: str):
+    """The rows of one issue, as this list groups them — what
+    ``FindingService`` fans a promotion out over (review 2026-10-22, A-C2)."""
+    return _key_is(issue_key)
+
+
 def _of_most_severe_row(db: Session, column):
     """``column`` from the group's most severe row (tie → lowest id), as an
     aggregate in the same GROUP BY (v2.402.0).
@@ -645,9 +651,9 @@ def dismiss_issue(
     if host_ids is None:
         rep = db.get(Vulnerability, min(rows, key=_most_severe_first).id)
         # The hosts are THIS list's — every host whose row has the issue's
-        # stored key — named outright, as the bulk promotion names them: the
-        # service's own "every host" resolves a title-keyed row by plugin id
-        # and would leave out hosts another tool reported it on.
+        # stored key — named outright, as the bulk promotion names them (the
+        # service's own "every host" is the same set since review 2026-10-22,
+        # A-C2: ``issue_rows_condition``).
         finding, _created = FindingService(db).promote_vulnerability(
             vuln=rep, project_id=project_id, actor_id=actor_id,
             status=fp, summary=reason, host_ids=sorted(by_host), on_join="set",

@@ -24,6 +24,7 @@ from app.db import models
 from app.services.ingestion_service import IngestionService, delete_partial_scan
 from tests.ingestion_job_harness import (
     all_scan_ids,
+    cancel_from_the_api,
     host_ips,
     job_row,
     kill_worker,
@@ -137,7 +138,7 @@ def test_a_cancelled_nessus_import_removes_the_port_it_added_to_a_known_host(
             "found": _port_id(db, known_host, 22),
             "recorded": _recorded(db, job_id),
         }))
-        svc.cancel_job(job_id)
+        cancel_from_the_api(job_id)
 
     with on_heartbeat(svc, 2, cancel):
         run_next(db_session, svc)

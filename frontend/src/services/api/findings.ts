@@ -85,6 +85,9 @@ export interface Finding {
   owner_id: number | null;
   owner_name: string | null;
   evidence_annotation_id: number | null;
+  /** The host the source note is on — where its evidence thread is
+   *  (`GET /findings/{id}` only; null on a list row, or with no such note). */
+  evidence_host_id?: number | null;
   vuln_id: number | null;
   host_count: number;
   hosts: FindingHostInfo[];

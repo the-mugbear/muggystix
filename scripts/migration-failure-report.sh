@@ -19,8 +19,9 @@
 #     killed one for memory (OOMKilled), with each memory limit;
 #  6. disk space, and the database's size and largest tables (row counts only);
 #  7. the database settings that can end a long migration (timeouts);
-#  8. the one known refusal: projects with two scanner findings for one issue
-#     (a count — revision b2e5a8c1d4f6 will not run until they are resolved);
+#  8. the known refusals — scripts/upgrade-refusals.sql, the one list
+#     deploy.sh option 1 also runs before it builds (counts: each revision
+#     named there will not run until its `refused` is 0), and invalid indexes;
 #  9. live sessions and lock waits, as migration-status.sh shows them.
 #
 # What it leaves out: SQL parameter values ("[parameters: …]") are removed and
@@ -182,16 +183,17 @@ DB_LOGS=$("${DC[@]}" logs --since "$SINCE" db 2>&1 || true)
     echo "--- Timeouts and memory (the server's values) ---"
     "${DC[@]}" exec -T db psql -X -P pager=off -U "$DB_USER" -d "$DB_NAME" -c "SELECT name, setting, unit, source FROM pg_settings WHERE name IN ('statement_timeout','lock_timeout','idle_in_transaction_session_timeout','idle_session_timeout','tcp_keepalives_idle','max_locks_per_transaction','maintenance_work_mem','work_mem','shared_buffers','max_wal_size','temp_file_limit') ORDER BY name;" 2>&1 || echo "(query failed)"
 
-    section "8. Known refusal: two scanner findings for one issue (revision b2e5a8c1d4f6)"
-    q "Issues with more than one scanner finding (must be 0 before that revision runs)" "SELECT count(*) AS duplicated_issues, coalesce(sum(n), 0) AS findings_involved FROM (SELECT count(*) AS n FROM findings WHERE source = 'scanner' AND dedup_key IS NOT NULL AND dedup_key NOT LIKE 'row:%' GROUP BY project_id, dedup_key HAVING count(*) > 1) d;"
-    # The two later revisions that refuse rather than guess (2.488.0, 2.490.0).
-    # Counts only; plain SQL that reads the same before and after each revision.
-    q "Revision e1b4c7d0a2f5 (one scope per project): scopes with no project and entries held by two scopes of one project must be 0; several scopes alone are merged" "SELECT (SELECT count(*) FROM scopes WHERE project_id IS NULL) AS scopes_without_project, (SELECT count(*) FROM (SELECT 1 FROM scopes WHERE project_id IS NOT NULL GROUP BY project_id HAVING count(*) > 1) p) AS projects_with_several_scopes, (SELECT count(*) FROM (SELECT 1 FROM subnets sn JOIN scopes s ON s.id = sn.scope_id GROUP BY s.project_id, sn.cidr HAVING count(DISTINCT sn.scope_id) > 1) c) AS cidrs_in_two_scopes, (SELECT count(*) FROM (SELECT 1 FROM scope_domains d JOIN scopes s ON s.id = d.scope_id GROUP BY s.project_id, d.domain HAVING count(DISTINCT d.scope_id) > 1) c) AS domains_in_two_scopes;"
-    q "Revision a4f8c2e6b0d1 (a CIDR once in a scope): duplicates are merged; those whose copies differ in description or site must be 0" "SELECT count(*) AS duplicated_cidrs, count(*) FILTER (WHERE descriptions > 1 OR sites > 1 OR site_ids > 1) AS refused FROM (SELECT count(DISTINCT nullif(btrim(description), '')) AS descriptions, count(DISTINCT nullif(btrim(site), '')) AS sites, count(DISTINCT site_id) AS site_ids FROM subnets GROUP BY scope_id, cidr HAVING count(*) > 1) d;"
-    # Backlog 2026-10-22 (2.523.0): three more that refuse, naming the rows.
-    q "Revision e3b7a1c9d5f0 (every row has a project): rows with no project must be 0" "SELECT (SELECT count(*) FROM hosts_v2 WHERE project_id IS NULL) AS hosts, (SELECT count(*) FROM scans WHERE project_id IS NULL) AS scans, (SELECT count(*) FROM ingestion_jobs WHERE project_id IS NULL) AS ingestion_jobs, (SELECT count(*) FROM parse_errors WHERE project_id IS NULL) AS parse_errors, (SELECT count(*) FROM dns_records WHERE project_id IS NULL) AS dns_records;"
-    q "Revision f4c8b2d0e6a1 (every key is a session's): keys not bound to an agent session must be 0" "SELECT count(*) AS unbound_keys FROM api_keys WHERE agent_id IS NULL OR agent_session_id IS NULL;"
-    q "Revision b6e0d4f2a8c3 (one scanner row per identity): rows sharing one identity must be 0" "SELECT count(*) AS duplicated_identities, coalesce(sum(n) - count(*), 0) AS extra_rows FROM (SELECT count(*) AS n FROM vulnerabilities GROUP BY host_id, source, plugin_id, port_id, name_id, title HAVING count(*) > 1) d;"
+    section "8. Known refusals: rows a revision will not change (scripts/upgrade-refusals.sql)"
+    # The ONE list (deploy.sh option 1 runs the same file before it builds).
+    # Counts only; each statement on its own, so one that fails on an older
+    # schema says so and the rest still run.
+    echo ""
+    echo "--- Every refused must be 0 before its revision runs ---"
+    if [[ -f "$SCRIPT_DIR/upgrade-refusals.sql" ]]; then
+        psql_q -f - < "$SCRIPT_DIR/upgrade-refusals.sql" 2>&1 || echo "(query failed — the table may be locked or absent at this revision)"
+    else
+        echo "(scripts/upgrade-refusals.sql is missing from this copy of the scripts)"
+    fi
     q "Invalid indexes left by an interrupted build" "SELECT c.relname AS index, t.relname AS on_table FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid WHERE NOT i.indisvalid;"
 
     section "9. Live sessions and lock waits"

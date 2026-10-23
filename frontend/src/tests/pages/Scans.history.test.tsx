@@ -454,17 +454,17 @@ describe('Scans — layout', () => {
     expect(screen.queryByText(/nothing failed/)).not.toBeInTheDocument();
   });
 
-  it('never says "nothing failed" while dismissed failures exist; says they were never imported', async () => {
+  it('never says "nothing failed" while dismissed failures exist; says they were not imported', async () => {
     api.getScansSummary.mockResolvedValue({
       total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
       imports_need_attention: 0, imports_not_imported: 31,
     });
     renderPage();
-    await waitFor(() => expect(leadText()).toMatch(/31 never imported/));
+    await waitFor(() => expect(leadText()).toMatch(/31 closed failures, not imported/));
     // No reason breakdown: no one status filter lists exactly these, so the
     // figure opens nothing (5.418.0 — it opened every upload, which is not
     // the list it counts).
-    expect(screen.queryByRole('link', { name: '31 never imported' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /31 closed failures/ })).not.toBeInTheDocument();
     expect(leadText()).not.toMatch(/nothing failed/);
   });
 
@@ -476,8 +476,9 @@ describe('Scans — layout', () => {
     });
     renderPage();
     await screen.findByRole('link', { name: '31 expired before review' });
-    // Two reasons: each opens its list; the total, which no one list holds, opens none.
-    expect(screen.queryByRole('link', { name: '33 never imported' })).not.toBeInTheDocument();
+    // Two reasons: each opens its list; there is no total, which no one list holds.
+    expect(leadText()).not.toMatch(/33 (never|not) imported/);
+    expect(leadText()).not.toMatch(/never imported/);
     expect(screen.getByRole('link', { name: '31 expired before review' })).toHaveAttribute('href', '/scans?status=expired');
     expect(screen.getByRole('link', { name: '2 discarded' })).toHaveAttribute('href', '/scans?status=discarded');
   });
@@ -494,7 +495,7 @@ describe('Scans — layout', () => {
     renderPage();
     await screen.findByRole('link', { name: '31 expired before review' });
     const text = leadText();
-    expect(text).toMatch(/imported · 33 never imported \(31 expired before review, 2 discarded\) · last import/);
+    expect(text).toMatch(/imported · 31 expired before review and 2 discarded, not imported · last import/);
     expect(text).not.toMatch(/dismissed failure/);
     expect(text).not.toMatch(/none needs attention/);
     // The explanation is an info tip, not a paragraph under the lead.
@@ -511,7 +512,7 @@ describe('Scans — layout', () => {
     });
     const { unmount } = renderPage();
     await screen.findByRole('link', { name: '25 discarded' });
-    expect(leadText()).toMatch(/26 never imported \(25 discarded, 1 dismissed failure\)/);
+    expect(leadText()).toMatch(/25 discarded and 1 dismissed failure, not imported/);
     expect(leadText()).not.toMatch(/failed, dismissed/);
     unmount();
     api.getScansSummary.mockResolvedValue({
@@ -519,8 +520,8 @@ describe('Scans — layout', () => {
       imports_need_attention: 0, imports_not_imported: 3, imports_not_imported_by_reason: { dismissed: 3 },
     });
     renderPage();
-    const link = await screen.findByRole('link', { name: '3 never imported' });
-    expect(leadText()).toMatch(/3 never imported \(3 dismissed failures\)/);
+    const link = await screen.findByRole('link', { name: '3 dismissed failures' });
+    expect(leadText()).toMatch(/3 dismissed failures, not imported/);
     // The 3 open the 3: Ingestion results' dismissed-failures view, not every
     // failed import (it opened `status=failed`, dismissed or not).
     expect(link).toHaveAttribute('href', '/scans?status=failed_dismissed');

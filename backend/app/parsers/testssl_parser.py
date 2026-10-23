@@ -29,6 +29,8 @@ from app.db import models
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ProjectHostsByAddress,
+    ResolvedHost,
     announce_scan,
     beat_while_reading,
     correlate_scan,
@@ -37,6 +39,7 @@ from app.parsers.parser_utils import (
     resolve_host_cached,
     resolve_port_cached,
     upsert_vulnerability,
+    write_record,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.cert_fields import parse_cert_not_after, _classify_tls_version
@@ -191,10 +194,70 @@ class TestsslParser:
     def __init__(self, db: Session):
         self.db = db
         self._project_id: Optional[int] = None
-        self._host_cache: dict = {}
+        # The project's hosts by address, read once per file (B1-2).
+        self._hosts: Optional[ProjectHostsByAddress] = None
         self._observed = ScanHostObservations()
         self._port_cache: dict = {}
         self._name_cache = ObservationCache()
+
+    def _reset_caches(self) -> None:
+        """After a target's savepoint rolled back.  The host map heals itself
+        (a host the target created is found gone); the port memo and the name
+        cache have no per-entry provenance — a DNSName created in the
+        savepoint would be reused transient — so they start again, which
+        costs re-queries only (v2.332.2: a host or port row cached from a
+        rolled-back savepoint failed a later target on a foreign key)."""
+        self._port_cache.clear()
+        self._name_cache = ObservationCache()
+
+    def _write_target(
+        self, scan: models.Scan, ip: str, hostname: Optional[str], port: int, t: Dict[str, Any],
+    ) -> Tuple[ResolvedHost, int]:
+        """One testssl target's rows: its host, its TLS interface and its
+        rated checks.  Returns the resolved host and how many scanner
+        observations it recorded."""
+        resolved = resolve_host_cached(self.db, self._hosts, ip, hostname=hostname)
+        host_row = resolved.host
+        port_row = resolve_port_cached(self.db, host_row, port, self._port_cache)
+        # weak is True if any weak protocol offered; False if only strong
+        # protocols were observed; None when protocols weren't enumerated.
+        weak = t["weak"] if t["weak"] is not None else (False if t["strong_seen"] else None)
+        # v2.416.0 — the URL is the endpoint testssl was asked about: the NAME
+        # (SNI) when it had one, else the IP.  Two names on one IP:port are
+        # two endpoints with their own certificates and checks; keyed by IP,
+        # the second collided and rolled back with its observations.  The
+        # address is part of the row's key (scan, url, source, ip), so one
+        # name on two IPs stays two rows too.
+        if hostname:
+            url = f"https://{hostname}:{port}"
+        else:
+            url = f"https://[{ip}]:{port}" if ":" in ip else f"https://{ip}:{port}"
+        # Phase 2 — testssl knows the NAME it probed (SNI) even though the URL
+        # is keyed by IP; bind it + record the HTTP observation.
+        name_id = bind_hostname(
+            self.db, project_id=self._project_id, hostname=hostname,
+            ip_address=ip, scan_id=scan.id, cache=self._name_cache,
+        )
+        self.db.add(models.WebInterface(
+            scan_id=scan.id, host_id=host_row.id,
+            port_id=port_row.id if port_row else None,
+            project_id=self._project_id, source="testssl",
+            url=url, protocol="https", port=port, ip_address=ip,
+            name_id=name_id,
+            tls_weak_protocol=weak,
+            cert_not_after=t["not_after"],
+            cert_self_signed=t["self_signed"],
+            raw={"findings": t["raw"]},
+        ))
+        self.db.flush()
+        # v2.390.0 — every rated check (LOW … CRITICAL) is a scanner
+        # observation on this host:port.  Only three facts were promoted
+        # (weak protocol, expiry, self-signed); Heartbleed, ROBOT, SWEET32,
+        # missing HSTS … lived in `raw`, unread.
+        observations = self._record_observations(
+            t["raw"], host_row.id, scan.id, port_row.id if port_row else None, name_id,
+        )
+        return resolved, observations
 
     def _record_observations(
         self, findings: List[Dict[str, Any]], host_id: int, scan_id: int,
@@ -249,7 +312,7 @@ class TestsslParser:
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
-        self._host_cache.clear()
+        self._hosts = ProjectHostsByAddress(self.db, self._project_id)
         self._port_cache.clear()
         start = time.time()
         logger.info("Starting testssl parse of %s", filename)
@@ -323,95 +386,33 @@ class TestsslParser:
         )
         for (ip, hostname, port), t in targets.items():
             beat.tick()
-            # Per-target SAVEPOINT so a single row's integrity failure (e.g. a
-            # (scan_id, url, source) collision) rolls back JUST this target
-            # instead of poisoning the session — without it, the caught flush
-            # error left the transaction in pending_rollback and the next flush
-            # raised PendingRollbackError, aborting the whole upload. Mirrors the
-            # dnsx parser / persist_host_observation isolation.
-            # What this target adds to the per-file caches, so a rollback can
-            # evict exactly that (v2.332.2).  A Host/Port row created inside a
-            # savepoint that is then rolled back is gone from the database but
-            # was still in the cache, so a later target for the same address
-            # reused a transient object and failed on a foreign key it could
-            # not satisfy.  Entries that were cached BEFORE this target are
-            # untouched by the rollback and stay.
-            host_was_cached = ip in self._host_cache
-            port_key = None
-            port_was_cached = True
-            sp = self.db.begin_nested()
-            try:
-                resolved = resolve_host_cached(self.db, self._project_id, ip,
-                                               self._host_cache, hostname=hostname)
-                host_row = resolved.host
-                if host_row is None:
-                    sp.rollback()
-                    continue
-                port_key = (host_row.id, port)
-                port_was_cached = port_key in self._port_cache
-                port_row = resolve_port_cached(self.db, host_row, port, self._port_cache)
-                # weak is True if any weak protocol offered; False if only strong
-                # protocols were observed; None when protocols weren't enumerated.
-                weak = t["weak"] if t["weak"] is not None else (False if t["strong_seen"] else None)
-                # v2.416.0 — the URL is the endpoint testssl was asked about:
-                # the NAME (SNI) when it had one, else the IP.  Two names on
-                # one IP:port are two endpoints with their own certificates
-                # and checks; keyed by IP, the second collided and rolled
-                # back with its observations.  The address is part of the
-                # row's key (scan, url, source, ip), so one name on two IPs
-                # stays two rows too.
-                if hostname:
-                    url = f"https://{hostname}:{port}"
-                else:
-                    url = f"https://[{ip}]:{port}" if ":" in ip else f"https://{ip}:{port}"
-                # Phase 2 — testssl knows the NAME it probed (SNI) even though
-                # the URL is keyed by IP; bind it + record the HTTP observation.
-                name_id = bind_hostname(
-                    self.db, project_id=self._project_id, hostname=hostname,
-                    ip_address=ip, scan_id=scan.id, cache=self._name_cache,
-                )
-                self.db.add(models.WebInterface(
-                    scan_id=scan.id, host_id=host_row.id,
-                    port_id=port_row.id if port_row else None,
-                    project_id=self._project_id, source="testssl",
-                    url=url, protocol="https", port=port, ip_address=ip,
-                    name_id=name_id,
-                    tls_weak_protocol=weak,
-                    cert_not_after=t["not_after"],
-                    cert_self_signed=t["self_signed"],
-                    raw={"findings": t["raw"]},
-                ))
-                self.db.flush()
-                # v2.390.0 — every rated check (LOW … CRITICAL) is a scanner
-                # observation on this host:port.  Only three facts were
-                # promoted (weak protocol, expiry, self-signed); Heartbleed,
-                # ROBOT, SWEET32, missing HSTS … lived in `raw`, unread.
-                observations += self._record_observations(
-                    t["raw"], host_row.id, scan.id, port_row.id if port_row else None, name_id,
-                )
-                sp.commit()
-                written += 1
-                # Only a COMMITTED target is an observation (v2.332.2).  Noting
-                # before the commit let a target that then rolled back — the
-                # second hostname on one ip:port collides on the URL key — put
-                # its hostname on the scan history while being reported as
-                # skipped.  A TLS assessment completed a handshake: up now.
-                self._observed.note(
-                    host_row, created=resolved.created, state="up", hostname=hostname,
-                    renamed=resolved.renamed,
-                )
-            except Exception as exc:
-                sp.rollback()
-                if not host_was_cached:
-                    self._host_cache.pop(ip, None)
-                if port_key is not None and not port_was_cached:
-                    self._port_cache.pop(port_key, None)
-                # The name cache has no per-entry provenance; a DNSName created
-                # in this savepoint would be reused transient.  A fresh cache
-                # costs re-queries only.
-                self._name_cache = ObservationCache()
-                logger.warning("testssl: skipping target %s:%s due to %s", ip, port, exc)
-                skipped_targets.append(f"{ip}:{port} ({exc})")
+            # One record per target (``write_record``) so a single row's
+            # integrity failure (e.g. a (scan_id, url, source) collision)
+            # rolls back JUST this target instead of poisoning the session —
+            # without it, the caught flush error left the transaction in
+            # pending_rollback and the next flush raised
+            # PendingRollbackError, aborting the whole upload.
+            outcome = write_record(
+                self.db,
+                lambda: self._write_target(scan, ip, hostname, port, t),
+                on_rollback=self._reset_caches,
+            )
+            if outcome.error is not None:
+                logger.warning("testssl: skipping target %s:%s due to %s", ip, port, outcome.error)
+                skipped_targets.append(f"{ip}:{port} ({outcome.error})")
+                continue
+            resolved, target_observations = outcome.value
+            observations += target_observations
+            written += 1
+            # Only a COMMITTED target is an observation (v2.332.2).  Noting
+            # before the commit let a target that then rolled back — the
+            # second hostname on one ip:port collides on the URL key — put
+            # its hostname on the scan history while being reported as
+            # skipped.  A TLS assessment completed a handshake: up now.
+            self._observed.note(
+                resolved.host, created=resolved.created, state="up", hostname=hostname,
+                renamed=resolved.renamed,
+            )
 
         record_hosts_in_scan(self.db, scan.id, self._observed)
         self.db.commit()

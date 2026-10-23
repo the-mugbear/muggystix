@@ -115,6 +115,10 @@ class HostDeduplicationService:
         self._ws_host_id: Optional[int] = None
         self._ws_scan_id: Optional[int] = None
         self._ws_ports: Dict[Tuple[int, str], Port] = {}
+        # The ids of the ports in ``_ws_ports`` that this parse did not
+        # create (those are ``_ws_fresh_port_ids``): "does the working set
+        # hold this port" is a set lookup, not a walk over the host's ports.
+        self._ws_port_ids: set = set()
         self._ws_scripts: Dict[Tuple[int, str], Script] = {}
         self._ws_fresh_port_ids: set = set()
         self._ws_history_checked: set = set()
@@ -140,18 +144,14 @@ class HostDeduplicationService:
         for cache in (self._pending_host_history, self._pending_port_history):
             for key in [k for k, row in cache.items() if not sa_inspect(row).persistent]:
                 del cache[key]
-        self._ws_host_id = None
-        self._ws_scan_id = None
-        self._ws_ports = {}
-        self._ws_scripts = {}
-        self._ws_fresh_port_ids = set()
-        self._ws_history_checked = set()
+        self._reset_working_set()
         self._name_cache = ObservationCache()
 
     def _reset_working_set(self) -> None:
         self._ws_host_id = None
         self._ws_scan_id = None
         self._ws_ports = {}
+        self._ws_port_ids = set()
         self._ws_scripts = {}
         self._ws_fresh_port_ids = set()
         self._ws_history_checked = set()
@@ -238,10 +238,11 @@ class HostDeduplicationService:
         return address, (written if written != address else None)
 
     @staticmethod
-    def _address_is(address: str, written: Optional[str]):
+    def address_is(address: str, written: Optional[str]):
         """The lookup of a host by address: the canonical spelling, and the
         one it was written in when that differs (a row stored that way
-        before addresses were normalised) — the canonical row first."""
+        before addresses were normalised) — the canonical row first.  Also
+        ``parser_utils.resolve_host_cached``'s (the web parsers)."""
         if not written:
             return Host.ip_address == address, Host.id
         from sqlalchemy import case
@@ -305,7 +306,7 @@ class HostDeduplicationService:
         self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int,
         *, written: Optional[str] = None,
     ) -> Host:
-        same_address, canonical_first = self._address_is(ip_address, written)
+        same_address, canonical_first = self.address_is(ip_address, written)
         # v2.90.3 (code review NEW C) — suppress the eager loads
         # inherited from Host.* lazy="selectin" relationships.  The
         # dedup lookup only needs Host.id + scalar fields to decide
@@ -513,6 +514,7 @@ class HostDeduplicationService:
                         for script in self.db.query(Script).filter(Script.port_id == updated_port.id):
                             self._ws_scripts.setdefault((updated_port.id, script.script_id), script)
                         self._ws_ports[(port_number, protocol)] = updated_port
+                        self._ws_port_ids.add(updated_port.id)
                         return updated_port
                     fallback_nested.rollback()
                     raise RuntimeError(
@@ -563,9 +565,13 @@ class HostDeduplicationService:
         this bounds memory, and it is dropped when the objects left the
         session (a parser that commits + expunges between hosts) — a
         detached object's changes would be lost silently."""
+        # One port stands for all of them (a commit + expunge detaches every
+        # one) — taken without copying the host's ports, which made a re-scan
+        # of a 65,535-port host quadratic (review 2026-10-22, nitpick).
+        first = next(iter(self._ws_ports.values()), None)
         if (
             self._ws_host_id == host_id and self._ws_scan_id == scan_id
-            and all(obj in self.db for obj in list(self._ws_ports.values())[:1])
+            and (first is None or first in self.db)
         ):
             return
         self._ws_host_id, self._ws_scan_id = host_id, scan_id
@@ -579,10 +585,12 @@ class HostDeduplicationService:
             # 2026-09-23 finding 2).
             self._fresh_host_ids.discard(host_id)
             self._ws_ports = {}
+            self._ws_port_ids = set()
             return
         ports = self.db.query(Port).filter(Port.host_id == host_id).all()
         self._ws_ports = {(p.port_number, p.protocol): p for p in ports}
         port_ids = [p.id for p in ports]
+        self._ws_port_ids = set(port_ids)
         if not port_ids:
             return
         for script in self.db.query(Script).filter(Script.port_id.in_(port_ids)).all():
@@ -598,9 +606,7 @@ class HostDeduplicationService:
 
     def _ws_knows_port(self, port_id: int) -> bool:
         """Whether the working set holds everything the DB has for this port."""
-        return port_id in self._ws_fresh_port_ids or any(
-            p.id == port_id for p in self._ws_ports.values()
-        )
+        return port_id in self._ws_fresh_port_ids or port_id in self._ws_port_ids
 
     def add_or_update_script(self, port_id: int, scan_id: int, script_data: Dict[str, Any]) -> Script:
         """Add or update a script for a port"""

@@ -25,6 +25,7 @@ from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.ingestion_service import IngestionService, delete_partial_scan
 from tests.ingestion_job_harness import (
     all_scan_ids,
+    cancel_from_the_api,
     host_ips,
     job_row,
     kill_worker,
@@ -148,7 +149,7 @@ def test_a_failed_nessus_import_removes_exactly_the_ports_it_created(
 
     # Heartbeat 2: the known host's batch (22 found; 443 and 8443 created) is
     # committed.
-    with on_heartbeat(svc, 2, lambda: svc.cancel_job(job_id)):
+    with on_heartbeat(svc, 2, lambda: cancel_from_the_api(job_id)):
         run_next(db_session, svc)
 
     job = job_row(db_session, job_id)

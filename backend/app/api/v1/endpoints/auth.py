@@ -457,7 +457,11 @@ def register(
         hashed_password=hashed_password,
         full_name=registration_data.full_name,
         role=requested_role,
-        created_by_id=current_user.id
+        created_by_id=current_user.id,
+        # The admin chose this password, so it is a transit credential, never a
+        # standing one — the rule of the admin reset (``users.reset_password``):
+        # the new account changes it at first sign-in (review 2026-10-22, A-R5).
+        must_change_password=True,
     )
 
     db.add(new_user)

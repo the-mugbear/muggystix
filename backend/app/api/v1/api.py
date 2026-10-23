@@ -169,7 +169,8 @@ api_router.include_router(mcp_assist.router, prefix="/mcp", tags=["mcp"])
 # project-scoped: an MCP request is accepted or refused before any project is
 # known, so the rows carry no project attribution to filter on.
 api_router.include_router(
-    mcp_telemetry.router, prefix="/mcp-telemetry", tags=["mcp-telemetry"]
+    mcp_telemetry.router, prefix="/mcp-telemetry", tags=["mcp-telemetry"],
+    dependencies=[Depends(require_password_changed)],
 )
 # Agent feedback ingest — same API-key auth path as /agent/.
 api_router.include_router(

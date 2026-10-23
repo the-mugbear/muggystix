@@ -123,7 +123,7 @@ Top-level endpoints (no project scope): `/auth/`, `/users/`, `/audit/`, `/projec
 
 1. **Authenticate** — `POST /auth/login` to obtain a JWT.
 2. **Select project** — `GET /projects/` to list available projects, note the `id`.
-3. **Discover data** — `GET /projects/{id}/dashboard/stats` for an overview,
+3. **Discover data** — `GET /projects/{id}/posture` for an overview,
    `GET /projects/{id}/scans/` to list ingested scans.
 4. **Query hosts** — `GET /projects/{id}/hosts/` with filters (ports, services,
    OS, vulnerability severity, follow status, tags, etc.) or the boolean query DSL.

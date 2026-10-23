@@ -10,11 +10,11 @@ from datetime import datetime, timezone
 from lxml import etree
 from sqlalchemy.orm import Session
 from app.db import models
-from app.db.session import is_deadlock
 from app.parsers import nse_vulns
-from sqlalchemy.exc import IntegrityError
 from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
-from app.parsers.parser_utils import announce_scan, epoch_to_utc, map_numeric_severity, upsert_vulnerability
+from app.parsers.parser_utils import (
+    announce_scan, epoch_to_utc, map_numeric_severity, upsert_vulnerability, write_record,
+)
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
@@ -101,46 +101,33 @@ class NmapXMLParser:
                             # only one around the host's new ports
                             # (find_or_create_port(isolated=True)); a port
                             # another import inserted concurrently surfaces
-                            # here as IntegrityError, and the host is processed
-                            # once more, now finding that row.
+                            # here as IntegrityError — or Postgres breaks a
+                            # deadlock between two imports of one project
+                            # locking host rows in different orders (review
+                            # 2026-10-10, S6) — and the host is processed once
+                            # more, now finding the other import's rows
+                            # (``retry_races``).  The one record isolation
+                            # (``write_record``; review 2026-10-22, B1-1); H1 —
+                            # the history the savepoint added is gone, so a
+                            # later element for this host must re-add it.
                             try:
-                                for attempt in (1, 2):
-                                    host_sp = self.db.begin_nested()
-                                    try:
-                                        recorded = self._process_host_with_deduplication(elem, scan_id)
-                                        host_sp.commit()
-                                        # A down host with nothing to record is
-                                        # read, not processed (review 2026-10-16,
-                                        # N8: it was counted in "N hosts").
-                                        if recorded:
-                                            hosts_processed += 1
-                                        break
-                                    except Exception as e:
-                                        try:
-                                            host_sp.rollback()
-                                            # H1 — the history the savepoint added is gone;
-                                            # a later element for this host must re-add it.
-                                            self.dedup_service.discard_rolled_back_state()
-                                        except Exception:  # noqa: BLE001
-                                            # Inner frame already rolled the savepoint back;
-                                            # the parent transaction stays committable.
-                                            pass
-                                        # A lost race is processed once
-                                        # more: a concurrent insert, or a
-                                        # deadlock Postgres broke between two
-                                        # imports of one project locking
-                                        # host rows in different orders
-                                        # (review 2026-10-10, S6) — the other
-                                        # import holds the rows now, and
-                                        # this attempt waits for it.
-                                        if attempt == 1 and (isinstance(e, IntegrityError) or is_deadlock(e)):
-                                            continue
-                                        logger.warning(f"Skipping malformed host element: {e}")
-                                        hosts_skipped += 1
-                                        parse_warnings.append(str(e))
-                                        break
+                                outcome = write_record(
+                                    self.db,
+                                    lambda: self._process_host_with_deduplication(elem, scan_id),
+                                    on_rollback=self.dedup_service.discard_rolled_back_state,
+                                    retry_races=True,
+                                )
                             finally:
                                 clear_element(elem)
+                            if outcome.error is not None:
+                                logger.warning(f"Skipping malformed host element: {outcome.error}")
+                                hosts_skipped += 1
+                                parse_warnings.append(str(outcome.error))
+                            elif outcome.value:
+                                # A down host with nothing to record is read,
+                                # not processed (review 2026-10-16, N8: it was
+                                # counted in "N hosts").
+                                hosts_processed += 1
                             # Progress + periodic commit live OUTSIDE the per-host
                             # savepoint. report_progress raises ParseFailure on
                             # cancel/timeout; keeping it out here lets that signal

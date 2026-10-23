@@ -21,13 +21,17 @@ import { TooltipProvider } from '../../components/ui/tooltip';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
+// `GET /dashboard/stats` answers the scanner observation counts and nothing
+// else (2.524.0).
 const emptyStats = {
-  total_scans: 0, total_hosts: 0, total_ports: 0, up_hosts: 0, open_ports: 0, total_subnets: 0,
-  recent_scans: [], subnet_stats: [],
+  vulnerability_stats: {
+    total_vulnerabilities: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0,
+    hosts_with_vulnerabilities: 0, hosts_by_severity: {},
+  },
 };
 const stats = {
-  ...emptyStats,
   vulnerability_stats: {
+    total_vulnerabilities: 1087,
     critical: 9, high: 154, medium: 20, low: 4, info: 900, hosts_with_vulnerabilities: 130,
     hosts_by_severity: { critical: 7, high: 122, medium: 15, low: 4 },
   },

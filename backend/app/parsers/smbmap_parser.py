@@ -14,7 +14,7 @@ from app.parsers.netexec_parser import writable_share
 from app.services.misconfig_checks import record_misconfig
 from app.parsers.parser_utils import (
     ProgressBeat, beat_while_reading, correlate_scan, extract_first_ip, ensure_scan,
-    persist_host_observation, record_savepoint, without_nul,
+    persist_host_observation, without_nul, write_record,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -150,11 +150,12 @@ class SMBMapParser:
         skipped = 0
         for ip_address, entry in hosts.items():
             beat.tick()
-            try:
-                with record_savepoint(self.db, on_rollback=self.dedup_service.discard_rolled_back_state):
-                    self._write_host(scan, project_id, ip_address, entry)
-            except Exception as exc:  # noqa: BLE001 — one host, counted below
-                logger.warning("SMBMap: skipping host %s: %s", ip_address, exc)
+            outcome = write_record(
+                self.db, lambda: self._write_host(scan, project_id, ip_address, entry),
+                on_rollback=self.dedup_service.discard_rolled_back_state,
+            )
+            if outcome.error is not None:
+                logger.warning("SMBMap: skipping host %s: %s", ip_address, outcome.error)
                 skipped += 1
 
         correlate_scan(self.db, scan.id)

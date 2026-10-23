@@ -379,37 +379,35 @@ def persist_host_observation(
 ) -> Optional[Tuple[models.Host, Dict[Tuple[int, str], models.Port]]]:
     """Persist one host observation (+ its ports).
 
-    ``isolate=True`` wraps the write in a SAVEPOINT and skips (rollback +
-    return None) on any error, so one malformed observation can't roll back
-    the whole upload — the per-record isolation the lower-volume parsers
-    (naabu/amass/dirbuster) want.  Callers that pass it ignore the return.
+    ``isolate=True`` writes it as one skippable record (``write_record``):
+    on any error it is rolled back and skipped (logged, return None), so one
+    malformed observation can't roll back the whole upload — the per-record
+    isolation the lower-volume parsers (naabu/amass/dirbuster/rustscan/
+    bloodhound) want.  Callers that pass it ignore the return.
     """
-    if isolate:
-        sp = dedup_service.db.begin_nested()
-        try:
-            result = _persist_host_observation_inner(
-                dedup_service=dedup_service, scan_id=scan_id, ip_address=ip_address,
-                hostname=hostname, state=state, ports=ports, host_data=host_data,
-                project_id=project_id,
-            )
-            sp.commit()
-            return result
-        except Exception as exc:  # noqa: BLE001 — isolate one bad observation
-            sp.rollback()
-            dedup_service.discard_rolled_back_state()
-            logger.warning("Skipping host observation %s: %s", ip_address, exc)
-            return None
-    return _persist_host_observation_inner(
-        dedup_service=dedup_service, scan_id=scan_id, ip_address=ip_address,
-        hostname=hostname, state=state, ports=ports, host_data=host_data,
-        project_id=project_id,
-    )
+    def write():
+        return _persist_host_observation_inner(
+            dedup_service=dedup_service, scan_id=scan_id, ip_address=ip_address,
+            hostname=hostname, state=state, ports=ports, host_data=host_data,
+            project_id=project_id,
+        )
+
+    if not isolate:
+        return write()
+    outcome = write_record(dedup_service.db, write, on_rollback=dedup_service.discard_rolled_back_state)
+    if outcome.error is not None:
+        logger.warning("Skipping host observation %s: %s", ip_address, outcome.error)
+        return None
+    return outcome.value
 
 
 @contextmanager
 def record_savepoint(db: Session, observed: Optional["ScanHostObservations"] = None,
                      on_rollback: Optional[Callable[[], None]] = None):
     """One input record's writes as a unit (v2.419.0, review 2026-09-25 H3).
+    The ONE savepoint a parser opens around a record (review 2026-10-22,
+    B1-1); a parser that skips a failed record and carries on calls
+    ``write_record``, which is built on it.
 
     A caller that catches a record's exception and carries on MUST have
     isolated that record: without a savepoint, the failed flush leaves the
@@ -417,20 +415,81 @@ def record_savepoint(db: Session, observed: Optional["ScanHostObservations"] = N
     whole import that the log said skipped one record (httpx: a
     content_length past 2**31).  On failure the savepoint is rolled back,
     the scan's host notes are restored, ``on_rollback`` drops per-file caches
-    that may hold rows from the rolled-back savepoint, and the exception is
-    re-raised for the caller to count."""
+    that may hold rows from the rolled-back savepoint (the dedup service's
+    ``discard_rolled_back_state`` among them, for a parser that writes
+    through it), and the exception is re-raised for the caller to count.
+
+    A savepoint an inner frame already rolled back cannot be rolled back
+    again; that is not a second failure — the notes are still restored, the
+    caches still dropped, and the record's own exception is the one raised
+    (nmap and gnmap swallowed it by hand)."""
     sp = db.begin_nested()
     checkpoint = observed.checkpoint() if observed is not None else None
     try:
         yield
         sp.commit()
     except Exception:
-        sp.rollback()
+        try:
+            sp.rollback()
+        except Exception as rollback_exc:  # noqa: BLE001 — the record's error is the one to raise
+            logger.debug("Record savepoint was already rolled back: %s", rollback_exc)
         if observed is not None:
             observed.restore(checkpoint)
         if on_rollback is not None:
             on_rollback()
         raise
+
+
+class RecordOutcome(NamedTuple):
+    """``write_record``'s answer: what ``write`` returned, or the error the
+    record was skipped for (``None`` when it was written)."""
+    value: Any = None
+    error: Optional[Exception] = None
+
+
+def write_record(
+    db: Session,
+    write: Callable[[], Any],
+    *,
+    observed: Optional["ScanHostObservations"] = None,
+    on_rollback: Optional[Callable[[], None]] = None,
+    retry_races: bool = False,
+) -> RecordOutcome:
+    """Write one input record that may be skipped — THE per-record isolation
+    of every parser that skips a failed record and carries on (review
+    2026-10-22, B1-1: it was written out by hand eight times, and the copies
+    had drifted).  ``write`` runs inside ``record_savepoint`` (which rolls the
+    record back, restores ``observed`` and calls ``on_rollback``).
+
+    * A cancel, a shutdown or a stall (``ParseFailure``) is never a bad
+      record: it is raised, and the import stops (only gnmap and NetExec
+      re-raised it; everywhere else it was counted as one skipped record).
+    * ``retry_races``: an ``IntegrityError`` or a deadlock (40P01) is a lost
+      race with another import of the project, not a bad record — the record
+      is written once more, now finding the other import's row (nmap; review
+      2026-10-01 R7 and 2026-10-10 S6).  Only for a ``write`` that may run
+      twice: everything it wrote is rolled back and ``on_rollback`` must
+      leave no per-record state behind.
+    * Any other error skips the record: the outcome carries it, for the
+      caller to count and say."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db.session import is_deadlock
+    from app.services.ingestion_service import ParseFailure
+
+    attempts = 2 if retry_races else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            with record_savepoint(db, observed, on_rollback):
+                value = write()
+            return RecordOutcome(value)
+        except ParseFailure:
+            raise
+        except Exception as exc:  # noqa: BLE001 — one record, the caller counts it
+            if attempt < attempts and (isinstance(exc, IntegrityError) or is_deadlock(exc)):
+                continue
+            return RecordOutcome(error=exc)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _persist_host_observation_inner(
@@ -510,7 +569,13 @@ class ProjectHostsByAddress:
     A host the import CREATES is ``add``-ed as it is made (a later answer of
     the same record may name it — a zone's own A record for its name server)
     and ``forget``-ed when the record that made it rolls back: that host does
-    not exist."""
+    not exist.  A caller that does not forget it is still answered right
+    (review 2026-10-22, B1-2 — the web parsers): a host whose row a rollback
+    discarded is no longer in the session, is read again by its key, is not
+    found, and its address is dropped from the map.
+
+    The one way an import finds a host by address outside the dedup service
+    — the DNS parsers, and the web parsers through ``resolve_host_cached``."""
 
     def __init__(self, db: Session, project_id: int) -> None:
         self._db = db
@@ -522,6 +587,10 @@ class ProjectHostsByAddress:
         # lets the window go, so this never grows to the project.
         self._loaded: Dict[int, models.Host] = {}
 
+    @property
+    def project_id(self) -> int:
+        return self._project_id
+
     def get(self, address: str) -> Optional[models.Host]:
         if self._ids is None:
             self._ids = dict(
@@ -532,18 +601,27 @@ class ProjectHostsByAddress:
         if host_id is None:
             return None
         host = self._loaded.get(host_id)
-        if host is not None and sa_inspect(host).expired:
-            self._loaded.clear()
-            host = None
+        if host is not None:
+            state = sa_inspect(host)
+            # Expired: a commit (every one of them, so the window goes).
+            # Not persistent: a rolled-back savepoint created it.
+            if state.expired or not state.persistent:
+                self._loaded.clear()
+                host = None
         if host is None:
             host = self._db.get(models.Host, host_id)
-            if host is not None:
-                self._loaded[host_id] = host
+            if host is None:
+                # Its row was rolled back (or deleted): the address has none.
+                self._ids.pop(address, None)
+                return None
+            self._loaded[host_id] = host
         return host
 
-    def add(self, host: Optional[models.Host]) -> None:
+    def add(self, host: Optional[models.Host], address: Optional[str] = None) -> None:
+        """Remember ``host`` under ``address`` (default: the spelling it is
+        stored in)."""
         if host is not None and self._ids is not None:
-            self._ids[host.ip_address] = host.id
+            self._ids[address or host.ip_address] = host.id
             self._loaded[host.id] = host
 
     def forget(self, addresses: Iterable[str]) -> None:
@@ -972,12 +1050,12 @@ def upsert_vulnerability(
 
 # --- Shared web-parser host/port resolution (cached) ---------------------
 #
-# The web parsers (eyewitness / httpx / whatweb) each resolve a record's Host
-# and Port by query before writing a WebInterface row.  A scan file holds many
-# records that share the same host (and port), so doing that per-record is an
-# N+1.  These helpers memoize the lookups in caches the parser owns for the
-# duration of one file parse, collapsing repeats to a dict hit.  eyewitness had
-# its own copy of this; these are the single shared version.
+# The web parsers (eyewitness / httpx / whatweb / testssl) each resolve a
+# record's Host and Port before writing a WebInterface row.  A scan file holds
+# many records that share the same host (and port), so a query per record is
+# an N+1.  Hosts come from the import's ``ProjectHostsByAddress`` (ids, not
+# ORM rows held for the whole file — review 2026-10-22, B1-2); ports are
+# memoized in a cache the parser owns for one file parse.
 
 
 class ResolvedHost(NamedTuple):
@@ -994,18 +1072,23 @@ class ResolvedHost(NamedTuple):
 
 def resolve_host_cached(
     db: Session,
-    project_id: Optional[int],
+    hosts: ProjectHostsByAddress,
     ip: str,
-    host_cache: Dict[str, Any],
     *,
     hostname: Optional[str] = None,
-    create: bool = True,
 ) -> ResolvedHost:
-    """Look up (or create) a ``Host`` by ``(ip, project)``, memoized in
-    ``host_cache`` (``ip -> Host``).  On a cache hit, still enrich a missing
-    ``hostname`` if one was newly learned — matches the per-record behaviour the
-    web parsers relied on.  ``create=True`` inserts + flushes a missing host
-    (the web tool observed it, so it's real)."""
+    """Find (or create) the project's ``Host`` for ``ip``: from ``hosts``, the
+    import's address map, else by one query — an address the map does not
+    hold may be stored in another spelling (``HostDeduplicationService
+    .host_address``, as ``find_or_create_host`` finds it) or have been added
+    by another import since the map was read — else a new host is inserted
+    and flushed (the web tool observed it, so it is real) under
+    ``normalize_ip``'s spelling.  A value that is no address raises
+    (``ValueError``), and the record is skipped.
+
+    On a host that already existed, a newly learned ``hostname`` is offered
+    through the one precedence rule.  A record that is rolled back needs no
+    eviction: ``hosts`` finds that a host it created is gone."""
     # Display-name writes go through the one precedence rule; a web tool's
     # name for the address is a 'scanner' source (fills an empty hostname or
     # replaces a weaker forward-resolved vhost, never a PTR or operator name).
@@ -1013,33 +1096,28 @@ def resolve_host_cached(
 
     # A URL / ip:port / address is not a display name (v2.402.0).
     hostname = display_name_candidate(hostname)
-    if ip in host_cache:
-        host = host_cache[ip]
-        renamed = bool(
-            host is not None and hostname and apply_hostname_candidate(host, hostname, "scanner")
+    address, written = HostDeduplicationService.host_address(ip)
+    host = hosts.get(address)
+    if host is None:
+        where, first = HostDeduplicationService.address_is(address, written)
+        host = (
+            db.query(models.Host)
+            .filter(models.Host.project_id == hosts.project_id, where)
+            .order_by(first)
+            .first()
         )
-        return ResolvedHost(host, False, renamed)
-
-    host = (
-        db.query(models.Host)
-        .filter(models.Host.ip_address == ip, models.Host.project_id == project_id)
-        .first()
-    )
-    created = False
-    renamed = False
-    if host is None and create:
-        host = models.Host(
-            ip_address=ip, hostname=hostname, state="up", project_id=project_id,
-            hostname_source="scanner" if hostname else None,
-        )
-        db.add(host)
-        db.flush()
-        created = True
-    elif host is not None and hostname:
-        renamed = apply_hostname_candidate(host, hostname, "scanner")
-
-    host_cache[ip] = host
-    return ResolvedHost(host, created, renamed)
+        if host is None:
+            host = models.Host(
+                ip_address=address, hostname=hostname, state="up", project_id=hosts.project_id,
+                hostname_source="scanner" if hostname else None,
+            )
+            db.add(host)
+            db.flush()
+            hosts.add(host, address)
+            return ResolvedHost(host, True, False)
+        hosts.add(host, address)
+    renamed = bool(hostname and apply_hostname_candidate(host, hostname, "scanner"))
+    return ResolvedHost(host, False, renamed)
 
 
 def resolve_port_cached(

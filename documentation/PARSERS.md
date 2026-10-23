@@ -322,7 +322,11 @@ Notes:
   in the same SQL: a scan that gives none keeps the stored reason while the
   state is unchanged and clears one that described another state; a
   `--banners` record's `reason="response"` is the banner arriving, not the
-  port's reason.
+  port's reason. Banners (`masscan-<kind>` script rows) are written after
+  each flush of the collected ports, a heartbeat per 1,000 addresses; a
+  banner whose port is not stored yet waits for the next flush, and one
+  whose port never opens is dropped at the end (review 2026-10-22, A-R6:
+  they were held for the whole file and written in one loop at its end).
   **Fails closed** (raises if 0 hosts). Masscan writes nmap's XML dialect
   (`<nmaprun scanner="masscan">`), so an XML root that names ANOTHER scanner is
   refused — an nmap file can never be imported as masscan (open ports only) —
@@ -701,13 +705,25 @@ class MyToolParser:
   before it can fail — the dispatcher deletes a failed import's scan, so a
   row the scan re-observed keeps its `scan_id` and gains a sighting instead
   (see "What a failed import leaves" below).
-- **Record isolation:** a parser that catches a record's exception and carries
-  on MUST wrap the record in `record_savepoint(db, observed, on_rollback)`;
-  without it the failed flush poisons the session and the whole import fails
-  after logging "skipped" (v2.419.0). Since 2.515.0 NetExec (per host),
-  Nikto (per finding), RustScan, SMBMap and BloodHound (per host) do too: one
-  record the database refuses is skipped and counted, the import completes
-  partial, and only a file whose every record failed fails.
+- **Record isolation:** a parser that skips a failed record and carries on
+  writes it with `write_record(db, write, observed=…, on_rollback=…)` — the
+  ONE per-record isolation (review 2026-10-22, B1-1; it had been written out
+  by hand in eight parsers and the copies had drifted). It runs `write`
+  inside `record_savepoint` and answers a `RecordOutcome(value, error)`:
+  without the savepoint the failed flush poisons the session and the whole
+  import fails after logging "skipped" (v2.419.0). The helper rolls the
+  record back, restores the scan's host notes (`observed`), calls
+  `on_rollback` (pass `dedup_service.discard_rolled_back_state`, or a reset
+  that calls it, for a parser that writes through the dedup service), and
+  survives a savepoint an inner frame already rolled back. A cancel, a
+  shutdown or a stall (`ParseFailure`) inside a record is RAISED — never a
+  skipped record — in every parser. `retry_races=True` writes the record once
+  more after an `IntegrityError` or a deadlock (40P01), for a `write` that
+  may run twice (nmap; a lost race with another import of the project).
+  Since 2.515.0 NetExec (per host), Nikto (per finding), RustScan, SMBMap and
+  BloodHound (per host) do too: one record the database refuses is skipped
+  and counted, the import completes partial, and only a file whose every
+  record failed fails.
 - **Name your scan:** create the `Scan` with `ensure_scan`, or call
   `announce_scan(db, scan)` right after flushing a row you built yourself —
   once, OUTSIDE any record savepoint. Under a job this stamps
@@ -817,7 +833,10 @@ class MyToolParser:
   removed ends the fallback chain), and the reaper retries the cleanup of
   failed jobs once their attempt is over — its worker no longer holds the
   attempt's liveness lock, or its lease is past the stale window — which is
-  also how a job cancelled while its worker was dead is cleaned.
+  also how a job cancelled while its worker was dead, or while it waited
+  with a dead attempt's scan on it, is cleaned: the cancel request itself
+  removes nothing (it is the job row only; the sweep runs on the worker's
+  next poll).
   **Ports carry the scan that created them.** Every code path that INSERTS a
   port stamps `ports_v2.created_scan_id` (`HostDeduplicationService._create_new_port`,
   masscan's batch INSERT — its `DO UPDATE` never touches the stamp —, and
@@ -887,8 +906,8 @@ class MyToolParser:
   hostname=None, state="up", ports=[...], host_data=None, project_id=None,
   isolate=False)` — the one-stop "I saw this host with these ports" writer
   (keyword-only; wraps the dedup service you constructed in `__init__`;
-  `isolate=True` puts each host in its own savepoint so one bad record can't
-  fail the batch).
+  `isolate=True` writes each host as one skippable record through
+  `write_record`, so one bad record can't fail the batch).
 - `upsert_vulnerability(*, db, host_id, scan_id, source, title, severity, ...)` —
   **keyword-only** (the positional form is a `TypeError`); also takes
   `plugin_id`, `port_id`, `description`, `cvss_score`, `cve_id`, `solution`,
@@ -897,8 +916,11 @@ class MyToolParser:
   signature. The way to create a scanner `Vulnerability` (handles app-level
   dedup and the required `db.flush()`); a **catalog weakness** goes through
   `record_misconfig` (`app/services/misconfig_checks.py`) instead.
-- `record_savepoint(db, observed=None, on_rollback=None)` — one input record's
-  writes as a unit (see "Record isolation" above).
+- `write_record(db, write, *, observed=None, on_rollback=None,
+  retry_races=False) -> RecordOutcome` — one input record that may be
+  skipped; `record_savepoint(db, observed=None, on_rollback=None)` is the
+  savepoint it opens, for a caller that does not skip (see "Record isolation"
+  above).
 - `read_tool_text(path) -> ToolText` — read a tool's text output with UTF-16
   (PowerShell `>`) decoded and NUL removed; required when text lines reach a
   Text column (PostgreSQL rejects NUL; v2.420.0). `without_nul(handle)` is the
@@ -917,8 +939,16 @@ class MyToolParser:
   severity mapping; reuse these instead of hand-rolling thresholds.
 - `extract_first_ip(text)` / `normalize_ip(value)` /
   `parse_host_port_token(token)` — robust IP/host:port extraction.
-- `resolve_host_cached` / `resolve_port_cached` — per-file caches for the
-  web-interface parsers.
+- `ProjectHostsByAddress(db, project_id)` — the project's hosts by address,
+  read once per import as ids (never ORM rows held for the whole file); a
+  host is loaded by its key when an answer names it, and one a rolled-back
+  record created is found gone. The DNS parsers use it directly;
+  `resolve_host_cached(db, hosts, ip, *, hostname=None)` is the web parsers'
+  (httpx, WhatWeb, EyeWitness, testssl) find-or-create on it — an address the
+  map misses is looked up once (another spelling, `HostDeduplicationService
+  .host_address`; or a host another import added since), and a new host is
+  stored under `normalize_ip`'s spelling (review 2026-10-22, B1-2).
+  `resolve_port_cached` memoizes ports per file.
 - `correlate_scan(db, scan_id)` — map newly-seen hosts to scopes/subnets
   (call once at the end).
 

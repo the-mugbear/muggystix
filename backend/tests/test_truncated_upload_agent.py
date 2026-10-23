@@ -320,7 +320,7 @@ def test_an_agreed_request_imports_what_the_file_holds_and_is_recorded(
 def test_the_instruction_is_that_attempts_only(client, db_session, test_project):
     """A cancel during the kept attempt cleans up, and the upload is then a
     cut-short failure again when a person retries it plainly."""
-    from tests.ingestion_job_harness import on_heartbeat
+    from tests.ingestion_job_harness import cancel_from_the_api, on_heartbeat
 
     pid = test_project.id
     headers = _headers(db_session, test_project)
@@ -329,7 +329,7 @@ def test_the_instruction_is_that_attempts_only(client, db_session, test_project)
     assert client.post(_keep_path(job_id), json={"operator_agreed": True}, headers=headers).status_code == 200
 
     svc = IngestionService()
-    with on_heartbeat(svc, 2, lambda: svc.cancel_job(job_id)) as beats:
+    with on_heartbeat(svc, 2, lambda: cancel_from_the_api(job_id)) as beats:
         run_next(db_session, svc)
     assert len(beats) >= 2
     job = job_row(db_session, job_id)

@@ -122,6 +122,12 @@ class FindingResponse(BaseModel):
     owner_id: Optional[int] = None
     owner_name: Optional[str] = None
     evidence_annotation_id: Optional[int] = None
+    # The host the source note (``evidence_annotation_id``) is on — the host
+    # whose notes hold the evidence thread.  ``GET /findings/{id}`` only (a
+    # list row leaves it null); null when the note is gone or is on no host.
+    # The page used to guess it as the first endpoint, which is wrong once
+    # that endpoint is removed (review 2026-10-22, N1).
+    evidence_host_id: Optional[int] = None
     vuln_id: Optional[int] = None
     # ``host_count`` is the true number of endpoint rows.  On a LIST row
     # ``hosts`` is a preview of at most five of them (review 2026-10-01 C2 —

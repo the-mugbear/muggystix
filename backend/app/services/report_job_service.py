@@ -282,6 +282,7 @@ class ReportJobService:
     def _run_job(self, job_id: int, claimed_at: datetime) -> None:
         # Lazy import — ReportGenerator pulls in the whole report/insight stack.
         from app.services.report_generator import ReportGenerator
+        from app.worker_loop import WorkerStopping
 
         stop = threading.Event()
         renewer = threading.Thread(
@@ -387,6 +388,25 @@ class ReportJobService:
                 db.commit()
                 logger.info("Report job %s completed: %s (%d bytes)", job_id, filename, file_size)
                 self._notify_finished(db, job_id)
+            except WorkerStopping:
+                # SIGTERM arrived and the render stopped at its next step
+                # (worker_loop.render_checkpoint): hand the job back to the
+                # queue for the next worker, as the ingestion worker does —
+                # not a failure, and an issued report stays PENDING, not
+                # FAILED (review 2026-10-22, N4: it used to be SIGKILLed at
+                # the end of the grace and wait out the reaper's window).
+                db.rollback()
+                released = _transitions.release(
+                    db, job_id, claimed_at,
+                    message="Interrupted by a worker restart — re-queued",
+                )
+                db.commit()
+                logger.info(
+                    "Report job %s: worker stopping — %s", job_id,
+                    "handed back to the queue" if released else "a peer owns it now; left alone",
+                )
+                if job_dir is not None:
+                    self._discard_unpublished(db, job_id, job_dir)
             except Exception as exc:
                 logger.exception("Report job %s failed", job_id)
                 db.rollback()

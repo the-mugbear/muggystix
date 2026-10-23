@@ -18,7 +18,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.api.v1.endpoints import dashboard as dashboard_module
 from app.api.v1.endpoints.auth import get_current_user
 from app.db import models
 from app.db import session as session_module
@@ -27,7 +26,6 @@ from app.db.models_project import Project
 from app.db.session import _NO_TIMEOUT, get_db
 from app.main import app
 from app.services import host_query_dsl
-from app.services.host_follow_service import HostFollowService
 from app.services.vulnerability_service import VulnerabilityService
 
 
@@ -206,21 +204,18 @@ def _breaks_the_transaction(sessions):
 def _patch_section(monkeypatch, section, stand_in):
     if section == "host-vulnerabilities":
         monkeypatch.setattr(VulnerabilityService, "get_bulk_host_vulnerability_summaries", stand_in)
-    elif section == "subnets":
-        monkeypatch.setattr(
-            dashboard_module.SubnetCalculator, "calculate_subnet_metrics", staticmethod(stand_in),
-        )
-    elif section == "vulnerabilities":
-        monkeypatch.setattr(VulnerabilityService, "get_dashboard_statistics", stand_in)
     else:
-        monkeypatch.setattr(HostFollowService, "get_dashboard_activity", stand_in)
+        monkeypatch.setattr(VulnerabilityService, "get_dashboard_statistics", stand_in)
 
 
 def _path(project, section) -> str:
     return f"{_base(project)}/hosts/" if section == "host-vulnerabilities" else f"{_base(project)}/dashboard/stats"
 
 
-SECTIONS = ["host-vulnerabilities", "subnets", "vulnerabilities", "note-activity"]
+# The dashboard's subnet and note-activity sections were deleted with the
+# rest of the retired dashboard (review 2026-10-22, A-R7); its scanner
+# observation counts are the whole answer now, so they are not optional.
+SECTIONS = ["host-vulnerabilities", "vulnerabilities"]
 
 
 @pytest.fixture
@@ -244,31 +239,29 @@ def test_a_cancelled_statement_in_an_optional_section_is_a_503(real_db_client, p
     assert "ran longer than the server allows" in response.json()["detail"]
 
 
-@pytest.mark.parametrize("section", SECTIONS)
-def test_a_failed_optional_section_does_not_take_the_page_with_it(real_db_client, populated, monkeypatch, section):
+def test_a_failed_optional_section_does_not_take_the_page_with_it(real_db_client, populated, monkeypatch):
     """The section's failed statement aborted the transaction; without a
     rollback the NEXT query on the page fails and the answer is a 500."""
     test_client, sessions = real_db_client
-    _patch_section(monkeypatch, section, _breaks_the_transaction(sessions))
-    response = test_client.get(_path(populated, section))
+    _patch_section(monkeypatch, "host-vulnerabilities", _breaks_the_transaction(sessions))
+    response = test_client.get(_path(populated, "host-vulnerabilities"))
     assert response.status_code == 200, response.text[:400]
     body = response.json()
-    if section == "host-vulnerabilities":
-        assert body["vulnerability_error"] is True
-        assert [h["ip_address"] for h in body["items"]] == ["10.90.0.1"]
-    else:
-        assert body["total_hosts"] == 1
-        # The sections AFTER the failed one still answer: before the rollback
-        # each of them failed in turn on the aborted transaction.
-        if section == "subnets":
-            assert body["subnet_stats"] == []
-            assert body["vulnerability_stats"] is not None
-            assert body["note_activity"] is not None
-        elif section == "vulnerabilities":
-            assert body["vulnerability_stats"] is None
-            assert body["note_activity"] is not None
-        else:
-            assert body["note_activity"] is None
+    assert body["vulnerability_error"] is True
+    assert [h["ip_address"] for h in body["items"]] == ["10.90.0.1"]
+
+
+def test_failed_scanner_observation_counts_are_an_error_never_a_null(real_db_client, populated, monkeypatch):
+    """Review 2026-10-22 (A-R7): the counts are the whole answer of
+    ``/dashboard/stats``.  A null section was drawn by the Posture page as "no
+    critical, high, medium or low scanner observation is recorded" — a clean
+    project — so a failure fails the request and the page says "could not be
+    counted"."""
+    _test_client, sessions = real_db_client
+    _patch_section(monkeypatch, "vulnerabilities", _breaks_the_transaction(sessions))
+    with TestClient(app, raise_server_exceptions=False) as failing_client:
+        response = failing_client.get(_path(populated, "vulnerabilities"))
+    assert response.status_code >= 500, response.text[:400]
 
 
 # --- M1: the bare-word search is confined to the project --------------------------

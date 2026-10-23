@@ -174,31 +174,6 @@ class Annotation(AnnotationBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
-class NoteActivityEntry(BaseModel):
-    note_id: int
-    host_id: int
-    ip_address: str
-    hostname: Optional[str] = None
-    preview: str
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-
-class ReviewProgress(BaseModel):
-    total_hosts: int
-    not_reviewed: int
-    watching: int
-    in_review: int
-    reviewed: int
-
-class NoteActivitySummary(BaseModel):
-    total_notes: int
-    active_host_count: int
-    following_count: int
-    review_progress: Optional[ReviewProgress] = None
-    recent_notes: List[NoteActivityEntry] = []
-
-
 #: What a host's review status can be SET to, on every door — the page's
 #: control, the bulk bar, an agent: the review states the pages offer
 #: (``engagement_metrics_service.REVIEW_STATES``, the one list).  The retired
@@ -712,6 +687,10 @@ class Scan(ScanBase):
     up_hosts: int = 0
     total_ports: int = 0
     open_ports: int = 0
+    # The upload batch the file came in with, as the list rows carry it
+    # (review 2026-10-22, B3-4: the scan page names its batch).
+    batch_id: Optional[int] = None
+    batch_label: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -838,20 +817,6 @@ class ScanSummary(_ScanRunWindow):
 
     model_config = ConfigDict(from_attributes=True)
 
-class SubnetStats(BaseModel):
-    id: int
-    cidr: str
-    description: Optional[str] = None
-    host_count: int
-    total_addresses: Optional[int] = None
-    usable_addresses: Optional[int] = None
-    utilization_percentage: Optional[float] = None
-    risk_level: Optional[str] = None
-    network_address: Optional[str] = None
-    is_private: Optional[bool] = None
-    
-    model_config = ConfigDict(from_attributes=True)
-
 class VulnerabilityStats(BaseModel):
     total_vulnerabilities: int
     critical: int
@@ -865,16 +830,10 @@ class VulnerabilityStats(BaseModel):
     hosts_by_severity: Dict[str, int] = {}
 
 class DashboardStats(BaseModel):
-    total_scans: int
-    total_hosts: int
-    total_ports: int
-    up_hosts: int
-    open_ports: int
-    total_subnets: int
-    recent_scans: List[ScanSummary]
-    subnet_stats: List[SubnetStats]
-    vulnerability_stats: Optional[VulnerabilityStats] = None
-    note_activity: Optional[NoteActivitySummary] = None
+    """``GET /dashboard/stats`` — the Posture page's scanner-observation
+    counts (review 2026-10-22, A-R7: the retired dashboard's totals, recent
+    scans, subnet stats and note activity are gone)."""
+    vulnerability_stats: VulnerabilityStats
 
 
 class FileUploadResponse(BaseModel):

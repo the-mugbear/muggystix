@@ -463,16 +463,18 @@ for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS
         echo "No docker compose binary on PATH."
     fi
     if $DB_UP; then
-        # The revisions that REFUSE to run rather than guess (the new
-        # image then does not start).  Counts only; each query is plain SQL
-        # that reads the same on the schema before and after the revision.
-        q "Upgrade refusals — b2e5a8c1d4f6: issues with more than one scanner finding (must be 0)" "SELECT count(*) AS duplicated_issues FROM (SELECT 1 FROM findings WHERE source = 'scanner' AND dedup_key IS NOT NULL GROUP BY project_id, dedup_key HAVING count(*) > 1) d;"
-        q "Upgrade refusals — e1b4c7d0a2f5: scopes with no project, projects with more than one scope, and entries held by two scopes of one project (every column but projects_with_several_scopes must be 0; several scopes alone are merged)" "SELECT (SELECT count(*) FROM scopes WHERE project_id IS NULL) AS scopes_without_project, (SELECT count(*) FROM (SELECT 1 FROM scopes WHERE project_id IS NOT NULL GROUP BY project_id HAVING count(*) > 1) p) AS projects_with_several_scopes, (SELECT count(*) FROM (SELECT 1 FROM subnets sn JOIN scopes s ON s.id = sn.scope_id GROUP BY s.project_id, sn.cidr HAVING count(DISTINCT sn.scope_id) > 1) c) AS cidrs_in_two_scopes, (SELECT count(*) FROM (SELECT 1 FROM scope_domains d JOIN scopes s ON s.id = d.scope_id GROUP BY s.project_id, d.domain HAVING count(DISTINCT d.scope_id) > 1) c) AS domains_in_two_scopes;"
-        q "Upgrade refusals — a4f8c2e6b0d1: one CIDR twice in a scope (merged), and those whose copies differ in description or site (must be 0)" "SELECT count(*) AS duplicated_cidrs, count(*) FILTER (WHERE descriptions > 1 OR sites > 1 OR site_ids > 1) AS refused FROM (SELECT count(DISTINCT nullif(btrim(description), '')) AS descriptions, count(DISTINCT nullif(btrim(site), '')) AS sites, count(DISTINCT site_id) AS site_ids FROM subnets GROUP BY scope_id, cidr HAVING count(*) > 1) d;"
-        # Backlog 2026-10-22 (2.523.0): three more that refuse, naming the rows.
-        q "Upgrade refusals — e3b7a1c9d5f0: rows with no project (every column must be 0)" "SELECT (SELECT count(*) FROM hosts_v2 WHERE project_id IS NULL) AS hosts, (SELECT count(*) FROM scans WHERE project_id IS NULL) AS scans, (SELECT count(*) FROM ingestion_jobs WHERE project_id IS NULL) AS ingestion_jobs, (SELECT count(*) FROM parse_errors WHERE project_id IS NULL) AS parse_errors, (SELECT count(*) FROM dns_records WHERE project_id IS NULL) AS dns_records;"
-        q "Upgrade refusals — f4c8b2d0e6a1: API keys not bound to an agent session (must be 0)" "SELECT count(*) AS unbound_keys FROM api_keys WHERE agent_id IS NULL OR agent_session_id IS NULL;"
-        q "Upgrade refusals — b6e0d4f2a8c3: scanner rows sharing one identity (must be 0; extra_rows is how many would be removed)" "SELECT count(*) AS duplicated_identities, coalesce(sum(n) - count(*), 0) AS extra_rows FROM (SELECT count(*) AS n FROM vulnerabilities GROUP BY host_id, source, plugin_id, port_id, name_id, title HAVING count(*) > 1) d;"
+        # The revisions that REFUSE to run rather than guess (the new image
+        # then does not start): scripts/upgrade-refusals.sql, the ONE list —
+        # deploy.sh option 1 runs the same file before it builds.  Every
+        # `refused` must be 0; counts only, each statement on its own (one
+        # that fails on an older schema says so and the rest still run).
+        echo ""
+        echo "--- Upgrade refusals (scripts/upgrade-refusals.sql; every refused must be 0) ---"
+        if [[ -f "$SCRIPT_DIR/upgrade-refusals.sql" ]]; then
+            psql_q -f - < "$SCRIPT_DIR/upgrade-refusals.sql" 2>&1 || echo "(query failed — see above)"
+        else
+            echo "(scripts/upgrade-refusals.sql is missing from this copy of the scripts)"
+        fi
         # What the database is doing at this moment, and who waits on whom —
         # a migration in progress, or a stuck one, shows here.  Statement text
         # is the application's own SQL, cut at 100 characters and scrubbed with

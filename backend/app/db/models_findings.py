@@ -384,9 +384,12 @@ def _count_finding_revisions(session: Session) -> None:
     ``revision + 1`` is computed by the database as the transaction's LAST
     statement, so two transactions writing one finding number their commits
     in the order they commit (the second waits for the first's row lock and
-    re-reads it), and the lock is taken after every other lock the
-    transaction holds — it adds no step to anyone's lock order.  A savepoint's
-    release is not the commit: the count waits for the outer one.
+    re-reads it).  Its lock is the one every write to an existing finding's
+    endpoints has already taken FIRST (``FindingService.lock_finding``,
+    review 2026-10-22, A-R1 — before that an endpoint writer took it here,
+    LAST, after its endpoint locks, against a status change that took the
+    finding first: a deadlock), so at commit it waits on nothing new.  A
+    savepoint's release is not the commit: the count waits for the outer one.
 
     What changes an answer WITHOUT a write of either table — a host or name
     deleted under an endpoint (the database cascades), a later retest result

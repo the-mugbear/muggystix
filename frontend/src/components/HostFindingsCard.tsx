@@ -10,7 +10,7 @@
 import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL, SEVERITY_ORDER } from '../utils/severity';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Plus } from 'lucide-react';
 import { AlertHexIcon } from './AppIcons';
 
@@ -38,6 +38,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { FindingHistoryButton } from './FindingHistoryButton';
+import { StatusReasonDialog } from './findings/StatusReasonDialog';
 import { InspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
 import {
   Select,
@@ -157,6 +158,10 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   const { canWrite: canManage } = useProjectRole();
   const projectId = useProjectId();
   const [adding, setAdding] = useState(false);
+  // A closing status asks why first — the list's and the finding page's own
+  // dialog (review 2026-10-22, B3-1: the choice used to be dropped and the
+  // reader sent to the finding page to choose it again).
+  const [reasonFor, setReasonFor] = useState<{ id: number; status: FindingStatus } | null>(null);
 
   const query = useQuery({
     queryKey: hostFindingsKey(projectId, hostId),
@@ -211,15 +216,17 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   };
 
   const statusChange = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: FindingStatus }) => setFindingStatus(projectId, id, status),
+    mutationFn: ({ id, status, summary }: { id: number; status: FindingStatus; summary?: string }) =>
+      setFindingStatus(projectId, id, status, summary),
     onSuccess: put,
     onError: (err) => toast.error(formatApiError(err, 'Failed to update finding status.')),
   });
   const handleStatus = (id: number, status: FindingStatus) => {
-    // Terminal dispositions carry an audit rationale — hand off to the canonical
-    // finding workspace (which prompts for it) instead of applying silently here.
+    // Terminal dispositions ask for the reason in place.  Opened a tick
+    // later: a modal opened inside the Select's onValueChange races its
+    // dismiss layer.
     if (TERMINAL_STATUSES.has(status)) {
-      navigate(`/findings/${id}`);
+      setTimeout(() => setReasonFor({ id, status }), 0);
       return;
     }
     statusChange.mutate({ id, status });
@@ -308,17 +315,16 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
             <Badge variant={SEVERITY_VARIANT[f.severity] as never}>
               {f.severity[0].toUpperCase() + f.severity.slice(1)}
             </Badge>
-            {f.source === 'note' && f.evidence_annotation_id ? (
-              <a
-                href={`#note-${f.evidence_annotation_id}`}
-                className="min-w-0 flex-1 truncate text-info hover:underline"
-                title={`${f.title} — jump to evidence thread`}
-              >
-                {f.title}
-              </a>
-            ) : (
-              <span className="min-w-0 flex-1 truncate" title={f.title}>{f.title}</span>
-            )}
+            {/* The finding's own page (review 2026-10-22, B3-1): its report
+                text, every endpoint and — for one made from a note — the
+                source thread. */}
+            <Link
+              to={`/findings/${f.id}`}
+              className="min-w-0 flex-1 truncate text-info hover:underline"
+              title={f.title}
+            >
+              {f.title}
+            </Link>
             {(() => {
               const here = (f.hosts ?? []).filter((h) => h.host_id === hostId).map((h) => h.host_status);
               // Several named endpoints of this host on one finding: "false
@@ -387,6 +393,15 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
           </div>
         ))}
       </div>
+      <StatusReasonDialog
+        request={reasonFor}
+        onCancel={() => setReasonFor(null)}
+        onSave={(summary) => {
+          const r = reasonFor;
+          setReasonFor(null);
+          if (r) statusChange.mutate({ ...r, summary });
+        }}
+      />
     </InspectorSection>
   );
 };

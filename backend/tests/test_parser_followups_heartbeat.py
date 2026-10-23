@@ -17,7 +17,7 @@ from app.db.models_attribution import NetworkAttribution
 from app.parsers import parser_utils
 from app.services.ingestion_service import IngestionService, ParseFailure
 from tests.ingestion_job_harness import (
-    active_job, all_scan_ids, host_ips, job_row, on_heartbeat, queue_file, run_next,
+    active_job, all_scan_ids, cancel_from_the_api, host_ips, job_row, on_heartbeat, queue_file, run_next,
 )
 
 
@@ -96,7 +96,7 @@ def test_a_cancel_during_the_read_phase_stops_the_parse_and_leaves_nothing(
     path = _write(tmp_path, filename, content)
 
     with active_job(db_session, pid) as (job_id, svc):
-        with on_heartbeat(svc, 1, lambda: svc.cancel_job(job_id)) as beats:
+        with on_heartbeat(svc, 1, lambda: cancel_from_the_api(job_id)) as beats:
             with pytest.raises(ParseFailure, match="cancelled"):
                 getattr(mod, cls)(db_session).parse_file(str(path), filename, project_id=pid)
     assert beats and "read" in beats[0], f"the first heartbeat was not in the read phase: {beats}"
@@ -122,7 +122,7 @@ def test_a_job_cancelled_while_reading_fails_with_no_scan(
     svc = IngestionService()
     job_id = queue_file(db_session, pid, _write(tmp_path, filename, content))
 
-    with on_heartbeat(svc, 1, lambda: svc.cancel_job(job_id)) as beats:
+    with on_heartbeat(svc, 1, lambda: cancel_from_the_api(job_id)) as beats:
         run_next(db_session, svc)
 
     assert beats and "read" in beats[0]
@@ -152,7 +152,7 @@ def test_a_cancel_between_hosts_removes_what_was_committed(
     job_id = queue_file(db_session, pid, _write(tmp_path, filename, content))
 
     # Heartbeat 2: the first one's commit already holds two hosts.
-    with on_heartbeat(svc, 2, lambda: svc.cancel_job(job_id)) as beats:
+    with on_heartbeat(svc, 2, lambda: cancel_from_the_api(job_id)) as beats:
         run_next(db_session, svc)
 
     assert beats == ["2 hosts", "4 hosts"]
@@ -171,7 +171,7 @@ def test_rdap_checks_its_job_once_before_it_writes(db_session, test_project, tmp
     from app.parsers.rdap_parser import RdapParser
 
     with active_job(db_session, pid) as (job_id, svc):
-        with on_heartbeat(svc, 1, lambda: svc.cancel_job(job_id)) as beats:
+        with on_heartbeat(svc, 1, lambda: cancel_from_the_api(job_id)) as beats:
             with pytest.raises(ParseFailure, match="cancelled"):
                 RdapParser(db_session).parse_file(str(path), "rdap.json", project_id=pid)
     assert beats == ["1 records read"]

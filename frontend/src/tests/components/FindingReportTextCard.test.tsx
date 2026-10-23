@@ -514,3 +514,35 @@ describe('FindingReportTextCard — unsaved text is guarded', () => {
     expect(unload()).toBe(false);
   });
 });
+
+// Review 2026-10-22, A-R13 — the score field was editable while a 3.x / 2.0
+// vector decided it: the server recomputed the score on save and the typed
+// one was silently replaced.
+describe('FindingReportTextCard — a score the vector decides', () => {
+  const scored = (fromVector: boolean, vector: string) => ({
+    id: 42, title: 'Weak TLS',
+    report_text: {
+      description: 'TLS 1.0 is accepted.', impact: null, recommendation: null, references: null,
+      steps_to_reproduce: null, cvss_vector: vector, cvss_score: 9.8, cvss_score_from_vector: fromVector,
+    },
+  }) as never;
+
+  it('is read-only, and says so, while a 3.x / 2.0 vector stands', () => {
+    render(<FindingReportTextCard finding={scored(true, 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H')} canEdit startEditing />);
+    const score = screen.getByLabelText('Score');
+    expect(score).toHaveAttribute('readonly');
+    expect(score).toHaveAccessibleDescription('Set by the vector.');
+  });
+
+  it('is editable again once the vector is changed in the editor', () => {
+    render(<FindingReportTextCard finding={scored(true, 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H')} canEdit startEditing />);
+    fireEvent.change(screen.getByLabelText('CVSS vector'), { target: { value: 'CVSS:4.0/AV:N' } });
+    expect(screen.getByLabelText('Score')).not.toHaveAttribute('readonly');
+    expect(screen.queryByText('Set by the vector.')).toBeNull();
+  });
+
+  it('is editable when the vector does not decide it (4.0)', () => {
+    render(<FindingReportTextCard finding={scored(false, 'CVSS:4.0/AV:N')} canEdit startEditing />);
+    expect(screen.getByLabelText('Score')).not.toHaveAttribute('readonly');
+  });
+});

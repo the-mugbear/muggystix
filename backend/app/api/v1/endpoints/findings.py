@@ -119,7 +119,16 @@ def _serialize(
         endpoint_status_counts = {}
         for h in hosts:
             endpoint_status_counts[h.host_status] = endpoint_status_counts.get(h.host_status, 0) + 1
+    # The source note's host (one finding only): where its evidence thread is.
+    evidence_host_id = None
+    if endpoints is None and finding.evidence_annotation_id is not None:
+        note = finding.evidence_annotation
+        if note is not None:
+            evidence_host_id = note.host_id
+            if evidence_host_id is None and note.port is not None:
+                evidence_host_id = note.port.host_id
     return FindingResponse(
+        evidence_host_id=evidence_host_id,
         endpoint_status_counts=endpoint_status_counts,
         id=finding.id, project_id=finding.project_id, title=finding.title,
         severity=finding.severity, status=finding.status, source=finding.source,

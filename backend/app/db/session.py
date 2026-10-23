@@ -3,6 +3,7 @@ import logging
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import settings
@@ -98,6 +99,18 @@ def get_db():
                 "This request needed a database query that ran longer than the server allows "
                 "and was stopped. Narrow the filter or try again."
             ),
+        ) from exc
+    except PoolTimeoutError as exc:
+        # Every pooled connection stayed checked out for DB_POOL_TIMEOUT:
+        # the server is busy, not broken.  Without this the request hung for
+        # the timeout and then answered an anonymous 500 (review 2026-10-22,
+        # A-R10).
+        logger.warning("no database connection free after %s s (DB_POOL_SIZE + DB_MAX_OVERFLOW in use)",
+                       settings.DB_POOL_TIMEOUT)
+        raise HTTPException(
+            status_code=503,
+            detail="The server is busy. Try again in a moment.",
+            headers={"Retry-After": "5"},
         ) from exc
     finally:
         db.close()

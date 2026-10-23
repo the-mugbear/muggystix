@@ -68,11 +68,8 @@ import { formatTimestamp } from '../utils/relativeTime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
-import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from '../components/ui/dialog';
+import { StatusReasonDialog } from '../components/findings/StatusReasonDialog';
 import { Input } from '../components/ui/input';
-import { Textarea } from '../components/ui/textarea';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import { SOURCE_LABEL, STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
@@ -152,7 +149,6 @@ const FindingDetail: React.FC = () => {
   // Terminal-disposition "why" prompt — mirrors the /findings list so a
   // status change on this page also captures the audit rationale.
   const [summaryPrompt, setSummaryPrompt] = useState<{ status: FindingStatus } | null>(null);
-  const [summaryText, setSummaryText] = useState('');
   const [addHostsOpen, setAddHostsOpen] = useState(false);
 
   // An accepted proposal changed the finding (text, an endpoint).  The
@@ -174,13 +170,15 @@ const FindingDetail: React.FC = () => {
 
   const memberLabel = (m: ProjectMember) => m.full_name || m.username || `User ${m.user_id}`;
 
-  const evidenceHref = useMemo(() => {
-    if (!finding || finding.source !== 'note' || !finding.evidence_annotation_id) return null;
-    const host = finding.hosts[0];
-    return host ? `/hosts/${host.host_id}#note-${finding.evidence_annotation_id}` : null;
-  }, [finding]);
+  // The source note's own host, as the server reads it — never the first
+  // endpoint, which may not be the note's host or may have been removed
+  // (review 2026-10-22, N1).
+  const evidenceHostId = finding?.source === 'note' ? finding.evidence_host_id ?? null : null;
 
-  const evidenceHostId = finding?.hosts[0]?.host_id ?? null;
+  const evidenceHref = useMemo(() => {
+    if (!finding?.evidence_annotation_id || evidenceHostId == null) return null;
+    return `/hosts/${evidenceHostId}#note-${finding.evidence_annotation_id}`;
+  }, [finding?.evidence_annotation_id, evidenceHostId]);
 
   // The note thread this finding was promoted from (root + replies, with
   // image attachments), shown inline — not just a link out.  H1-style split:
@@ -251,7 +249,6 @@ const FindingDetail: React.FC = () => {
     // Defer the open a tick so the modal doesn't race the Radix Select's
     // dismiss layer (which can otherwise leave body pointer-events:none).
     if (TERMINAL_STATUSES.has(status)) {
-      setSummaryText('');
       setTimeout(() => setSummaryPrompt({ status }), 0);
     } else {
       void applyStatus(status);
@@ -785,39 +782,15 @@ const FindingDetail: React.FC = () => {
 
       {/* Terminal-disposition "why" prompt — same policy as the /findings
           list; the summary lands on the finding's disposition history. */}
-      <Dialog open={summaryPrompt !== null} onOpenChange={(v) => { if (!v) setSummaryPrompt(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Mark {summaryPrompt ? STATUS_LABEL[summaryPrompt.status] : ''}</DialogTitle>
-            <DialogDescription>
-              Why? The reason is kept on the finding's history and carried into the
-              report. You can save without one.
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            rows={3}
-            autoFocus
-            placeholder="e.g. confirmed false positive — scanner flagged the backport, not the CVE"
-            value={summaryText}
-            onChange={(e) => setSummaryText(e.target.value)}
-            aria-label="Disposition reason"
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setSummaryPrompt(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                const p = summaryPrompt;
-                setSummaryPrompt(null);
-                if (p) void applyStatus(p.status, summaryText.trim() || undefined);
-              }}
-            >
-              {summaryText.trim() ? 'Save' : 'Save without a reason'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <StatusReasonDialog
+        request={summaryPrompt}
+        onCancel={() => setSummaryPrompt(null)}
+        onSave={(summary) => {
+          const p = summaryPrompt;
+          setSummaryPrompt(null);
+          if (p) applyStatus(p.status, summary);
+        }}
+      />
       {confirmDialog}
       {canManage && (
         <AddFindingHostsDialog

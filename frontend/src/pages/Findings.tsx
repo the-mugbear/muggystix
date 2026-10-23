@@ -47,15 +47,7 @@ import SeverityBar from '../components/ui/SeverityBar';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
 import { DataTablePagination } from '../components/ui/data-table';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../components/ui/dialog';
-import { Textarea } from '../components/ui/textarea';
+import { StatusReasonDialog, type StatusReasonRequest } from '../components/findings/StatusReasonDialog';
 import { InfoTip } from '../components/ui/info-tip';
 import {
   Select,
@@ -253,7 +245,14 @@ const FindingsList: React.FC = () => {
   // membership guard below), so this set can span pages.
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [summaryPrompt, setSummaryPrompt] = useState<SummaryPrompt | null>(null);
-  const [summaryText, setSummaryText] = useState('');
+  // What the one "why?" dialog asks — one object per opening (its key).
+  const summaryRequest = useMemo<StatusReasonRequest | null>(() => (
+    summaryPrompt === null
+      ? null
+      : summaryPrompt.kind === 'bulk'
+        ? { status: summaryPrompt.status, bulk: { count: summaryPrompt.ids.length, offscreen: summaryPrompt.offscreen } }
+        : { status: summaryPrompt.status }
+  ), [summaryPrompt]);
   // Project roster for bulk owner assignment. Failure is non-fatal — the
   // status controls keep working, and the assign menu says it could not load.
   const roster = useProjectRoster();
@@ -524,7 +523,6 @@ const FindingsList: React.FC = () => {
       // Terminal bulk disposition: collect ONE rationale (applied to every
       // history row) + show the count — same audit discipline as the
       // single-finding flow.
-      setSummaryText('');
       setTimeout(
         () => setSummaryPrompt({ kind: 'bulk', status, ids, offscreen: offscreenSelectedCount }),
         0,
@@ -545,7 +543,6 @@ const FindingsList: React.FC = () => {
     // Terminal dispositions get a "why" prompt (the summary is the audit
     // rationale on the history trail); non-terminal moves apply immediately.
     if (TERMINAL_STATUSES.has(status)) {
-      setSummaryText('');
       // Defer the dialog open to the next tick: opening a modal Dialog inside
       // a Radix Select's onValueChange races the Select's dismiss layer, which
       // can leave the body pointer-events:none so the dialog never appears.
@@ -974,52 +971,17 @@ const FindingsList: React.FC = () => {
 
       {/* Terminal-disposition "why" prompt — the summary lands on the
           finding's history trail as the audit rationale. */}
-      <Dialog open={summaryPrompt !== null} onOpenChange={(v) => { if (!v) setSummaryPrompt(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {summaryPrompt
-                ? summaryPrompt.kind === 'bulk'
-                  ? `Mark ${summaryPrompt.ids.length} finding${summaryPrompt.ids.length === 1 ? '' : 's'} ${STATUS_LABEL[summaryPrompt.status]}`
-                  : `Mark ${STATUS_LABEL[summaryPrompt.status]}`
-                : ''}
-            </DialogTitle>
-            <DialogDescription>
-              {summaryPrompt?.kind === 'bulk'
-                ? 'Why? One reason is recorded on every selected finding’s history and carried into reports. You can save without one.'
-                  + (summaryPrompt.offscreen > 0
-                    ? ` ${summaryPrompt.offscreen} of the ${summaryPrompt.ids.length} selected ${summaryPrompt.offscreen === 1 ? 'is' : 'are'} not on this page.`
-                    : '')
-                : 'Why? The reason is kept on the finding’s history and carried into the report. You can save without one.'}
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            rows={3}
-            autoFocus
-            placeholder="e.g. confirmed false positive — scanner flagged the backport, not the CVE"
-            value={summaryText}
-            onChange={(e) => setSummaryText(e.target.value)}
-            aria-label="Disposition reason"
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setSummaryPrompt(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                const p = summaryPrompt;
-                const summary = summaryText.trim() || undefined;
-                setSummaryPrompt(null);
-                if (!p) return;
-                if (p.kind === 'single') applyStatus(p.findingId, p.status, p.title, summary);
-                else runBulk(p.ids, p.status, summary);
-              }}
-            >
-              {summaryText.trim() ? 'Save' : 'Save without a reason'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <StatusReasonDialog
+        request={summaryRequest}
+        onCancel={() => setSummaryPrompt(null)}
+        onSave={(summary) => {
+          const p = summaryPrompt;
+          setSummaryPrompt(null);
+          if (!p) return;
+          if (p.kind === 'single') applyStatus(p.findingId, p.status, p.title, summary);
+          else runBulk(p.ids, p.status, summary);
+        }}
+      />
       {confirmDialog}
     </div>
   );

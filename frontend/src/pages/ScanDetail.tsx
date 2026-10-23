@@ -288,6 +288,13 @@ const ScanDetail: React.FC = () => {
           {run.endLabel && <p className="break-words">Ended: {run.endLabel}</p>}
           {run.durationLabel && <p>Duration: {run.durationLabel}</p>}
           <p className="break-words" title={upload.explanation}>Uploaded: {upload.label}</p>
+          {/* The upload batch the file arrived in (review 2026-10-22, B3-4).
+              Text only: no page lists one batch by address. */}
+          {scan.batch_id != null && (
+            <p className="break-words" data-testid="scan-batch">
+              In upload batch: {scan.batch_label?.trim() || `#${scan.batch_id}`}
+            </p>
+          )}
           <ScanTimeSourceNote
             className="mt-xxs"
             label={run.sourceLabel}

@@ -37,6 +37,16 @@ services:
     # honors an explicit `docker compose stop` — so a deliberate
     # dev shutdown isn't fought by the daemon.
     restart: unless-stopped
+    # Docker's default is 10 s, then SIGKILL.  The image stops Postgres with
+    # SIGINT (a fast shutdown: open transactions are rolled back, then a
+    # shutdown checkpoint writes every dirty buffer); a checkpoint after a
+    # large import or migration can take longer than 10 s, and a KILL mid-way
+    # means crash recovery (WAL replay) on the next start — safe, but a slow
+    # start that a deploy's health wait then reads as a stuck backend.  Compose
+    # stops the db LAST (everything depends on it), so this is time the
+    # database alone uses, and it ends as soon as Postgres exits (review
+    # 2026-10-22, N5).
+    stop_grace_period: 1m
     # Turns TLS on from ./ssl/certs when the pair is one PostgreSQL will
     # accept, says so loudly when it is not, then runs the image's own
     # entrypoint with the command below.  `bash <file>`: a file copied onto a
@@ -312,11 +322,17 @@ services:
     mem_limit: ${REPORT_WORKER_MEM_LIMIT:-2g}
     # `exec`: python is PID 1 and receives SIGTERM (see the worker above).
     command: ["sh", "-c", "mkdir -p /app/uploads/report_artifacts /app/uploads/client_reports 2>/dev/null; exec python -m app.report_worker"]
-    # A client-report render may run for REPORT_RENDER_TIMEOUT_SECONDS (300 s
-    # by default) per format.  Docker's default 10 s grace SIGKILLed a render
-    # on every rebuild, leaving the job 'processing' until the reaper's
-    # timeout (review 2026-10-01 N7).  Six minutes = one render timeout plus a
+    # A client-report render is several steps — issuing renders html, docx and
+    # qmd, and a format's post-processor is a step of its own — each allowed
+    # REPORT_RENDER_TIMEOUT_SECONDS (300 s by default).  On SIGTERM the render
+    # stops at the NEXT step boundary and hands its job back to the queue
+    # (worker_loop.render_checkpoint; review 2026-10-22, N4 — it used to run
+    # every remaining format, be SIGKILLed past the grace, and wait out the
+    # reaper's REPORT_JOB_TIMEOUT_SECONDS).  So the grace has to cover only
+    # the ONE step in progress: six minutes = one render timeout plus a
     # margin; raise REPORT_WORKER_STOP_GRACE with the render timeout.
+    # (Docker's default 10 s SIGKILLed every render on a rebuild — review
+    # 2026-10-01 N7.)
     stop_grace_period: ${REPORT_WORKER_STOP_GRACE:-6m}
     # Same heartbeat-freshness healthcheck as the ingestion worker (v2.194.0):
     # the loop rewrites the file each cycle, so a wedged render goes stale ->
@@ -357,9 +373,9 @@ services:
         # in this file (the services above read the mounted file).  Kept equal
         # to platform_version.json by scripts/bump-version.py and
         # versionConsistency.test.ts.
-        BACKEND_VERSION: ${APP_VERSION:-2.523.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.524.0}
         # Stamped by generate-build-info.js (shown under About BlueStick).
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.418.0}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.419.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.

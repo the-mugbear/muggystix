@@ -943,7 +943,8 @@ predeploy_db_backup() {
         fi
         print_error "backup-db.sh took a ${BACKUP_TYPE:-different} backup, not a database dump (it snapshots the"
         print_error "volume when the db container is not running), and a rollback can only restore a dump."
-        print_error "Start the stack ($DC up -d db), then deploy again."
+        print_error "The database stopped answering after option 1 found it up (or started it, above). Look at:"
+        print_error "    $DC logs db | tail -n 50      then deploy again."
     else
         print_error "The pre-deploy backup FAILED — backup-db.sh says why above."
         print_info  "Only the uploads archive failed, and a database-only backup is acceptable for this deploy?"
@@ -1079,6 +1080,124 @@ marked_deploy_completed() {
     backend_probe
 }
 
+# ------------------------------------------------------------------
+# The OLD database must answer before option 1 counts the rows a migration
+# would refuse and takes the pre-deploy dump (only a dump is a rollback
+# point).  After a host reboot Docker can start the containers minutes late:
+# option 1 used to refuse there with "Start the stack ($DC up -d db), then
+# deploy again" (owner report, 2026-10-22).  So, when this installation has a
+# database volume and the db container does not answer, it starts the db
+# service ALONE and waits for it — safe: the postgres image runs no migration,
+# and the backend and workers are not touched.  Only when that fails does it
+# refuse, with the reason.  A new installation (no volume) is left alone.
+# Returns 1 to stop.
+# ------------------------------------------------------------------
+ensure_database_up() {
+    local pg_user pg_db up_rc=0
+    pg_user="$(_stack_env_val POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
+    pg_db="$(_stack_env_val POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
+    if $DC exec -T db pg_isready -U "$pg_user" -d "$pg_db" </dev/null >/dev/null 2>&1; then
+        return 0
+    fi
+    postgres_volume_exists || return 0
+    print_info "The database container is not running (after a reboot Docker may start it late):"
+    print_info "starting the database ALONE to check and back it up before the upgrade..."
+    $DC up -d db </dev/null || up_rc=$?
+    if [[ "$up_rc" -ne 0 ]]; then
+        print_error "Starting the database failed ('$DC up -d db' returned $up_rc; its message is above)."
+        print_error "Nothing was changed. Look at:  $DC logs db | tail -n 50      then run option 1 again."
+        return 1
+    fi
+    # 120 s: a start after an unclean stop replays WAL before it answers.
+    if ! wait_for_database 120; then
+        print_error "The database container started but did not accept connections within 120s."
+        print_error "Nothing else was changed. Look at:  $DC logs db | tail -n 50      then run option 1 again."
+        return 1
+    fi
+    print_success "The database is up (the backend and workers were not started)."
+}
+
+# ------------------------------------------------------------------
+# The rows this upgrade's migrations would REFUSE (review 2026-10-22, B2-1).
+#
+# A refusing revision raises, changes nothing, and the new backend does not
+# start — the 2.523.0 note relied on the operator remembering to run the
+# diagnostics bundle first.  So option 1 runs scripts/upgrade-refusals.sql
+# (the ONE list; collect-logs.sh and migration-failure-report.sh print the
+# same file) against the database as it is NOW — the old build's — before
+# the backup and the build, and stops, changing nothing, on any non-zero
+# `refused` or on a check that could not run.  DEPLOY_SKIP_REFUSAL_CHECK=1
+# overrides.  Returns 1 to stop.
+# ------------------------------------------------------------------
+upgrade_refusal_gate() {
+    local sql="scripts/upgrade-refusals.sql" pg_user pg_db err out expected
+    local rows=0 refused=0 rev count detail
+    if [[ "${DEPLOY_SKIP_REFUSAL_CHECK:-0}" == "1" ]]; then
+        print_warning "DEPLOY_SKIP_REFUSAL_CHECK=1 — NOT counting the rows this upgrade's migrations would refuse."
+        return 0
+    fi
+    if [[ ! -f "$sql" ]]; then
+        print_error "$sql is missing, so the rows this upgrade's migrations would refuse cannot be counted."
+        print_info  "Copy the whole scripts/ folder of this release, or override: DEPLOY_SKIP_REFUSAL_CHECK=1 ./scripts/deploy.sh"
+        return 1
+    fi
+    pg_user="$(_stack_env_val POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
+    pg_db="$(_stack_env_val POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
+    if ! $DC exec -T db pg_isready -U "$pg_user" -d "$pg_db" </dev/null >/dev/null 2>&1; then
+        if postgres_volume_exists; then
+            # ensure_database_up ran just before; it said why if it failed.
+            print_error "The database does not answer, so the rows this upgrade's migrations would"
+            print_error "refuse cannot be counted. Nothing was changed."
+            print_info  "Look at:  $DC logs db | tail -n 50      then run option 1 again."
+            print_info  "Override:  DEPLOY_SKIP_REFUSAL_CHECK=1 ./scripts/deploy.sh"
+            return 1
+        fi
+        print_info "No database yet (a new installation): no upgrade refusal to check."
+        return 0
+    fi
+    if [[ -z "$(database_alembic_revision </dev/null || true)" ]]; then
+        print_info "The database has no schema revision yet: no upgrade refusal to check."
+        return 0
+    fi
+
+    print_info "Counting the rows this upgrade's migrations would refuse (scripts/upgrade-refusals.sql)..."
+    err="$(mktemp)"
+    # Unaligned, one line per check: revision|refused|detail.  No
+    # ON_ERROR_STOP: a check that fails (older schema) is counted as missing.
+    out="$($DC exec -T db psql -X -q -A -t -F '|' -U "$pg_user" -d "$pg_db" -f - < "$sql" 2>"$err" || true)"
+    expected="$(grep -c '^SELECT ' "$sql" || true)"
+    while IFS='|' read -r rev count detail; do
+        [[ "$count" =~ ^[0-9]+$ ]] || continue
+        rows=$((rows + 1))
+        if [[ "$count" -gt 0 ]]; then
+            refused=$((refused + 1))
+            print_error "  REFUSED — $rev: $count${detail:+ ($detail)}"
+        fi
+    done <<< "$out"
+
+    if [[ "$refused" -eq 0 && "$rows" -eq "$expected" ]]; then
+        rm -f "$err"
+        print_success "No row this upgrade's migrations refuse ($rows checks)."
+        return 0
+    fi
+    echo ""
+    if [[ "$rows" -lt "$expected" ]]; then
+        print_error "$((expected - rows)) of the $expected checks could not run on this database. What psql said:"
+        sed 's/^/    /' "$err" | tail -n 20
+    fi
+    rm -f "$err"
+    if [[ "$refused" -gt 0 ]]; then
+        print_error "$refused migration(s) of this upgrade would REFUSE the rows counted above: the new"
+        print_error "backend would not start. Nothing was changed — the running build is untouched."
+        print_info  "Resolve them on the RUNNING version first (the upgrade notes and scripts/README.md name"
+        print_info  "the repair for each revision), then run option 1 again."
+    else
+        print_error "Whether this upgrade's migrations would refuse a row is UNKNOWN. Nothing was changed."
+    fi
+    print_info "Deploy anyway, knowing the new backend may not start:  DEPLOY_SKIP_REFUSAL_CHECK=1 ./scripts/deploy.sh"
+    return 1
+}
+
 # Decide what option 1 does about the rollback point.  Returns 1 to abort.
 prepare_rollback_point() {
     if [[ -n "$(state_get DEPLOY_IN_PROGRESS)" ]]; then
@@ -1208,7 +1327,7 @@ rollback_to_previous() {
     fi
 
     # ---- 3. Is the database still at the schema the previous build expects? -
-    local current_rev schema_moved=1 restored=0 answer
+    local current_rev schema_moved=1 restored=0 uploads_partial=0 answer
     current_rev="$(database_alembic_revision || true)"
     if [[ -n "$current_rev" && -n "$recorded_rev" && "$current_rev" == "$recorded_rev" ]]; then
         schema_moved=0
@@ -1247,7 +1366,14 @@ rollback_to_previous() {
                 # script starts the stack afterwards.
                 local restore_rc=0
                 ./scripts/restore-db.sh --yes --no-start "$predeploy_dump" || restore_rc=$?
-                if [[ "$restore_rc" -ne 0 ]]; then
+                if [[ "$restore_rc" -eq 4 ]]; then
+                    # restore-db.sh's "database restored, uploads/ not": the
+                    # previous build can start on the database, but the end
+                    # of this option says PARTLY RESTORED (review 2026-10-22,
+                    # A-R14 — it used to inherit "Restore complete").
+                    uploads_partial=1
+                    print_warning "The database is restored, but uploads/ is NOT — the retry command is above."
+                elif [[ "$restore_rc" -ne 0 ]]; then
                     rollback_summary "STOPPED" \
                         "The database restore FAILED (exit $restore_rc; its own message is above). The application containers are stopped; the image names point at the previous build." \
                         "Fix what it reported, then:  ./scripts/restore-db.sh \"$predeploy_dump\"   (it starts the stack when it succeeds)."
@@ -1288,6 +1414,12 @@ rollback_to_previous() {
             # The instance is on the previous build again: the unfinished
             # deploy is over, and the next option 1 takes a new rollback point.
             state_del DEPLOY_IN_PROGRESS
+            if [[ "$uploads_partial" -eq 1 ]]; then
+                rollback_summary "RUNNING — PARTLY RESTORED (database restored, uploads/ not)" \
+                    "The previous build is running on the pre-deploy database, but restoring uploads/ failed: evidence images and issued report files may be missing." \
+                    "Retry the files with the command restore-db.sh printed above (under 'uploads/ is PARTLY RESTORED')."
+                return 1
+            fi
             rollback_summary "RUNNING" \
                 "The previous build is running and its backend is healthy.$([[ "$restored" -eq 1 ]] && echo ' The database is the pre-deploy backup.')" \
                 "Check the version under About BlueStick. To try the upgrade again: option 1."
@@ -1376,6 +1508,12 @@ case $DEPLOY_CHOICE in
         CONFIGURED_IP=$(get_configured_ip)
         ensure_ssl_certs "$CONFIGURED_IP"
         ensure_uploads_dir
+
+        # The OLD database, up (started alone if a reboot left it down), then
+        # the rows this upgrade's migrations would refuse — before the
+        # backup and the build, so a refusal changes nothing.
+        ensure_database_up || exit 1
+        upgrade_refusal_gate || exit 1
 
         # B2-1 — before rebuilding in place, snapshot the current images and
         # take a DB backup so a deploy whose boot migration fails (crash-loop,

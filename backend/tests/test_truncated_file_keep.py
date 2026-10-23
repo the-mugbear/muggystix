@@ -55,7 +55,7 @@ from app.services.ingestion_service import (
     IngestionService,
 )
 from app.services.operations_read_service import blocked_import_condition
-from tests.ingestion_job_harness import host_ips, job_row, on_heartbeat, run_next, scans_of
+from tests.ingestion_job_harness import cancel_from_the_api, host_ips, job_row, on_heartbeat, run_next, scans_of
 
 # Three heartbeats' worth: the WhatWeb parser is made to heartbeat (and so to
 # COMMIT) every BEAT records here instead of every 500, so a streamed import
@@ -569,7 +569,7 @@ def test_a_cancel_during_the_kept_attempt_cleans_up_and_the_instruction_ends_wit
     assert _retry(client, test_project, job_id, {"keep_truncated": True}).status_code == 200
     svc = IngestionService()
     # At the second heartbeat the first BEAT records are committed.
-    with on_heartbeat(svc, 2, lambda: svc.cancel_job(job_id)) as beats:
+    with on_heartbeat(svc, 2, lambda: cancel_from_the_api(job_id)) as beats:
         run_next(db_session, svc)
     assert len(beats) >= 2
     job = job_row(db_session, job_id)
