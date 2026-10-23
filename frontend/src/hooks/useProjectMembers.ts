@@ -52,6 +52,19 @@ export const projectMembersQuery = (projectId: number) => ({
   ...rememberFor(TTL_MS),
 });
 
+/** The reads a membership change (add, role, removal) puts out of date, by
+ *  API function — for every member screen (Project settings, Portfolio's
+ *  members sheet, the admins' memberships dialog): the roster and its
+ *  pickers, the project list (`getProjects` carries the reader's own role,
+ *  which `useProjectRole` follows, and lists only their projects), Portfolio's
+ *  member counts and one person's memberships.  Hand-kept like
+ *  `OPERATIONS_READS`; the screens each kept their own and drifted (review
+ *  2026-10-23b, FEC-2: the sheet left `getProjects` out, so demoting yourself
+ *  kept your old controls until a reload). */
+export const MEMBERSHIP_READS = [
+  'listProjectMembers', 'getProjects', 'getPortfolioDashboard', 'getUserMemberships',
+] as const;
+
 /** `enabled: false` asks for nothing yet (a menu not opened, a role that has
  *  no picker); the status stays `loading`. */
 export function useProjectRoster({ enabled = true }: { enabled?: boolean } = {}): ProjectRoster {

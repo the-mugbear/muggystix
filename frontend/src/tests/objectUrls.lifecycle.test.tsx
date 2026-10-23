@@ -182,7 +182,7 @@ describe('object URLs: made == revoked', () => {
     api.fetchWebInterfaceScreenshot.mockImplementation(() => Promise.resolve(bytes()));
     const { unmount } = render(
       <MemoryRouter><TooltipProvider>
-        <WebInterfacesCard hostId={1} count={1} rows={[row] as never} embedded />
+        <WebInterfacesCard rows={[row] as never} />
       </TooltipProvider></MemoryRouter>,
     );
     const open = screen.getByRole('button', { name: `View screenshot of ${row.url}` });

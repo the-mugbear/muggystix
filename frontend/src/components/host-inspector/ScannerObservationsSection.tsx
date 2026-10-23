@@ -170,9 +170,8 @@ export const ScannerObservationsSection: React.FC<ScannerObservationsSectionProp
           finding_endpoint_status: here?.host_status ?? (hostOnly ? 'false_positive' : row.finding_endpoint_status),
         })),
       }));
-      // …then the host is read again: the issue's OTHER rows on this host
-      // are covered by the same finding now.
-      void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
+      // (`putHost` reads the host again too: the issue's OTHER rows on this
+      // host are covered by the same finding now.)
       // This host has a finding it did not (or one changed); the promotion
       // took the issue's test results onto the finding, so the tests and the
       // other evidence are out of date too.

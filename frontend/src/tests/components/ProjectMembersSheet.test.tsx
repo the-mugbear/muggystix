@@ -5,6 +5,7 @@
  * "Remove member?" for a removal the server refuses.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../services/api', () => ({
@@ -118,6 +119,32 @@ describe('ProjectMembersSheet — the member rules of Project settings', () => {
     fireEvent.keyDown(await screen.findByRole('combobox', { name: 'Role for cy' }), { key: 'Enter' });
     const options = await screen.findAllByRole('option');
     expect(options.map((o) => o.textContent)).toEqual(['Admin', 'Analyst', 'Auditor', 'Viewer']);
+  });
+
+  // Review 2026-10-23b, FEC-2 — `useProjectRole` reads the reader's role from
+  // the project list; the sheet did not read it again, so demoting or removing
+  // yourself left the old role's controls on screen until a reload.
+  it.each([
+    ['changing your own role', async () => {
+      await chooseRole('ben', 'Viewer');
+      await waitFor(() => expect(mocked.updateProjectMemberRole).toHaveBeenCalledWith(7, 2, 'viewer'));
+    }],
+    ['removing yourself', async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove ben' }));
+      await waitFor(() => expect(mocked.removeProjectMember).toHaveBeenCalledWith(7, 2));
+    }],
+  ])('%s reads the project list (the reader’s role) again', async (_label, act) => {
+    mocked.listProjectMembers.mockResolvedValue([ANA, BEN]);   // the reader is ben (user 2)
+    confirmMock.mockResolvedValue(true);
+    const getProjects = vi.fn().mockResolvedValue([]);
+    const ProjectList = () => { useQuery({ queryKey: ['getProjects'], queryFn: getProjects }); return null; };
+    render(<>
+      <ProjectList />
+      <ProjectMembersSheet projectId={7} projectName="Acme" canManage open onOpenChange={() => {}} />
+    </>);
+    await waitFor(() => expect(getProjects).toHaveBeenCalledTimes(1));
+    await act();
+    await waitFor(() => expect(getProjects).toHaveBeenCalledTimes(2));
   });
 
   it('shows a reader who cannot manage the roles as text, with no controls', async () => {

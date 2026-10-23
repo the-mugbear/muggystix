@@ -2,8 +2,9 @@
  * The tests one agent session proposed (5.320.0), on the session's page — it
  * replaced the list of plans and execution runs a session opened.
  */
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HostTest } from '../../services/api';
@@ -76,6 +77,26 @@ describe('SessionTests', () => {
     expect(await screen.findByRole('link', { name: '10.0.0.7' })).toHaveAttribute('href', '/hosts/7#host-test-33');
     expect(screen.getByRole('link', { name: '10.0.0.5' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();
+  });
+
+  // Review 2026-10-23b, FEC-5 — a failed "Show more" was a mutation's error,
+  // which stayed after the list had been read again successfully.
+  it('says a failed "Show more" under the rows, and stops saying it once the list is read again', async () => {
+    let client!: ReturnType<typeof useQueryClient>;
+    const Probe = () => { client = useQueryClient(); return null; };
+    api.listHostTests.mockImplementation((_p: number, params: { offset?: number }) => (
+      params.offset ? Promise.reject({ response: { status: 503, data: { detail: 'The database is busy.' } } })
+        : Promise.resolve({ items: [test({ id: 31 })], total: 3, has_more: true })
+    ));
+    render(<MemoryRouter><Probe /><SessionTests sessionId={72} ended={false} /></MemoryRouter>);
+    await screen.findByTestId('session-tests');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more (2 left)' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The database is busy.');
+    expect(screen.getByRole('link', { name: '10.0.0.5' })).toBeInTheDocument();
+
+    await act(async () => { await client.invalidateQueries({ queryKey: ['listHostTests'] }); });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByRole('link', { name: '10.0.0.5' })).toBeInTheDocument();
   });
 
   it('renders a test with no tool and a 200-character description, truncated', async () => {

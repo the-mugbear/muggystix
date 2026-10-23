@@ -14,7 +14,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Copy, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 
 import {
   createHostTests,
@@ -34,9 +34,9 @@ import { useOpeningKey } from '../../hooks/useOpeningKey';
 import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
-import { copyToClipboard } from '../../utils/clipboard';
 import { resolveCommand } from '../../utils/hostTests';
 import { Button } from '../ui/button';
+import { CopyButton } from '../ui/code-block';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
@@ -75,26 +75,6 @@ const newKey = (): string =>
   (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
     ? crypto.randomUUID()
     : `r-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-export const CopyButton: React.FC<{ text: string; label?: string }> = ({ text, label = 'Copy command' }) => {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      type="button" variant="ghost" size="icon" className="size-7 shrink-0"
-      aria-label={label} title={copied ? 'Copied' : label}
-      onClick={(e) => {
-        e.stopPropagation();
-        void copyToClipboard(text).then((ok) => {
-          if (!ok) return;
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        });
-      }}
-    >
-      {copied ? <Check className="size-3.5 text-success" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
-    </Button>
-  );
-};
 
 interface ResultPanelProps {
   test: HostTest | null;
@@ -209,7 +189,7 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
               {command && (
                 <div className="flex min-w-0 items-start gap-xs rounded-control bg-accent p-xs">
                   <pre className="m-0 min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-caption">{command}</pre>
-                  <CopyButton text={command} />
+                  <CopyButton text={command} label="Copy command" size="compact" />
                 </div>
               )}
               {current.expected_result && (

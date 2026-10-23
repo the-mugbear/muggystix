@@ -81,7 +81,15 @@ const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
 const renderIt = (props: { onNextUnreviewed?: () => void } = {}) =>
   render(<MemoryRouter><HostInspector hostId={1} {...props} /></MemoryRouter>);
-const withFollow = (follow: Record<string, unknown> | null) => mocked.getHost.mockResolvedValue({ ...host, follow });
+// The server's stored review state: a write's answer is stored, so the host
+// read again after the write (the inspector's `putHost` re-reads) carries it.
+const server = { follow: null as Record<string, unknown> | null };
+const withFollow = (follow: Record<string, unknown> | null) => {
+  server.follow = follow;
+  mocked.getHost.mockImplementation(() => Promise.resolve({ ...host, follow: server.follow }));
+};
+const stores = (write: ReturnType<typeof vi.fn>, answer: Record<string, unknown>) =>
+  write.mockImplementation(() => { server.follow = answer; return Promise.resolve(answer); });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -89,7 +97,7 @@ beforeEach(() => {
   URL.revokeObjectURL = vi.fn();
   role.value = 'analyst';
   withFollow(null);
-  mocked.followHost.mockResolvedValue(reviewed());
+  stores(mocked.followHost, reviewed());
 });
 
 describe('HostInspector — "Reviewed" is one click', () => {
@@ -206,7 +214,7 @@ describe('HostInspector — a conclusion an older review recorded', () => {
 describe('HostInspector — the optional note on a finished review', () => {
   it('a writer adds one with one input; the server’s answer is what shows', async () => {
     withFollow(reviewed());
-    mocked.setReviewNote.mockResolvedValue(reviewed({ review_summary: 'RDP only, patched in June' }));
+    stores(mocked.setReviewNote, reviewed({ review_summary: 'RDP only, patched in June' }));
     renderIt();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add a review note' }));
@@ -224,7 +232,7 @@ describe('HostInspector — the optional note on a finished review', () => {
 
   it('Cancel writes nothing; saving it empty removes the note', async () => {
     withFollow(reviewed({ review_summary: 'looked at ssh' }));
-    mocked.setReviewNote.mockResolvedValue(reviewed());
+    stores(mocked.setReviewNote, reviewed());
     renderIt();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit review note' }));

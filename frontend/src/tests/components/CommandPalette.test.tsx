@@ -92,4 +92,26 @@ describe('CommandPalette finding search', () => {
     // One digit searches findings only — not every host with a 7 in its IP.
     expect(api.getHosts).not.toHaveBeenCalledWith(1, expect.objectContaining({ search: '7' }), expect.anything());
   });
+
+  // Review 2026-10-23b, FEC-6 — an effect cleared the box on close, but the
+  // debounced search still held the last query: reopened within 300 ms, the
+  // palette showed (and asked for) the previous search's results.
+  it('opens clean every time: no search and none of the last results', async () => {
+    api.listFindings.mockResolvedValue({ items: [finding(37, 'Critical finding — default creds')], total: 1 });
+    const at = (open: boolean) => (
+      <MemoryRouter initialEntries={['/operations']}>
+        <CommandPalette open={open} onOpenChange={() => undefined} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(at(true));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'default creds' } });
+    await screen.findByText('Critical finding — default creds', {}, { timeout: 2000 });
+
+    rerender(at(false));
+    api.listFindings.mockClear();
+    rerender(at(true));
+    expect(screen.getByRole('combobox')).toHaveValue('');
+    expect(screen.queryByText('Critical finding — default creds')).toBeNull();
+    expect(api.listFindings).not.toHaveBeenCalled();
+  });
 });

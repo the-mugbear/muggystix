@@ -209,6 +209,24 @@ describe('usePagedList', () => {
     expect(result.current.total).toBe(50);
   });
 
+  // Review 2026-10-23b, FEC-9 — `total > 0` guarded the step back, so a list
+  // whose last rows were dealt with stayed on its page number, past the end
+  // of an empty list.
+  it('goes back to the first page when the list is emptied', async () => {
+    const size = { n: 51 };
+    const fetch = server('a', size);
+    const { result } = renderHook(() => usePagedList<Row>('getRows', fetch, ['a']));
+    await waitFor(() => expect(result.current.rows).toHaveLength(25));
+    act(() => result.current.setPage(2));
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+
+    size.n = 0;
+    await act(async () => { await result.current.reload(); });
+    await waitFor(() => expect(result.current.page).toBe(0));
+    await waitFor(() => expect(result.current.rows).toEqual([]));
+    expect(result.current.total).toBe(0);
+  });
+
   it('`enabled: false` parks it — nothing asked, not by reload either — and it reads once enabled', async () => {
     const fetch = server('a');
     const { result, rerender } = renderHook(

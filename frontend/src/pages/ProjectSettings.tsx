@@ -27,7 +27,7 @@ import {
   removeProjectMember, updateProject, updateProjectMemberRole, type ProjectMember,
 } from '../services/api';
 import { NO_PROJECT } from '../hooks/useProjectId';
-import { projectMembersQuery } from '../hooks/useProjectMembers';
+import { MEMBERSHIP_READS, projectMembersQuery } from '../hooks/useProjectMembers';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -200,8 +200,7 @@ const ProjectSettings: React.FC = () => {
       addProjectMember(body.projectId, body.userId, body.role),
     onSuccess: async () => {
       setAddOpen(false);
-      await queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] });
-      await projectsChanged();
+      await invalidateReads(queryClient, ...MEMBERSHIP_READS);
       toast.success('Member added.');
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not add the member.')),
@@ -213,11 +212,11 @@ const ProjectSettings: React.FC = () => {
   };
 
   const roleChange = useMutation({
-    mutationFn: (body: { projectId: number; member: ProjectMember; role: string; self: boolean }) =>
+    mutationFn: (body: { projectId: number; member: ProjectMember; role: string }) =>
       updateProjectMemberRole(body.projectId, body.member.user_id, body.role),
-    onSuccess: async (_updated, { member, role, self }) => {
+    onSuccess: async (_updated, { member, role }) => {
       setMembers((prev) => prev.map((x) => (x.user_id === member.user_id ? { ...x, role } : x)));
-      if (self) await projectsChanged();
+      await invalidateReads(queryClient, ...MEMBERSHIP_READS);
       toast.success(`${memberName(member)} is now ${roleLabel(role)}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not change the role.')),
@@ -227,7 +226,7 @@ const ProjectSettings: React.FC = () => {
       removeProjectMember(body.projectId, body.member.user_id),
     onSuccess: async (_void, { member }) => {
       setMembers((prev) => prev.filter((x) => x.user_id !== member.user_id));
-      await projectsChanged();
+      await invalidateReads(queryClient, ...MEMBERSHIP_READS);
       toast.success('Member removed.');
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not remove the member.')),
@@ -256,7 +255,7 @@ const ProjectSettings: React.FC = () => {
     if (!currentProject || role === m.role) return;
     const change = changeOf(m, currentProject.name);
     if (!(await allowMemberChange(roleChangeDecision(change, role), confirm, refuse))) return;
-    roleChange.mutate({ projectId: currentProject.id, member: m, role, self: change.isSelf });
+    roleChange.mutate({ projectId: currentProject.id, member: m, role });
   };
 
   const removeMember = async (m: ProjectMember) => {

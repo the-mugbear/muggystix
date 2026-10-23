@@ -5,6 +5,7 @@
  */
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('react-router-dom', async () => {
@@ -28,8 +29,14 @@ const api = vi.hoisted(() => ({
   followHost: vi.fn(),
 }));
 
+// What the server stores: a note created is on the host read after it (the
+// inspector reads the host again after every write).
+const server = vi.hoisted(() => ({ notes: {} as Record<number, unknown[]> }));
+
 vi.mock('../../services/api', () => ({
-  getHost: vi.fn().mockImplementation((_projectId: number, id: number) => Promise.resolve(hostFixture(id))),
+  getHost: vi.fn().mockImplementation((_projectId: number, id: number) => Promise.resolve(
+    { ...hostFixture(id), notes: server.notes[id] ?? [] },
+  )),
   getHostConflicts: vi.fn().mockResolvedValue([]),
   listHostTests: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   listProposals: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
@@ -40,7 +47,12 @@ vi.mock('../../services/api', () => ({
   listProjectMembers: vi.fn().mockResolvedValue([]),
   followHost: api.followHost, unfollowHost: vi.fn(), assignHost: vi.fn(), unassignHost: vi.fn(),
   createNote: vi.fn(), updateAnnotation: vi.fn(), deleteAnnotation: vi.fn(),
-  createAnnotation: api.createAnnotation,
+  createAnnotation: (projectId: number, hostId: number, body: unknown) => Promise.resolve(
+    api.createAnnotation(projectId, hostId, body),
+  ).then((note: unknown) => {
+    server.notes[hostId] = [note, ...(server.notes[hostId] ?? [])];
+    return note;
+  }),
   uploadNoteAttachment: api.uploadNoteAttachment,
  
   promoteVulnerability: vi.fn(), previewPromoteVulnerability: vi.fn(),
@@ -60,6 +72,7 @@ vi.mock('../../components/HostNamesCard', () => ({ default: () => null }));
 vi.mock('../../components/host-inspector/PortDetailsCard', () => ({ default: () => null }));
 
 import HostInspector from '../../components/HostInspector';
+import * as apiModule from '../../services/api';
 
 const createObjectURL = vi.fn();
 const revokeObjectURL = vi.fn();
@@ -75,6 +88,7 @@ const pasteImage = (textarea: HTMLElement, file: File) => {
 
 describe('HostInspector note composer — draft bound to host, recoverable attachments', () => {
   beforeEach(() => {
+    server.notes = {};
     api.createAnnotation.mockReset();
     api.uploadNoteAttachment.mockReset();
     createObjectURL.mockReset();
@@ -279,6 +293,7 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
 // after the reader left its host must change nothing on the host now shown.
 describe('HostInspector — a late completion is for the host it was sent for', () => {
   beforeEach(() => {
+    server.notes = {};
     api.createAnnotation.mockReset();
     api.followHost.mockReset();
     Object.values(toastMock).forEach((m) => m.mockReset());
@@ -335,5 +350,77 @@ describe('HostInspector — a late completion is for the host it was sent for', 
     // The composer on host 2 is usable: the other host's save does not hold it.
     fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'for host two' } });
     expect(screen.getByRole('button', { name: /save note/i })).toBeEnabled();
+  });
+});
+
+// Review 2026-10-23b, FEC-1 — a note was put onto ONE cache entry and never
+// re-read, so a read of the host already on its way (taken before the note was
+// saved) overwrote it, or the write missed the reading on screen.
+describe('HostInspector — a note just posted survives a read of the host already on its way', () => {
+  const getHost = () => apiModule.getHost as unknown as ReturnType<typeof vi.fn>;
+  const base = () => getHost().getMockImplementation()!;
+  const postNote = async (body: string) => {
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: body } });
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    await waitFor(() => expect(api.createAnnotation).toHaveBeenCalledWith(1, 1, { body }));
+  };
+
+  beforeEach(() => {
+    server.notes = {};
+    api.createAnnotation.mockReset();
+    api.createAnnotation.mockResolvedValue({ id: 80, body: 'kept note', author: 'ana', attachments: [] });
+  });
+
+  it('a re-read sent before the note (an assignee change, say) does not wipe it', async () => {
+    const original = base();
+    let client!: ReturnType<typeof useQueryClient>;
+    const Probe = () => { client = useQueryClient(); return null; };
+    try {
+      render(<MemoryRouter><Probe /><HostInspector hostId={1} /></MemoryRouter>);
+      await screen.findByText('10.0.0.1');
+      // The re-read's snapshot is taken now, before the note exists.
+      let answerStale!: () => void;
+      getHost().mockImplementationOnce((_p: number, id: number) => new Promise((resolve) => {
+        answerStale = () => resolve(hostFixture(id));
+      }));
+      act(() => { void client.invalidateQueries({ queryKey: ['getHost', 1, 1] }); });
+      await waitFor(() => expect(answerStale).toBeDefined());
+
+      await postNote('kept note');
+      await act(async () => { answerStale(); });
+      expect(await screen.findByText('kept note')).toBeInTheDocument();
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(screen.getByText('kept note')).toBeInTheDocument();
+    } finally {
+      getHost().mockImplementation(original);
+    }
+  });
+
+  it('a note posted while the informational rows load is on the wider reading too', async () => {
+    const original = base();
+    let answerWide: (() => void) | undefined;
+    getHost().mockImplementation((_p: number, id: number, options?: { includeInfo?: boolean }) => {
+      const reading = (notes: unknown[]) => ({
+        ...hostFixture(id), notes, informational_count: 3, informational_included: options?.includeInfo === true,
+      });
+      // The first wider read is held, and answers with what it saw: no note.
+      if (options?.includeInfo && answerWide === undefined) {
+        return new Promise((resolve) => { answerWide = () => resolve(reading([])); });
+      }
+      return Promise.resolve(reading(server.notes[id] ?? []));
+    });
+    try {
+      render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+      fireEvent.click(await screen.findByRole('button', { name: 'Show 3 informational findings' }));
+      await waitFor(() => expect(answerWide).toBeDefined());
+
+      await postNote('kept note');
+      await act(async () => { answerWide!(); });
+      expect(await screen.findByText('kept note')).toBeInTheDocument();
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(screen.getByText('kept note')).toBeInTheDocument();
+    } finally {
+      getHost().mockImplementation(original);
+    }
   });
 });
