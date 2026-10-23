@@ -1142,8 +1142,8 @@ def observed_names_at_address(
     db: Session, project_id: int, ip_address: str, limit: int = 200
 ) -> List[str]:
     """Every FQDN observed at ``ip_address`` (any address-valued evidence kind),
-    most recently seen first.  The one definition the agent host-detail reads
-    share (``/agent/hosts/{id}`` and ``/agent/assist/hosts/{id}``): the valid
+    most recently seen first.  The one definition the agent host detail
+    (``/agent/assist/hosts/{id}``) reads: the valid
     ``target_fqdn`` set for a plan entry."""
     r, n = models.DNSRecord, models.DNSName
     last = func.max(func.coalesce(r.observed_at, r.created_at))

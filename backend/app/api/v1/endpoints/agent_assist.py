@@ -68,10 +68,11 @@ from app.api.v1.endpoints.agent_common import (
     batch_host_enrichment,
     load_agent_session,
     load_operator,
-    require_project_host,
     unknown_value_error,
 )
-from app.services import dns_name_service, finding_needs, host_detail_service, report_writing_guidance
+from app.services import dns_name_service, finding_needs, host_access_service, host_detail_service, report_writing_guidance
+from app.services.host_access_service import HostAccessResult
+from app.services.cert_fields import tls_summary
 from app.services.attribution_correlation import attributions_for_host
 from app.services.host_assessment_service import host_assessment
 from app.services.host_query import (
@@ -96,6 +97,7 @@ from app.services.note_attachment_service import require_readable_file
 from app.services.agent_prompt_service import PROMPT_VERSION
 from app.services.posture_service import compute_posture
 from app.services.scan_inventory_filters import apply_scan_inventory_filters
+from app.services.instants import parse_instant
 from app.services.scan_time import scan_time_for_api
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.subnet_insight_service import compute_subnet_insights
@@ -692,15 +694,22 @@ class AssistWebInterface(BaseModel):
         "protocols were seen; null when the tool did not enumerate protocols."
     ))
     # v2.429.1 (MCP acceptance run 2) — what the host inspector's web panel
-    # reads straight from the tool's TLS record (``WebInterfacesCard``'s
-    # summarizeTls: the same keys, in the same order).  The typed columns
-    # above can be empty where the record is not, and the page showed an
-    # issuer and SANs the agent could not see.
+    # shows from the tool's TLS record: ``cert_fields.tls_summary``, the one
+    # reading of it, served to the page as ``tls_summary``.  The typed columns
+    # above can be empty where the record is not.
     tls_version: Optional[str] = None
     cert_issuer: Optional[str] = Field(None, description="issuer CN, else organisation, else DN, as the tool reported it")
     cert_subject_cn: Optional[str] = None
+    cert_not_after_reported: Optional[str] = Field(None, description=(
+        "The certificate's not-after date exactly as the tool's record states it "
+        "(cert_not_after is the parsed column, which may be empty)."
+    ))
     cert_sans: List[str] = Field(default_factory=list, description="Subject alternative names (first 20)")
     cert_san_total: int = 0
+    tls_flags: List[str] = Field(default_factory=list, description=(
+        "What the tool's TLS record states as true, nothing inferred: self_signed, "
+        "expired, hostname_mismatch, wildcard — the flags the host inspector shows."
+    ))
     # v2.433.0 (agent feedback #24) — which observation this is.  The table
     # keeps one row per scan, so a re-scanned URL appears once per scan; the
     # inspector shows the latest per (tool, URL) and so must a write-up.
@@ -736,9 +745,7 @@ class AssistPortDetail(PortBrief):
 class AssistHostDetail(HostDetail):
     """Assist's host detail — what the host inspector shows (v2.428.0).
 
-    A subclass rather than fields on the shared schema: ``HostDetail`` is also
-    what ``GET /agent/hosts/{id}`` answers, which carries no screenshot
-    download paths or review state.  Every field below comes from
+    ``HostDetail`` holds the host and its ports; every field below comes from
     the code the inspector's ``GET /hosts/{id}`` uses (``host_detail_service``,
     ``host_serialization``, ``scope_coverage``, ``host_assessment_service``,
     ``host_query.host_weakness_flags``), so the two cannot state different facts.
@@ -844,29 +851,22 @@ _TECH_CAP = 12
 _SAN_CAP = 20
 
 
-def _tls_str(tls: dict, *keys: str) -> Optional[str]:
-    """The first non-empty string among ``keys`` — the web panel's tlsStr."""
-    for k in keys:
-        v = tls.get(k)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return None
-
-
 def _serialize_web_interface(w, observed=None, latest: Optional[set] = None) -> AssistWebInterface:
     """One web interface as assist reports it — shared by the capped list on
     host detail and the paged list below, so the two never disagree.
     ``observed`` / ``latest`` come from services/web_interface_observation."""
     obs = observed.get(w.id) if observed else None
-    tls = w.tls_info if isinstance(w.tls_info, dict) else {}
-    sans = tls.get("subject_an") or tls.get("subject_alt_names")
-    sans = [str(s) for s in sans] if isinstance(sans, list) else []
+    # The inspector's web rows read the same summary (cert_fields.tls_summary).
+    tls = tls_summary(w.tls_info) or {}
+    sans = tls.get("sans") or []
     return AssistWebInterface(
-        tls_version=_tls_str(tls, "tls_version", "version"),
-        cert_issuer=_tls_str(tls, "issuer_cn", "issuer_org", "issuer_dn"),
-        cert_subject_cn=_tls_str(tls, "subject_cn"),
+        tls_version=tls.get("version"),
+        cert_issuer=tls.get("issuer"),
+        cert_subject_cn=tls.get("subject_cn"),
+        cert_not_after_reported=tls.get("not_after"),
         cert_sans=sans[:_SAN_CAP],
         cert_san_total=len(sans),
+        tls_flags=tls.get("flags") or [],
         id=w.id,
         url=w.url,
         fqdn=w.name.fqdn if w.name else None,
@@ -951,28 +951,9 @@ def list_assist_host_web_interfaces(
     ))
 
 
-class AssistAccessResult(BaseModel):
-    """One NetExec / SMBMap result on a host, as stored (v2.418.0): what the
-    parser read from the tool's line (login outcome, local admin, SMBv1,
-    shares) beside the line itself, so a reader can check one against the
-    other."""
-    id: int
-    scan_id: int
-    tool: str
-    protocol: str
-    port: Optional[int] = None
-    auth_success: Optional[bool] = None
-    username: Optional[str] = None
-    local_admin: Optional[bool] = None
-    smbv1: Optional[bool] = None
-    writable_share: Optional[bool] = None
-    shares: Optional[Any] = None
-    raw_output: Optional[str] = None
-    raw_output_truncated: bool = False
-
-
 class AssistAccessPage(AgentPage):
-    items: List[AssistAccessResult] = []
+    # The inspector's NetExec card's rows, from the same service.
+    items: List[HostAccessResult] = []
 
 
 @router.get(
@@ -991,9 +972,8 @@ def list_assist_host_access(
     """Every NetExec / SMBMap result recorded on the host — one row per
     (scan, protocol, port, account) — with the tool's own line.  The
     interpreted fields and the line side by side are what a parse audit
-    compares (v2.418.0)."""
-    from app.db.models_confidence import NETEXEC_RAW_OUTPUT_LIMIT, NetexecResult
-
+    compares (v2.418.0).  The inspector's NetExec card's rows, order and
+    fields (``host_access_service``)."""
     host = (
         db.query(models.Host.id)
         .filter(models.Host.id == host_id, models.Host.project_id == request.state.agent_project_id)
@@ -1001,20 +981,9 @@ def list_assist_host_access(
     )
     if host is None:
         raise HTTPException(status_code=404, detail="Host not found in this project")
-    scoped = db.query(NetexecResult).filter(NetexecResult.host_id == host_id)
-    total = scoped.with_entities(func.count(NetexecResult.id)).scalar() or 0
-    rows = scoped.order_by(NetexecResult.protocol, NetexecResult.port, NetexecResult.id).offset(offset).limit(limit).all()
+    rows, total = host_access_service.page(db, host_id, limit=limit, offset=offset)
     return AssistAccessPage(**agent_page(
-        [
-            AssistAccessResult(
-                id=r.id, scan_id=r.scan_id, tool=r.tool or "netexec", protocol=r.protocol, port=r.port,
-                auth_success=r.auth_success, username=r.username, local_admin=r.local_admin,
-                smbv1=r.smbv1, writable_share=r.writable_share, shares=r.shares,
-                raw_output=r.raw_output,
-                raw_output_truncated=len(r.raw_output or "") >= NETEXEC_RAW_OUTPUT_LIMIT,
-            )
-            for r in rows
-        ],
+        [host_access_service.serialize(r) for r in rows],
         total=total, limit=limit, offset=offset,
     ))
 
@@ -1554,17 +1523,8 @@ def list_assist_findings(
         source = source.strip().lower()
         if source not in _FINDING_SOURCES:
             raise unknown_value_error("source", source, _FINDING_SOURCES | {"all"})
-    require_project_host(db, request.state.agent_project_id, host_id)
 
-    owner_id = None
-    if owner:
-        if owner.lower() == "me":
-            owner_id = request.state.key_operator_id
-        else:
-            row = db.query(User.id).filter(func.lower(User.username) == owner.lower()).first()
-            if row is None:
-                raise HTTPException(status_code=400, detail=f"No user named {owner!r}")
-            owner_id = row[0]
+    owner_id = _project_person_id(db, request, "owner", owner)
 
     svc = FindingService(db)
     filters = dict(
@@ -1625,6 +1585,26 @@ _FINDING_STATUSES = frozenset({
 #: here the day it exists.
 _FINDING_SEVERITIES = frozenset(s.value for s in FindingSeverity)
 _FINDING_SOURCES = frozenset(s.value for s in FindingSource)
+
+
+def _project_person_id(db: Session, request: Request, name: str, value: Optional[str]) -> Optional[int]:
+    """The user id an ``owner=`` / ``author=`` filter names: ``me`` is the
+    operator; a username is resolved among the people this project can name —
+    ``host_query_predicates.project_assignees``, the one list the vocabulary
+    gives an agent.  Anyone else is a 422 naming the accepted values, the same
+    whether or not such an account exists elsewhere in the installation
+    (review 2026-10-23b, AGT-7: any username resolved, and a miss was a 400 —
+    a viewer's agent could probe which accounts exist)."""
+    if not value:
+        return None
+    if value.lower() == "me":
+        return request.state.key_operator_id
+    from app.services.host_query_predicates import project_assignees
+
+    people = {u.lower(): uid for uid, u in project_assignees(db, request.state.agent_project_id).all() if u}
+    if value.lower() not in people:
+        raise unknown_value_error(name, value, set(people) | {"me"})
+    return people[value.lower()]
 
 
 def _unfiltered(value: Optional[str]) -> Optional[str]:
@@ -2077,15 +2057,7 @@ def list_assist_recent_notes(
     """
     from app.services.note_activity_service import project_notes_page
 
-    author_id: Optional[int] = None
-    if author:
-        if author.lower() == "me":
-            author_id = request.state.key_operator_id
-        else:
-            row = db.query(User.id).filter(func.lower(User.username) == author.lower()).first()
-            if row is None:
-                raise HTTPException(status_code=400, detail=f"No user named {author!r}")
-            author_id = row[0]
+    author_id = _project_person_id(db, request, "author", author)
 
     total, rows = project_notes_page(
         db, request.state.agent_project_id, every_target=True,
@@ -2296,14 +2268,36 @@ def list_assist_scans(
         None, max_length=100,
         description="Only this tool's scans (nmap, nessus, netexec…) — the Scans page's tool chips",
     ),
+    created_after: Optional[str] = Query(
+        None, max_length=40,
+        description=(
+            "ISO-8601 date or timestamp (no offset = UTC); only scans uploaded "
+            "at or after this point — 'recent uploads' without paging the history."
+        ),
+    ),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
+    cutoff = None
+    if created_after:
+        # A value that is not a timestamp is refused by name: an empty page
+        # would read as "no scans since then".  No offset is UTC, as everywhere
+        # a person or an agent types a time (`instants.parse_instant`).
+        try:
+            cutoff = parse_instant(created_after)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"created_after must be an ISO-8601 timestamp "
+                    f"(2026-10-08 or 2026-10-08T14:30:00Z); not understood: {created_after!r}."
+                ),
+            )
     # The Scans page's own filter (v2.429.1, MCP acceptance run 2: "the last
     # two nmap scans" meant reading every scan).
     matching = apply_scan_inventory_filters(
         db.query(models.Scan).filter(models.Scan.project_id == request.state.agent_project_id),
-        search=None, tool=tool, created_after=None,
+        search=None, tool=tool, created_after=cutoff,
     )
     # The whole answer to "how many nmap scans?" (agent feedback #30: this was
     # a bare array, the one list an agent had to page to the end to count).
@@ -2873,8 +2867,12 @@ class AssistFindingDetail(BaseModel):
     scanner_evidence_truncated: bool = False
     # v2.442.0 — the agent evidence records that bear on this finding (what
     # was run, and what came back).  It was ``execution_evidence``: one
-    # test-plan execution result.
+    # test-plan execution result.  The newest ``_EVIDENCE_RECORD_CAP``;
+    # ``evidence_records_total`` is all of them, and the rest are paged at
+    # ``GET /agent/evidence?finding_id=`` (MCP ``list_evidence``).
     evidence_records: List[dict] = []
+    evidence_records_total: int = 0
+    evidence_records_truncated: bool = False
     # --- v2.428.0: what the finding page shows beyond the evidence ---------
     updated_at: Optional[datetime] = None
     # Per-endpoint state counts (open / remediated / retest / false_positive):
@@ -2906,6 +2904,8 @@ class AssistFindingDetail(BaseModel):
 _FINDING_HOST_CAP = 100
 #: Scanner rows listed on a finding's detail; ``scanner_evidence_total`` is all of them.
 _SCANNER_EVIDENCE_CAP = 100
+#: Evidence records listed on a finding's detail; ``evidence_records_total`` is all of them.
+_EVIDENCE_RECORD_CAP = 50
 #: A finding's status changes are few; the cap only stops a pathological one.
 _STATUS_HISTORY_CAP = 100
 
@@ -3125,8 +3125,9 @@ def get_assist_finding(
     # Evidence records linked to the finding — the same rows the host's Agent
     # evidence section shows (serialize_evidence: preview, never raw output).
     from app.services import agent_evidence_service
-    evidence_rows, _ = agent_evidence_service.list_evidence(
-        db, request.state.agent_project_id, finding_id=finding.id, limit=50,
+    # The total is kept: a finding confirmed on 60 hosts must not read as 50.
+    evidence_rows, evidence_records_total = agent_evidence_service.list_evidence(
+        db, request.state.agent_project_id, finding_id=finding.id, limit=_EVIDENCE_RECORD_CAP,
     )
     evidence_records = [agent_evidence_service.serialize_evidence(r) for r in evidence_rows]
 
@@ -3200,6 +3201,8 @@ def get_assist_finding(
         comments=[_serialize_finding_note(n, attachments_by_note, uploaders) for n in comment_notes],
         scanner_evidence=scanner_evidence,
         evidence_records=evidence_records,
+        evidence_records_total=evidence_records_total,
+        evidence_records_truncated=evidence_records_total > len(evidence_records),
     )
 
 

@@ -1,12 +1,10 @@
 """
-Agent API — data-read, notes & follow endpoints.
+Agent API — the session's own routes, host notes, follow and corrections.
 
-Read-only project/host/scan/scope browsing plus host notes and follow
-status.  Split out of agent_api.py.
-
-Every read is bounded by the key's project; nothing narrows one to a scope,
-and the scope's own hosts are read through /agent/scope/….  The
-inventory reads agents mostly use are /agent/assist/* (agent_assist.py).
+Identity, key renewal and session end, tool suggestions, a host note, the
+operator's review status and a host correction.  Split out of agent_api.py.
+The inventory reads are /agent/assist/* (agent_assist.py); the scope's own
+lists are /agent/scope/….
 
 Also here: the recorded request for one configured scanner's credentials
 (``POST /agent/scanner-integrations/{integration_id}/credentials``).
@@ -15,9 +13,9 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.db import models
@@ -39,17 +37,13 @@ from app.api.deps import (
 )
 from app.core.security import check_permissions
 from app.db.models_tools import TOOL_REFERENCE
-from app.services import dns_name_service
 from app.services.host_follow_service import HostFollowService
-from app.services.host_serialization import exploit_count_maps
 from app.services.tool_registry_service import record_suggestion
 from app.services.agent_session_service import (
     close_agent_session_from_agent, note_agent_model,
 )
 
 from app.api.v1.endpoints.agent_schemas import (
-    PortBrief, VulnCounts, HostBrief, HostDetail,
-    ScanBrief, ProjectInfo, AgentDashboard,
     AgentIdentity, AgentIdentityOperator,
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest, FOLLOW_CLEAR,
     AgentHostUpdate, AgentHostUpdateResponse,
@@ -58,13 +52,7 @@ from app.api.v1.endpoints.agent_schemas import (
 )
 from app.services.agent_policy import SCANNER_ASK_FIRST_REFUSAL, SCANNER_CREDENTIALS_NOTE
 from app.services.integration_service import IntegrationService, share_credentials_with_agent
-from app.api.v1.endpoints.agent_common import (
-    PORTS_PARAM_HELP, SEARCH_PARAM_HELP, SERVICES_PARAM_HELP, SEVERITY_FLAGS_HELP,
-    STATE_PARAM_HELP, SUBNETS_PARAM_HELP,
-    batch_host_enrichment, load_agent_session, load_operator,
-)
-from app.services.host_query import build_filtered_host_query
-from app.services.instants import parse_instant
+from app.api.v1.endpoints.agent_common import load_agent_session, load_operator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,51 +68,6 @@ router = APIRouter()
 # then do nothing with it.
 renewal_router = APIRouter()
 
-
-# v2.295.0 — ``_log_unscoped_legacy_hit`` removed.  It was deprecation
-# instrumentation (v2.65.0) that fired only for a key with no scope binding at
-# all, to answer "is the unscoped global key still being used?".  That key can
-# no longer authenticate, so the probe could never fire again — and a silent
-# probe reads as "nothing uses these endpoints", which is the opposite of what
-# it would mean.  The browse routes below stay: every session key reaches them.
-
-
-def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
-    """Convert Host ORM objects to HostBrief with port/vuln enrichment."""
-    if not hosts:
-        return []
-    host_ids = [h.id for h in hosts]
-    port_counts, vuln_map = batch_host_enrichment(db, host_ids)
-    exploits, critical_exploits = exploit_count_maps(db, host_ids)
-
-    result = []
-    for h in hosts:
-        vc = vuln_map.get(h.id, {})
-        result.append(HostBrief(
-            exploitable_count=exploits.get(h.id, 0),
-            critical_exploitable_count=critical_exploits.get(h.id, 0),
-            id=h.id,
-            ip_address=h.ip_address,
-            hostname=h.hostname,
-            state=h.state,
-            os_name=h.os_name,
-            os_family=h.os_family,
-            first_seen=h.first_seen,
-            last_seen=h.last_seen,
-            open_port_count=port_counts.get(h.id, 0),
-            vuln_summary=VulnCounts(
-                critical=vc.get("critical", 0),
-                high=vc.get("high", 0),
-                medium=vc.get("medium", 0),
-                low=vc.get("low", 0),
-            ) if vc else None,
-        ))
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Data-read endpoints
-# ---------------------------------------------------------------------------
 
 class SessionRenewResponse(BaseModel):
     """The new deadline on the SAME token — nothing to re-bootstrap."""
@@ -403,217 +346,14 @@ def request_scanner_credentials(
     return {**shared, "note": SCANNER_CREDENTIALS_NOTE}
 
 
-@router.get("/project", response_model=ProjectInfo, summary="Get project metadata")
-def get_project_info(
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    project = db.query(Project).filter(Project.id == agent.project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return ProjectInfo(
-        id=project.id,
-        name=project.name,
-        slug=project.slug,
-        description=project.description,
-        status=project.status,
-        start_date=project.start_date,
-        end_date=project.end_date,
-        agent_name=agent.name,
-    )
-
-
-@router.get("/dashboard", response_model=AgentDashboard, summary="Project stats summary")
-def get_dashboard(
-    request: Request,
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    """Project stats summary for the key's project."""
-    pid = agent.project_id
-
-    host_q = db.query(models.Host).filter(models.Host.project_id == pid)
-    port_q = (
-        db.query(models.Port)
-        .join(models.Host, models.Port.host_id == models.Host.id)
-        .filter(models.Host.project_id == pid, models.Port.state == "open")
-    )
-    scan_q = db.query(models.Scan).filter(models.Scan.project_id == pid)
-    last_scan_q = (
-        db.query(models.Scan.created_at)
-        .filter(models.Scan.project_id == pid)
-        .order_by(models.Scan.created_at.desc())
-    )
-
-    host_count = host_q.count()
-    up_host_count = host_q.filter(models.Host.state == "up").count()
-    open_port_count = port_q.count()
-    scan_count = scan_q.count()
-    last_scan = last_scan_q.first()
-
-    return AgentDashboard(
-        host_count=host_count,
-        up_host_count=up_host_count,
-        open_port_count=open_port_count,
-        scan_count=scan_count,
-        last_scan_at=last_scan[0] if last_scan else None,
-    )
-
-
-@router.get("/hosts", response_model=List[HostBrief], summary="List hosts")
-def list_hosts(
-    request: Request,
-    state: Optional[str] = Query(None, description=STATE_PARAM_HELP),
-    ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
-    services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
-    subnets: Optional[str] = Query(None, description=SUBNETS_PARAM_HELP),
-    has_critical_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
-    has_high_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
-    has_exploit_available: Optional[bool] = Query(
-        None,
-        description=(
-            "Filter to hosts with at least one vulnerability whose "
-            "Vulnerability.exploitable is True — set by the Nessus parser "
-            "when exploit_code_maturity ∈ {functional, high, "
-            "proof-of-concept} or metasploit/core-impact/canvas modules "
-            "are present."
-        ),
-    ),
-    search: Optional[str] = Query(None, description=SEARCH_PARAM_HELP),
-    limit: int = Query(500, ge=1, le=5000),
-    offset: int = Query(0, ge=0),
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    # The Hosts page's own assembly; nothing here is judged for a person.
-    q = build_filtered_host_query(
-        db, None, project_id=request.state.agent_project_id,
-        state=state, ports=ports, services=services, subnets=subnets,
-        has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
-        has_exploit_available=has_exploit_available,
-        search=search,
-    )
-    hosts = q.order_by(models.Host.ip_address).offset(offset).limit(limit).all()
-    return _enrich_host_briefs(db, hosts)
-
-
-@router.get("/hosts/{host_id}", response_model=HostDetail, summary="Host detail with ports")
-def get_host(
-    request: Request,
-    host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    q = (
-        db.query(models.Host)
-        .options(joinedload(models.Host.ports))
-        .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
-    )
-    host = q.first()
-    if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
-    port_briefs = [PortBrief.model_validate(p) for p in host.ports]
-    open_count = sum(1 for p in host.ports if p.state == "open")
-    # Compute vuln summary for consistency with list endpoint
-    port_counts, vuln_map = batch_host_enrichment(db, [host.id])
-    vc = vuln_map.get(host.id, {})
-    # v2.323.0 — every name observed at this address, most recently seen
-    # first; the valid target_fqdn set (shared with /assist/hosts/{id}).
-    return HostDetail(
-        names=dns_name_service.observed_names_at_address(db, host.project_id, host.ip_address),
-        id=host.id,
-        ip_address=host.ip_address,
-        hostname=host.hostname,
-        state=host.state,
-        os_name=host.os_name,
-        os_family=host.os_family,
-        first_seen=host.first_seen,
-        last_seen=host.last_seen,
-        open_port_count=open_count,
-        vuln_summary=VulnCounts(
-            critical=vc.get("critical", 0),
-            high=vc.get("high", 0),
-            medium=vc.get("medium", 0),
-            low=vc.get("low", 0),
-        ) if vc else None,
-        ports=port_briefs,
-    )
-
-
-@router.get("/scans", response_model=List[ScanBrief], summary="List scans")
-def list_scans(
-    request: Request,
-    tool: Optional[str] = Query(
-        None,
-        description=(
-            "Case-insensitive substring match against Scan.tool_name "
-            "(e.g. ``nessus``, ``nmap``, ``masscan``) — the Scans page's "
-            "tool filter."
-        ),
-    ),
-    created_after: Optional[str] = Query(
-        None,
-        description=(
-            "ISO-8601 date or timestamp (no offset = UTC); only scans "
-            "uploaded after this point are returned — 'recent uploads' "
-            "without paging the full history."
-        ),
-    ),
-    sort_by: Optional[str] = Query(
-        None,
-        pattern="^(created_at|filename|tool_name)$",
-        description=(
-            "Sort column.  Allowed: ``created_at`` (default), "
-            "``filename``, ``tool_name``."
-        ),
-    ),
-    sort_order: Optional[str] = Query(
-        "desc",
-        pattern="^(asc|desc)$",
-        description="Sort direction — asc or desc.  Defaults to desc.",
-    ),
-    limit: int = Query(100, ge=1, le=500),
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    q = db.query(models.Scan).filter(models.Scan.project_id == agent.project_id)
-    # v2.85.0 — same filter surface as the user-side /scans endpoint, so
-    # an agent that already understands the page can replicate its
-    # narrowing without an extra query/round-trip.
-    if tool:
-        from app.services.host_query_common import escape_like
-        q = q.filter(models.Scan.tool_name.ilike(f"%{escape_like(tool)}%", escape='\\'))
-    if created_after:
-        # A value that is not a timestamp is refused by name: an empty list
-        # would read as "no scans since then".
-        try:
-            # No offset is UTC, as everywhere a person or an agent types a
-            # time (`instants.parse_instant`; it was the server's zone here).
-            cutoff = parse_instant(created_after)
-        except ValueError:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"created_after must be an ISO-8601 timestamp "
-                    f"(2026-10-08 or 2026-10-08T14:30:00Z); not understood: {created_after!r}."
-                ),
-            )
-        q = q.filter(models.Scan.created_at >= cutoff)
-    _SORT_COLUMNS = {
-        "created_at": models.Scan.created_at,
-        "filename": models.Scan.filename,
-        "tool_name": models.Scan.tool_name,
-    }
-    sort_column = _SORT_COLUMNS.get(sort_by or "created_at", models.Scan.created_at)
-    if (sort_order or "desc").lower() == "desc":
-        sort_column = sort_column.desc()
-    scans = q.order_by(sort_column).limit(limit).all()
-    return [ScanBrief.model_validate(s) for s in scans]
-
-
-# (`GET /agent/scopes` — the uncapped list of scopes — went in 2.488.0: a
-# project has one scope, read at `/agent/assist/scope`, and its whole lists
-# are `/agent/scope/subnets` and `/agent/scope/domains`.)
+#: The pre-assist reads — ``GET /agent/project``, ``/agent/dashboard``,
+#: ``/agent/hosts``, ``/agent/hosts/{id}``, ``/agent/scans`` and
+#: ``GET /agent/hosts/{id}/notes`` — went with review 2026-10-23b's AGT-4 (owner): each
+#: re-implemented a page read with its own semantics (a substring tool match,
+#: four hand-written counts, an unpaged note list).  Their reads are
+#: ``/agent/assist/context``, ``/assist/hosts``, ``/assist/hosts/{id}``,
+#: ``/assist/scans`` (``created_after`` included) and ``/assist/hosts/{id}/notes``.
+#: ``GET /agent/scopes`` went in 2.488.0: a project has one scope.
 
 
 # ---------------------------------------------------------------------------
@@ -676,41 +416,6 @@ def create_agent_note(
         # tells its operator who was not reached (the page shows the same).
         unmatched_mentions=list(told.get("unmatched_mentions") or []),
     )
-
-
-@router.get(
-    "/hosts/{host_id}/notes",
-    response_model=List[AgentNoteResponse],
-    summary="List notes for a host",
-)
-def list_agent_notes(
-    request: Request,
-    host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    q = (
-        db.query(models.Host)
-        .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
-    )
-    host = q.first()
-    if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
-
-    svc = HostFollowService(db)
-    notes = svc.list_notes(host_id)
-    return [
-        AgentNoteResponse(
-            id=n.id,
-            host_id=host_id,
-            body=n.body,
-            author_id=n.user_id,
-            parent_id=n.parent_id,
-            created_at=n.created_at,
-            updated_at=n.updated_at,
-        )
-        for n in notes
-    ]
 
 
 class AgentFollowResponse(BaseModel):

@@ -17,6 +17,7 @@ from app.db.models_agent import AgentSession
 # ``parse_port_list`` lives with the filter assembly both doors use; the name
 # stays importable from here.
 from app.services.host_query import parse_port_list, unknown_value_error  # noqa: F401
+from app.services.filter_targets import require_in_project
 from app.services.vulnerability_service import VulnerabilityService
 
 
@@ -91,17 +92,10 @@ def require_project_host(db: Session, project_id: int, host_id: Optional[int]) -
     rows — "no tests / no evidence / no findings on that host" said about a
     host that does not exist here, while the host reads answered 404 for the
     same id (agent feedback #30, 2026-10-02).  Another project's host and a
-    nonexistent one are the same answer.
+    nonexistent one are the same answer.  ``filter_targets.require_in_project``
+    is the one check (the evidence and findings services call it themselves).
     """
-    if host_id is None:
-        return
-    found = (
-        db.query(models.Host.id)
-        .filter(models.Host.id == host_id, models.Host.project_id == project_id)
-        .first()
-    )
-    if found is None:
-        raise HTTPException(status_code=404, detail="Host not found in this project")
+    require_in_project(db, project_id, host_id=host_id)
 
 
 STATE_PARAM_HELP = "Host state: up, down or unknown. Any other value is a 422."

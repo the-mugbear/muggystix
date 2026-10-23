@@ -285,8 +285,9 @@ The template lives on the operator's machine and the agent fills it there
 **`assist_get_finding`** is the tool the report stage turns on. It carries the
 finding's comment thread, the note that justified it and that note's replies
 where there is one, the affected endpoints (the first 100, with the totals),
-the scanner rows and evidence records behind it, its report text and status
-history. Each note says whether a person or an agent wrote it. A scanner's
+the scanner rows and evidence records behind it (the first 100 and the newest
+50, each with its total and a `_truncated` flag; `list_evidence` with
+`finding_id` pages every record), its report text and status history. Each note says whether a person or an agent wrote it. A scanner's
 output and a command a tester ran are different assertions, and a write-up
 says which one a claim rests on.
 

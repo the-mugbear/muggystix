@@ -691,10 +691,22 @@ async def _handle_message(
 
         # v2.434.0 — the client names itself here (``clientInfo``); that is
         # the session's harness, recorded without asking the agent anything.
+        # Only for a key the gate would accept (``deps.agent_key_may_act``).
         if api_key:
             from starlette.concurrency import run_in_threadpool
+            from app.api.deps import live_agent_session_id
             from app.services.agent_session_service import record_mcp_client
-            await run_in_threadpool(record_mcp_client, api_key, params.get("clientInfo"))
+
+            def _record(key=api_key, info=params.get("clientInfo")):
+                try:
+                    session_id = live_agent_session_id(key)
+                except Exception:
+                    logger.exception("reading the key behind an MCP initialize failed")
+                    return
+                if session_id is not None:
+                    record_mcp_client(session_id, info)
+
+            await run_in_threadpool(_record)
 
         result = {
             "protocolVersion": protocol_version,

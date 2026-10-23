@@ -412,7 +412,10 @@ def get_assist_scan_hosts(
     request: Request,
     state: Optional[str] = Query(
         None, max_length=40,
-        description="Filter on state_at_scan (the observed state, not the current one).",
+        description=(
+            "Filter on state_at_scan (the observed state, not the current one): "
+            "up, down or unknown. Any other value is a 422."
+        ),
     ),
     search: Optional[str] = Query(None, max_length=200, description="Address or hostname at scan"),
     limit: int = Query(100, ge=1, le=1000),

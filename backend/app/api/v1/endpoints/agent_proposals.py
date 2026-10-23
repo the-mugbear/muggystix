@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import check_agent_rate_limit
-from app.api.v1.endpoints.agent_common import load_agent_session, require_project_host
+from app.api.v1.endpoints.agent_common import load_agent_session
 from app.api.v1.endpoints.agent_schemas import AgentRowsPage, agent_page
 from app.db.models_agent import Agent
 from app.db.session import get_db
@@ -126,7 +126,6 @@ def list_evidence(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    require_project_host(db, agent.project_id, host_id)
     rows, total = evidence.list_evidence(
         db, agent.project_id, host_id=host_id, finding_id=finding_id,
         host_test_id=host_test_id, agent_session_id=agent_session_id,
@@ -301,7 +300,7 @@ def propose_observation(
         severity=body.severity, summary=body.summary, rationale=body.rationale,
         evidence_ids=body.evidence_ids, replaces=body.replaces,
     )
-    data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
+    data = proposals.serialize_created(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
     return data
 
@@ -316,7 +315,7 @@ def propose_endpoint_status(
         finding_host_id=body.finding_host_id, host_status=body.host_status,
         rationale=body.rationale, evidence_ids=body.evidence_ids, replaces=body.replaces,
     )
-    data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
+    data = proposals.serialize_created(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
     return data
 
@@ -334,7 +333,7 @@ def propose_subnet_details(
         items=[item.model_dump() for item in body.subnets], rationale=body.rationale,
         evidence_ids=body.evidence_ids, replaces=body.replaces,
     )
-    data = {"proposals": proposals.serialize_many(db, rows)}  # before the commit expires them (N8)
+    data = {"proposals": proposals.serialize_created(db, rows)}  # before the commit expires them (N8)
     db.commit()
     return data
 

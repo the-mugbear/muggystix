@@ -1030,6 +1030,19 @@ export const getMatchingHostIds = async (
 // output, per host.  See backend/app/db/models.py::WebInterface.
 // ---------------------------------------------------------------------------
 
+/** A certificate flag the tool's TLS record states as true (nothing inferred). */
+export type TlsRecordFlag = 'self_signed' | 'expired' | 'hostname_mismatch' | 'wildcard';
+
+export interface TlsRecordSummary {
+  version: string | null;
+  issuer: string | null;
+  subject_cn: string | null;
+  /** The not-after date as the tool wrote it. */
+  not_after: string | null;
+  sans: string[];
+  flags: TlsRecordFlag[];
+}
+
 export interface WebInterface {
   id: number;
   source: string;                 // httpx | eyewitness | nikto
@@ -1049,6 +1062,9 @@ export interface WebInterface {
   /** v5.276.0 — page text EyeWitness captured (first 2,000 characters). */
   page_text?: string | null;
   tls_info?: Record<string, unknown> | null;
+  /** What the tool's TLS record says, read once by the server
+   *  (`cert_fields.tls_summary`; the agents' web interfaces carry the same). */
+  tls_summary?: TlsRecordSummary | null;
   // Typed cert / TLS promotions (surfaced per-port in the host inspector).
   cert_not_after?: string | null;
   cert_self_signed?: boolean | null;

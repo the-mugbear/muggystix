@@ -78,7 +78,7 @@ class VulnCounts(BaseModel):
 
 class HostBrief(BaseModel):
     """Lightweight host summary for list views.  See `HostDetail` for ports."""
-    id: int = Field(..., description="Internal host id; use for /agent/hosts/{host_id} drill-down.")
+    id: int = Field(..., description="Internal host id; use for /agent/assist/hosts/{host_id} drill-down.")
     ip_address: str = Field(..., description="Primary IPv4/IPv6 address.")
     hostname: Optional[str] = Field(None, description="Reverse DNS or scan-derived hostname; null when none was discovered.")
     state: Optional[str] = Field(None, description="'up' or 'down' (lowercase normalised) — null when no scan reported a state.")
@@ -291,17 +291,6 @@ class AssistNamesResponse(AgentPage):
     items: List[AssistNameRow] = Field(default_factory=list)
 
 
-class ProjectInfo(BaseModel):
-    id: int
-    name: str
-    slug: str
-    description: Optional[str] = None
-    status: str
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    agent_name: Optional[str] = None
-
-
 class AgentIdentityOperator(BaseModel):
     id: int
     username: Optional[str] = None
@@ -423,14 +412,6 @@ class ScannerCredentialsResponse(ScannerIntegrationBrief):
         ),
     )
     note: str
-
-
-class AgentDashboard(BaseModel):
-    host_count: int
-    up_host_count: int
-    open_port_count: int
-    scan_count: int
-    last_scan_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------

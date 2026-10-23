@@ -125,8 +125,8 @@ backend/app/
 │       ├── llm_providers.py  # per-user LLM provider credentials
 │       ├── integrations.py   # the installation's scanner integrations (people's routes; no secrets out)
 │       ├── feedback.py       # agent feedback ingest (API-key) + admin triage (JWT)
-│       ├── agent_browse.py        # /agent/* — shared reads, identity,
-│       │                          #   session renew/end, feedback, tool suggestions, host writes
+│       ├── agent_browse.py        # /agent/* — identity, session renew/end, tool suggestions,
+│       │                          #   host writes (the reads are agent_assist's)
 │       ├── host_tests.py          # host tests — ONE router factory mounted twice: /projects/{id}/host-tests (JWT) and /agent/host-tests (key)
 │       ├── remediation.py         # remediation tracking — one router factory, /projects/{id}/remediation (JWT) and /agent/remediation (key);
 │       │                          #   account_router: /remediation-policy (the installation's switch and timelines) and
@@ -206,6 +206,11 @@ backend/app/
 │   │                         # who may edit / delete a finding (FindingActor), report text, promote/dismiss
 │   ├── proposal_service.py, agent_evidence_service.py
 │   │                         # agent proposals (a person accepts/rejects) + evidence records
+│   ├── filter_targets.py     # a list filter naming a host / finding / test / session not in the
+│   │                         # project is a 404 — called by the evidence and findings services
+│   ├── host_access_service.py, cert_fields.py
+│   │                         # NetExec / SMBMap rows and the TLS-record summary — one read each
+│   │                         # for the host inspector and the agents
 │   ├── scanner_observation_service.py, vuln_identity.py, misconfig_checks.py, misconfig_backfill.py
 │   │                         # scanner rows grouped by issue (issue_key / check_id), bulk
 │   │                         # promote; the weakness catalog and its backfill
@@ -399,7 +404,7 @@ Parsed hosts flow through `host_deduplication_service` (dedupe by IP within proj
 
 ## 5. Host tests + agent workflow
 
-Agent-assisted testing is recorded as **host tests** and **evidence records**: what was proposed for a host, and what was actually run against it. The `/api/v1/agent/*` surface is split into routers by KIND OF WORK — `agent_browse` (shared reads, identity, session lifecycle), `host_tests` (its agent router), `agent_proposals` (evidence + proposals), `agent_recon` (scope reads + uploads), `agent_assist` (plus `agent_browse.renewal_router` and the agent feedback router; `agent_activity` is the JWT viewer of the call log, not part of this surface) — but since v2.337.0 that split is code organisation, not authorization: **one project-scoped session and key reaches all of them** (§2.2). There is no required order and no approval step (v2.433.0): the operator drives, and the agent works within the operator's project role.
+Agent-assisted testing is recorded as **host tests** and **evidence records**: what was proposed for a host, and what was actually run against it. The `/api/v1/agent/*` surface is split into routers by KIND OF WORK — `agent_browse` (identity, session lifecycle, host writes), `host_tests` (its agent router), `agent_proposals` (evidence + proposals), `agent_recon` (scope reads + uploads), `agent_assist` (plus `agent_browse.renewal_router` and the agent feedback router; `agent_activity` is the JWT viewer of the call log, not part of this surface) — but since v2.337.0 that split is code organisation, not authorization: **one project-scoped session and key reaches all of them** (§2.2). There is no required order and no approval step (v2.433.0): the operator drives, and the agent works within the operator's project role.
 
 ### 5.1 Host tests
 

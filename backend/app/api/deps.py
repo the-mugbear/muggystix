@@ -420,6 +420,43 @@ def _issued_before_password_change(ctx: _AgentKeyContext) -> bool:
     return issued is not None and changed is not None and issued < changed
 
 
+def agent_key_may_act(ctx: Optional[_AgentKeyContext]) -> bool:
+    """Would the gate let this key act at all? — the yes / no of
+    :func:`get_current_agent` and :func:`enforce_agent_operator_access` for a
+    caller that records something about the session and must not do it for a
+    key the gate refuses (the MCP ``initialize``'s client name; review
+    2026-10-23b, AGT-8: it renamed the session for an expired key, one issued
+    before a password change, or one whose operator had left).  The same
+    predicates the gate uses, nothing of its own; the project's archive state
+    is left out, as for a session-metadata write."""
+    if ctx is None or ctx.session is None:
+        return False
+    if _key_expired(ctx.api_key) or ctx.session.status != "active":
+        return False
+    if ctx.session.project_id != ctx.agent.project_id:
+        return False
+    if _issued_before_password_change(ctx):
+        return False
+    if ctx.operator_id is None or not ctx.operator_active:
+        return False
+    return ctx.operator_is_admin or ctx.membership_role is not None
+
+
+def live_agent_session_id(token: Optional[str]) -> Optional[int]:
+    """The session id of a key :func:`agent_key_may_act` accepts, else None —
+    on a database session of its own (``initialize`` runs outside the gate)."""
+    if not token:
+        return None
+    from app.db import session as _session_module
+
+    db = _session_module.SessionLocal()
+    try:
+        ctx = _load_agent_key(db, token)
+        return ctx.session.id if agent_key_may_act(ctx) else None
+    finally:
+        db.close()
+
+
 _CREDENTIALS_CHANGED_DETAIL = {
     "error": "operator_credentials_changed",
     "recoverable": False,

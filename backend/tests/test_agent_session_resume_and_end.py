@@ -173,8 +173,10 @@ def test_resume_rotates_the_key_on_the_same_session(client, test_project, db_ses
     ev = client.get("/api/v1/agent/evidence", headers=_hdr(new_key),
                     params={"agent_session_id": sid}).json()
     assert [e["id"] for e in ev["items"]] == [evidence_id]
+    # A session that is not this project's is a 404, not "no evidence"
+    # (review 2026-10-23b, AGT-3).
     assert client.get("/api/v1/agent/evidence", headers=_hdr(new_key),
-                      params={"agent_session_id": sid + 999}).json()["total"] == 0
+                      params={"agent_session_id": sid + 999}).status_code == 404
 
     # Exactly one live key on the session, and the session record says why.
     live = (

@@ -113,8 +113,15 @@ def scan_host_snapshots(
     Every field is read from the observation tables (``HostScanHistory``,
     ``PortScanHistory``), so the response is stable: re-running it after later
     scans, or after a port is remediated, returns the same thing.  Raises
-    ``ScanNotInProject`` when the scan is not one of this project's.
+    ``ScanNotInProject`` when the scan is not one of this project's, and a 422
+    naming a ``state`` that is not a host state — for both doors (the scan
+    page and ``/agent/assist/scans/{id}/hosts``): ``alive`` read as "the scan
+    saw no host up" (review 2026-10-23b, AGT-2).
     """
+    from app.services.host_query import check_discrete_filters
+
+    check_discrete_filters(state=state)
+    state = state.strip() if state and state.strip() else None
     scan = db.query(models.Scan).filter(
         models.Scan.id == scan_id,
         models.Scan.project_id == project_id,

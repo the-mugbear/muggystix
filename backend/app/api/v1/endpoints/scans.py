@@ -2163,7 +2163,11 @@ def get_scan_command_explanation(
 def get_scan_host_snapshots(
     scan_id: int,
     state: Optional[str] = Query(
-        None, description="Filter on state_at_scan (the observed state, not the current one).",
+        None, max_length=40,
+        description=(
+            "Filter on state_at_scan (the observed state, not the current one): "
+            "up, down or unknown. Any other value is a 422."
+        ),
     ),
     search: Optional[str] = Query(None, max_length=200),
     skip: int = Query(0, ge=0),

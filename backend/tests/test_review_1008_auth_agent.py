@@ -200,15 +200,20 @@ def test_agent_scans_refuses_a_created_after_it_cannot_read(client, db_session, 
     db_session.commit()
     headers = {"X-API-Key": raw}
 
-    bad = client.get("/api/v1/agent/scans", params={"created_after": "yesterday"}, headers=headers)
+    # (`/agent/scans` took it until review 2026-10-23b, AGT-4; the assist list
+    # took it over, through the Scans page's own filter.)
+    bad = client.get("/api/v1/agent/assist/scans", params={"created_after": "yesterday"}, headers=headers)
     assert bad.status_code == 422, bad.text
     assert "yesterday" in bad.json()["detail"] and "created_after" in bad.json()["detail"]
 
     good = client.get(
-        "/api/v1/agent/scans", params={"created_after": "2000-01-01T00:00:00Z"}, headers=headers,
+        "/api/v1/agent/assist/scans", params={"created_after": "2000-01-01T00:00:00Z"}, headers=headers,
     )
-    assert good.status_code == 200 and len(good.json()) == 1
-    assert len(client.get("/api/v1/agent/scans", headers=headers).json()) == 1
+    assert good.status_code == 200 and good.json()["total"] == 1
+    assert client.get(
+        "/api/v1/agent/assist/scans", params={"created_after": "2999-01-01"}, headers=headers,
+    ).json()["total"] == 0
+    assert client.get("/api/v1/agent/assist/scans", headers=headers).json()["total"] == 1
 
 
 @pytest.mark.parametrize("name", ["ports", "services", "subnets"])
@@ -218,7 +223,7 @@ def test_agent_hosts_refuses_a_list_filter_that_names_nothing(client, db_session
     db_session.add(models.Host(project_id=test_project.id, ip_address="10.91.0.1", state="up"))
     db_session.commit()
 
-    resp = client.get("/api/v1/agent/hosts", params={name: " , "}, headers={"X-API-Key": raw})
+    resp = client.get("/api/v1/agent/assist/hosts", params={name: " , "}, headers={"X-API-Key": raw})
     assert resp.status_code == 422, resp.text
     assert name in resp.json()["detail"]
 
