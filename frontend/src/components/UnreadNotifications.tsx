@@ -17,6 +17,9 @@ import {
   type NotificationItem, type NotificationListResponse,
 } from '../services/api';
 import { invalidateReads } from '../lib/query';
+import { isCrossProjectPath, useProject } from '../contexts/ProjectContext';
+import { useToast } from '../contexts/ToastContext';
+import { useOpenInProject } from '../hooks/useOpenInProject';
 import { cn } from '../utils/cn';
 import { notificationHref } from '../utils/notificationLinks';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -29,6 +32,11 @@ export const UNREAD_LIMIT = 50;
 export const UNREAD_KEY = ['getNotifications', true, UNREAD_LIMIT] as const;
 
 const NO_NOTIFICATIONS: NotificationItem[] = [];
+
+/** Said when a notification's project is not in the reader's list. */
+export const NOT_A_MEMBER =
+  'This notification is about a project you can no longer open (you are not a member of it, or it was archived). '
+  + 'It stays in your list until you mark it read.';
 
 /** "60 unread notifications" — the server's total, never the preview's
  *  length; and how many are shown when that is fewer. */
@@ -75,12 +83,27 @@ export const useUnreadNotifications = (enabled = true) => {
     onSettled: bellChanged,
   });
 
-  // Open a notification's source: mark it read, then deep-link by kind.
+  // Open a notification's source: mark it read, then deep-link by kind — in
+  // the notification's OWN project (review 2026-10-23, H-FE1: the links name
+  // no project, so one from project B opened in A as "Finding not found", or
+  // as A's list, and was gone).  A cross-project page (a remediation alert's
+  // deadlines list) and the installation's alerts need no switch.  A project
+  // the reader cannot open any more is said, and the notification stays.
+  const { openInProject } = useOpenInProject();
+  const toast = useToast();
   const open = useCallback((n: NotificationItem) => {
-    dismiss(n.id);
     const to = notificationHref(n);
+    if (to && n.project_id != null && !isCrossProjectPath(to)) {
+      if (!openInProject(n.project_id, to)) {
+        toast.warning(NOT_A_MEMBER);
+        return;
+      }
+      dismiss(n.id);
+      return;
+    }
+    dismiss(n.id);
     if (to) navigate(to);
-  }, [dismiss, navigate]);
+  }, [dismiss, navigate, openInProject, toast]);
 
   return {
     notifications: query.data?.notifications ?? NO_NOTIFICATIONS,
@@ -137,39 +160,53 @@ export const NotificationRows: React.FC<{
   /** A narrow place (the bell's panel): a title runs to a second line
    *  instead of being cut before it has said what it is about. */
   wrap?: boolean;
-}> = ({ notifications, onOpen, wrap = false }) => (
-  <ul className="divide-y divide-border/60">
-    {notifications.map((n) => (
-      <li key={n.id}>
-        <button
-          type="button"
-          onClick={() => onOpen(n)}
-          className={cn(
-            'flex w-full min-w-0 items-start gap-sm rounded-control py-xs text-left',
-            'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          )}
-        >
-          <Badge variant={n.type === 'mention' ? 'info' : 'muted'} className="mt-xxs shrink-0">
-            {n.type === 'mention' ? 'mention' : n.type.replace('_', ' ')}
-          </Badge>
-          <span className="min-w-0 flex-1">
-            <span className={cn('text-metadata font-medium', wrap ? 'line-clamp-2 break-words' : 'block truncate')}
-              title={n.title}>
-              {n.title}
-            </span>
-            {n.body && (
-              <span className={cn('break-words text-caption text-muted-foreground', wrap ? 'line-clamp-2' : 'line-clamp-1')}>
-                {n.body}
-              </span>
+}> = ({ notifications, onOpen, wrap = false }) => {
+  const { projects, currentProject } = useProject();
+  /** The project a row is about, named when it is not the selected one. */
+  const otherProject = (n: NotificationItem): string | null => {
+    if (n.project_id == null || n.project_id === currentProject?.id) return null;
+    return projects.find((p) => p.id === n.project_id)?.name ?? 'another project';
+  };
+  return (
+    <ul className="divide-y divide-border/60">
+      {notifications.map((n) => {
+        const elsewhere = otherProject(n);
+        return (<li key={n.id}>
+          <button
+            type="button"
+            onClick={() => onOpen(n)}
+            className={cn(
+              'flex w-full min-w-0 items-start gap-sm rounded-control py-xs text-left',
+              'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
-          </span>
-          {/* Short age, a date past a month ("412d ago" says less than the date). */}
-          <span className="shrink-0 text-caption text-muted-foreground">
-            {formatRelativeTime(n.created_at, { absoluteAfterDays: 30 })}
-          </span>
-          <ArrowRight className="mt-xxs size-4 shrink-0 text-muted-foreground" aria-hidden />
-        </button>
-      </li>
-    ))}
-  </ul>
-);
+          >
+            <Badge variant={n.type === 'mention' ? 'info' : 'muted'} className="mt-xxs shrink-0">
+              {n.type === 'mention' ? 'mention' : n.type.replace('_', ' ')}
+            </Badge>
+            <span className="min-w-0 flex-1">
+              <span className={cn('text-metadata font-medium', wrap ? 'line-clamp-2 break-words' : 'block truncate')}
+                title={n.title}>
+                {n.title}
+              </span>
+              {n.body && (
+                <span className={cn('break-words text-caption text-muted-foreground', wrap ? 'line-clamp-2' : 'line-clamp-1')}>
+                  {n.body}
+                </span>
+              )}
+              {elsewhere && (
+                <span className="block truncate text-caption text-muted-foreground" title={elsewhere}>
+                  In {elsewhere}
+                </span>
+              )}
+            </span>
+            {/* Short age, a date past a month ("412d ago" says less than the date). */}
+            <span className="shrink-0 text-caption text-muted-foreground">
+              {formatRelativeTime(n.created_at, { absoluteAfterDays: 30 })}
+            </span>
+            <ArrowRight className="mt-xxs size-4 shrink-0 text-muted-foreground" aria-hidden />
+          </button>
+        </li>);
+      })}
+    </ul>
+  );
+};

@@ -22,7 +22,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Clock, RefreshCw, Search, ExternalLink, AlertTriangle, Info } from 'lucide-react';
 import {
   ActivityItem,
@@ -62,6 +62,7 @@ import { formatTimestamp } from '../utils/relativeTime';
 import { ActivityHistogram } from '../components/ActivityHistogram';
 import { PostureSection, SectionCount } from '../components/posture/PostureSection';
 import { useProject } from '../contexts/ProjectContext';
+import { useOpenInProject } from '../hooks/useOpenInProject';
 
 // v4.21.0 — finer-grained tolerance steps so the analyst can ramp from
 // "exact moment" to "general hour" without skipping a useful range.
@@ -339,8 +340,8 @@ const pastWeek = (filters: AttributionFilters) => {
 };
 
 export const ToolActivity: React.FC = () => {
-  const navigate = useNavigate();
-  const { projects, currentProject, selectProject } = useProject();
+  const { projects, currentProject } = useProject();
+  const { openInProject } = useOpenInProject();
 
   // v4.27.0 — /tool-activity is cross-project by design, and makes no
   // project-scoped request itself (`getScansAt` / `getScansBetween` answer
@@ -350,16 +351,12 @@ export const ToolActivity: React.FC = () => {
   // would target the WRONG project's resource id (404 or, worse,
   // silently load a foreign id that happens to exist).  Switch first,
   // then navigate: the selection and the navigation are one update, so
-  // the destination page renders — and asks — with the row's project.
+  // the destination page renders — and asks — with the row's project
+  // (`useOpenInProject`; a row of a project not in the reader's list opens
+  // nothing rather than another project's page).
   const navigateToItem = useCallback(
-    (item: ActivityItem) => {
-      if (item.project_id !== currentProject?.id) {
-        const target = projects.find((p) => p.id === item.project_id);
-        if (target) selectProject(target);
-      }
-      navigate(deepLinkFor(item));
-    },
-    [currentProject?.id, navigate, projects, selectProject],
+    (item: ActivityItem) => { openInProject(item.project_id, deepLinkFor(item)); },
+    [openInProject],
   );
 
   // B15 — the query lives in the URL, so "what ran at 14:32" can be shared

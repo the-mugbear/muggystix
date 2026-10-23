@@ -40,6 +40,14 @@ const CROSS_PROJECT_ROUTES: RegExp[] = [
   /^\/portfolio(\/|$)/, /^\/oversight(\/|$)/, /^\/tool-activity(\/|$)/, /^\/remediation-deadlines(\/|$)/,
 ];
 
+/** Whether a page spans every project (its own query names the project, if
+ *  any), so opening it needs no project switch.  Takes a path, with or
+ *  without its query. */
+export function isCrossProjectPath(to: string): boolean {
+  const pathname = to.split(/[?#]/, 1)[0];
+  return CROSS_PROJECT_ROUTES.some((re) => re.test(pathname));
+}
+
 /** Where to send the operator after switching projects, or null to stay put.
  *  Resource pages go to /operations (their id belongs to the old project).
  *  Project-wide pages keep their path but drop the query string: Hosts,
@@ -50,7 +58,7 @@ const CROSS_PROJECT_ROUTES: RegExp[] = [
  *  project's own saved filters (per-project session storage). */
 export function locationAfterProjectSwitch(pathname: string, search: string): string | null {
   if (isProjectScopedResourceRoute(pathname)) return '/operations';
-  if (search && !CROSS_PROJECT_ROUTES.some((re) => re.test(pathname))) return pathname;
+  if (search && !isCrossProjectPath(pathname)) return pathname;
   return null;
 }
 

@@ -1015,7 +1015,11 @@ From the codebase review of 2026-10-07 (5.339.0).
   members" or an empty list. Project members come from the one cached loader,
   `hooks/useProjectMembers` (`useProjectRoster` → `{members, status, retry}`);
   `components/MembersLoadError` is the message. Do not call
-  `listProjectMembers()` from a page.
+  `listProjectMembers()` from a page: a screen that needs the query itself
+  (Project settings, Portfolio's members sheet, the admins' memberships
+  dialog) spreads the hook's `projectMembersQuery(projectId)` — one key, one
+  request, one shape — adding `staleTime: 0` where it changes members
+  (`tests/projectMembersOneLoader.test.ts`).
 - **A count that could not be read is not another filter's count.** When a
   summary request fails, its numbers are cleared and the page says they could
   not be counted (Scans); the previous filter's figures never stay on screen.
@@ -1343,6 +1347,14 @@ const save = useMutation({
   `queryFn` uses.  Data that is not one project's — the project list, users,
   installation settings, Oversight, Portfolio — has no project in its key and
   needs no marker: `['getProjects']`.
+- **A link to another project's page switches project first** —
+  `hooks/useOpenInProject` (`openInProject(projectId, to)`): a project page
+  takes its project from the selection, never from the link, so a row of a
+  cross-project page (Tool activity, Remediation deadlines) or a notification
+  of another project selects that project and then navigates, in one update.
+  A project not in the reader's list (no longer a member, archived) opens
+  nothing: the row stays text, or the reader is told and the notification
+  stays unread.  A notification row of another project names it ("In Beta").
 - **An async completion keeps the identity it started with — by
   construction.**  The `projectId` in a closure is the one the component
   rendered with: a save that answers after the reader switched project

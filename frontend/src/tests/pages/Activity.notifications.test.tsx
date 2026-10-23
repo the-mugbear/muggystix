@@ -18,7 +18,6 @@ const getNotifications = vi.fn();
 vi.mock('../../services/api', () => ({
   getNoteActivity: vi.fn().mockResolvedValue({ notes: [], total_notes: 0, status_counts: {}, authors: [] }),
   getFindingDiscussions: vi.fn().mockResolvedValue({ items: [], total: 0 }),
-  markActivitySeen: vi.fn().mockResolvedValue(undefined),
   getNotifications: (...a: unknown[]) => getNotifications(...a),
   markNotificationsRead: vi.fn().mockResolvedValue(1),
   markAllNotificationsRead: vi.fn().mockResolvedValue(0),

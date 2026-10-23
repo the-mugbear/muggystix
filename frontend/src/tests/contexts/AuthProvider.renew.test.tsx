@@ -4,7 +4,7 @@
  * that ended, or was replaced, while the request was away.
  */
 import React from 'react';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +18,8 @@ vi.mock('../../contexts/AuthContext', async () =>
   vi.importActual<typeof import('../../contexts/AuthContext')>('../../contexts/AuthContext'));
 
 import { AuthProvider, useAuth } from '../../contexts/AuthContext';
+import { createQueryClient } from '../../lib/query';
+import { heldByMutations, withClient } from '../helpers/heldByMutations';
 
 const ADMIN = { id: 1, username: 'admin', role: 'admin' };
 
@@ -106,6 +108,18 @@ describe('AuthProvider — renewing the session', () => {
     });
 
     expect(localStorage.getItem('auth_token')).toBe(storedMeanwhile);
+  });
+
+  it('the mutation cache does not keep the renewed token (SECRET_MUTATION; review 2026-10-23)', async () => {
+    apiPost.mockResolvedValue({ data: { access_token: 'renewed-secret-token' } });
+    const client = createQueryClient();
+    render(<MemoryRouter><AuthProvider><Probe /></AuthProvider></MemoryRouter>, { wrapper: withClient(client) });
+    expect(await screen.findByText('token: first-token')).toBeInTheDocument();
+
+    await act(async () => { await renew(); });
+
+    expect(localStorage.getItem('auth_token')).toBe('renewed-secret-token');
+    await waitFor(() => expect(heldByMutations(client)).not.toContain('renewed-secret-token'));
   });
 
   it('a renewal that fails leaves the session as it was and can be asked for again', async () => {

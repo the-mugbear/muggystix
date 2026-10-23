@@ -387,7 +387,9 @@ const ScanDetail: React.FC = () => {
                     <p className="text-caption text-muted-foreground">
                       {hostView === 'as_scanned'
                         ? 'What this scan observed. Does not change as later scans run.'
-                        : 'These hosts as they are today — later scans and remediation included.'}
+                        // Neutral on purpose: with remediation tracking off
+                        // nothing about remediation is shown (review 2026-10-23).
+                        : 'These hosts as they are today — later scans included.'}
                     </p>
                   </div>
                   {listState(hostView === 'as_scanned' ? snapshotList : currentList)}

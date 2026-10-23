@@ -11,7 +11,6 @@ import { toast } from 'sonner';
 
 import {
   ProjectMember,
-  listProjectMembers,
   getUserDirectory,
   addProjectMember,
   updateProjectMemberRole,
@@ -33,6 +32,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from './ui/select';
 import { useConfirm } from '../hooks/useConfirm';
+import { NO_PROJECT } from '../hooks/useProjectId';
+import { projectMembersQuery } from '../hooks/useProjectMembers';
 import { useAuth } from '../contexts/AuthContext';
 import {
   DEFAULT_MEMBER_ROLE, PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
@@ -61,10 +62,12 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   const [addRole, setAddRole] = React.useState<string>(DEFAULT_MEMBER_ROLE);
 
   // The project is this sheet's argument (any project on Portfolio), not the
-  // one the app is in: the key names the project it was given.
+  // one the app is in: the key names the project it was given.  The roster's
+  // one query (`projectMembersQuery`); a screen that changes members reads it
+  // afresh when it opens (`staleTime: 0`) instead of the pickers' remembered copy.
   const roster = useQuery({
-    queryKey: ['listProjectMembers', projectId],
-    queryFn: ({ signal }) => listProjectMembers(projectId as number, signal),
+    ...projectMembersQuery(projectId ?? NO_PROJECT),
+    staleTime: 0,
     enabled: open && projectId != null,
   });
   // The picker is optional: asked for once the roster is there, and a failure

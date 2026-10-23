@@ -25,12 +25,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import {
-  addProjectMember, getProjects, getUserMemberships, listProjectMembers, removeProjectMember,
+  addProjectMember, getProjects, getUserMemberships, removeProjectMember,
   updateProjectMemberRole, type UserProjectMembership,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateReads, queryErrorText } from '../lib/query';
+import { projectMembersQuery } from '../hooks/useProjectMembers';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -181,9 +182,10 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
     let adminCount = 0;
     if (row.role === 'admin') {
       try {
+        // The roster's one query, asked afresh: a remembered copy could
+        // miss an admin added or removed meanwhile.
         const roster = await queryClient.fetchQuery({
-          queryKey: ['listProjectMembers', row.project_id],
-          queryFn: ({ signal }) => listProjectMembers(row.project_id, signal),
+          ...projectMembersQuery(row.project_id), staleTime: 0,
         });
         adminCount = countProjectAdmins(roster);
       } catch (err) {

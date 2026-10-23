@@ -727,10 +727,6 @@ export const getNoteActivity = async (projectId: number, params?: {
   return response.data;
 };
 
-export const markActivitySeen = async (projectId: number): Promise<void> => {
-  await api.post(`${projectPath(projectId)}/hosts/notes/mark-seen`);
-};
-
 // Hosts API
 export const getHosts = async (projectId: number, params: {
   scan_id?: number;

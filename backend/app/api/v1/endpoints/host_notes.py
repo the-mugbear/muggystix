@@ -1,7 +1,6 @@
 """Host notes CRUD endpoints."""
 
 import logging
-from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from fastapi.responses import FileResponse
@@ -20,7 +19,7 @@ from app.services.note_attachment_service import (
 from app.db.session import get_db
 from app.db import models
 from app.services.note_activity_service import project_notes_page
-from app.db.models import Annotation as AnnotationModel, ActivityCursor
+from app.db.models import Annotation as AnnotationModel
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
@@ -38,66 +37,8 @@ from app.services.host_follow_service import (
 # CR4-2 — serializer moved to the service layer (was defined here and
 # imported back by host_serialization, a service -> router dependency).
 from app.services.host_serialization import _serialize_note
-from app.db.cursor_upsert import upsert_user_project_cursor
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-
-@router.get(
-    "/notes/unread-count",
-    summary="Count notes from teammates since last activity-page visit",
-)
-def get_unread_activity_count(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Count notes by teammates since the caller last marked THIS project's
-    activity feed seen.  RV-6 — the cursor is per (user, project), so a
-    visit to one project no longer hides unread activity in another."""
-    cursor = (
-        db.query(ActivityCursor)
-        .filter(
-            ActivityCursor.user_id == current_user.id,
-            ActivityCursor.project_id == project.id,
-        )
-        .first()
-    )
-    last_seen = cursor.last_seen_at if cursor else None
-    query = db.query(func.count(AnnotationModel.id)).join(
-        models.Host, AnnotationModel.host_id == models.Host.id
-    ).filter(
-        models.Host.project_id == project.id,
-        # Always exclude the caller's own notes from the unread count.
-        AnnotationModel.user_id != current_user.id,
-    )
-    if last_seen:
-        query = query.filter(
-            func.coalesce(AnnotationModel.updated_at, AnnotationModel.created_at) > last_seen
-        )
-    count = query.scalar() or 0
-    return {"unread_count": count}
-
-
-@router.post(
-    "/notes/mark-seen",
-    status_code=204,
-    summary="Mark this project's activity feed seen (per-user/project cursor)",
-)
-def mark_activity_seen(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Advance the caller's Activity cursor for THIS project only (RV-6)."""
-    now = datetime.now(timezone.utc)
-    # Race-safe upsert (review #9).
-    upsert_user_project_cursor(
-        db, ActivityCursor,
-        user_id=current_user.id, project_id=project.id,
-        ts_column="last_seen_at", ts_value=now,
-    )
-    return Response(status_code=204)
 
 
 @router.get(

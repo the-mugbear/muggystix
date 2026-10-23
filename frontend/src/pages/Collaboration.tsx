@@ -19,11 +19,12 @@
  * finding's status.
  *
  * Behaviour kept: search (debounced), the author filter, paging via
- * Load more, the since-last-visit cursor (markActivitySeen on mount), and the
- * unread notifications panel with the ?mentions=mine deep link.
+ * Load more, and the unread notifications panel with the ?mentions=mine deep
+ * link.  Opening the page writes nothing (review 2026-10-23: the "seen" cursor
+ * it posted on mount had no reader and went, with its routes and table).
  */
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { MessageSquare, Bell, Paperclip, RefreshCw, Loader2 } from 'lucide-react';
 import {
@@ -33,7 +34,6 @@ import {
   NoteActivityItem,
   NoteActivityAuthor,
   NoteActivityResponse,
-  markActivitySeen,
 } from '../services/api';
 import { NotificationRows, unreadHeading, useUnreadNotifications } from '../components/UnreadNotifications';
 import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
@@ -232,11 +232,6 @@ const Activity: React.FC = () => {
       node.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
   }, [mentionsFilter, unreadNotifications.length, mentionsDismissed]);
-
-  // Opening the page marks the activity FEED seen (the "since last visit"
-  // cursor) — once, whatever comes of it.
-  const { mutate: markSeen } = useMutation({ mutationFn: () => markActivitySeen(projectId) });
-  useEffect(() => { markSeen(); }, [markSeen]);
 
   const threadGroups = useMemo<NoteThreadGroup[]>(() => {
     const grouped = new Map<string, NoteActivityItem[]>();

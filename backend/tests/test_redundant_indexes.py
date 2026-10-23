@@ -91,5 +91,9 @@ def test_the_revision_drops_what_the_models_no_longer_declare():
     dropped = module.dropped()
     assert len(dropped) == 100
     for name, table, _column in dropped:
+        if table not in models.Base.metadata.tables:
+            # A table dropped since (``activity_cursors``, 7b83a791a783):
+            # no model, so nothing can bring its index back.
+            continue
         declared = {index.name for index in models.Base.metadata.tables[table].indexes}
         assert name not in declared, (table, name)

@@ -1,6 +1,6 @@
 """Race-safe per-(user, project) cursor upsert (review #9).
 
-Two first-time ``mark-seen`` requests (across tabs/devices) can both observe
+Two first-time cursor writes (across tabs/devices) can both observe
 no cursor row, then one violates the ``(user_id, project_id)`` unique
 constraint.  This does an atomic upsert instead: PostgreSQL ``INSERT … ON
 CONFLICT DO UPDATE``; on other backends (the SQLite test fallback) a
