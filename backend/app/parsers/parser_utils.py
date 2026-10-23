@@ -23,7 +23,6 @@ from app.db.models_vulnerability import (
 )
 from app.services import scan_sightings
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.services.subnet_correlation import SubnetCorrelationService
 
 
 IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -568,10 +567,6 @@ def _persist_host_observation_inner(
         port_map[(persisted.port_number, persisted.protocol)] = persisted
 
     return host, port_map
-
-
-def correlate_scan(db: Session, scan_id: int) -> None:
-    SubnetCorrelationService(db).batch_correlate_scan_hosts_to_subnets(scan_id)
 
 
 class HostObservation(NamedTuple):

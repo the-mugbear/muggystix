@@ -710,13 +710,15 @@ class MyToolParser:
             scan_type="port_scan", project_id=self._project_id,
         )
         # ... read file_path, build hosts/ports/findings, persist ...
-        correlate_scan(self.db, scan.id)   # map new hosts to scopes/subnets
         return scan
 ```
 
 - **Constructor** takes the DB session; **`parse_file(file_path, filename,
   **kwargs)`** returns the `Scan` (read `project_id` from `kwargs`).
-- **The orchestrator** commits, tags `project_id`, backfills `command_line`.
+- **The orchestrator** commits, tags `project_id`, backfills `command_line`,
+  then correlates the scan's hosts to the scope subnets
+  (`ingestion_service.correlate_imported_hosts`, best effort, once for every
+  format — a parser never correlates; review 2026-10-23b, ING-5).
   Many parsers also commit themselves (in batches for memory, or before a pass
   that needs committed rows, as rdap's `correlate_hosts`); `grep db.commit
   app/parsers` for the current set. A committing parser writes part of a scan
@@ -738,6 +740,13 @@ class MyToolParser:
   skipped record — in every parser. `retry_races=True` writes the record once
   more after an `IntegrityError` or a deadlock (40P01), for a `write` that
   may run twice (nmap; a lost race with another import of the project).
+  The services an import writes through use the same helper: the Nessus
+  path's host attributes, informational ports and each retried finding, and
+  the dedup service's name observations (review 2026-10-23b, ING-8); a Nessus
+  batch that is retried finding by finding holds `record_savepoint`. The
+  only other savepoints there are the dedup service's two concurrent-insert
+  ones in `find_or_create_host` / `find_or_create_port`
+  (`test_parsers_isolate_records_one_way.py` refuses any other).
   Since 2.515.0 NetExec (per host), Nikto (per finding), RustScan, SMBMap and
   BloodHound (per host) do too: one record the database refuses is skipped
   and counted, the import completes partial, and only a file whose every
@@ -967,9 +976,8 @@ class MyToolParser:
   map misses is looked up once (another spelling, `HostDeduplicationService
   .host_address`; or a host another import added since), and a new host is
   stored under `normalize_ip`'s spelling (review 2026-10-22, B1-2).
-  `resolve_port_cached` memoizes ports per file.
-- `correlate_scan(db, scan_id)` — map newly-seen hosts to scopes/subnets
-  (call once at the end).
+  `resolve_port_cached` memoizes ports per file, keyed on `(host, port,
+  protocol)`.
 
 `app/parsers/streaming_json.py` → `iter_json_records(file_path, *, array_keys=(),
 tool_label="JSON")` streams `.json` arrays, single objects, and `.jsonl` /

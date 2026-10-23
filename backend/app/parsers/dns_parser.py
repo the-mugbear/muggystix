@@ -8,7 +8,6 @@ from app.parsers.parser_utils import (
     ProjectHostsByAddress,
     ScanHostObservations,
     announce_scan,
-    correlate_scan,
     dns_import_summary,
     open_tool_lines,
     record_addressed_hosts,
@@ -214,12 +213,6 @@ class DNSParser:
                 f"(record_type, name, address) rows."
             )
 
-        # Persist parsed DNS rows + hosts BEFORE correlation.  Correlation
-        # can poison the session on a transient error; committing first means
-        # a correlation hiccup can't roll back an otherwise-good import, and
-        # the swallowed-exception path no longer leaves a pending rollback
-        # that turns the trailing commit into PendingRollbackError.  Matches
-        # the masscan/nmap ordering.
         self.db.commit()
 
         hosts_created = len(created_host_ids)
@@ -228,15 +221,6 @@ class DNSParser:
         # The set that set ``hostname_changed`` — one source for the sentence
         # and the Scans figure.
         hosts_renamed = len(self._observed.renamed_host_ids - created_host_ids)
-
-        # Correlate hosts to subnets
-        if hosts_created > 0:
-            try:
-                correlate_scan(self.db, scan.id)
-                self.db.commit()
-            except Exception as e:
-                self.db.rollback()
-                logger.warning(f"Failed to correlate hosts to subnets for scan {scan.id}: {str(e)}")
 
         # A mixed file's rejected rows are reported on the import, not only
         # logged: a clean-looking job must not hide half a zone.

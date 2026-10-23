@@ -29,7 +29,6 @@ from app.parsers.streaming_json import iter_json_records
 from app.parsers.parser_utils import (
     ProgressBeat,
     beat_while_reading,
-    correlate_scan,
     ensure_scan,
     normalize_ip,
     persist_host_observation,
@@ -162,7 +161,6 @@ class DirBusterParser:
                 "summary": f"{len(hosts)} web service{'s' if len(hosts) != 1 else ''}",
                 "partial": True,
             }
-        correlate_scan(self.db, scan.id)
         return scan
 
     def _bind_named_targets(

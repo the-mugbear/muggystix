@@ -13,7 +13,7 @@ from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.netexec_parser import writable_share
 from app.services.misconfig_checks import record_misconfig
 from app.parsers.parser_utils import (
-    ProgressBeat, beat_while_reading, correlate_scan, extract_first_ip, ensure_scan,
+    ProgressBeat, beat_while_reading, extract_first_ip, ensure_scan,
     persist_host_observation, without_nul, write_record,
 )
 from app.parsers.streaming_json import iter_json_records
@@ -158,7 +158,6 @@ class SMBMapParser:
                 logger.warning("SMBMap: skipping host %s: %s", ip_address, outcome.error)
                 skipped += 1
 
-        correlate_scan(self.db, scan.id)
         self.last_parse_stats = {
             "skipped": skipped,
             "warnings": None,

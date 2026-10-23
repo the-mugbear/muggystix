@@ -19,7 +19,6 @@ from app.parsers.parser_utils import (
     ProgressBeat,
     ScanClock,
     without_nul,
-    correlate_scan,
     ensure_scan,
     extract_first_ip,
     map_text_severity,
@@ -132,7 +131,6 @@ class NiktoParser:
             self._parse_text(file_path, scan)
 
         self._clock.apply(scan)
-        correlate_scan(self.db, scan.id)
         self.last_parse_stats = {
             "skipped": self._skipped,
             "warnings": (f"{self._skipped} finding(s) could not be written and were skipped"

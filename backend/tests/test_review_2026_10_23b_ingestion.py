@@ -269,6 +269,93 @@ def test_a_later_line_naming_the_service_is_not_dropped(db_session, test_project
 
 
 # ---------------------------------------------------------------------------
+# ING-5 — every import's hosts are correlated, by the dispatcher, once
+# ---------------------------------------------------------------------------
+
+def _every_import_case():
+    from tests.test_every_import_records_the_hosts_it_touches import CASES
+    return sorted(CASES)
+
+
+@pytest.mark.parametrize("file_type", _every_import_case())
+def test_every_import_correlates_the_hosts_it_recorded(db_session, test_project, tmp_path, monkeypatch, file_type):
+    """The rule the parsers each kept (about 20 copies, some only when they
+    created a host, one never until 2.342.0) is now the dispatcher's: every
+    host an import recorded is mapped to the scope subnets that contain it."""
+    from app.core.config import settings
+    from tests.test_every_import_records_the_hosts_it_touches import CASES, _import
+
+    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path / "uploads"))
+    pid = test_project.id
+    scope = models.Scope(project_id=pid)
+    db_session.add(scope)
+    db_session.flush()
+    db_session.add_all([models.Subnet(scope_id=scope.id, cidr="0.0.0.0/0"),
+                        models.Subnet(scope_id=scope.id, cidr="::/0")])
+    db_session.commit()
+
+    scan_id = _import(db_session, pid, tmp_path, file_type, CASES[file_type])
+    recorded = {
+        host_id for (host_id,) in
+        db_session.query(models.HostScanHistory.host_id).filter(models.HostScanHistory.scan_id == scan_id)
+    }
+    mapped = {
+        host_id for (host_id,) in
+        db_session.query(models.HostSubnetMapping.host_id).filter(models.HostSubnetMapping.host_id.in_(recorded))
+    }
+    assert recorded and mapped == recorded
+
+
+def test_a_failed_correlation_never_fails_the_import(db_session, test_project, tmp_path, monkeypatch):
+    from app.services.subnet_correlation import SubnetCorrelationService
+    from tests.ingestion_job_harness import run_file
+
+    def broken(self, scan_id):
+        raise RuntimeError("correlation is down")
+
+    monkeypatch.setattr(SubnetCorrelationService, "batch_correlate_scan_hosts_to_subnets", broken)
+    path = tmp_path / "r.txt"
+    path.write_text("Open 10.63.0.1:22\n")
+    job = run_file(db_session, test_project.id, path)
+    assert job.status == "completed", job.error_message
+    assert _hosts(db_session, test_project.id) == ["10.63.0.1"]
+
+
+# ---------------------------------------------------------------------------
+# ING-8 — the Nessus writes isolate through the one record savepoint
+# ---------------------------------------------------------------------------
+
+def test_an_informational_port_that_fails_loses_no_finding(db_session, test_project, tmp_path, monkeypatch):
+    """The informational items' ports were written in a loop that also chose
+    which findings to keep: a failure part-way dropped every finding after
+    it, silently (not counted as a write failure)."""
+    from app.db.models_vulnerability import Vulnerability
+    from app.services.nessus_integration_service import NessusIntegrationService
+    from app.services.vulnerability_service import VulnerabilityService
+    from tests.test_nessus_skip_informational import NESSUS_XML
+
+    real = VulnerabilityService._get_or_create_port
+    calls = []
+
+    def first_port_fails(self, *args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise RuntimeError("the first informational port cannot be written")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(VulnerabilityService, "_get_or_create_port", first_port_fails)
+    path = tmp_path / "info.nessus"
+    path.write_text(NESSUS_XML)
+    result = NessusIntegrationService(db_session).process_nessus_file(
+        str(path), project_id=test_project.id, skip_informational=True,
+    )
+    assert result["informational_skipped"] == 3
+    assert result["vuln_write_failures"] == 0
+    plugins = sorted(p for (p,) in db_session.query(Vulnerability.plugin_id))
+    assert plugins == ["42873", "90317"]
+
+
+# ---------------------------------------------------------------------------
 # ING-10 — the web parsers' port memo is keyed on the protocol too
 # ---------------------------------------------------------------------------
 

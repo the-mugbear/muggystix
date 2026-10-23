@@ -119,6 +119,22 @@ def carry_upload_identity(db: Session, job: IngestionJob) -> None:
     scan.batch_id = job.batch_id
     scan.content_sha256 = job.content_sha256
 
+
+def correlate_imported_hosts(db: Session, scan_id: Optional[int]) -> None:
+    """Correlate the hosts a finished import recorded to the project's scope
+    subnets.  Best effort: the import's data is already committed, so a
+    failure is logged and rolled back, never the import's failure.  A scan
+    with no hosts costs one query."""
+    if not isinstance(scan_id, int):
+        return
+    from app.services.subnet_correlation import SubnetCorrelationService
+
+    try:
+        SubnetCorrelationService(db).batch_correlate_scan_hosts_to_subnets(scan_id)
+    except Exception as exc:  # noqa: BLE001 — the host data is committed
+        logger.warning("Scan %s: subnet correlation failed: %s", scan_id, exc)
+        db.rollback()
+
 # v2.328.0 — every lifecycle write (claim / heartbeat / complete / fail /
 # cancel / retry / reap) goes through the shared transition layer so the
 # ingestion and report queues cannot drift on fencing or locking again.
@@ -2521,6 +2537,11 @@ class IngestionService:
                     f"{rejected_json_lines} line{'s' if rejected_json_lines != 1 else ''} of the file "
                     "were not valid JSON and were skipped (a truncated or corrupted record)"
                 )
+
+        # After an import, its hosts are correlated to the project's scope —
+        # here, once, for every format (review 2026-10-23b, ING-5: each
+        # parser did it with its own try / except, and a new one could forget).
+        correlate_imported_hosts(db, scan_id)
 
         # The file ended early and the import went on with what came before
         # (the operator asked for that) — whichever format, whichever branch.

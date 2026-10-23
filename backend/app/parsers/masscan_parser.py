@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
-    ProgressBeat, ScanClock, announce_scan, beat_while_reading, correlate_scan, epoch_to_utc, normalize_ip,
+    ProgressBeat, ScanClock, announce_scan, beat_while_reading, epoch_to_utc, normalize_ip,
     without_nul,
 )
 from app.services import scan_sightings
@@ -157,7 +157,6 @@ class MasscanParser:
             total_unique_ips = counters["ips"]
             processed_hosts = counters["hosts"]
 
-            # Commit parsed host data before correlation
             self.db.commit()
 
             elapsed = time.time() - start
@@ -168,15 +167,6 @@ class MasscanParser:
                 elapsed,
                 filename,
             )
-
-            try:
-                correlate_scan(self.db, scan.id)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("Masscan scan %s correlation failed: %s", scan.id, exc)
-                try:
-                    self.db.rollback()
-                except Exception:
-                    pass
 
             # A file that was CUT SHORT (XML or JSON) never reaches here
             # unless the operator asked to keep what it holds; the dispatcher

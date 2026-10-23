@@ -56,7 +56,6 @@ from app.parsers.parser_utils import (
     ProgressBeat,
     ProjectHostsByAddress,
     ScanHostObservations,
-    correlate_scan,
     dns_import_summary,
     ensure_scan,
     ScanClock,
@@ -396,12 +395,6 @@ class DnsxParser:
                 f"file is empty, every record was a resolution failure, "
                 f"or the file isn't dnsx -json output."
             )
-
-        # Best-effort scope correlation for any PTR-created hosts.
-        try:
-            correlate_scan(self.db, scan.id)
-        except Exception as exc:  # pragma: no cover — best effort
-            logger.warning("dnsx: scope correlation failed for scan %s: %s", scan.id, exc)
 
         # Resolver / status summary lands as a parser-warning so the
         # operator can see per-resolver totals in the IngestionJob

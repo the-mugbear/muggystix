@@ -10,7 +10,6 @@ from app.parsers.parser_utils import (
     ProgressBeat,
     ScanClock,
     beat_while_reading,
-    correlate_scan,
     ensure_scan,
     extract_first_ip,
     parse_host_port_token,
@@ -105,5 +104,4 @@ class NaabuParser:
                 isolate=True,
             )
 
-        correlate_scan(self.db, scan.id)
         return scan

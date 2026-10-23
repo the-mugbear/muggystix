@@ -206,22 +206,26 @@ def test_host_list_says_no_scope_defined_rather_than_out_of_scope(client, db_ses
 
 def test_netexec_upload_correlates_its_hosts(db_session, test_project, tmp_path):
     """NetExec created hosts but never ran scope correlation, so a host first
-    seen by it stayed out of scope until something else re-correlated."""
-    from app.parsers.netexec_parser import NetexecParser
+    seen by it stayed out of scope until something else re-correlated.  The
+    dispatcher correlates every import since review 2026-10-23b, ING-5 (every
+    format: ``test_review_2026_10_23b_ingestion.py``), so this runs the import
+    through the job path."""
+    from tests.ingestion_job_harness import run_file
 
     s = _subnet(db_session, _scope(db_session, test_project.id), "10.0.0.0/24")
     db_session.commit()
 
     path = tmp_path / "nxc.txt"
     path.write_text("SMB  10.0.0.5  445  HOSTX  [+] CORP\\administrator:Passw0rd (Pwn3d!)\n")
-    scan = NetexecParser(db_session).parse_file(str(path), os.path.basename(path), project_id=test_project.id)
+    job = run_file(db_session, test_project.id, path, os.path.basename(path), format_override="netexec_output")
+    assert job.status == "completed", job.error_message
 
     host = (
         db_session.query(models.Host)
         .filter(models.Host.project_id == test_project.id, models.Host.ip_address == "10.0.0.5")
         .one()
     )
-    assert scan.id is not None
+    assert job.scan_id is not None
     mapped = (
         db_session.query(models.HostSubnetMapping)
         .filter(models.HostSubnetMapping.host_id == host.id)

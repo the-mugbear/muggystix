@@ -51,7 +51,6 @@ from app.parsers.parser_utils import (
     ProgressBeat,
     ProjectHostsByAddress,
     announce_scan,
-    correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
     resolve_host_cached,
@@ -177,11 +176,6 @@ class WhatwebParser:
                 f"file isn't whatweb --log-json output."
             )
         self.db.commit()
-
-        try:
-            correlate_scan(self.db, scan.id)
-        except Exception as exc:  # pragma: no cover — best effort
-            logger.warning("whatweb scan %s correlation failed: %s", scan.id, exc)
 
         elapsed = time.time() - start
         logger.info(

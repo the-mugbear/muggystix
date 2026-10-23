@@ -21,7 +21,7 @@ from app.services.confidence_service import (
 )
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySource
-from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text, write_record
+from app.parsers.parser_utils import announce_scan, read_tool_text, write_record
 from app.parsers.streaming_json import document_before_the_cut
 from app.services import smb_signing as smb_signing_states
 from app.services.misconfig_checks import record_misconfig
@@ -456,21 +456,7 @@ class NetexecParser:
                     "uninterpreted": self.uninterpreted,
                 }
 
-            # v2.342.0 — this was the one host-creating parser that never ran
-            # scope correlation, so a host first seen by NetExec stayed "out
-            # of scope" until some other upload or a scope edit re-correlated
-            # the project.  Same best-effort shape as the other parsers: the
-            # host data is committed first so a correlation failure cannot
-            # lose it.
             self.db.commit()
-            try:
-                correlate_scan(self.db, scan.id)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("NetExec scan %s correlation failed: %s", scan.id, exc)
-                try:
-                    self.db.rollback()
-                except Exception:  # pragma: no cover
-                    pass
             return scan
 
         except Exception as e:

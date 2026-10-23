@@ -291,6 +291,7 @@ class HostDeduplicationService:
         if not pairs:
             return
         from app.db.models import DNS_OBS_SCANNER
+        from app.parsers.parser_utils import write_record
         from app.services.dns_name_service import record_observation
         is_v6 = ':' in ip_address
         for name, kind in pairs:
@@ -301,20 +302,20 @@ class HostDeduplicationService:
                 record_type = 'AAAA' if is_v6 else 'A'
             else:
                 record_type = DNS_OBS_SCANNER
-            # SAVEPOINT so a bad name can't poison the host's transaction; the
-            # journal lets the cache forget what the rollback discarded.
+            # One record (``write_record``) so a bad name can't poison the
+            # host's transaction; the journal lets the cache forget what the
+            # rollback discarded.
             journal: List[Tuple[str, object]] = []
-            sp = self.db.begin_nested()
-            try:
-                record_observation(
+            outcome = write_record(
+                self.db,
+                lambda name=name, record_type=record_type, journal=journal: record_observation(
                     self.db, project_id=project_id, name=name, record_type=record_type,
                     value=ip_address, scan_id=scan_id, cache=self._name_cache, journal=journal,
-                )
-                sp.commit()
-            except Exception as exc:  # noqa: BLE001 — never let a name break host ingest
-                sp.rollback()
-                self._name_cache.forget(journal)
-                logger.warning("name observation %r for %s skipped: %s", name, ip_address, exc)
+                ),
+                on_rollback=lambda journal=journal: self._name_cache.forget(journal),
+            )
+            if outcome.error is not None:
+                logger.warning("name observation %r for %s skipped: %s", name, ip_address, outcome.error)
 
     def _find_or_create_host_inner(
         self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int,

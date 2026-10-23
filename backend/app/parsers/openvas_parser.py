@@ -28,7 +28,6 @@ from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
 from app.parsers.parser_utils import (
     ProgressBeat,
     ScanClock,
-    correlate_scan,
     ensure_scan,
     extract_first_ip,
     map_numeric_severity,
@@ -191,7 +190,6 @@ class OpenVASParser:
         }
 
         clock.apply(scan)
-        correlate_scan(self.db, scan.id)
         return scan
 
     def _process_result(

@@ -13,7 +13,6 @@ from app.parsers.nessus_parser import NessusParser, NessusHost
 from app.db.models import Host, HostScanHistory, Scan
 from app.services.vulnerability_service import VulnerabilityService
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.services.subnet_correlation import SubnetCorrelationService
 from app.core.config import settings
 from app.parsers.parser_utils import ScanClock, epoch_to_utc, write_record
 
@@ -53,7 +52,6 @@ class NessusIntegrationService:
         self.parser = NessusParser()
         self.vulnerability_service = VulnerabilityService(db)
         self.dedup_service = HostDeduplicationService(db)
-        self.correlation_service = SubnetCorrelationService(db)
         self._commit_batch_size = max(1, settings.NESSUS_COMMIT_BATCH_SIZE)
 
     def process_nessus_file(self, file_path: str, scan_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
@@ -156,18 +154,6 @@ class NessusIntegrationService:
                 clock.apply(scan)
 
             self.db.commit()
-
-            # Correlate hosts to subnets
-            try:
-                correlated = self.correlation_service.batch_correlate_scan_hosts_to_subnets(scan_id)
-                logger.info("Nessus scan %s correlated %s hosts to subnets", scan_id, correlated)
-            except Exception as exc:
-                logger.warning("Nessus scan %s correlation failed: %s", scan_id, exc)
-                try:
-                    self.db.rollback()
-                except Exception:
-                    pass
-
             self.db.expunge_all()
 
             # v2.91.3 (code review #1) — surface per-finding-write failures.
