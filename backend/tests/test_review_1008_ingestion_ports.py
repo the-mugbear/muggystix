@@ -119,11 +119,10 @@ def test_every_import_path_stamps_the_ports_it_inserts_and_only_those(
     assert created.created_scan_id == nmap.id
     assert found.created_scan_id == job.scan_id      # a re-observation never moves it
 
-    # Masscan's set-based upsert: the INSERT stamps, the DO UPDATE does not.
-    from app.parsers.masscan_parser import MasscanParser
-
+    # The set-based upsert masscan writes through: the INSERT stamps, the DO
+    # UPDATE does not.
     masscan = _scan(db_session, pid, "masscan.json", tool="masscan")
-    MasscanParser(db_session)._upsert_ports_batch(masscan.id, [
+    HostDeduplicationService(db_session).upsert_ports_bulk(masscan.id, [
         (known_host, {"port_number": 9090, "protocol": "tcp", "state": "open"}),
         (known_host, {"port_number": 8080, "protocol": "tcp", "state": "open"}),
         (known_host, {"port_number": 22, "protocol": "tcp", "state": "open"}),

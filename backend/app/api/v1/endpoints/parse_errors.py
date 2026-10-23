@@ -280,10 +280,11 @@ def delete_parse_error(
         raise HTTPException(status_code=404, detail="Parse error not found")
 
     try:
+        # The jobs that named it lose the link by the FK's own SET NULL.
         jobs_cleared = (
             db.query(models.IngestionJob)
             .filter(models.IngestionJob.parse_error_id == error_id)
-            .update({"parse_error_id": None}, synchronize_session=False)
+            .count()
         )
 
         db.delete(error)

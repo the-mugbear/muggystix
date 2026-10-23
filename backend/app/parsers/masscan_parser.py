@@ -16,14 +16,16 @@ from lxml import etree
 from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
 from app.parsers.streaming_json import ends_early
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
-    ProgressBeat, ScanClock, announce_scan, beat_while_reading, correlate_scan, epoch_to_utc, without_nul,
+    ProgressBeat, ScanClock, announce_scan, beat_while_reading, correlate_scan, epoch_to_utc, normalize_ip,
+    without_nul,
 )
 from app.services import scan_sightings
+from app.services.host_deduplication_service import HostDeduplicationService, should_replace_service
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,23 @@ class MasscanParser:
 
     def __init__(self, db: Session):
         self.db = db
+        self._written: Dict[str, set] = {}
+
+    def _address(self, written: Any) -> Optional[str]:
+        """The address a record names, in the one spelling a host is stored
+        in (``HostDeduplicationService.host_address``) — or None, and the
+        record is counted unread, when it names none (review 2026-10-23b,
+        ING-1: the raw text was inserted as the host, so one bad token failed
+        the whole import and one IPv6 address written two ways was two
+        hosts)."""
+        try:
+            address, other = HostDeduplicationService.host_address(written)
+        except ValueError:
+            self._unread_lines += 1
+            return None
+        if other:
+            self._written.setdefault(address, set()).add(other)
+        return address
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Dispatch to format-specific parsers based on file extension."""
@@ -72,6 +91,9 @@ class MasscanParser:
         # Records decoded before JSON text that is not a record (None = none).
         self._json_unread_after: Optional[int] = None
         self._unread_lines = 0
+        # The other spellings the file wrote each address in (``_address``).
+        self._written: Dict[str, set] = {}
+        self._dedup = HostDeduplicationService(self.db)
         self.last_parse_stats = None
         start = time.time()
         scan = self._create_scan_record(filename)
@@ -164,42 +186,41 @@ class MasscanParser:
             # v2.419.0 (review H4) — XML that stops being XML keeps the hosts
             # read before the break, and says the rest is unknown rather than
             # importing as complete.
+            warnings: List[str] = []
             if self._truncated_at:
-                self.last_parse_stats = {
-                    "skipped": 0,
-                    "warnings": (
-                        f"The XML ended early ({self._truncated_at}); the {processed_hosts} host"
-                        f"{'s' if processed_hosts != 1 else ''} before that point were imported, "
-                        "anything after it is not in the inventory."
-                    ),
-                    "summary": None,
-                    "partial": True,
-                }
+                warnings.append(
+                    f"The XML ended early ({self._truncated_at}); the {processed_hosts} host"
+                    f"{'s' if processed_hosts != 1 else ''} before that point were imported, "
+                    "anything after it is not in the inventory."
+                )
             elif self._json_unread_after is not None:
                 # JSON that stops being JSON.  The records before it were
                 # always kept; until 2026-10-11 the text, and every record
                 # after it, were dropped with a log line and the import looked
                 # complete.
                 after = self._json_unread_after
+                warnings.append(
+                    f"After {after:,} record{'s' if after != 1 else ''} the file holds text that "
+                    "is not a masscan record; it, and anything after it, could not be read and "
+                    "is not in the inventory."
+                )
+            unread = self._unread_lines
+            if unread:
+                # N9 — lines and records that were not read (reported the way
+                # the sibling parsers report skipped rows): a list line that
+                # is not a record, and in every format a record whose address
+                # is not an IP address (review 2026-10-23b, ING-1).
+                warnings.append(
+                    f"{unread} record{'s' if unread != 1 else ''} of the file named no IP address "
+                    "and were skipped"
+                    if suffix in (".xml", ".json") else
+                    f"{unread} line{'s' if unread != 1 else ''} of the list file were not masscan "
+                    "records and were skipped"
+                )
+            if warnings:
                 self.last_parse_stats = {
-                    "skipped": 0,
-                    "warnings": (
-                        f"After {after:,} record{'s' if after != 1 else ''} the file holds text that "
-                        "is not a masscan record; it, and anything after it, could not be read and "
-                        "is not in the inventory."
-                    ),
-                    "summary": None,
-                    "partial": True,
-                }
-            elif self._unread_lines:
-                # N9 — list lines that were not records (reported the way the
-                # sibling parsers report skipped rows).
-                self.last_parse_stats = {
-                    "skipped": self._unread_lines,
-                    "warnings": (
-                        f"{self._unread_lines} line{'s' if self._unread_lines != 1 else ''} of the "
-                        "list file were not masscan records and were skipped"
-                    ),
+                    "skipped": unread,
+                    "warnings": " ".join(warnings),
                     "summary": None,
                     "partial": True,
                 }
@@ -320,8 +341,11 @@ class MasscanParser:
         host_ports: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for entry in beat_while_reading(self._iter_json_entries(file_path), every=_READ_BEAT_EVERY):
-            ip_address = entry.get("ip") or entry.get("addr")
-            if not ip_address:
+            written = entry.get("ip") or entry.get("addr")
+            if not written:
+                continue
+            ip_address = self._address(written)
+            if ip_address is None:
                 continue
             self._observe_epoch(entry.get("timestamp"))
             for port_info in entry.get("ports", []):
@@ -369,10 +393,13 @@ class MasscanParser:
                 if line.startswith("Timestamp:") and "Host:" in line and "Ports:" in line:
                     parsed = self._parse_timestamp_line(line)
                     if parsed:
+                        written, ports = parsed
+                        ip_address = self._address(written)
+                        if ip_address is None:
+                            continue
                         ts_match = re.match(r"Timestamp:\s*(\d+)", line)
                         if ts_match:
                             self._observe_epoch(ts_match.group(1))
-                        ip_address, ports = parsed
                         host_ports[ip_address].extend(ports)
                         self._maybe_flush(host_ports, flush)
                     continue
@@ -389,7 +416,12 @@ class MasscanParser:
                     # list record was dropped without the import saying so.
                     self._unread_lines += 1
                     continue
-                state, protocol, port_str, ip_address = parts[:4]
+                state, protocol, port_str, written = parts[:4]
+                if state not in ("open", "banner"):
+                    continue
+                ip_address = self._address(written)
+                if ip_address is None:
+                    continue
                 # `--banners`: "banner tcp 80 10.0.0.1 <epoch> <kind> <text…>"
                 if state == "banner" and len(parts) >= 7 and port_str.isdigit():
                     self._note_banner(ip_address, int(port_str), protocol, parts[5], line.split(None, 6)[6])
@@ -423,16 +455,9 @@ class MasscanParser:
         return dict(host_ports)
 
     # ------------------------------------------------------------------
-    # Phase 2 — Batch persist using bulk SQL operations
-    #
-    # NOTE: This intentionally uses raw SQL against hosts_v2/ports_v2 rather
-    # than HostDeduplicationService for throughput on large masscan scans
-    # (tens of thousands of hosts).  Trade-offs vs the ORM dedup service:
-    #   - No savepoint-based retry on concurrent inserts (acceptable: scans
-    #     are processed serially by the ingestion queue).
-    #   - first_seen relies on the column's server_default (consistent with
-    #     the dedup service).
-    #   - If the v2 schema changes, this SQL must be updated in lockstep.
+    # Phase 2 — Batch persist, through the dedup service's set-based form
+    # (``upsert_hosts_bulk`` / ``upsert_ports_bulk``: its rules, a few
+    # statements per 500 hosts for scans of tens of thousands).
     # ------------------------------------------------------------------
 
     def _batch_persist(
@@ -452,7 +477,9 @@ class MasscanParser:
 
         for i in range(0, total_ips, BATCH):
             batch_ips = all_ips[i : i + BATCH]
-            ip_to_host_id = self._upsert_hosts_batch(scan_id, batch_ips)
+            ip_to_host_id = self._dedup.upsert_hosts_bulk(
+                self._project_id, scan_id, {ip: self._written.get(ip, ()) for ip in batch_ips},
+            )
             processed_hosts += len(ip_to_host_id)
 
             if (i + BATCH) % 2000 == 0 or i + BATCH >= total_ips:
@@ -468,7 +495,7 @@ class MasscanParser:
             batch_port_rows = self._build_port_rows_for_hosts(batch_ips, ip_to_host_id, host_ports)
             processed_ports += len(batch_port_rows)
             if batch_port_rows:
-                self._upsert_ports_batch(scan_id, batch_port_rows)
+                self._dedup.upsert_ports_bulk(scan_id, batch_port_rows)
                 logger.info(
                     "Masscan batch persist: ports %d processed after hosts %d/%d",
                     processed_ports,
@@ -502,211 +529,17 @@ class MasscanParser:
                 if kept is not None:
                     # masscan writes a port once per record (the SYN-ACK, then
                     # one per banner): the first record is kept, and takes the
-                    # reason from whichever record carries one.
+                    # reason from whichever record carries one, and the
+                    # service name the one merge rule prefers (a later
+                    # ``Ports:`` line's name was dropped).
                     if not kept.get("reason") and port_data.get("reason"):
                         kept["reason"] = port_data["reason"]
+                    if should_replace_service(kept.get("service_name"), 0, port_data.get("service_name"), 0):
+                        kept["service_name"] = port_data.get("service_name")
                     continue
-                seen[key] = port_data
-                rows.append((host_id, port_data))
+                seen[key] = dict(port_data)
+                rows.append((host_id, seen[key]))
         return rows
-
-    def _upsert_hosts_batch(
-        self, scan_id: int, ips: List[str]
-    ) -> Dict[str, int]:
-        """Upsert a batch of hosts and return {ip: host_id} mapping.
-
-        v2.332.5 — records ``host_scan_history.host_created`` for the IPs this
-        scan inserted, the same create/update decision the dedup service
-        persists.  This bulk path wrote bare membership rows, so every host a
-        masscan import introduced counted as "already known" and the scan
-        showed 0 new hosts on /scans.
-        """
-        if not ips:
-            return {}
-
-        project_id = self._project_id
-        # IPs whose hosts_v2 row THIS scan inserted (vs. updated).
-        created_ips: set = set()
-
-        # Find existing hosts (scoped to project)
-        existing = (
-            self.db.query(models.Host.id, models.Host.ip_address)
-            .filter(models.Host.ip_address.in_(ips), models.Host.project_id == project_id)
-            .all()
-        )
-        existing_map = {row.ip_address: row.id for row in existing}
-
-        # Update existing hosts: bump last_seen and scan_id
-        if existing_map:
-            self.db.execute(
-                text(
-                    "UPDATE hosts_v2 SET last_seen = NOW(), "
-                    "last_updated_scan_id = :scan_id, state = 'up' "
-                    "WHERE ip_address = ANY(:ips) AND project_id = :project_id"
-                ),
-                {"scan_id": scan_id, "ips": list(existing_map.keys()), "project_id": project_id},
-            )
-
-        # Insert new hosts
-        new_ips = [ip for ip in ips if ip not in existing_map]
-        if new_ips:
-            values_clauses = []
-            params: Dict[str, Any] = {"scan_id": scan_id, "project_id": project_id}
-            for idx, ip in enumerate(new_ips):
-                params[f"ip_{idx}"] = ip
-                values_clauses.append(f"(:ip_{idx}, 'up', :scan_id, :project_id)")
-            # (xmax = 0) is true only for a row this INSERT created; a row the
-            # ON CONFLICT ... DO UPDATE branch touched (a concurrent writer
-            # inserted it after our SELECT) carries the updating transaction's
-            # xid.  That is the insert-vs-update decision
-            # host_scan_history.host_created records.  DO UPDATE returns every
-            # row, so each new IP comes back with its id.
-            sql = (
-                "INSERT INTO hosts_v2 (ip_address, state, last_updated_scan_id, project_id) "
-                "VALUES " + ", ".join(values_clauses) + " "
-                "ON CONFLICT (project_id, ip_address) DO UPDATE SET "
-                "last_seen = NOW(), last_updated_scan_id = :scan_id, state = 'up' "
-                "RETURNING id, ip_address, (xmax = 0) AS inserted"
-            )
-            result = self.db.execute(text(sql), params)
-            for row in result:
-                existing_map[row.ip_address] = row.id
-                if row.inserted:
-                    created_ips.add(row.ip_address)
-
-        # Insert host_scan_history for all hosts in this batch
-        history_values = []
-        h_params: Dict[str, Any] = {"scan_id": scan_id}
-        for idx, (ip, host_id) in enumerate(existing_map.items()):
-            if ip in ips:  # only for this batch
-                h_params[f"hid_{idx}"] = host_id
-                created = "true" if ip in created_ips else "false"
-                history_values.append(f"(:hid_{idx}, :scan_id, 'up', {created})")
-        if history_values:
-            sql = (
-                "INSERT INTO host_scan_history (host_id, scan_id, state_at_scan, host_created) "
-                "VALUES " + ", ".join(history_values) + " "
-                "ON CONFLICT (host_id, scan_id) DO NOTHING"
-            )
-            self.db.execute(text(sql), h_params)
-
-        self.db.flush()
-        return {ip: existing_map[ip] for ip in ips if ip in existing_map}
-
-    # Each port row binds 5 params (hid/pn/proto/st/svc); the history
-    # insert binds 1 (pid).  PostgreSQL caps a statement at 65 535 bind
-    # params, so a 500-host batch of a wide-port masscan scan
-    # (e.g. -p0-65535) easily overflows one INSERT.  Sub-batch the rows
-    # so each statement stays well under the ceiling.  5 000 rows ×
-    # 5 params = 25 000, comfortably bounded.
-    _PORT_UPSERT_CHUNK = 5000
-
-    def _upsert_ports_batch(
-        self,
-        scan_id: int,
-        rows: List[Tuple[int, Dict[str, Any]]],
-    ) -> None:
-        """Upsert a batch of ports, sub-chunked under the bind-param limit."""
-        if not rows:
-            return
-        for start in range(0, len(rows), self._PORT_UPSERT_CHUNK):
-            self._upsert_ports_chunk(scan_id, rows[start:start + self._PORT_UPSERT_CHUNK])
-
-    def _upsert_ports_chunk(
-        self,
-        scan_id: int,
-        rows: List[Tuple[int, Dict[str, Any]]],
-    ) -> None:
-        """Upsert a single sub-batch of ports (caller bounds the size)."""
-        if not rows:
-            return
-
-        values_clauses = []
-        params: Dict[str, Any] = {"scan_id": scan_id}
-        for idx, (host_id, port_data) in enumerate(rows):
-            params[f"hid_{idx}"] = host_id
-            params[f"pn_{idx}"] = port_data["port_number"]
-            params[f"proto_{idx}"] = port_data.get("protocol", "tcp")
-            params[f"st_{idx}"] = port_data.get("state", "open")
-            params[f"svc_{idx}"] = port_data.get("service_name")
-            # Review 2026-10-01 B12 — why the port is open (XML `<state
-            # reason="syn-ack">`, JSON `reason`); the list format has none.
-            params[f"rsn_{idx}"] = port_data.get("reason") or None
-            values_clauses.append(
-                f"(:hid_{idx}, :pn_{idx}, :proto_{idx}, :st_{idx}, "
-                f":rsn_{idx}, :svc_{idx}, :scan_id, :scan_id, TRUE)"
-            )
-
-        # service_name merge MIRRORS the canonical rule in
-        # host_deduplication_service.should_replace_service.  Masscan's bulk path
-        # carries only a name (no confidence), so the rule reduces to: take the
-        # new name only when we have nothing yet, or it's non-empty and longer
-        # than a name that is itself unconfident — never over an nmap -sV
-        # identification (service_conf > 0).  The old COALESCE(NULLIF(...)) was
-        # last-non-empty-wins, which let a masscan re-scan clobber a
-        # longer/better nmap service name. Keep in lockstep.
-        sql = (
-            "INSERT INTO ports_v2 "
-            # created_scan_id is written by the INSERT only (the DO UPDATE
-            # leaves it): which import created the row, for the cleanup of a
-            # failed one.
-            "(host_id, port_number, protocol, state, reason, service_name, "
-            "last_updated_scan_id, created_scan_id, is_active) "
-            "VALUES " + ", ".join(values_clauses) + " "
-            "ON CONFLICT (host_id, port_number, protocol) DO UPDATE SET "
-            "state = EXCLUDED.state, last_seen = NOW(), "
-            # reason MIRRORS host_deduplication_service._update_port: it
-            # belongs to the observation that set the state.  A scan that
-            # gives none (the list format) keeps the stored one while the
-            # state is unchanged; a changed state drops a reason that
-            # described the old one.
-            "reason = CASE "
-            "WHEN EXCLUDED.reason IS NOT NULL THEN EXCLUDED.reason "
-            "WHEN ports_v2.state IS DISTINCT FROM EXCLUDED.state THEN NULL "
-            "ELSE ports_v2.reason END, "
-            "last_updated_scan_id = EXCLUDED.last_updated_scan_id, "
-            "is_active = TRUE, "
-            "service_name = CASE "
-            "WHEN COALESCE(ports_v2.service_name, '') = '' THEN EXCLUDED.service_name "
-            "WHEN NULLIF(EXCLUDED.service_name, '') IS NOT NULL "
-            "AND COALESCE(ports_v2.service_conf, 0) = 0 "
-            "AND length(EXCLUDED.service_name) > length(ports_v2.service_name) "
-            "THEN EXCLUDED.service_name "
-            "ELSE ports_v2.service_name END "
-            # (xmax = 0): this INSERT created the row, vs. the DO UPDATE
-            # branch touching an existing one — the port_created decision
-            # (same technique as _upsert_hosts_batch).
-            "RETURNING id, host_id, port_number, protocol, (xmax = 0) AS inserted"
-        )
-        result = self.db.execute(text(sql), params)
-        port_rows = list(result)
-        # What THIS scan reported for each port (the ports_v2 merge above may
-        # have kept an older, longer name).
-        reported_service = {
-            (host_id, pd["port_number"], pd.get("protocol", "tcp")): pd.get("service_name") or None
-            for host_id, pd in rows
-        }
-
-        # Insert port_scan_history
-        if port_rows:
-            ph_values = []
-            ph_params: Dict[str, Any] = {"scan_id": scan_id}
-            for idx, row in enumerate(port_rows):
-                ph_params[f"pid_{idx}"] = row.id
-                ph_params[f"svc_{idx}"] = reported_service.get(
-                    (row.host_id, row.port_number, row.protocol)
-                )
-                created = "true" if row.inserted else "false"
-                ph_values.append(f"(:pid_{idx}, :scan_id, 'open', :svc_{idx}, {created})")
-            sql = (
-                "INSERT INTO port_scan_history "
-                "(port_id, scan_id, state_at_scan, service_name, port_created) "
-                "VALUES " + ", ".join(ph_values) + " "
-                "ON CONFLICT (port_id, scan_id) DO NOTHING"
-            )
-            self.db.execute(text(sql), ph_params)
-
-        self.db.flush()
 
     # ------------------------------------------------------------------
     # Line-level parsers (unchanged)
@@ -809,15 +642,19 @@ class MasscanParser:
         ips = list(by_ip)
         for start in range(0, len(ips), self._BANNER_CHUNK):
             chunk = ips[start:start + self._BANNER_CHUNK]
-            port_ids = {
-                (ip, number, proto): pid
-                for pid, ip, number, proto in (
-                    self.db.query(models.Port.id, models.Host.ip_address, models.Port.port_number, models.Port.protocol)
-                    .join(models.Host, models.Host.id == models.Port.host_id)
-                    .filter(models.Host.project_id == self._project_id, models.Host.ip_address.in_(chunk))
-                    .all()
-                )
-            }
+            # A host stored in another spelling of the address is found as
+            # ``upsert_hosts_bulk`` found it, the canonical row first.
+            spellings = set(chunk).union(*(self._written.get(ip, ()) for ip in chunk))
+            port_ids: Dict[Tuple[str, int, str], int] = {}
+            for pid, stored, number, proto in (
+                self.db.query(models.Port.id, models.Host.ip_address, models.Port.port_number, models.Port.protocol)
+                .join(models.Host, models.Host.id == models.Port.host_id)
+                .filter(models.Host.project_id == self._project_id, models.Host.ip_address.in_(spellings))
+                .all()
+            ):
+                key = (normalize_ip(stored), number, proto)
+                if key not in port_ids or stored == key[0]:
+                    port_ids[key] = pid
             wanted = {
                 (port_ids[(ip, port, proto)], f"masscan-{kind}"): banner
                 for ip in chunk for port, proto, kind, banner in by_ip[ip]
@@ -863,8 +700,11 @@ class MasscanParser:
         address_elem = host_elem.find("address")
         if address_elem is None:
             return None
-        ip_address = address_elem.get("addr")
-        if not ip_address:
+        written = address_elem.get("addr")
+        if not written:
+            return None
+        ip_address = self._address(written)
+        if ip_address is None:
             return None
 
         ports: List[Dict[str, Any]] = []

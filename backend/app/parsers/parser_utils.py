@@ -1159,17 +1159,17 @@ def resolve_port_cached(
     db: Session,
     host: Optional[models.Host],
     port: Optional[int],
-    port_cache: Dict[Tuple[int, int], Any],
+    port_cache: Dict[Tuple[int, int, str], Any],
     *,
     protocol: str = "tcp",
 ) -> Optional[models.Port]:
     """Look up a ``Port`` by ``(host_id, port_number, protocol)``, memoized in
-    ``port_cache`` (``(host_id, port) -> Port|None``).  Misses are cached too —
-    the web parsers never create Port rows, so an absent port stays absent for
-    the file."""
+    ``port_cache`` under that same key.  Misses are cached too — the web
+    parsers never create Port rows, so an absent port stays absent for the
+    file."""
     if not (host and port):
         return None
-    key = (host.id, port)
+    key = (host.id, port, protocol)
     if key in port_cache:
         return port_cache[key]
     port_row = (

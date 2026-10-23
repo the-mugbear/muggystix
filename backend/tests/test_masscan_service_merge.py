@@ -1,10 +1,11 @@
-"""Masscan's bulk-SQL service-name merge mirrors the canonical dedup rule.
+"""Masscan's service-name merge is the canonical dedup rule.
 
 masscan_parser used last-non-empty-wins (COALESCE(NULLIF(...))), so a re-scan
 with a shorter/worse service name clobbered a longer/better one (e.g. an nmap
-"http-proxy" overwritten by masscan "http"). It now mirrors
-host_deduplication_service.should_replace_service (empty-or-longer-wins). This
-pins the two in lockstep.
+"http-proxy" overwritten by masscan "http").  Masscan now writes through the
+dedup service's set-based form (``upsert_ports_bulk``), which states
+should_replace_service (empty-or-longer-wins) in SQL;
+``test_review_2026_10_23b_ingestion.py`` holds it to the per-row form.
 """
 import json
 from collections import defaultdict
@@ -13,7 +14,7 @@ import pytest
 
 from app.db import models
 from app.parsers.masscan_parser import MasscanParser
-from app.services.host_deduplication_service import should_replace_service
+from app.services.host_deduplication_service import HostDeduplicationService, should_replace_service
 from tests.conftest import USING_POSTGRES
 
 
@@ -49,7 +50,7 @@ def test_longer_still_wins_among_equal_confidence():
     assert should_replace_service("http", None, "winrm", None) is True
 
 
-# --- Masscan bulk SQL mirrors the rule (Postgres-only) ----------------------
+# --- The set-based form masscan writes through (Postgres-only) --------------
 
 @pytest.mark.skipif(
     not USING_POSTGRES,
@@ -57,18 +58,17 @@ def test_longer_still_wins_among_equal_confidence():
     "length(), NULLIF) — runs only against the Postgres test DB.",
 )
 def test_masscan_merge_keeps_longer_name(db_session, test_project):
-    parser = MasscanParser(db_session)
-    parser._project_id = test_project.id
+    dedup = HostDeduplicationService(db_session)
 
     s1 = models.Scan(project_id=test_project.id, filename="a.xml", tool_name="masscan", scan_type="port_scan")
     s2 = models.Scan(project_id=test_project.id, filename="b.xml", tool_name="masscan", scan_type="port_scan")
     db_session.add_all([s1, s2])
     db_session.flush()
 
-    hid = parser._upsert_hosts_batch(s1.id, ["10.9.9.9"])["10.9.9.9"]
+    hid = dedup.upsert_hosts_bulk(test_project.id, s1.id, {"10.9.9.9": ()})["10.9.9.9"]
 
     def upsert(scan_id, svc):
-        parser._upsert_ports_chunk(scan_id, [
+        dedup.upsert_ports_bulk(scan_id, [
             (hid, {"port_number": 8080, "protocol": "tcp", "state": "open", "service_name": svc}),
         ])
 
