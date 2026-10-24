@@ -172,9 +172,13 @@ const StageView: React.FC<StageProps> = ({
   const frame = useRef<HTMLDivElement | null>(null);
   const body = useRef<HTMLDivElement | null>(null);
   const inner = useRef<HTMLDivElement | null>(null);
-  const [scale, setScale] = useState(1);
+  const [fitTo, setFitTo] = useState({ scale: 1, left: 0, top: 0 });
   const [fit, setFit] = useState<{ key: string; scale: number } | null>(null);
-  const [imageReady, setImageReady] = useState<string | null>(null);
+  // Readiness belongs to ONE render instance — a slide shown again (image →
+  // text → the same image) mounts its image afresh and must decode it again
+  // before the render is acknowledged (code review 2026-10-24).
+  const instanceCounter = useRef(0);
+  const [imageReady, setImageReady] = useState<number | null>(null);
   const width = stage.width ?? 1600;
   const height = stage.height ?? 900;
   const slideKey = slide?.key ?? '';
@@ -184,7 +188,10 @@ const StageView: React.FC<StageProps> = ({
     if (!el) return undefined;
     const resize = () => {
       const r = el.getBoundingClientRect();
-      if (r.width && r.height) setScale(Math.min(r.width / width, r.height / height));
+      if (!r.width || !r.height) return;
+      // Scaled as one unit and centred: the frame's spare room is split on both sides.
+      const s = Math.min(r.width / width, r.height / height);
+      setFitTo({ scale: s, left: (r.width - width * s) / 2, top: (r.height - height * s) / 2 });
     };
     resize();
     if (typeof ResizeObserver === 'undefined') return undefined;
@@ -193,8 +200,14 @@ const StageView: React.FC<StageProps> = ({
     return () => observer.disconnect();
   }, [width, height]);
 
+  const instance = useMemo(() => {
+    instanceCounter.current += 1;
+    return instanceCounter.current;
+    // A new instance per slide shown (identity: the slide object).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slide]);
   const needsImage = Boolean(slide?.image);
-  const imageDone = !needsImage || imageReady === slideKey;
+  const imageDone = !needsImage || imageReady === instance;
   const renderedRef = useRef(onRendered);
   renderedRef.current = onRendered;
   const overflowRef = useRef(onOverflow);
@@ -229,10 +242,12 @@ const StageView: React.FC<StageProps> = ({
       renderedRef.current?.(token, fitted);
     });
     return () => { current = false; };
-  }, [slide, imageDone, token]);
+  }, [slide, imageDone, token, instance]);
 
   const fittedScale = fit && fit.key === slideKey ? fit.scale : 1;
-  const style = useMemo(() => ({ ...cssVars(stage), transform: `scale(${scale})` }), [stage, scale]);
+  const style = useMemo(() => ({
+    ...cssVars(stage), left: `${fitTo.left}px`, top: `${fitTo.top}px`, transform: `scale(${fitTo.scale})`,
+  }), [stage, fitTo]);
 
   return (
     <div ref={frame} className="ps-frame" data-testid="ps-frame">
@@ -244,8 +259,8 @@ const StageView: React.FC<StageProps> = ({
               <div ref={inner} className="ps-body-inner" data-testid="ps-body-inner"
                 style={fittedScale < 1 ? { transform: `scale(${fittedScale})` } : undefined}>
                 {slide.image && (
-                  <SlideImage key={slide.key} projectId={projectId} reportId={reportId} image={slide.image}
-                    onReady={() => setImageReady(slide.key)} />
+                  <SlideImage key={`${slide.key}#${instance}`} projectId={projectId} reportId={reportId} image={slide.image}
+                    onReady={() => setImageReady(instance)} />
                 )}
                 {slide.blocks.map((b, i) => <Block key={`${slide.key}-${i}`} block={b} />)}
               </div>

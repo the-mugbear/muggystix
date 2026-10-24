@@ -208,10 +208,20 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
   }, [canNavigate, slides, position, go]);
   useKeyboardShortcuts({ j: () => step(1), k: () => step(-1) }, kind !== 'display');
 
+  // The position NOW, for a filter whose slide list arrives later.
+  const positionRef = useRef(position);
+  positionRef.current = position;
   const changeFilter = useCallback(async (next: HostFilter | null) => {
     if (!canNavigate || !position) return;
+    const from = position.slide_key;
     const list = await queryClient.fetchQuery(slidesQuery(projectId, reportId, next));
-    go({ slide_key: filterLanding(list.slides, position.slide_key), host_filter: next });
+    // The presentation moved while the list loaded: this landing is for a slide no
+    // longer shown — drop it (code review 2026-10-24) rather than send a stale move.
+    if (positionRef.current?.slide_key !== from) return;
+    go({ slide_key: filterLanding(list.slides, from), host_filter: next });
+    // The filter control keeps the focus after a choice, and page keys are not
+    // read while a control has it: hand j / k back to the presentation.
+    window.setTimeout(() => { (document.activeElement as HTMLElement | null)?.blur?.(); }, 0);
   }, [canNavigate, position, queryClient, projectId, reportId, go]);
 
   const take = useMutation({
@@ -222,6 +232,11 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     mutationFn: () => endPresentation(projectId, presentationId ?? 0, clientId),
     onSuccess: (answer) => sync.read(answer),
   });
+
+  // The Display is outside the app layout, which names every other tab.
+  useEffect(() => {
+    if (kind === 'display') document.title = 'Presentation display · BlueStick';
+  }, [kind]);
 
   const stale = Boolean(state) && sync.lastAnswerAt > 0 && now - sync.lastAnswerAt > STALE_AFTER_MS;
   const inSync = stale ? `Reconnecting — in sync ${Math.round((now - sync.lastAnswerAt) / 1000)} s ago` : null;
@@ -343,6 +358,9 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
                 </Button>
               )}
             </div>
+            {sync.refused && kind === 'controller' && (
+              <p className="mt-xs text-destructive" role="status" data-testid="move-refused">{sync.refused}</p>
+            )}
             {(take.isError || end.isError) && (
               <p className="mt-xs text-destructive">{formatApiError(take.error ?? end.error, 'That did not go through.')}</p>
             )}

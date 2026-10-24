@@ -274,8 +274,9 @@ def _col_widths(header: Sequence[str], rows: Sequence[Sequence[str]], width: flo
     natural, minimum = [], []
     for c in range(cols):
         cells = [header[c]] + [r[c] for r in rows]
-        nat = max((L.text_width("".join(t for t, _ in L.visible_runs(x)), size) for x in cells), default=0)
-        longest = max((L.text_width(w, size) for x in cells for w in re.split(r"\s+", x) if w), default=0)
+        # The header is drawn bold; measure every cell of the column that way (an over-count only).
+        nat = max((L.text_width("".join(t for t, _ in L.visible_runs(x)), size, face="bold") for x in cells), default=0)
+        longest = max((L.text_width(w, size, face="bold") for x in cells for w in re.split(r"\s+", x) if w), default=0)
         natural.append(nat + pad)
         minimum.append(min(max(longest, 96) + pad, 360 + pad))
     # Whole table at its natural width, or squeezed down to the minimums.
@@ -304,10 +305,10 @@ def _col_widths(header: Sequence[str], rows: Sequence[Sequence[str]], width: flo
     return widths, groups
 
 
-def _row_height(cells: Sequence[str], widths: Sequence[float]) -> float:
+def _row_height(cells: Sequence[str], widths: Sequence[float], *, bold: bool = False) -> float:
     size, line = S["table_size"], S["table_line"]
     pad = 2 * S["cell_pad_x"]
-    tallest = max((len(L.md_lines(c, w - pad, size)) for c, w in zip(cells, widths)), default=1)
+    tallest = max((len(L.md_lines(c, w - pad, size, bold=bold)) for c, w in zip(cells, widths)), default=1)
     return tallest * size * line + 2 * S["cell_pad_y"] + 1
 
 
@@ -325,7 +326,7 @@ def block_height(block: dict) -> float:
     k = block["kind"]
     gap = S["block_gap"]
     if k in ("p", "h", "quote"):
-        return L.md_height(block["md"], _text_width_for(block), S["body_size"], S["body_line"]) + gap
+        return L.md_height(block["md"], _text_width_for(block), S["body_size"], S["body_line"], bold=k == "h") + gap
     if k == "li":
         return L.md_height(block["md"], _text_width_for(block), S["body_size"], S["body_line"]) + S["item_gap"]
     if k == "code":
@@ -334,13 +335,14 @@ def block_height(block: dict) -> float:
         label = L.LABEL_HEIGHT if block.get("cont_before") else 0
         return count * S["code_size"] * S["code_line"] + 2 * S["code_pad_y"] + gap + label
     if k == "table":
-        h = _row_height(block["header"], block["widths"])
+        h = _row_height(block["header"], block["widths"], bold=True)
         label = L.LABEL_HEIGHT if block.get("columns") else 0
         return h + sum(_row_heights(block)) + gap + label
     if k == "rule":
         return S["rule_height"]
     if k == "title":
-        return len(L.md_lines(block["md"], BODY_WIDTH, S["title_size"])) * S["title_size"] * S["title_line"] + S["title_gap"]
+        return (len(L.md_lines(block["md"], BODY_WIDTH, S["title_size"], bold=True)) * S["title_size"] * S["title_line"]
+                + S["title_gap"])
     if k == "meta":
         return L.md_height(block["md"], BODY_WIDTH, S["body_size"], S["body_line"]) + gap
     if k == "counts":
@@ -463,7 +465,7 @@ def _split_row(cells: Sequence[str], widths: Sequence[float], room: float) -> Op
 
 def _split_table(block: dict, avail: float) -> Optional[Tuple[dict, dict]]:
     widths = block["widths"]
-    used = _row_height(block["header"], widths) + S["block_gap"] + (L.LABEL_HEIGHT if block.get("columns") else 0)
+    used = _row_height(block["header"], widths, bold=True) + S["block_gap"] + (L.LABEL_HEIGHT if block.get("columns") else 0)
     room = avail - used
     heights = _row_heights(block)
     k = 0
@@ -544,13 +546,13 @@ def paginate(blocks: Iterable[dict], avail: float) -> List[List[dict]]:
 # The slides
 # ---------------------------------------------------------------------------
 
-def _line_height(size_key: str, line_key: str, text: str) -> float:
+def _line_height(size_key: str, line_key: str, text: str, *, bold: bool = False) -> float:
     size = S[size_key]
-    return len(L.md_lines(text, BODY_WIDTH, size)) * size * S[line_key]
+    return len(L.md_lines(text, BODY_WIDTH, size, bold=bold)) * size * S[line_key]
 
 
 def _body_room(header: str, footer_probe: str) -> float:
-    head = (_line_height("header_size", "header_line", header) + S["header_gap"]) if header else 0
+    head = (_line_height("header_size", "header_line", header, bold=True) + S["header_gap"]) if header else 0
     foot = _line_height("footer_size", "footer_line", footer_probe) + S["footer_gap"]
     return S["height"] - S["pad_top"] - S["pad_bottom"] - head - foot
 
@@ -590,7 +592,9 @@ def _tables_with_widths(blocks: List[dict]) -> List[dict]:
                 "align": [b["align"][c] for c in g],
                 "rows": [[r[c] for c in g] for r in b["rows"]],
                 "widths": [widths[c] * (BODY_WIDTH / sum(widths[x] for x in g)) for c in g],
-                "columns": f"Columns {g[1] + 1}–{g[-1] + 1} of {total}" if len(g) > 1 else None,
+                # Its columns, counted from 1 — the first is repeated on every group.
+                "columns": (f"Columns 1–{g[-1] + 1} of {total}" if g[1] == 1
+                            else f"Columns 1, {g[1] + 1}–{g[-1] + 1} of {total}") if len(g) > 1 else None,
             })
     return out
 
@@ -641,11 +645,28 @@ def presentation_slides(
     if summary.strip():
         head = "Executive summary"
         room = _body_room(head, f"{rep_line} · Executive summary — {probe}")
-        blocks = _tables_with_widths(parse_blocks(L.strip_evidence_refs(summary)))
-        slides += _numbered(
-            paginate(blocks, room), lambda i: f"summary:{i}", head,
-            lambda i, t: f"{rep_line} · Executive summary" + (f" — {i} of {t}" if t > 1 else ""), "summary",
-        )
+        # The report's own images it places (``engagement.images``, the printed
+        # ones), each a slide at its place — read from the frozen copies like a
+        # finding's (code review 2026-10-24: they were dropped).
+        own = {img["attachment_id"]: img for img in (dataset.get("engagement") or {}).get("images") or []
+               if img.get("printed", True)}
+        paged = _sequence(summary, room)
+        total = sum(1 for what, _ in paged if what == "page")
+        n = 0
+        shown_own: Set[int] = set()
+        for what, item in paged:
+            if what == "image":
+                if item in own and item not in shown_own:
+                    shown_own.add(item)
+                    slides += _image_slides(item, own[item], f"summary:image:{item}", "Executive summary · Image",
+                                            f"{rep_line} · Executive summary · Image", frozen_images, probe)
+                continue
+            n += 1
+            slides.append({
+                "key": f"summary:{n}", "kind": "summary", "header": head, "blocks": item,
+                "footer": f"{rep_line} · Executive summary" + (f" — {n} of {total}" if total > 1 else ""),
+                "page": n, "pages": total,
+            })
 
     # Scope.
     scope = dataset.get("scope") or {}
@@ -682,6 +703,59 @@ def presentation_slides(
     }
 
 
+def _image_slides(att_id: int, img: dict, key: str, header: str, footer: str, frozen_images: Set[int],
+                  probe: str, extra: Optional[dict] = None) -> List[dict]:
+    """One printed image as a slide (and, for a long caption, its continuation
+    slides).  ``available`` only when the issue froze a copy that is still in
+    the report's storage — never the live attachment."""
+    caption = img.get("caption") or ""
+    room_i = _body_room(header, f"{footer} — {probe}")
+    cap_pages = paginate([{"kind": "p", "md": caption}], room_i * CAPTION_SHARE) if caption else [[]]
+    first_cap, rest = cap_pages[0], cap_pages[1:]
+    cap_h = sum(block_height(b) for b in first_cap)
+    out = [{
+        "key": key, "kind": "image", "header": header, "blocks": first_cap,
+        "image": {"attachment_id": att_id, "available": att_id in frozen_images,
+                  "height": max(IMAGE_MIN_HEIGHT, room_i - cap_h)},
+        "footer": footer + (f" — 1 of {len(cap_pages)}" if rest else ""),
+        "page": 1, "pages": len(cap_pages), **(extra or {}),
+    }]
+    if rest:
+        more = paginate([b for page in rest for b in page], room_i)
+        for i, blocks in enumerate(more, start=2):
+            out.append({"key": f"{key}:{i}", "kind": "caption", "header": header, "blocks": blocks,
+                        "footer": f"{footer} — {i} of {len(more) + 1}", "page": i, "pages": len(more) + 1,
+                        **(extra or {})})
+    return out
+
+
+def _sequence(md: str, room: float) -> List[Tuple[str, object]]:
+    """Written Markdown as ``[("page", blocks) | ("image", attachment id)]`` in
+    reading order: the text paged, each image a placement names at its place."""
+    sequence: List[Tuple[str, object]] = []
+    run: List[dict] = []
+    for b in parse_blocks(md):
+        refs = L.evidence_refs(b["md"]) if "md" in b else []
+        if refs:
+            b = {**b, "md": L.strip_evidence_refs(b["md"])}
+        if "md" not in b or b["md"].strip():
+            run.append(b)
+        if refs:
+            if run:
+                sequence.append(("blocks", run))
+                run = []
+            sequence.extend(("image", att) for att in refs)
+    if run:
+        sequence.append(("blocks", run))
+    paged: List[Tuple[str, object]] = []
+    for what, item in sequence:
+        if what == "blocks":
+            paged.extend(("page", p) for p in paginate(_tables_with_widths(item), room))
+        else:
+            paged.append(("image", item))
+    return paged
+
+
 def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[HostFilter],
                     frozen_images: Set[int], probe: str) -> List[dict]:
     ref = str(finding.get("ref") or "")
@@ -698,7 +772,7 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
     facts = {"kind": "facts", "severity": finding.get("severity"), "severity_label": sev,
              "cvss_score": finding.get("cvss_score"), "status_note": finding.get("status_note"),
              "affected_count": int(finding.get("affected_count") or 0)}
-    title_lines = len(L.md_lines(title["md"], BODY_WIDTH, S["title_size"]))
+    title_lines = len(L.md_lines(title["md"], BODY_WIDTH, S["title_size"], bold=True))
     if title_lines > 3:
         pages = paginate([title], room) + [[facts]]
     else:
@@ -715,32 +789,8 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
         if att_id in shown or att_id not in images:
             return []
         shown.add(att_id)
-        img = images[att_id]
-        caption = img.get("caption") or ""
-        h = f"{ref} · Evidence"
-        room_i = _body_room(h, f"{base} · Evidence — {probe}")
-        cap_room = room_i * CAPTION_SHARE
-        cap_block = {"kind": "p", "md": caption}
-        cap_pages = paginate([cap_block], cap_room) if caption else [[]]
-        first_cap = cap_pages[0]
-        rest = cap_pages[1:]
-        cap_h = sum(block_height(b) for b in first_cap)
-        out = [{
-            "key": f"f:{ref}:image:{att_id}", "kind": "image", "header": h, "ref": ref,
-            "blocks": first_cap,
-            "image": {"attachment_id": att_id, "available": att_id in frozen_images,
-                      "height": max(IMAGE_MIN_HEIGHT, room_i - cap_h)},
-            "footer": f"{base} · Evidence" + (f" — 1 of {len(cap_pages)}" if rest else ""),
-            "page": 1, "pages": len(cap_pages),
-        }]
-        if rest:
-            room_c = _body_room(h, f"{base} · Evidence — {probe}")
-            more = paginate([b for page in rest for b in page], room_c)
-            for i, blocks in enumerate(more, start=2):
-                out.append({"key": f"f:{ref}:image:{att_id}:{i}", "kind": "caption", "header": h, "ref": ref,
-                            "blocks": blocks, "footer": f"{base} · Evidence — {i} of {len(more) + 1}",
-                            "page": i, "pages": len(more) + 1})
-        return out
+        return _image_slides(att_id, images[att_id], f"f:{ref}:image:{att_id}", f"{ref} · Evidence",
+                             f"{base} · Evidence", frozen_images, probe, {"ref": ref})
 
     for field, label in SECTIONS:
         md = finding.get(field) or ""
@@ -748,28 +798,7 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
             continue
         head = f"{ref} · {label}"
         room = _body_room(head, f"{base} · {label} — {probe}")
-        # The section as an ordered sequence of block runs and placed images.
-        sequence: List[Tuple[str, object]] = []
-        run: List[dict] = []
-        for b in parse_blocks(md):
-            refs = L.evidence_refs(b["md"]) if "md" in b else []
-            if refs:
-                b = {**b, "md": L.strip_evidence_refs(b["md"])}
-            if "md" not in b or b["md"].strip():
-                run.append(b)
-            if refs:
-                if run:
-                    sequence.append(("blocks", run))
-                    run = []
-                sequence.extend(("image", att) for att in refs)
-        if run:
-            sequence.append(("blocks", run))
-        paged: List[Tuple[str, object]] = []
-        for what, item in sequence:
-            if what == "blocks":
-                paged.extend(("page", p) for p in paginate(_tables_with_widths(item), room))
-            else:
-                paged.append(("image", item))
+        paged = _sequence(md, room)
         total = sum(1 for what, _ in paged if what == "page")
         n = 0
         for what, item in paged:

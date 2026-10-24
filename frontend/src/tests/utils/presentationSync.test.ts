@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 
 import type { HostFilter, PresentationState } from '../../services/api';
-import { MoveConflict, PresentationSync, type Target } from '../../utils/presentationSync';
+import { MoveConflict, MoveRefused, PresentationSync, type Target } from '../../utils/presentationSync';
 
 const PEOPLE = {
   1: { id: 1, name: 'Ben', profile_image: null },
@@ -284,6 +284,42 @@ describe('presentation sync — three tabs over one server', () => {
     A.sync.read(same);
     expect(A.sync.getView().position?.slide_key).toBe('overview:1');
     expect(A.sync.getView().state?.watching).toHaveLength(1);
+  });
+
+  it('a refused move (a 422) is dropped and said, never resent', async () => {
+    const server = new Server();
+    const net = new Network();
+    const B = tab(server, net, 1, 'B');
+    B.read();
+    B.sync.go(to('f:F-99'));
+    await net.fail(0, new MoveRefused('That slide is not in this report for this host filter.'));
+    expect(B.sync.getView().reconciling).toBe(false);
+    expect(B.sync.getView().pending).toBeNull();
+    expect(B.sync.getView().refused).toMatch(/not in this report/);
+    B.read();
+    B.read();
+    expect(net.labels()).toEqual([]);                                   // the code review's loop: none
+    expect(B.reads()).toBe(0);
+    B.sync.go(to('summary:1'));                                         // a new move clears the message
+    expect(B.sync.getView().refused).toBeNull();
+    await net.answer();
+    expect(server.slide).toBe('summary:1');
+  });
+
+  it('a target whose move keeps getting no answer is sent again once, then dropped', async () => {
+    const server = new Server();
+    const net = new Network();
+    const B = tab(server, net, 1, 'B');
+    B.read();
+    B.sync.go(to('summary:1'));
+    await net.fail(0, new Error('network'));
+    B.read();
+    expect(net.labels()).toEqual(['move B summary:1@1']);               // the one resend
+    await net.fail(0, new Error('network'));
+    B.read();
+    expect(net.labels()).toEqual([]);                                   // not again
+    expect(B.sync.getView().pending).toBeNull();
+    expect(B.sync.getView().refused).not.toBeNull();
   });
 
   it('End reaches all three and stops every move', async () => {

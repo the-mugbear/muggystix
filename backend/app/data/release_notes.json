@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.530.1",
+      "frontend": "5.424.1",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "fixed", "text": "Presentation mode: the slides are centred on the shared screen, j and k work again right after choosing an endpoint filter, a refused move says why instead of being retried, and images placed in the executive summary are shown."},
+        {"kind": "fixed", "text": "Presentation mode: tables fit more rows on a slide, and a display only reports a slide as shown once its image has loaded."}
+      ]
+    },
+    {
       "backend": "2.530.0",
       "frontend": "5.424.0",
       "date": "2026-10-24",

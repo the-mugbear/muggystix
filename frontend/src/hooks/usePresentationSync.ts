@@ -16,7 +16,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { heartbeatPresentation, movePresentation, type PresentationState, type RenderedAck } from '../services/api';
 import { pollEvery } from '../lib/query';
-import { MoveConflict, PresentationSync, type SyncView, type Target } from '../utils/presentationSync';
+import { MoveConflict, MoveRefused, PresentationSync, type SyncView, type Target } from '../utils/presentationSync';
+import { formatApiError } from '../utils/apiErrors';
 
 export type TabKind = 'display' | 'controller' | 'browse';
 
@@ -66,6 +67,11 @@ export function usePresentationSync(
           if (detail && typeof detail === 'object' && detail.presentation) {
             throw new MoveConflict(detail.presentation as never);
           }
+        }
+        // Any other answer the server GAVE is definite (a 422, a 403…); only no
+        // answer at all — or a gateway's 5xx, which says nothing — is unknown.
+        if (axios.isAxiosError(error) && error.response && error.response.status < 500) {
+          throw new MoveRefused(formatApiError(error, 'The presentation refused that move.'));
         }
         throw error;
       }

@@ -53,8 +53,23 @@ LABEL_HEIGHT = STAGE["label_size"] * STAGE["label_line"] + STAGE["label_gap"]
 
 BODY_WIDTH = STAGE["width"] - 2 * STAGE["pad_x"]
 
-SANS_FACES = ("sans-400-normal", "sans-400-italic", "sans-700-normal", "sans-700-italic")
+# Text is measured with the faces it is drawn in: plain text with the widest of
+# regular and italic, bold text (``**…**``, headings, titles, table headers)
+# with the widest of bold and bold italic, code with mono.  (Measuring every
+# run as bold over-counted so much that narrow table cells wrapped twice as
+# often as drawn — Chrome pass 2026-10-24.)
+REGULAR_FACES = ("sans-400-normal", "sans-400-italic")
+BOLD_FACES = ("sans-700-normal", "sans-700-italic")
 MONO_FACES = ("mono-400-normal", "mono-700-normal")
+
+
+def _faces(face) -> tuple:
+    """``face``: "sans", "bold" or "mono" (``True`` / ``False`` read as mono / sans)."""
+    if face is True or face == "mono":
+        return MONO_FACES
+    if face == "bold":
+        return BOLD_FACES
+    return REGULAR_FACES
 
 # Where a token wider than a line may be broken, best first.
 _SOFT_BREAK_AFTER = set("/?&=-_.")
@@ -65,11 +80,10 @@ def _metrics() -> dict:
     return json.loads(_METRICS_FILE.read_text())
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=4)
 def _face_table(faces: tuple) -> Dict[int, float]:
-    """The widest advance of each code point over ``faces`` (em): bold and
-    italic runs are measured as the widest of the family, so markup never
-    makes a run wider than it was counted."""
+    """The widest advance of each code point over ``faces`` (em): an italic
+    run is never wider than it was counted."""
     table: Dict[int, float] = {}
     for face in faces:
         for cp, w in _metrics()["faces"][face].items():
@@ -92,8 +106,8 @@ def _glyph_em(ch: str, table: Dict[int, float]) -> float:
     return 1.0
 
 
-def text_width(text: str, size: float, *, mono: bool = False) -> float:
-    table = _face_table(MONO_FACES if mono else SANS_FACES)
+def text_width(text: str, size: float, *, mono=False, face=None) -> float:
+    table = _face_table(_faces(face if face is not None else mono))
     return sum(_glyph_em(ch, table) for ch in text) * size * (1 + SAFETY_MARGIN)
 
 
@@ -116,12 +130,33 @@ def strip_evidence_refs(md: str) -> str:
     return _EVIDENCE_REF.sub("", md or "")
 
 
-def visible_runs(md: str) -> List[tuple]:
-    """``[(text, mono)]`` — the text a browser draws for inline Markdown, in
-    reading order: link and image destinations dropped (SafeMarkdown shows a
-    link's text and an image's alt), code spans in the mono family.  Emphasis
-    markers are KEPT in the count — an over-count by a few characters, never an
-    under-count."""
+_BOLD_MARK = re.compile(r"\*\*|__")
+
+
+def _bold_runs(text: str, bold: bool) -> List[tuple]:
+    """Plain text split at ``**`` / ``__`` into (text, "sans" | "bold") runs;
+    the markers stay in the count (an over-count of a few characters)."""
+    out: List[tuple] = []
+    at, on = 0, bold
+    for m in _BOLD_MARK.finditer(text):
+        if bold:
+            break
+        if m.start() > at:
+            out.append((text[at:m.start()], "bold" if on else "sans"))
+        out.append((m.group(0), "bold"))
+        at, on = m.end(), not on
+    if at < len(text):
+        out.append((text[at:], "bold" if (on or bold) else "sans"))
+    return out
+
+
+def visible_runs(md: str, *, bold: bool = False) -> List[tuple]:
+    """``[(text, face)]`` — the text a browser draws for inline Markdown, in
+    reading order, with the face it is drawn in ("sans", "bold", "mono"): link
+    and image destinations dropped (SafeMarkdown shows a link's text and an
+    image's alt), code spans mono, ``**…**`` bold (``bold=True``: everything
+    not code — a heading, a title, a table header).  Emphasis markers are KEPT
+    in the count — an over-count by a few characters, never an under-count."""
     s = _EVIDENCE_REF.sub("", md)
     s = _IMAGE.sub(lambda m: m.group(1), s)
     s = _LINK.sub(lambda m: m.group(1), s)
@@ -130,11 +165,11 @@ def visible_runs(md: str) -> List[tuple]:
     at = 0
     for m in _CODE_SPAN.finditer(s):
         if m.start() > at:
-            runs.append((s[at:m.start()], False))
-        runs.append((m.group(2), True))
+            runs.extend(_bold_runs(s[at:m.start()], bold))
+        runs.append((m.group(2), "mono"))
         at = m.end()
     if at < len(s):
-        runs.append((s[at:], False))
+        runs.extend(_bold_runs(s[at:], bold))
     return runs
 
 
@@ -142,11 +177,11 @@ def visible_runs(md: str) -> List[tuple]:
 # Line breaking
 # ---------------------------------------------------------------------------
 
-def _break_token(token: str, width: float, size: float, mono: bool) -> List[str]:
+def _break_token(token: str, width: float, size: float, mono) -> List[str]:
     """A token wider than a line, broken inside itself: after one of
     ``/ ? & = - _ .`` when one is in reach, else between any two characters
     (CSS ``overflow-wrap: anywhere`` on the stage does the same)."""
-    table = _face_table(MONO_FACES if mono else SANS_FACES)
+    table = _face_table(_faces(mono))
     scale = size * (1 + SAFETY_MARGIN)
     widths = [_glyph_em(ch, table) * scale for ch in token]
     pieces: List[str] = []
@@ -172,11 +207,11 @@ def _break_token(token: str, width: float, size: float, mono: bool) -> List[str]
 
 
 def wrap_runs(runs: Sequence[tuple], width: float, size: float) -> List[str]:
-    """Greedy line breaking over ``(text, mono)`` runs at spaces, as a
+    """Greedy line breaking over ``(text, face)`` runs at spaces, as a
     browser does; a token wider than a line by the rule above.  Returns the
     lines' texts (for splitting); ``len()`` is the line count.  A hard break
     (a newline in the text) ends a line."""
-    words: List[tuple] = []          # (text, mono, hard_break_before)
+    words: List[tuple] = []          # (text, face, hard_break_before)
     for text, mono in runs:
         for li, line in enumerate(text.split("\n")):
             parts = line.split(" ")
@@ -193,7 +228,7 @@ def wrap_runs(runs: Sequence[tuple], width: float, size: float) -> List[str]:
             cur, cur_w = "", 0.0
         if not w:
             continue
-        ww = text_width(w, size, mono=mono)
+        ww = text_width(w, size, face=mono)
         if cur and cur_w + space + ww <= width:
             cur += " " + w
             cur_w += space + ww
@@ -206,23 +241,24 @@ def wrap_runs(runs: Sequence[tuple], width: float, size: float) -> List[str]:
         else:
             pieces = _break_token(w, width, size, mono)
             lines.extend(pieces[:-1])
-            cur, cur_w = pieces[-1], text_width(pieces[-1], size, mono=mono)
+            cur, cur_w = pieces[-1], text_width(pieces[-1], size, face=mono)
     if cur:
         lines.append(cur)
     return lines or [""]
 
 
-def md_lines(md: str, width: float, size: float) -> List[str]:
-    """Lines of inline Markdown at ``size`` in a box ``width`` wide.  A
-    single newline is a space (as SafeMarkdown and the report read it), a
-    hard break (two trailing spaces or a backslash) ends a line."""
+def md_lines(md: str, width: float, size: float, *, bold: bool = False) -> List[str]:
+    """Lines of inline Markdown at ``size`` in a box ``width`` wide (all of
+    it bold when ``bold``).  A single newline is a space (as SafeMarkdown and
+    the report read it), a hard break (two trailing spaces or a backslash)
+    ends a line."""
     text = re.sub(r"(  |\\)\n", "\x00", md or "")
     text = text.replace("\n", " ").replace("\x00", "\n")
-    return wrap_runs(visible_runs(text), width, size)
+    return wrap_runs(visible_runs(text, bold=bold), width, size)
 
 
-def md_height(md: str, width: float, size: float, line: float) -> float:
-    return len(md_lines(md, width, size)) * size * line
+def md_height(md: str, width: float, size: float, line: float, *, bold: bool = False) -> float:
+    return len(md_lines(md, width, size, bold=bold)) * size * line
 
 
 _RUNS = re.compile(r" +|[^ ]+")

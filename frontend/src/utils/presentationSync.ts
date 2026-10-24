@@ -27,12 +27,22 @@
  *   accepted.  Then a target the read shows is cleared; otherwise, if the tab
  *   still drives, the latest target is sent with that read's revision.  A
  *   409 is a definite outcome: its body is the current state.
+ * - **A refused move is a definite outcome too.**  Any answer other than a
+ *   409 that the server gave (a 422 for a slide not in the report, a 403…)
+ *   drops the target and says why (`refused`); it is never retried.  Only a
+ *   move with NO answer (a network error, a timeout) is of unknown outcome —
+ *   and its target is sent again at most once after reconciling, so a server
+ *   that keeps failing cannot make the tab send forever (code review
+ *   2026-10-24: a 422 read as unknown resent itself 179 times in 3.5 s).
  * - **Before a target is sent** the tab rechecks the highest accepted state:
  *   still driving, not ended — else the target is dropped.
  */
 import type { HostFilter, PresentationPerson, PresentationState, RenderedAck } from '../services/api';
 
 export interface Target { slide_key: string; host_filter: HostFilter | null }
+
+/** A move the server refused for good (not a 409): its message is said. */
+export class MoveRefused extends Error {}
 
 /** A 409 from a move: the server's current state rides with it. */
 export class MoveConflict extends Error {
@@ -43,7 +53,8 @@ export class MoveConflict extends Error {
 
 export interface SyncTransport {
   /** Send a move at `revision`; resolves with the new state, rejects with
-   *  `MoveConflict` (a 409) or any other error (an unknown outcome). */
+   *  `MoveConflict` (a 409), `MoveRefused` (any other answer the server gave)
+   *  or any other error (no answer: an unknown outcome). */
   move(revision: number, target: Target): Promise<PresentationState>;
   /** Ask for a read of the presentation now (after an unknown outcome). */
   requestRead(): void;
@@ -62,6 +73,8 @@ export interface SyncView {
   lastAnswerAt: number;
   /** Who took control from this tab, until it drives again. */
   lostControlTo: PresentationPerson | null;
+  /** Why the last move was refused, until the next one is asked for. */
+  refused: string | null;
 }
 
 const filterEq = (a: HostFilter | null, b: HostFilter | null) =>
@@ -77,6 +90,9 @@ export class PresentationSync {
   private reconciling = false;
   private lastAnswerAt = 0;
   private lostControlTo: PresentationPerson | null = null;
+  private refused: string | null = null;
+  /** The target last resent after an unknown outcome: never resent twice. */
+  private resentOnce: Target | null = null;
   private listeners = new Set<() => void>();
   private snapshot: SyncView;
   /** A Display's last finished render, sent with every heartbeat. */
@@ -115,7 +131,7 @@ export class PresentationSync {
       : s ? { slide_key: s.slide_key, host_filter: s.host_filter } : null;
     return {
       state: s, position, pending: this.target, inFlight: this.inFlight, reconciling: this.reconciling,
-      lastAnswerAt: this.lastAnswerAt, lostControlTo: this.lostControlTo,
+      lastAnswerAt: this.lastAnswerAt, lostControlTo: this.lostControlTo, refused: this.refused,
     };
   }
 
@@ -136,7 +152,7 @@ export class PresentationSync {
     if (prev?.you_are_driving && !answer.you_are_driving && !answer.ended) {
       this.lostControlTo = answer.driver;
     }
-    if (answer.you_are_driving) this.lostControlTo = null;
+    if (answer.you_are_driving || answer.ended) this.lostControlTo = null;
     this.accepted = answer;
     if (!answer.you_are_driving || answer.ended) this.target = null;
     if (this.target && samePosition(this.target, answer)) this.target = null;
@@ -155,6 +171,8 @@ export class PresentationSync {
     const s = this.accepted;
     if (!s || !s.you_are_driving || s.ended) return false;
     this.target = samePosition(target, s) && !this.inFlight ? null : target;
+    this.refused = null;
+    this.resentOnce = null;
     this.emit();
     this.flush();
     return true;
@@ -196,7 +214,21 @@ export class PresentationSync {
           this.flush();
           return;
         }
-        // The move may have committed: nothing more is sent until a read says.
+        if (error instanceof MoveRefused) {
+          // Definite: the server will refuse this target again.  Drop it, say why.
+          if (this.target && samePosition(this.target, sent)) this.target = null;
+          this.refused = error.message;
+          this.emit();
+          return;
+        }
+        // No answer: the move may have committed, so nothing more is sent until a
+        // read says — and a target already resent once after this is dropped.
+        if (this.target && this.resentOnce && samePosition(this.target, this.resentOnce)) {
+          this.target = null;
+          this.refused = 'The move could not be sent; the presentation shows where it is.';
+        } else if (this.target && samePosition(this.target, sent)) {
+          this.resentOnce = sent;
+        }
         this.reconciling = true;
         this.emit();
         this.transport.requestRead();

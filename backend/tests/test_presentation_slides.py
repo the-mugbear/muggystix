@@ -169,3 +169,25 @@ def test_the_metrics_table_covers_the_faces_the_stage_uses():
     assert len({faces["mono-400-normal"][str(ord(c))] for c in "il0WM"}) == 1
     letters = [str(ord(c)) for c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"]
     assert all(faces["sans-700-normal"][k] >= faces["sans-400-normal"][k] for k in letters)
+
+
+def test_the_summarys_own_images_are_slides_at_their_place():
+    """Code review 2026-10-24: images the executive summary places were dropped."""
+    ds = _dataset()
+    ds["executive_summary"] = ("The network is segmented.\n\n![Network diagram](evidence:41)\n\n"
+                               "Two weaknesses stand out. ![Not printed](evidence:42)")
+    ds["engagement"] = {"images": [
+        {"attachment_id": 41, "caption": "Network diagram", "printed": True, "placed_in": ["executive_summary"]},
+        {"attachment_id": 42, "caption": "Not printed", "printed": False, "placed_in": ["executive_summary"]},
+    ]}
+    result = presentation_slides(ds, None, {41})
+    keys = [s["key"] for s in result["slides"]]
+    assert keys[1:4] == ["summary:1", "summary:image:41", "summary:2"]
+    assert "summary:image:42" not in keys
+    image = next(s for s in result["slides"] if s["key"] == "summary:image:41")
+    assert image["image"] == {"attachment_id": 41, "available": True, "height": image["image"]["height"]}
+    assert image["blocks"][0]["md"] == "Network diagram"
+    assert _over_budget(result) == []
+    # Without the frozen copy it is a slide that says so.
+    missing = presentation_slides(ds, None, set())
+    assert next(s for s in missing["slides"] if s["key"] == "summary:image:41")["image"]["available"] is False
