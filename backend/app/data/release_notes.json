@@ -3,6 +3,14 @@
   "releases": [
     {
       "backend": "2.532.1",
+      "frontend": "5.426.2",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "fixed", "text": "Presentation mode: a display that had shown a presentation now really does pick up the next one of that report; it stayed on \"The presentation ended\" with \"Reconnecting\" instead. An ended presentation no longer says it is reconnecting."}
+      ]
+    },
+    {
+      "backend": "2.532.1",
       "frontend": "5.426.1",
       "date": "2026-10-24",
       "entries": [

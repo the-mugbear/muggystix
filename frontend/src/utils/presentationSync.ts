@@ -130,6 +130,8 @@ export class PresentationSync {
   private snapshot: SyncView;
   /** A Display's last finished render, sent with every heartbeat. */
   private rendered: RenderedAck | null = null;
+  /** The presentation that render belongs to: a revision means nothing in another. */
+  private renderedFor: number | null = null;
   private spotlight: HeldSpotlight | null = null;
   /** The highest spotlight seq seen, per presentation. */
   private spotlightSeq = 0;
@@ -138,13 +140,20 @@ export class PresentationSync {
   setRendered(ack: RenderedAck | null): boolean {
     const before = this.rendered;
     this.rendered = ack;
+    this.renderedFor = ack ? this.accepted?.id ?? null : null;
     const news = Boolean(ack && (!before || before.revision !== ack.revision || before.fitted !== ack.fitted));
     if (before?.revision !== ack?.revision) this.emit();
     return news;
   }
 
-  renderedAck(): RenderedAck | null {
-    return this.rendered;
+  /**
+   * The render to acknowledge to `presentationId` — never one of an earlier
+   * presentation: a Display left open through End and the next Start sent the
+   * ended one's revision, which the new one refused with a 422 every second
+   * (Chrome pass 2026-10-24).
+   */
+  renderedAck(presentationId: number): RenderedAck | null {
+    return this.renderedFor === presentationId ? this.rendered : null;
   }
 
   constructor(private readonly transport: SyncTransport) {
@@ -195,6 +204,10 @@ export class PresentationSync {
   private accept(answer: PresentationState): void {
     this.takeSpotlight(answer);
     const prev = this.accepted;
+    if (prev && answer.id !== prev.id) {
+      this.rendered = null;
+      this.renderedFor = null;
+    }
     if (prev && answer.id === prev.id && answer.revision < prev.revision) return;
     this.lastAnswerAt = this.now();
     if (prev && answer.id === prev.id && answer.revision === prev.revision) {

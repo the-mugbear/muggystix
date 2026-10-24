@@ -1496,7 +1496,8 @@ screen (`pages/Presentation.tsx`).  Its rules:
   out of sync ("Reconnecting — in sync 14 s ago"), when it lost control
   ("Ana took control") and when the caller drives from another tab.  An
   ended presentation is not a dead end: every tab offers (or, a Display,
-  waits for) the next Start of the report.
+  waits for) the next Start of the report.  An ended one is never
+  "reconnecting" — it is no longer read.
 - **A person is shown by their picture or initials, one component**
   (`components/PersonAvatar`): in presentation mode, beside a person's
   comment, in the user menu.  Never on an agent's note (an agent's work is

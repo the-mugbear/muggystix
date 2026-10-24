@@ -328,7 +328,8 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     if (kind === 'display') document.title = 'Presentation display · BlueStick';
   }, [kind]);
 
-  const stale = Boolean(state) && sync.lastAnswerAt > 0 && now - sync.lastAnswerAt > STALE_AFTER_MS;
+  // An ended presentation is no longer polled: it is not "reconnecting".
+  const stale = Boolean(state) && !state?.ended && sync.lastAnswerAt > 0 && now - sync.lastAnswerAt > STALE_AFTER_MS;
   const inSync = stale ? `Reconnecting — in sync ${Math.round((now - sync.lastAnswerAt) / 1000)} s ago` : null;
 
   // --- Display ---------------------------------------------------------------

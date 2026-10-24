@@ -410,6 +410,20 @@ describe('presentation sync — the spotlight keeps its own order (E6)', () => {
     expect(spotlightShown(after.spotlight, after.renderedRevision, clock.t + 5000)).toBe(false);
   });
 
+  it('a render is acknowledged only to the presentation it was made in', () => {
+    const server = new Server();
+    const net = new Network();
+    const A = tab(server, net, 3, 'A');
+    A.read();                                                           // presentation 7
+    const ack = { revision: 1, slide_key: 'overview:1', host_filter: null, fitted: false };
+    A.sync.setRendered(ack);
+    expect(A.sync.renderedAck(7)).toEqual(ack);
+    expect(A.sync.renderedAck(8)).toBeNull();                           // the next presentation never gets it
+    A.sync.read({ ...server.stateFor(3, 'A'), id: 8 });                 // …and once it is followed, it is gone
+    expect(A.sync.renderedAck(8)).toBeNull();
+    expect(A.sync.getView().renderedRevision).toBeUndefined();
+  });
+
   it('a move clears it: the new revision no longer matches', async () => {
     const server = new Server();
     const net = new Network();

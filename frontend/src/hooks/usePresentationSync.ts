@@ -89,7 +89,7 @@ export function usePresentationSync(
     queryFn: async ({ signal }) => {
       const answer = await heartbeatPresentation(
         projectId, presentationId ?? 0,
-        { client_id: clientId, kind, rendered: kind === 'display' ? sync.renderedAck() : null },
+        { client_id: clientId, kind, rendered: kind === 'display' && presentationId != null ? sync.renderedAck(presentationId) : null },
         signal,
       );
       sync.read(answer);

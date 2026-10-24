@@ -34,7 +34,7 @@ vi.mock('../../hooks/useProjectRole', () => ({ useProjectRole: () => role }));
 vi.mock('../../hooks/useProjectId', () => ({ useProjectId: () => 1 }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1, username: 'ben', role: 'member' } }) }));
 
-import Presentation, { keepCurrentInView } from '../../pages/Presentation';
+import Presentation, { keepCurrentInView, STALE_AFTER_MS } from '../../pages/Presentation';
 
 const person = (id: number, name: string) => ({ id, name, profile_image: null });
 
@@ -141,23 +141,50 @@ describe('presentation mode', () => {
 
 describe('presentation mode — the review of 2026-10-24', () => {
   it('a Display left open through End follows the NEXT Start of the report', async () => {
-    const ended = state({ revision: 6, you_are_driving: false, ended: { at: 'now', reason: 'ended', by: person(1, 'Ben') } });
+    const shown = state({ revision: 6, you_are_driving: false });
+    const ended = state({ revision: 7, you_are_driving: false, ended: { at: 'now', reason: 'ended', by: person(1, 'Ben') } });
     const next = state({ id: 10, revision: 1, slide_key: 'summary:1', you_are_driving: false });
+    let endNow = false;
     api.getLivePresentation
-      .mockResolvedValueOnce({ live: state({ you_are_driving: false }) })
+      .mockResolvedValueOnce({ live: shown })
       .mockResolvedValueOnce({ live: null })                       // re-read once it ended
       .mockResolvedValue({ live: next });                          // someone started again
-    api.heartbeatPresentation.mockImplementation(async (_p: number, id: number) => (id === 9 ? ended : next));
+    // The server's rule: a Display cannot have rendered a revision the presentation has not reached.
+    api.heartbeatPresentation.mockImplementation(async (_p: number, id: number, body: { rendered?: { revision: number } | null }) => {
+      const p = id === 9 ? (endNow ? ended : shown) : next;
+      if (body.rendered && body.rendered.revision > p.revision) {
+        throw Object.assign(new Error('422'), { isAxiosError: true, response: { status: 422, data: { detail: 'A Display cannot have rendered that revision.' } } });
+      }
+      return p;
+    });
     renderAt('/reports/3/present/display');
-    expect(await screen.findByText(/The presentation ended/)).toBeInTheDocument();
+    // It rendered the first presentation's revision 6 — the ack the next one must never receive.
+    await waitFor(() => expect(api.heartbeatPresentation).toHaveBeenCalledWith(
+      1, 9, expect.objectContaining({ rendered: expect.objectContaining({ revision: 6 }) }), expect.anything()));
+    endNow = true;
+    expect(await screen.findByText(/The presentation ended/, {}, { timeout: 3000 })).toBeInTheDocument();
     // Not a dead end: the report's live presentation is read again, and the new one followed.
     await waitFor(() => expect(api.heartbeatPresentation).toHaveBeenCalledWith(1, 10, expect.anything(), expect.anything()),
       { timeout: 5000 });
     expect(await screen.findByText('We tested the network.')).toBeInTheDocument();
+    expect(api.heartbeatPresentation.mock.calls.filter(([, id, body]) => id === 10 && body.rendered?.revision === 6)).toEqual([]);
     // …and the ended one is no longer polled.
     const before = api.heartbeatPresentation.mock.calls.filter(([, id]) => id === 9).length;
     await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
     expect(api.heartbeatPresentation.mock.calls.filter(([, id]) => id === 9).length).toBe(before);
+  }, 10_000);
+
+  it('an ended presentation, no longer polled, is not "reconnecting"', async () => {
+    api.getLivePresentation
+      .mockResolvedValueOnce({ live: state({ you_are_driving: false }) })
+      .mockResolvedValue({ live: null });
+    api.heartbeatPresentation.mockResolvedValue(
+      state({ revision: 5, you_are_driving: false, ended: { at: 'now', reason: 'ended', by: person(1, 'Ben') } }));
+    renderAt('/reports/3/present/display');
+    expect(await screen.findByText(/The presentation ended/)).toBeInTheDocument();
+    await act(async () => { await new Promise((r) => setTimeout(r, STALE_AFTER_MS + 1200)); });
+    expect(screen.getByText(/The presentation ended/)).toBeInTheDocument();
+    expect(screen.queryByText(/Reconnecting/)).not.toBeInTheDocument();
   }, 10_000);
 
   it('a presenter remote steps with Page Down and the arrows', async () => {
