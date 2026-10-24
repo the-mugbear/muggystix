@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import func, case, select, asc, desc
+from sqlalchemy import func, case, or_, select, asc, desc
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -1430,6 +1430,67 @@ class FindingService:
         q = q.order_by(*_finding_order(sort, sort_dir))
         rows = q.offset(offset).limit(limit).all()
         return rows, total
+
+    def queue_neighbours(
+        self, *, project_id: int, finding_id: int,
+        status: Optional[str] = None, severity: Optional[str] = None,
+        owner_id: Optional[int] = None, source: Optional[str] = None,
+        host_id: Optional[int] = None, unowned: bool = False,
+        search: Optional[str] = None, needs: Optional[str] = None,
+        host_state: Optional[str] = None,
+        sort: Optional[str] = None, sort_dir: Optional[str] = None,
+    ) -> dict:
+        """Where a finding stands in the Findings list it was opened from, and
+        the findings either side of it — the finding page's Previous / Next
+        (2.529.0).  The list is :meth:`list_findings`' own: the same
+        ``_selection`` and the same ``_finding_order``, so stepping walks
+        exactly the rows the list pages through.
+
+        ONE statement: the list plus this finding, numbered by the list's
+        ORDER BY.  A finding the list no longer holds (closed under the
+        ``active`` filter while it was open) keeps its place in that order,
+        so Next is the finding after where it sat, not the top of the list.
+
+        ``{"position", "total", "previous", "next"}`` — ``position`` is
+        1-based and ``None`` when the finding is not in the list; ``total``
+        is the list's total; a neighbour is ``{"id", "title"}`` or ``None``.
+        404 when the finding is not one of the project's."""
+        from app.services.filter_targets import require_in_project
+
+        require_in_project(self.db, project_id, host_id=host_id)
+        listed = self._selection(
+            select(Finding.id), project_id=project_id,
+            status=status, severity=severity, owner_id=owner_id, unowned=unowned,
+            source=source, host_id=host_id, search=search, needs=needs, host_state=host_state,
+        ).whereclause
+        ranked = (
+            select(
+                Finding.id.label("id"), Finding.title.label("title"),
+                case((listed, 1), else_=0).label("listed"),
+                func.row_number().over(order_by=_finding_order(sort, sort_dir)).label("rn"),
+                func.count().over().label("n"),
+            )
+            .where(Finding.project_id == project_id, or_(listed, Finding.id == finding_id))
+            .cte("ranked")
+        )
+        here = select(ranked.c.rn).where(ranked.c.id == finding_id).scalar_subquery()
+        rows = {
+            row.rn: row for row in self.db.execute(
+                select(ranked.c.id, ranked.c.title, ranked.c.listed, ranked.c.rn, ranked.c.n)
+                .where(ranked.c.rn.between(here - 1, here + 1))
+            )
+        }
+        me = next((r for r in rows.values() if r.id == finding_id), None)
+        if me is None:
+            raise HTTPException(status_code=404, detail="Finding not found")
+        step = lambda r: {"id": r.id, "title": r.title} if r is not None else None  # noqa: E731
+        return {
+            "position": me.rn if me.listed else None,
+            # Everything numbered is listed, but for this finding when it is not.
+            "total": me.n if me.listed else me.n - 1,
+            "previous": step(rows.get(me.rn - 1)),
+            "next": step(rows.get(me.rn + 1)),
+        }
 
     def endpoint_summaries(
         self, finding_ids: Sequence[int], *, preview: int = ENDPOINT_PREVIEW,

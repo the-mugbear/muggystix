@@ -215,6 +215,22 @@ class FindingListResponse(BaseModel):
     owner_counts: List[FindingOwnerCount] = []
 
 
+class FindingQueueStep(BaseModel):
+    id: int
+    title: str
+
+
+class FindingQueueNeighbours(BaseModel):
+    """Where a finding stands in a Findings list and the findings either side
+    (the finding page's Previous / Next; 2.529.0)."""
+    # 1-based; null when the finding is not in this list (closed while it was
+    # open under the `active` filter) — previous / next are then where it sat.
+    position: Optional[int] = None
+    total: int
+    previous: Optional[FindingQueueStep] = None
+    next: Optional[FindingQueueStep] = None
+
+
 class FindingStatusHistoryEntry(BaseModel):
     id: int
     from_status: Optional[str] = None

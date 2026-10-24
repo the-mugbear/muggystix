@@ -58,6 +58,7 @@ import PostureSection, { SectionCount } from '../components/posture/PostureSecti
 import FindingEndpoints from '../components/findings/FindingEndpoints';
 import { FindingEditDisclosure } from '../components/findings/FindingEditChange';
 import ReportDraftBar, { reportParam } from '../components/findings/ReportDraftBar';
+import FindingsQueueBar from '../components/findings/FindingsQueueBar';
 import {
   findingHistoryKey, findingKey, keepNewerFinding, putFindingAnswer,
 } from '../components/findings/findingCache';
@@ -73,7 +74,7 @@ import { Input } from '../components/ui/input';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import { SOURCE_LABEL, STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
-import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
+import { RETURN_PARAM, findingQueueFilters, safeFindingsReturn } from '../utils/findingsReturn';
 import { routeId } from '../utils/routeId';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
@@ -107,6 +108,10 @@ const FindingDetail: React.FC = () => {
   // `?endpoint=<finding_host id>` — a proposal's link to the row it is about.
   const focusEndpointId = Number(searchParams.get('endpoint')) || null;
   const { user } = useAuth();
+  // Previous / Next walk that list: its filters and order, read as the list
+  // reads its own address (no `from`: the default list).
+  const rawFrom = searchParams.get(RETURN_PARAM);
+  const queueFilters = useMemo(() => findingQueueFilters(rawFrom, user?.id), [rawFrom, user?.id]);
   // Findings routes admit viewers (read-only); analyst+ may dispose/detach.
   // Gate the write affordances so viewers see history without 403-bait controls.
   // Triage is a project analyst's (R32): a viewer or auditor reads the page.
@@ -449,8 +454,11 @@ const FindingDetail: React.FC = () => {
   return (
     <div className="p-md md:p-lg">
       {leaveDialog}
-      {fromReport != null && (
+      {fromReport != null ? (
         <ReportDraftBar reportId={fromReport} findingId={finding.id} onNavigate={leaveTo} />
+      ) : (
+        <FindingsQueueBar findingId={finding.id} revision={finding.revision} filters={queueFilters}
+          returnTo={returnTo} onNavigate={leaveTo} />
       )}
       <Button variant="ghost" size="sm" onClick={backToFindings} className="mb-sm">
         <ArrowLeft className="size-4" aria-hidden /> Findings

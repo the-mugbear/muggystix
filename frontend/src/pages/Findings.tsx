@@ -7,7 +7,9 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { findingDetailHref } from '../utils/findingsReturn';
+import {
+  findingDetailHref, findingFiltersOf, ownerFilterOf, type OwnerFilterValue,
+} from '../utils/findingsReturn';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
@@ -75,7 +77,7 @@ import {
   matchesStatusFilter,
 } from '../utils/findingStatus';
 import { ENDPOINT_STATES, endpointPreviewTitle } from '../utils/findingEndpoints';
-import { NEED_FILTER_OPTIONS, NEED_SECTION, needsFilterOf, rowNeeds } from '../utils/findingNeeds';
+import { NEED_FILTER_OPTIONS, NEED_SECTION, rowNeeds } from '../utils/findingNeeds';
 import { selectAllState } from '../utils/selection';
 
 // Compact age ("31d") from an ISO timestamp — the full date goes in the
@@ -124,16 +126,6 @@ type SummaryPrompt =
   | { kind: 'bulk'; status: FindingStatus; ids: number[]; offscreen: number };
 
 type StatusFilterValue = FindingStatusQuery | 'all';
-/** `?owner=`: `me`, `unowned`, or one person's user id (5.356.0 — the filter
- *  offered only the reader and "nobody", so findings promoted by a teammate,
- *  who owns what they promote, could not be listed).  Anything else is "any". */
-type OwnerFilterValue = 'any' | 'me' | 'unowned' | `${number}`;
-const ownerFilterOf = (raw: string | null, myId: number | null | undefined): OwnerFilterValue => {
-  if (raw === 'me' || raw === 'unowned') return raw;
-  if (raw && /^[1-9]\d*$/.test(raw)) return Number(raw) === myId ? 'me' : (raw as `${number}`);
-  return 'any';
-};
-
 /**
  * The project's findings — the judged record reports are built from.
  * Scanner observations are their own Inventory page (`/observations`).
@@ -182,17 +174,20 @@ const FindingsList: React.FC = () => {
   // status is 'active' — terminal findings shouldn't bury current work
   // (§15). An absent param means the default, so a clean URL stays clean.
   const [searchParams, setSearchParams] = useSearchParams();
-  const statusFilter = (searchParams.get('status') as StatusFilterValue | null) ?? 'active';
-  const severityFilter = (searchParams.get('severity') as FindingSeverity | null) ?? 'all';
-  const sourceFilter = (searchParams.get('source') as FindingSource | null) ?? 'all';
+  // What the list is asked for, without the page: the address's ONE reading
+  // (`findingFiltersOf`), which the finding page's Previous / Next reads its
+  // `from` with too.  Kept by value, so a page change is not a new filter.
+  const filtersKey = JSON.stringify(findingFiltersOf(searchParams, user?.id));
+  const filters = useMemo<FindingFilters>(() => JSON.parse(filtersKey) as FindingFilters, [filtersKey]);
+  const statusFilter: StatusFilterValue = filters.status ?? 'all';
+  const severityFilter: FindingSeverity | 'all' = filters.severity ?? 'all';
+  const sourceFilter: FindingSource | 'all' = filters.source ?? 'all';
   const ownerFilter = ownerFilterOf(searchParams.get('owner'), user?.id);
   // What a finding still needs before the report (`utils/findingNeeds`).
-  const needsFilter = needsFilterOf(searchParams.get('needs'));
+  const needsFilter: FindingNeedsFilter | 'all' = filters.needs ?? 'all';
   // A host of the finding in this state (5.395.0): `retest` is the project's
   // list of pending retests, everyone's (owner, 2026-10-14).
-  const hostStateParam = searchParams.get('host_state');
-  const hostStateFilter: FindingHostStatus | 'all' =
-    (ENDPOINT_STATES as string[]).includes(hostStateParam ?? '') ? (hostStateParam as FindingHostStatus) : 'all';
+  const hostStateFilter: FindingHostStatus | 'all' = filters.host_state ?? 'all';
   // The search is the address's too (`search.value`, what the list is asked
   // for); the box shows `search.draft`, which is committed a moment after the
   // typing stops — replacing the entry, from the first page — and follows the
@@ -242,8 +237,8 @@ const FindingsList: React.FC = () => {
   // under pagination). With no sort in the URL the list is worst first, then
   // newest (v5.288.0) — newest-first alone interleaved the severities.  The
   // server's severity sort breaks ties by id descending, i.e. newest.
-  const sortBy: FindingSortField = (searchParams.get('sort') as FindingSortField | null) ?? 'severity';
-  const sortDir: 'asc' | 'desc' = searchParams.get('dir') === 'desc' ? 'desc' : 'asc';
+  const sortBy: FindingSortField = filters.sort ?? 'severity';
+  const sortDir: 'asc' | 'desc' = filters.dir ?? 'asc';
   const setPageSize = useCallback((n: number) => setUrlParam('page_size', String(n), '50', true), [setUrlParam]);
   const setSort = useCallback((field: FindingSortField | null, dir: 'asc' | 'desc') => {
     setSearchParams((prev) => {
@@ -302,22 +297,6 @@ const FindingsList: React.FC = () => {
     }
   }, [membershipSignature]);
 
-  // What the list is asked for, without the page (the list hook's).
-  const filters = useMemo<FindingFilters>(() => {
-    const f: FindingFilters = {};
-    if (statusFilter !== 'all') f.status = statusFilter;
-    if (severityFilter !== 'all') f.severity = severityFilter;
-    if (sourceFilter !== 'all') f.source = sourceFilter;
-    if (ownerFilter === 'unowned') f.unowned = true;
-    else if (ownerFilter === 'me') { if (user?.id != null) f.owner_id = user.id; }
-    else if (ownerFilter !== 'any') f.owner_id = Number(ownerFilter);
-    if (needsFilter !== 'all') f.needs = needsFilter;
-    if (hostStateFilter !== 'all') f.host_state = hostStateFilter;
-    if (searchValue) f.search = searchValue;
-    if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
-    return f;
-  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, hostStateFilter, searchValue,
-    user?.id, sortBy, sortDir]);
 
   // Per-field default direction (worst/most-relevant first); a repeat click
   // toggles. Mirrors the backend's per-field default.

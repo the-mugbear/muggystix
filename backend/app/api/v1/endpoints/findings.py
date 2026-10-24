@@ -7,6 +7,7 @@ itself (delete), a comment's text — is further limited to its author (or a
 project admin, for the finding); triage stays open to any analyst.
 """
 import logging
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
@@ -41,7 +42,7 @@ from app.schemas.schemas import (
 from app.schemas.findings import (
     EndpointRetestResult, EndpointStatusBulkUpdate, EndpointStatusUpdate,
     FindingImage, FindingImageList,
-    FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
+    FindingResponse, FindingHostInfo, FindingListResponse, FindingQueueNeighbours, FindingReportText,
     PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest, FindingNotePage, FindingNoteUpdate,
     FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry, FindingEditValues,
@@ -169,8 +170,33 @@ def _load(db: Session, project: Project, finding_id: int) -> Finding:
     return finding
 
 
-@router.get("/findings", response_model=FindingListResponse)
-def list_findings(
+@dataclass(frozen=True)
+class FindingListQuery:
+    """What a Findings list is: its filters and its order.  ONE declaration
+    for the list and the finding page's Previous / Next through it (2.529.0),
+    so the two can never read the same address as different lists."""
+    status: Optional[str]
+    severity: Optional[str]
+    owner_id: Optional[int]
+    unowned: bool
+    source: Optional[str]
+    host_id: Optional[int]
+    search: Optional[str]
+    needs: Optional[str]
+    host_state: Optional[str]
+    sort: Optional[str]
+    dir: Optional[str]
+
+    def filters(self) -> dict:
+        """The ``FindingService._selection`` arguments (no order)."""
+        return dict(
+            status=self.status, severity=self.severity, owner_id=self.owner_id, unowned=self.unowned,
+            source=self.source, host_id=self.host_id, search=self.search, needs=self.needs,
+            host_state=self.host_state,
+        )
+
+
+def finding_list_query(
     status: Optional[str] = Query(
         None, description="A status, or a group: 'active' (open/confirmed) | 'resolved' (terminal).",
     ),
@@ -187,6 +213,16 @@ def list_findings(
         None, description="severity | status | title | host_count | source | created_at | owner (default newest-first; unowned sorts last).",
     ),
     dir: Optional[str] = Query(None, pattern="^(asc|desc)$"),
+) -> FindingListQuery:
+    return FindingListQuery(
+        status=status, severity=severity, owner_id=owner_id, unowned=unowned, source=source,
+        host_id=host_id, search=search, needs=needs, host_state=host_state, sort=sort, dir=dir,
+    )
+
+
+@router.get("/findings", response_model=FindingListResponse)
+def list_findings(
+    query: FindingListQuery = Depends(finding_list_query),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -194,22 +230,19 @@ def list_findings(
     viewer: FindingActor = Depends(get_finding_viewer),
 ):
     svc = FindingService(db)
+    filters = query.filters()
     rows, total = svc.list_findings(
-        project_id=project.id, status=status, severity=severity,
-        owner_id=owner_id, unowned=unowned, source=source, host_id=host_id,
-        search=search, needs=needs, host_state=host_state,
-        limit=limit, offset=offset, sort=sort, sort_dir=dir,
+        project_id=project.id, **filters,
+        limit=limit, offset=offset, sort=query.sort, sort_dir=query.dir,
     )
     sev_counts = svc.severity_counts(
-        project_id=project.id, status=status, owner_id=owner_id,
-        unowned=unowned, source=source, host_id=host_id, search=search, needs=needs,
-        host_state=host_state,
+        project_id=project.id, **{k: v for k, v in filters.items() if k != "severity"},
     )
     # C2 (review 2026-10-01): a row carries the endpoint COUNT, the state
     # roll-up and a preview of five — two grouped statements for the page,
     # never every endpoint of every finding (and never a query per row).
     # With `host_id`, that host's endpoint rows lead each preview.
-    endpoints = svc.endpoint_summaries([f.id for f in rows], first_host_id=host_id)
+    endpoints = svc.endpoint_summaries([f.id for f in rows], first_host_id=query.host_id)
     # What each row still needs before the report: two more statements for
     # the page, and the figures behind `needs=` — never a second definition.
     needs_by_id = finding_needs.needs_of(db, [f.id for f in rows])
@@ -225,8 +258,8 @@ def list_findings(
         # The Owner filter's options: taken before the owner filter, so each
         # count is the size of the list that owner opens.
         owner_counts=svc.owner_counts(
-            project_id=project.id, status=status, severity=severity,
-            source=source, host_id=host_id, search=search, needs=needs, host_state=host_state,
+            project_id=project.id,
+            **{k: v for k, v in filters.items() if k not in ("owner_id", "unowned")},
         ),
     )
 
@@ -239,6 +272,23 @@ def get_finding(
     viewer: FindingActor = Depends(get_finding_viewer),
 ):
     return _serialize(_load(db, project, finding_id), viewer)
+
+
+@router.get("/findings/{finding_id}/neighbours", response_model=FindingQueueNeighbours)
+def finding_neighbours(
+    finding_id: int,
+    query: FindingListQuery = Depends(finding_list_query),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """The finding page's Previous / Next: where this finding stands in the
+    Findings list these parameters name (the list's own filters and order)
+    and the findings either side.  Navigation for the page only — the
+    agents read the list itself."""
+    return FindingService(db).queue_neighbours(
+        project_id=project.id, finding_id=finding_id, **query.filters(),
+        sort=query.sort, sort_dir=query.dir,
+    )
 
 
 @router.post("/findings", response_model=FindingResponse, status_code=201)

@@ -263,6 +263,38 @@ export const listFindings = async (
   return response.data;
 };
 
+export interface FindingQueueStep {
+  id: number;
+  title: string;
+}
+
+/** Where a finding stands in a Findings list, and the findings either side
+ *  (the finding page's Previous / Next). `position` is 1-based and null when
+ *  the finding has left the list; previous / next are then where it sat. */
+export interface FindingQueueNeighbours {
+  position: number | null;
+  total: number;
+  previous: FindingQueueStep | null;
+  next: FindingQueueStep | null;
+}
+
+export const getFindingNeighbours = async (
+  projectId: number,
+  findingId: number,
+  filters: FindingFilters = {},
+  signal?: AbortSignal,
+): Promise<FindingQueueNeighbours> => {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) params.set(k, String(v));
+  });
+  const qs = params.toString();
+  const response = await api.get<FindingQueueNeighbours>(
+    `${projectPath(projectId)}/findings/${findingId}/neighbours${qs ? `?${qs}` : ''}`, { signal },
+  );
+  return response.data;
+};
+
 export const getFinding = async (projectId: number, findingId: number, signal?: AbortSignal): Promise<Finding> => {
   const response = await api.get<Finding>(`${projectPath(projectId)}/findings/${findingId}`, { signal });
   return response.data;

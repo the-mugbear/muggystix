@@ -766,6 +766,16 @@ whole address in one place (Hosts' `commit`) hands the hook its own
 `{ page, setPage, search }` instead of `useUrlPage()`, so the address keeps
 one writer.
 
+**A record opened from a list steps through that list** (5.423.0, the
+finding page).  The row link carries the list's address (`from`); the record
+page reads it with the list's own reading of its address and asks the server
+where the record stands — never a copy of the rows in the browser, which a
+paged or capped list does not have.  The LIST decides what is walked (Owner:
+me walks the reader's own), never the reader's role.  The bar says "Finding
+2 of 41 in the list", or "No longer in the list" once a change took it out,
+and Previous / Next (`j` / `k`) keep `from` and go through the page's
+unsaved-text guard.
+
 **A filter has one owner: the address.**  A committed filter — a chip, a
 select, a sort, a tab, a search that was asked — is read from the URL on
 every render and changed by writing the URL (replace; `page` dropped).  It is

@@ -14,6 +14,8 @@ vi.mock('../../services/api', () => ({
   // The finding's linked test evidence (5.321.0); none unless a test says so.
   listEvidenceRecords: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   getFinding: vi.fn(),
+  // The list's Previous / Next (FindingDetail.queueBar.test.tsx); alone here.
+  getFindingNeighbours: vi.fn().mockResolvedValue({ position: 1, total: 1, previous: null, next: null }),
   getFindingHistory: vi.fn(),
   setFindingStatus: vi.fn(),
   setFindingEndpointStatus: vi.fn(),

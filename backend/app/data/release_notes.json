@@ -2,6 +2,14 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.529.0",
+      "frontend": "5.423.0",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "new", "text": "A finding's page has Previous and Next (or the j and k keys) through the Findings list you opened it from, with its filters and order, and says where the finding stands in it: open a finding from Owner: me to step through your own, or from the whole list to step through all of them."}
+      ]
+    },
+    {
       "backend": "2.528.0",
       "frontend": "5.422.3",
       "date": "2026-10-23",

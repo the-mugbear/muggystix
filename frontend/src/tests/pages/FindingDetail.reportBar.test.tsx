@@ -39,6 +39,7 @@ vi.mock('../../services/api', () => ({
   acceptProposal: vi.fn(),
   rejectProposal: vi.fn(),
   getClientReport: vi.fn(),
+  getFindingNeighbours: vi.fn().mockResolvedValue({ position: 1, total: 1, previous: null, next: null }),
 }));
 const confirmMock = vi.fn();
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
@@ -114,6 +115,9 @@ describe('The report draft bar on a finding', () => {
     expect(prev).toHaveAttribute('href', '/findings/6?edit=report-text&report=24');
     expect(next).toHaveAttribute('href', '/findings/8?edit=report-text&report=24');
     expect(back).toHaveAttribute('href', '/reports/24#report-checklist');
+    // The report's bar takes the place of the list's.
+    expect(screen.queryByTestId('findings-queue-bar')).toBeNull();
+    expect(mocked.getFindingNeighbours).not.toHaveBeenCalled();
 
     fireEvent.click(next);
     expect(navigateSpy).toHaveBeenCalledWith('/findings/8?edit=report-text&report=24');

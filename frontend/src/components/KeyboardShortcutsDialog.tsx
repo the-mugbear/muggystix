@@ -42,6 +42,7 @@ const buildShortcuts = (): ShortcutRow[] => [
     keys: ['j', 'k'],
     label: 'Findings, Scanner observations, Names, Collaboration: move the row cursor (↑/↓ too); Enter opens the row',
   },
+  { keys: ['j', 'k'], label: 'A finding: next / previous finding in the list it was opened from' },
   { keys: ['j', 'k'], label: 'Proposals: move the row cursor (↑/↓ too); Enter opens the finding' },
   { keys: ['a'], label: 'Proposals: accept the cursor row (applied as you)' },
   { keys: ['r'], label: 'Proposals: reject the cursor row — opens the reason field' },
