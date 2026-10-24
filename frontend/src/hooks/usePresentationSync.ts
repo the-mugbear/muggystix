@@ -23,6 +23,8 @@ export type TabKind = 'display' | 'controller' | 'browse';
 
 /** A move that has not answered in this long has an unknown outcome. */
 export const MOVE_TIMEOUT_MS = 8000;
+/** A Browse tab's heartbeat (presence and an end), slower than a following tab's. */
+export const BROWSE_POLL_MS = 5000;
 
 export interface PresentationSyncHandle extends SyncView {
   go: (target: Target) => boolean;
@@ -94,7 +96,10 @@ export function usePresentationSync(
       return answer;
     },
     enabled: presentationId != null,
-    ...pollEvery(1000, { inBackground: true }),
+    // A Browse tab follows nothing — it keeps its own position — so it says it
+    // is there, and learns of an end, every few seconds rather than every one
+    // (review 2026-10-24: the answer is read by every tab, every second).
+    ...pollEvery(kind === 'browse' ? BROWSE_POLL_MS : 1000, { inBackground: true }),
   });
 
   // Shown again, or back online: read now.

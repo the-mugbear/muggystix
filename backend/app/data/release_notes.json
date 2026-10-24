@@ -2,6 +2,16 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.532.1",
+      "frontend": "5.426.1",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "changed", "text": "Presentation mode: a presenter's remote works on the Controller (Page Down / Page Up and the arrow keys step like j and k), and the slide list keeps the current slide in view."},
+        {"kind": "fixed", "text": "Presentation mode: once a presentation ends, every open tab offers to start the next one, and a display left on the shared screen picks up the next presentation of that report without a reload."},
+        {"kind": "fixed", "text": "Presentation mode: an agenda can be deleted once the presentation that followed it has gone idle, without someone first opening that presentation."}
+      ]
+    },
+    {
       "backend": "2.532.0",
       "frontend": "5.426.0",
       "date": "2026-10-24",

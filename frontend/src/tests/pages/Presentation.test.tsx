@@ -34,7 +34,7 @@ vi.mock('../../hooks/useProjectRole', () => ({ useProjectRole: () => role }));
 vi.mock('../../hooks/useProjectId', () => ({ useProjectId: () => 1 }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1, username: 'ben', role: 'member' } }) }));
 
-import Presentation from '../../pages/Presentation';
+import Presentation, { keepCurrentInView } from '../../pages/Presentation';
 
 const person = (id: number, name: string) => ({ id, name, profile_image: null });
 
@@ -136,6 +136,53 @@ describe('presentation mode', () => {
     expect(called.every((n) => [
       'getLivePresentation', 'getPresentationSlides', 'heartbeatPresentation', 'listPresentationAgendas',
     ].includes(n))).toBe(true);
+  });
+});
+
+describe('presentation mode — the review of 2026-10-24', () => {
+  it('a Display left open through End follows the NEXT Start of the report', async () => {
+    const ended = state({ revision: 6, you_are_driving: false, ended: { at: 'now', reason: 'ended', by: person(1, 'Ben') } });
+    const next = state({ id: 10, revision: 1, slide_key: 'summary:1', you_are_driving: false });
+    api.getLivePresentation
+      .mockResolvedValueOnce({ live: state({ you_are_driving: false }) })
+      .mockResolvedValueOnce({ live: null })                       // re-read once it ended
+      .mockResolvedValue({ live: next });                          // someone started again
+    api.heartbeatPresentation.mockImplementation(async (_p: number, id: number) => (id === 9 ? ended : next));
+    renderAt('/reports/3/present/display');
+    expect(await screen.findByText(/The presentation ended/)).toBeInTheDocument();
+    // Not a dead end: the report's live presentation is read again, and the new one followed.
+    await waitFor(() => expect(api.heartbeatPresentation).toHaveBeenCalledWith(1, 10, expect.anything(), expect.anything()),
+      { timeout: 5000 });
+    expect(await screen.findByText('We tested the network.')).toBeInTheDocument();
+    // …and the ended one is no longer polled.
+    const before = api.heartbeatPresentation.mock.calls.filter(([, id]) => id === 9).length;
+    await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
+    expect(api.heartbeatPresentation.mock.calls.filter(([, id]) => id === 9).length).toBe(before);
+  }, 10_000);
+
+  it('a presenter remote steps with Page Down and the arrows', async () => {
+    renderAt('/reports/3/present');
+    await screen.findByText('You are driving');
+    await mainStage().findByText('Internal assessment');
+    fireEvent.keyDown(window, { key: 'PageDown' });
+    await waitFor(() => expect(api.movePresentation).toHaveBeenCalledWith(
+      1, 9, expect.objectContaining({ slide_key: 'summary:1' }), expect.any(Number)));
+  });
+
+  it('the slide list keeps the current slide in view, scrolling only itself', () => {
+    const list = document.createElement('nav');
+    const row = document.createElement('button');
+    row.setAttribute('aria-current', 'true');
+    list.appendChild(row);
+    Object.defineProperty(list, 'clientHeight', { value: 100 });
+    Object.defineProperty(row, 'offsetTop', { value: 450, configurable: true });
+    Object.defineProperty(row, 'offsetHeight', { value: 20 });
+    list.scrollTop = 0;
+    keepCurrentInView(list);
+    expect(list.scrollTop).toBe(370);                              // its bottom at the list's bottom
+    Object.defineProperty(row, 'offsetTop', { value: 40, configurable: true });
+    keepCurrentInView(list);
+    expect(list.scrollTop).toBe(40);                               // above: its top at the list's top
   });
 });
 

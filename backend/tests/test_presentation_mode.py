@@ -397,6 +397,45 @@ def test_a_layout_report_is_recorded_once_an_hour(client, test_project, report):
     body = {"slide_key": "summary:1", "overflow_px": 14, "font": "Arial"}
     assert client.post(_base(test_project, report) + "/layout-reports", json=body).json() == {"recorded": True}
     assert client.post(_base(test_project, report) + "/layout-reports", json=body).json() == {"recorded": False}
+    # Review 2026-10-24: only a slide of the report is recorded, never any string.
+    junk = {**body, "slide_key": "<script>not-a-slide"}
+    assert client.post(_base(test_project, report) + "/layout-reports", json=junk).status_code == 422
+
+
+def test_the_answer_costs_the_same_for_two_watchers_or_twenty(db_session, test_project, report, people):
+    """Review 2026-10-24: every tab reads it once a second; each watcher's
+    person was its own statement."""
+    from sqlalchemy import event
+
+    from app.services import presentation_service as ps
+    from tests.conftest import engine
+
+    starter = people["ana"]
+    p = ps.start(db_session, report, starter, "t")
+
+    def cost() -> int:
+        db_session.expire_all()
+        n = {"n": 0}
+
+        def count(*_args):
+            n["n"] += 1
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            ps.state(db_session, db_session.get(Presentation, p.id), starter, "t")
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+        return n["n"]
+
+    def watchers(first: int, count: int):
+        for i in range(first, first + count):
+            u = _member(db_session, test_project, 600 + i, f"w{i}", ProjectRole.AUDITOR)
+            db_session.add(PresentationViewer(presentation_id=p.id, user_id=u.id, client_id=f"c{i}", kind="display"))
+        db_session.commit()
+
+    watchers(0, 2)
+    two = cost()
+    watchers(2, 18)
+    assert cost() == two <= 6
 
 
 def test_the_answer_is_json_serialisable_and_names_people_one_way(client, test_project, report):
@@ -618,6 +657,21 @@ def test_an_agenda_a_live_presentation_follows_cannot_be_deleted(client, db_sess
     db_session.refresh(ended)
     assert ended.agenda_id is None and ended.agenda_mode is None
     assert client.get(_agendas(test_project, report)).json() == []
+
+
+def test_an_idle_presentation_never_read_again_does_not_hold_its_agenda(client, db_session, test_project, report):
+    """Review 2026-10-24: "live" for the delete was ``ended_at IS NULL``, so a
+    presentation gone idle and never read again blocked it for good."""
+    a = _agenda(client, test_project, report, ["overview"])
+    st = _start(client, test_project, report, "t")
+    _amove(client, test_project, st, "t", "overview:1", a)
+    p = db_session.get(Presentation, st["id"])
+    db_session.refresh(p)
+    p.last_move_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    db_session.commit()
+    listed = client.get(_agendas(test_project, report)).json()
+    assert listed[0]["in_live_presentation"] is False
+    assert client.delete(f"{_agendas(test_project, report)}/{a['id']}").status_code == 204
 
 
 def test_a_viewer_is_refused_the_agenda_and_spotlight_routes(client, test_project, report, people, act_as):

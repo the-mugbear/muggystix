@@ -39,6 +39,7 @@ Stages B and C (2.531.0):
 """
 from __future__ import annotations
 
+import time
 from collections import OrderedDict
 from datetime import timedelta
 from typing import Optional, Tuple
@@ -47,7 +48,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.security import log_audit_event
 from app.db.models_auth import User
@@ -67,6 +68,9 @@ IDLE_MINUTES = 30
 WATCHING_SECONDS = 30
 #: A Display not heard from for this long is "disconnected".
 DISPLAY_SILENT_SECONDS = 10
+#: …and is still LISTED (as disconnected) for this long, then forgotten — a
+#: Display closed by mistake stays visible long enough to be reopened.
+DISPLAY_LISTED_SECONDS = 300
 FIRST_SLIDE = "overview:1"
 #: How long a spotlight shows.
 SPOTLIGHT_MS = 5000
@@ -87,9 +91,28 @@ def presentable_report(db: Session, project_id: int, report_id: int) -> Report:
     return report
 
 
+#: How long the set of frozen copies on disk is remembered per report.  It is
+#: part of the slide-list cache key, read on every move and every Display
+#: acknowledgment; a query plus one file check per image, per Display, per
+#: second (review 2026-10-24) — and a copy only ever goes missing by hand.
+FROZEN_IMAGES_TTL_SECONDS = 30
+_FROZEN: "dict[int, tuple[float, frozenset]]" = {}
+
+
 def frozen_images(db: Session, report: Report) -> frozenset:
     """The attachment ids whose copy the issue froze AND is still in the
-    report's storage — a printed image outside it is "not available"."""
+    report's storage — a printed image outside it is "not available".
+    Remembered per report for ``FROZEN_IMAGES_TTL_SECONDS``."""
+    now = time.monotonic()
+    hit = _FROZEN.get(report.id)
+    if hit is not None and now - hit[0] < FROZEN_IMAGES_TTL_SECONDS:
+        return hit[1]
+    found = _frozen_images_on_disk(db, report)
+    _FROZEN[report.id] = (now, found)
+    return found
+
+
+def _frozen_images_on_disk(db: Session, report: Report) -> frozenset:
     from app.services.client_report_service import stored_file_path
 
     out = set()
@@ -255,13 +278,25 @@ def get_presentation(db: Session, project_id: int, presentation_id: int) -> Pres
 def state(db: Session, p: Presentation, user: User, client_id: Optional[str]) -> dict:
     """The answer every presentation route gives: the position, who drives,
     whether the CALLER drives, and who is watching (with each Display's
-    rendered position and status)."""
+    rendered position and status).
+
+    Every tab asks for it once a second, so its cost does not grow with the
+    room (review 2026-10-24): the watchers come with their people in one
+    statement, the presentation's own people (driver, starter, ender) in one
+    more — the relationships then resolve from the identity map —, the agenda
+    in one, the spotlight only while there is one
+    (``test_presentation_mode.py::test_the_answer_costs_the_same_for_two_watchers_or_twenty``)."""
     viewers = (
         db.query(PresentationViewer, func.extract("epoch", func.now() - PresentationViewer.last_seen_at))
+        .options(joinedload(PresentationViewer.user))
         .filter(PresentationViewer.presentation_id == p.id)
         .order_by(PresentationViewer.id)
         .all()
     )
+    named = {i for i in (p.driver_id, p.started_by_id, p.ended_by_id) if i is not None}
+    named -= {v.user_id for v, _ in viewers}
+    if named:
+        db.query(User).filter(User.id.in_(named)).all()
     watching, displays = [], []
     for v, age in viewers:
         age = float(age or 0)
@@ -272,7 +307,7 @@ def state(db: Session, p: Presentation, user: User, client_id: Optional[str]) ->
                 status = "synchronized"
             else:
                 status = "catching_up"
-            if age <= WATCHING_SECONDS * 10:
+            if age <= DISPLAY_LISTED_SECONDS:
                 displays.append({
                     "client": v.id, "person": person_of(v.user), "status": status,
                     "rendered": None if v.rendered_revision is None else {
@@ -321,12 +356,18 @@ def _agenda_state(db: Session, p: Presentation) -> Optional[dict]:
     reads Next from the same state), the mode and the ACTIVE item."""
     if p.agenda_id is None:
         return None
-    agenda = db.get(PresentationAgenda, p.agenda_id)
-    version = db.query(PresentationAgendaVersion).filter(
-        PresentationAgendaVersion.agenda_id == p.agenda_id, PresentationAgendaVersion.version == p.agenda_version,
-    ).first()
-    if agenda is None or version is None:
+    row = (
+        db.query(PresentationAgenda, PresentationAgendaVersion)
+        .join(PresentationAgendaVersion, and_(
+            PresentationAgendaVersion.agenda_id == PresentationAgenda.id,
+            PresentationAgendaVersion.version == p.agenda_version,
+        ))
+        .filter(PresentationAgenda.id == p.agenda_id)
+        .first()
+    )
+    if row is None:
         return None
+    agenda, version = row
     return {
         "id": agenda.id, "name": agenda.name, "version": p.agenda_version,
         "latest_version": agenda.latest_version, "mode": p.agenda_mode, "item_index": p.agenda_item_index,
@@ -608,8 +649,11 @@ def _check_agenda_input(db: Session, report: Report, name: str, items) -> Tuple[
 
 
 def _live_pinning(db: Session, agenda_id: int) -> Optional[Presentation]:
+    """A live presentation following the agenda — live by the ONE rule
+    (review 2026-10-24: one gone idle and never read again, so never ended,
+    blocked the delete until someone opened its report's presentation)."""
     return db.query(Presentation).filter(
-        Presentation.agenda_id == agenda_id, Presentation.ended_at.is_(None),
+        Presentation.agenda_id == agenda_id, Presentation.ended_at.is_(None), _recently_active(),
     ).first()
 
 
@@ -735,9 +779,14 @@ def end(db: Session, p: Presentation, user: User, client_id: Optional[str], *, i
 
 def report_layout(db: Session, report: Report, user: User, slide_key: str, overflow_px: int, font: str) -> bool:
     """Record a slide that overflowed its estimate in someone's browser.  The
-    same slide, font and person within the hour is recorded once."""
+    same slide, font and person within the hour is recorded once.  The key
+    must be one of the report's slides (review 2026-10-24: any string was
+    stored) — checked against the unfiltered list, which holds every key a
+    filtered one can (a filter only removes endpoint rows, so pages)."""
     slide_key = (slide_key or "")[:200]
     font = (font or "unknown")[:100]
+    if slide_key not in slides_for(db, report, None, None)["keys"]:
+        raise HTTPException(status_code=422, detail="That slide is not in this report.")
     recent = db.query(PresentationLayoutReport.id).filter(
         PresentationLayoutReport.report_id == report.id,
         PresentationLayoutReport.slide_key == slide_key,

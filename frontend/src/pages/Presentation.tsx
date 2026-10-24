@@ -165,6 +165,15 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
   const sync = usePresentationSync(projectId, presentationId, clientId, kind);
   const state = sync.state;
 
+  // An ended presentation is not a dead end (review 2026-10-24, critical): the
+  // report's live presentation is read again — none, so the heartbeat stops,
+  // "Start presenting" is offered, and the 2 s poll resumes, which is how a
+  // Display left on the shared screen follows the NEXT Start of this report.
+  const endedId = state?.ended && state.id === presentationId ? state.id : null;
+  useEffect(() => {
+    if (endedId != null) void invalidateReads(queryClient, 'getLivePresentation');
+  }, [endedId, queryClient]);
+
   // What this tab shows.
   const urlSlide = searchParams.get('slide');
   const urlKind = searchParams.get('fk');
@@ -254,7 +263,14 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     const target = stepTarget(slides.slides, position, pinned, delta);
     if (target) go(target);
   }, [canNavigate, slides, position, pinned, go]);
-  useKeyboardShortcuts({ j: () => step(1), k: () => step(-1) }, kind !== 'display');
+  // j / k, and what a presenter's remote sends — Page Down / Page Up or the
+  // arrows (review 2026-10-24).  Not Space: on a focused button it would also
+  // click it, two steps for one press.
+  useKeyboardShortcuts({
+    j: () => step(1), k: () => step(-1),
+    ArrowRight: () => step(1), ArrowLeft: () => step(-1), ArrowDown: () => step(1), ArrowUp: () => step(-1),
+    PageDown: () => step(1), PageUp: () => step(-1),
+  }, kind !== 'display');
 
   // The position NOW, for a filter whose slide list arrives later.
   const positionRef = useRef(position);
@@ -552,8 +568,25 @@ const Watching: React.FC<{ state: PresentationState }> = ({ state }) => (
   </section>
 );
 
-const SlideList: React.FC<{ slides: Slide[]; current: string; onPick?: (key: string) => void }> = ({ slides, current, onPick }) => (
-  <nav aria-label="Slides" className="max-h-[60vh] overflow-y-auto border-t border-border pt-xs">
+/** Scroll `list` (and nothing around it) so its current row is in view.
+ *  `list` is positioned, so a row's `offsetTop` is measured from it. */
+export const keepCurrentInView = (list: HTMLElement | null): void => {
+  const row = list?.querySelector<HTMLElement>('[aria-current="true"]');
+  if (!list || !row) return;
+  const top = row.offsetTop;
+  if (top < list.scrollTop) list.scrollTop = top;
+  else if (top + row.offsetHeight > list.scrollTop + list.clientHeight) {
+    list.scrollTop = top + row.offsetHeight - list.clientHeight;
+  }
+};
+
+const SlideList: React.FC<{ slides: Slide[]; current: string; onPick?: (key: string) => void }> = ({ slides, current, onPick }) => {
+  // A deck can run to thousands of slides: the current one stays in view as
+  // it moves — a key press, a takeover, an agenda step (review 2026-10-24).
+  const list = useRef<HTMLElement | null>(null);
+  useEffect(() => { keepCurrentInView(list.current); }, [current, slides]);
+  return (
+  <nav ref={list} aria-label="Slides" className="relative max-h-[60vh] overflow-y-auto border-t border-border pt-xs">
     <ol className="space-y-px text-metadata">
       {slides.map((s, i) => {
         // Numbered: two slides can share a header (a finding's evidence images).
@@ -574,6 +607,7 @@ const SlideList: React.FC<{ slides: Slide[]; current: string; onPick?: (key: str
       })}
     </ol>
   </nav>
-);
+  );
+};
 
 export default Presentation;

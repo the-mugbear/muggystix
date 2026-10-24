@@ -1487,12 +1487,16 @@ screen (`pages/Presentation.tsx`).  Its rules:
 - **Three kinds of tab.**  The *Display* (`/reports/:id/present/display`,
   outside the app layout) is the one shared — it always follows and has no
   controls.  The *Controller* (`/reports/:id/present`) drives: Previous /
-  Next (`j` / `k`), the slide list (numbered — two slides can share a
-  header), the host filter, End; for everyone else "Now driving: Ana" and
-  Take control.  *Browse* (`?browse=1`) keeps its own position in its own
-  address and sends nothing.  A tab says when it is out of sync
-  ("Reconnecting — in sync 14 s ago"), when it lost control ("Ana took
-  control") and when the caller drives from another tab.
+  Next (`j` / `k`, and what a presenter's remote sends — Page Down / Page
+  Up, the arrows; never Space, which also clicks a focused button), the
+  slide list (numbered — two slides can share a header; it keeps the current
+  slide in view, scrolling only itself), the host filter, End; for everyone
+  else "Now driving: Ana" and Take control.  *Browse* (`?browse=1`) keeps its
+  own position in its own address and sends nothing.  A tab says when it is
+  out of sync ("Reconnecting — in sync 14 s ago"), when it lost control
+  ("Ana took control") and when the caller drives from another tab.  An
+  ended presentation is not a dead end: every tab offers (or, a Display,
+  waits for) the next Start of the report.
 - **A person is shown by their picture or initials, one component**
   (`components/PersonAvatar`): in presentation mode, beside a person's
   comment, in the user menu.  Never on an agent's note (an agent's work is
