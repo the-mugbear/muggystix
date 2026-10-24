@@ -364,6 +364,41 @@ def test_an_acknowledgment_must_name_a_slide_of_the_report_and_a_revision_that_e
     assert _beat(client, test_project, st, "disp", {"revision": 7, "slide_key": "overview:1"}).status_code == 422
 
 
+def test_the_answer_reads_only_the_tabs_in_its_windows_and_an_end_forgets_them(
+        client, db_session, test_project, report, people, act_as):
+    """Review 2026-10-24b: a tab id is made per page load, so the rows are the
+    tabs' history; the answer, read by every tab every second, reads the room."""
+    from sqlalchemy import event
+
+    from app.services import presentation_service as svc
+    from tests.conftest import engine
+
+    st = _start(client, test_project, report, "drv")
+    for i in range(30):
+        _beat(client, test_project, st, f"old{i}", kind="controller")
+    db_session.query(PresentationViewer).update(
+        {"last_seen_at": datetime.now(timezone.utc) - timedelta(seconds=svc.DISPLAY_LISTED_SECONDS + 60)})
+    db_session.commit()
+    _beat(client, test_project, st, "now", kind="controller")
+    rows = []
+
+    def count(conn, cursor, statement, parameters, context, executemany):
+        if "FROM presentation_viewers" in statement and "presentation_viewers.last_seen_at >=" in statement:
+            rows.append(statement)
+
+    event.listen(engine, "before_cursor_execute", count)
+    try:
+        p = db_session.get(Presentation, st["id"])
+        answer = svc.state(db_session, p, report.created_by, "drv")
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+    assert rows, "the window is applied in SQL"
+    assert [w["kind"] for w in answer["watching"]] == ["controller"]
+    act_as(people["adm"])
+    client.post(_p(test_project, st["id"], "end"), json={})
+    assert db_session.query(PresentationViewer).filter(PresentationViewer.presentation_id == st["id"]).count() == 0
+
+
 def test_a_silent_display_is_disconnected(client, db_session, test_project, report):
     st = _start(client, test_project, report, "drv")
     _beat(client, test_project, st, "disp", {"revision": 1, "slide_key": "overview:1"})
@@ -389,6 +424,11 @@ def test_an_idle_presentation_ends_and_a_watched_one_does_not(client, db_session
     ended = db_session.get(Presentation, st["id"])
     db_session.refresh(ended)
     assert ended.ended_reason == "idle"
+    # Review 2026-10-24b: the end is audited (no one ended it), and its tabs are forgotten.
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "presentation_ended",
+                                              AuditLog.resource_id == str(st["id"])).one()
+    assert audit.user_id is None and audit.details["reason"] == "idle"
+    assert db_session.query(PresentationViewer).filter(PresentationViewer.presentation_id == st["id"]).count() == 0
     # A new Start makes a new presentation.
     assert _start(client, test_project, report, "drv")["id"] != st["id"]
 
@@ -400,6 +440,19 @@ def test_a_layout_report_is_recorded_once_an_hour(client, test_project, report):
     # Review 2026-10-24: only a slide of the report is recorded, never any string.
     junk = {**body, "slide_key": "<script>not-a-slide"}
     assert client.post(_base(test_project, report) + "/layout-reports", json=junk).status_code == 422
+
+
+def test_a_new_font_name_each_time_does_not_record_without_end(client, db_session, test_project, report, monkeypatch):
+    """Review 2026-10-24b: `font` is the browser's text and part of the once-an-hour key."""
+    from app.db.models_presentations import PresentationLayoutReport
+    from app.services import presentation_service as svc
+
+    monkeypatch.setattr(svc, "LAYOUT_REPORTS_PER_HOUR", 3)
+    answers = [client.post(_base(test_project, report) + "/layout-reports",
+                           json={"slide_key": "summary:1", "overflow_px": 5, "font": f"Font {i}"}).json()["recorded"]
+               for i in range(5)]
+    assert answers == [True, True, True, False, False]
+    assert db_session.query(PresentationLayoutReport).count() == 3
 
 
 def test_the_answer_costs_the_same_for_two_watchers_or_twenty(db_session, test_project, report, people):
@@ -576,11 +629,16 @@ def test_an_agenda_is_saved_as_versions_and_an_item_naming_nothing_is_refused(cl
     saved = client.put(url, json={"name": "Walkthrough", "items": ["finding:F-02", "overview"],
                                   "expected_version": 1}).json()
     assert saved["version"] == 2 and saved["items"] == ["finding:F-02", "overview"]
-    # A rename alone makes no version.
+    # A rename is a change too (review 2026-10-24c); saving nothing new is none.
     assert client.put(url, json={"name": "Short", "items": ["finding:F-02", "overview"],
-                                 "expected_version": 2}).json()["version"] == 2
+                                 "expected_version": 2}).json()["version"] == 3
+    assert client.put(url, json={"name": "Short", "items": ["finding:F-02", "overview"],
+                                 "expected_version": 3}).json()["version"] == 3
     # Someone saved since this editor opened: 409 with the agenda as it is now.
     stale = client.put(url, json={"name": "x", "items": ["scope"], "expected_version": 1})
+    assert stale.status_code == 409 and stale.json()["detail"]["agenda"]["name"] == "Short"
+    # …and a stale save of the items alone, made before the rename, cannot restore the old name.
+    stale = client.put(url, json={"name": "Walkthrough", "items": ["overview", "finding:F-02"], "expected_version": 2})
     assert stale.status_code == 409 and stale.json()["detail"]["agenda"]["name"] == "Short"
     assert [x["name"] for x in client.get(_agendas(test_project, report)).json()] == ["Short"]
 

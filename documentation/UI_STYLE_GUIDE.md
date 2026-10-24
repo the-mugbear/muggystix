@@ -1497,7 +1497,12 @@ screen (`pages/Presentation.tsx`).  Its rules:
   ("Ana took control") and when the caller drives from another tab.  An
   ended presentation is not a dead end: every tab offers (or, a Display,
   waits for) the next Start of the report.  An ended one is never
-  "reconnecting" — it is no longer read.
+  "reconnecting" — it is no longer read; a Browse tab, asked every 5 s, is
+  late only after that.  A read that FAILED is never shown as an answer:
+  not "Nobody is presenting" (and no Start) when the live presentation could
+  not be read, not "the full report only" when the agendas could not, and a
+  host filter whose slides could not be read says so with Retry.  "Present"
+  (`?start=1`) starts only when nobody presents; otherwise it joins, once.
 - **A person is shown by their picture or initials, one component**
   (`components/PersonAvatar`): in presentation mode, beside a person's
   comment, in the user menu.  Never on an agent's note (an agent's work is

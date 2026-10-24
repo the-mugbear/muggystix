@@ -446,6 +446,21 @@ def _split_code(block: dict, avail: float) -> Optional[Tuple[dict, dict]]:
             {**block, "lines": block["lines"][k:], "cont_before": True})
 
 
+def _words_that_fit(words: Sequence[str], fits) -> int:
+    """The most leading words that fit (``fits(k)`` for the first k), by
+    binary search — more words never take fewer lines.  A cell holding a
+    pasted dump was re-measured word by word, quadratic (review 2026-10-24b:
+    2,000 words 0.20 s against 0.03 s as a paragraph)."""
+    lo, hi = 0, len(words)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def _split_row(cells: Sequence[str], widths: Sequence[float], room: float) -> Optional[Tuple[List[str], List[str]]]:
     """A row taller than a slide: each cell's text split so the head fits."""
     size, line = S["table_size"], S["table_line"]
@@ -456,12 +471,7 @@ def _split_row(cells: Sequence[str], widths: Sequence[float], room: float) -> Op
     heads, tails = [], []
     for c, w in zip(cells, widths):
         words = re.split(r"[ \n]+", c)
-        best = 0
-        for k in range(1, len(words) + 1):
-            if len(L.md_lines(" ".join(words[:k]), w - pad, size)) <= lines_room:
-                best = k
-            else:
-                break
+        best = _words_that_fit(words, lambda k: len(L.md_lines(" ".join(words[:k]), w - pad, size)) <= lines_room)
         if best == 0 and words and words[0]:
             pieces = L._break_token(words[0], w - pad, size, False)
             head = "".join(pieces[:lines_room])

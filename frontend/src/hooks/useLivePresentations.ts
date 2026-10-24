@@ -7,6 +7,12 @@
  * ONE read, `['listLivePresentations']`: the top bar polls it every
  * `LIVE_POLL_MS` (a minute, like the bell's count, would make a glow a minute
  * late); the bell's panel reads the same key when it opens.
+ *
+ * A failed read (review 2026-10-24b asked for the stance): a failed REFRESH
+ * keeps the last answer — the glow stays as it was, and the next poll
+ * corrects it; a first read that fails shows no glow, as before any is known.
+ * The glow is an invitation, not a status to alarm on; `failed` is there for
+ * a reader that must say more.
  */
 import { useQuery } from '@tanstack/react-query';
 

@@ -187,6 +187,87 @@ describe('presentation mode — the review of 2026-10-24', () => {
     expect(screen.queryByText(/Reconnecting/)).not.toBeInTheDocument();
   }, 10_000);
 
+  it('opened with ?start=1 while someone presents: joins, and does not start a new one when theirs ends', async () => {
+    const theirs = state({ you_are_driving: false, driver: person(2, 'Ana'), started_by: person(2, 'Ana') });
+    let ended = false;
+    api.getLivePresentation.mockImplementation(async () => ({ live: ended ? null : theirs }));
+    api.heartbeatPresentation.mockImplementation(async () => (ended
+      ? { ...theirs, revision: 5, ended: { at: 'now', reason: 'ended', by: person(2, 'Ana') } } : theirs));
+    renderAt('/reports/3/present?start=1');
+    expect(await screen.findByText('Ana')).toBeInTheDocument();
+    ended = true;
+    expect(await screen.findByTestId('start-presentation', {}, { timeout: 3000 })).toBeInTheDocument();
+    await act(async () => { await new Promise((r) => setTimeout(r, 2500)); });   // a live re-read or two
+    expect(api.startPresentation).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('a failed read of the live presentation is not "nobody is presenting"', async () => {
+    api.getLivePresentation.mockRejectedValue(Object.assign(new Error('502'), {
+      isAxiosError: true, response: { status: 502, data: { detail: 'Bad gateway' } } }));
+    const { unmount } = renderAt('/reports/3/present');
+    expect(await screen.findByTestId('live-read-failed')).toHaveTextContent(/Trying again/);
+    expect(screen.queryByText(/Nobody is presenting/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('start-presentation')).not.toBeInTheDocument();
+    unmount();
+    renderAt('/reports/3/present/display');
+    expect(await screen.findByText('Reconnecting…')).toBeInTheDocument();
+  });
+
+  it('a Browse tab is not "reconnecting" between its polls', async () => {
+    renderAt('/reports/3/present?browse=1');
+    await screen.findByText('Browsing the presentation');
+    await waitFor(() => expect(api.heartbeatPresentation).toHaveBeenCalled());
+    await act(async () => { await new Promise((r) => setTimeout(r, STALE_AFTER_MS + 1200)); });
+    expect(api.heartbeatPresentation).toHaveBeenCalledTimes(1);               // still before its next poll
+    expect(screen.queryByText(/Reconnecting/)).not.toBeInTheDocument();
+  }, 10_000);
+
+  it('only the latest filter choice lands, and a failed one says so with Retry', async () => {
+    let releaseFirst: (v: PresentationSlides) => void = () => undefined;
+    api.getPresentationSlides.mockImplementation((_p: number, _r: number, f: { value: string } | null) => {
+      if (f?.value === 'slow') return new Promise<PresentationSlides>((r) => { releaseFirst = r; });
+      if (f?.value === 'broken') {
+        return Promise.reject(Object.assign(new Error('500'), {
+          isAxiosError: true, response: { status: 500, data: { detail: 'Server error' } } }));
+      }
+      return Promise.resolve({ ...slides, filter: f });
+    });
+    renderAt('/reports/3/present');
+    await screen.findByText('You are driving');
+    await mainStage().findByText('Internal assessment');
+    const box = screen.getByLabelText('Endpoints matching');
+    fireEvent.change(box, { target: { value: 'slow' } });
+    fireEvent.submit(box.closest('form')!);
+    fireEvent.change(box, { target: { value: 'fast' } });
+    fireEvent.submit(box.closest('form')!);
+    await waitFor(() => expect(api.movePresentation).toHaveBeenCalledWith(
+      1, 9, expect.objectContaining({ host_filter: { kind: 'text', value: 'fast' } }), expect.any(Number)));
+    await act(async () => { releaseFirst({ ...slides, filter: { kind: 'text', value: 'slow' } }); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(api.movePresentation.mock.calls.filter(([, , body]) => body.host_filter?.value === 'slow')).toEqual([]);
+
+    const again = screen.getByLabelText('Endpoints matching');            // re-seeded with the filter now shown
+    fireEvent.change(again, { target: { value: 'broken' } });
+    fireEvent.submit(again.closest('form')!);
+    expect(await screen.findByTestId('filter-failed')).toHaveTextContent(/Retry/);
+  });
+
+  it("a failed read of the report's agendas is not \"no agendas\"", async () => {
+    api.listPresentationAgendas.mockRejectedValue(Object.assign(new Error('500'), {
+      isAxiosError: true, response: { status: 500, data: { detail: 'Server error' } } }));
+    renderAt('/reports/3/present');
+    expect(await screen.findByTestId('agendas-failed')).toHaveTextContent(/Retry/);
+  });
+
+  it("another driver's text filter re-seeds the filter box", async () => {
+    renderAt('/reports/3/present');
+    await screen.findByText('You are driving');
+    await mainStage().findByText('Internal assessment');
+    expect(screen.getByLabelText('Endpoints matching')).toHaveValue('');
+    api.heartbeatPresentation.mockResolvedValue(state({ revision: 6, host_filter: { kind: 'text', value: '10.0.0.' } }));
+    await waitFor(() => expect(screen.getByLabelText('Endpoints matching')).toHaveValue('10.0.0.'), { timeout: 3000 });
+  });
+
   it('a presenter remote steps with Page Down and the arrows', async () => {
     renderAt('/reports/3/present');
     await screen.findByText('You are driving');

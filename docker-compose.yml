@@ -373,9 +373,9 @@ services:
         # in this file (the services above read the mounted file).  Kept equal
         # to platform_version.json by scripts/bump-version.py and
         # versionConsistency.test.ts.
-        BACKEND_VERSION: ${APP_VERSION:-2.532.1}
+        BACKEND_VERSION: ${APP_VERSION:-2.533.0}
         # Stamped by generate-build-info.js (shown under About BlueStick).
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.426.2}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.427.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.

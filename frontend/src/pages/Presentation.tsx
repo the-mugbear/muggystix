@@ -39,7 +39,7 @@ import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useNow } from '../hooks/useNow';
-import { usePresentationSync, type TabKind } from '../hooks/usePresentationSync';
+import { BROWSE_POLL_MS, usePresentationSync, type TabKind } from '../hooks/usePresentationSync';
 import { invalidateReads, pollEvery, queryErrorText, useLastSettled } from '../lib/query';
 import { routeId } from '../utils/routeId';
 import { formatApiError } from '../utils/apiErrors';
@@ -142,7 +142,9 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     queryKey: ['getLivePresentation', projectId, reportId, clientId],
     queryFn: ({ signal }) => getLivePresentation(projectId, reportId, clientId, signal),
     // Only while there is no presentation yet: a Display waits for one to start.
-    ...pollEvery((q) => ((q.state.data as { live: PresentationState | null } | undefined)?.live ? null : 2000)),
+    // And while it fails — a failed re-read after an end keeps the ended one.
+    ...pollEvery((q) => (q.state.status !== 'error' && (q.state.data as { live: PresentationState | null } | undefined)?.live
+      ? null : 2000)),
   });
   const start = useMutation({
     mutationFn: () => startPresentation(projectId, reportId, clientId),
@@ -153,12 +155,15 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
   const presentationId = live.data?.live?.id ?? null;
 
   // "Present" on the report page opens this tab with `?start=1`: start (or
-  // join) once, from THIS tab, so it is the driving one.
+  // join) once, from THIS tab, so it is the driving one.  The flag is spent by
+  // the first answer either way — kept while someone else presented, it
+  // started a NEW presentation, notifying everyone, the moment theirs ended
+  // (review 2026-10-24b).
   const started = useRef(false);
   useEffect(() => {
-    if (!startOnOpen || started.current || !live.isSuccess || live.data.live) return;
+    if (!startOnOpen || started.current || !live.isSuccess) return;
     started.current = true;
-    start.mutate();
+    if (!live.data.live) start.mutate();
     setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('start'); return next; }, { replace: true });
   }, [startOnOpen, live.isSuccess, live.data, start, setSearchParams]);
 
@@ -206,6 +211,12 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     if (latestSeen != null) void invalidateReads(queryClient, 'listPresentationAgendas');
   }, [latestSeen, queryClient]);
   const pinned = useMemo(() => pinnedAgenda(position, state, agendas), [position, state, agendas]);
+  // Both are new objects on every answer: read through refs where a callback
+  // must stay the same across them (the slide list's `onPick`).
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  const pinnedRef = useRef(pinned);
+  pinnedRef.current = pinned;
   const [editingAgendas, setEditingAgendas] = useState(false);
 
   const filter = position?.host_filter ?? null;
@@ -272,13 +283,26 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     PageDown: () => step(1), PageUp: () => step(-1),
   }, kind !== 'display');
 
-  // The position NOW, for a filter whose slide list arrives later.
-  const positionRef = useRef(position);
-  positionRef.current = position;
+  // A filter whose slide list arrives later: only the LATEST choice lands
+  // (two choices on one slide, the older answer last, kept the older one), and
+  // a failed read says so, Retry beside it (review 2026-10-24c).
+  const filterAsked = useRef(0);
+  const [filterFailed, setFilterFailed] = useState<{ filter: HostFilter | null; message: string } | null>(null);
   const changeFilter = useCallback(async (next: HostFilter | null) => {
     if (!canNavigate || !position) return;
+    const asked = ++filterAsked.current;
     const from = position.slide_key;
-    const list = await queryClient.fetchQuery(slidesQuery(projectId, reportId, next));
+    setFilterFailed(null);
+    let list: PresentationSlides;
+    try {
+      list = await queryClient.fetchQuery(slidesQuery(projectId, reportId, next));
+    } catch (error) {
+      if (asked === filterAsked.current) {
+        setFilterFailed({ filter: next, message: formatApiError(error, 'Could not read the slides for that filter.') });
+      }
+      return;
+    }
+    if (asked !== filterAsked.current) return;
     // The presentation moved while the list loaded: this landing is for a slide no
     // longer shown — drop it (code review 2026-10-24) rather than send a stale move.
     if (positionRef.current?.slide_key !== from) return;
@@ -288,6 +312,14 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     // read while a control has it: hand j / k back to the presentation.
     window.setTimeout(() => { (document.activeElement as HTMLElement | null)?.blur?.(); }, 0);
   }, [canNavigate, position, pinned, queryClient, projectId, reportId, go]);
+
+  // The slide list re-renders only when its slides or the current one change,
+  // not on every second's answer (review 2026-10-24b: thousands of rows).
+  const deck = slides?.slides;
+  const onPick = useCallback((key: string) => {
+    const at = positionRef.current;
+    if (deck && at) go(pickSlide(deck, at, pinnedRef.current, key));
+  }, [deck, go]);
 
   // E6: the driver clicks the slide — at the accepted revision, so only while
   // nothing of its own is pending (the point is ON the slide everyone has).
@@ -328,8 +360,13 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     if (kind === 'display') document.title = 'Presentation display · BlueStick';
   }, [kind]);
 
-  // An ended presentation is no longer polled: it is not "reconnecting".
-  const stale = Boolean(state) && !state?.ended && sync.lastAnswerAt > 0 && now - sync.lastAnswerAt > STALE_AFTER_MS;
+  // An ended presentation is no longer polled: it is not "reconnecting".  A
+  // Browse tab is asked every `BROWSE_POLL_MS`, so its answer is late only
+  // after that (review 2026-10-24c: it said "Reconnecting" between polls).
+  const staleAfter = kind === 'browse' ? BROWSE_POLL_MS + STALE_AFTER_MS : STALE_AFTER_MS;
+  const stale = Boolean(state) && !state?.ended && sync.lastAnswerAt > 0 && now - sync.lastAnswerAt > staleAfter;
+  // The report's live presentation could not be read: not "nobody" — unknown.
+  const liveFailed = live.isError && presentationId == null;
   const inSync = stale ? `Reconnecting — in sync ${Math.round((now - sync.lastAnswerAt) / 1000)} s ago` : null;
 
   // --- Display ---------------------------------------------------------------
@@ -345,7 +382,7 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
                 : presentationId == null ? 'Waiting for the presentation to start…' : 'Loading…'}
             </span>
           } />
-        {(inSync || sync.readFailed) && (
+        {(inSync || sync.readFailed || liveFailed) && (
           <div className="absolute bottom-2 left-2 rounded bg-background/80 px-2 py-1 text-caption text-warning" role="status">
             {inSync ?? 'Reconnecting…'}
           </div>
@@ -392,7 +429,11 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
         </p>
       )}
 
-      {loading ? (
+      {liveFailed ? (
+        <p className="text-destructive" role="status" data-testid="live-read-failed">
+          {queryErrorText(live.error, 'Could not read whether this report is being presented.')} Trying again…
+        </p>
+      ) : loading ? (
         <p className="flex items-center gap-xs text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden /> Loading…</p>
       ) : presentationId == null ? (
         <div className="flex flex-col items-start gap-sm">
@@ -420,7 +461,10 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
                     Next <ChevronRight className="size-4" aria-hidden />
                   </Button>
                   {slides && (
-                    <HostFilterControl slides={slides} value={filter} onChange={(f) => { void changeFilter(f); }} />
+                    // Keyed by a text filter's words: one another driver set
+                    // (a takeover) re-seeds the box (review 2026-10-24b).
+                    <HostFilterControl key={filter?.kind === 'text' ? filter.value : ''} slides={slides} value={filter}
+                      onChange={(f) => { void changeFilter(f); }} />
                   )}
                 </>
               )}
@@ -450,6 +494,12 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
                 </Button>
               )}
             </div>
+            {filterFailed && canNavigate && (
+              <p className="mt-xs text-destructive" role="status" data-testid="filter-failed">
+                {filterFailed.message}{' '}
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={() => { void changeFilter(filterFailed.filter); }}>Retry</Button>
+              </p>
+            )}
             {sync.refused && kind === 'controller' && (
               <p className="mt-xs text-destructive" role="status" data-testid="move-refused">{sync.refused}</p>
             )}
@@ -482,6 +532,13 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
                 // Someone may have saved since: the editor opens on the list as it is now.
                 onEdit={() => { void agendasRead.refetch(); setEditingAgendas(true); }} />
             )}
+            {kind === 'controller' && agendasRead.isError && (
+              // Not "no agendas": the list could not be read (review 2026-10-24b).
+              <p className="text-caption text-destructive" role="status" data-testid="agendas-failed">
+                {queryErrorText(agendasRead.error, "Could not read the report's agendas.")}{' '}
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={() => { void agendasRead.refetch(); }}>Retry</Button>
+              </p>
+            )}
             {editingAgendas && allRead.isError && (
               <p className="text-caption text-destructive" role="status">
                 {queryErrorText(allRead.error, 'Could not read the report to edit its agendas.')}{' '}
@@ -489,8 +546,7 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
               </p>
             )}
             {slides && position && (
-              <SlideList slides={slides.slides} current={position.slide_key}
-                onPick={canNavigate ? (key) => go(pickSlide(slides.slides, position, pinned, key)) : undefined} />
+              <SlideList slides={slides.slides} current={position.slide_key} onPick={canNavigate ? onPick : undefined} />
             )}
           </aside>
         </div>
@@ -581,7 +637,7 @@ export const keepCurrentInView = (list: HTMLElement | null): void => {
   }
 };
 
-const SlideList: React.FC<{ slides: Slide[]; current: string; onPick?: (key: string) => void }> = ({ slides, current, onPick }) => {
+const SlideList = React.memo<{ slides: Slide[]; current: string; onPick?: (key: string) => void }>(({ slides, current, onPick }) => {
   // A deck can run to thousands of slides: the current one stays in view as
   // it moves — a key press, a takeover, an agenda step (review 2026-10-24).
   const list = useRef<HTMLElement | null>(null);
@@ -609,6 +665,7 @@ const SlideList: React.FC<{ slides: Slide[]; current: string; onPick?: (key: str
     </ol>
   </nav>
   );
-};
+});
+SlideList.displayName = 'SlideList';
 
 export default Presentation;

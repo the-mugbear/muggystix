@@ -39,13 +39,14 @@ Stages B and C (2.531.0):
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections import OrderedDict
 from datetime import timedelta
 from typing import Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -74,6 +75,8 @@ DISPLAY_LISTED_SECONDS = 300
 FIRST_SLIDE = "overview:1"
 #: How long a spotlight shows.
 SPOTLIGHT_MS = 5000
+#: Layout reports one person records for one report within an hour.
+LAYOUT_REPORTS_PER_HOUR = 50
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +131,13 @@ def _frozen_images_on_disk(db: Session, report: Report) -> frozenset:
 
 
 # Issued reports never change, so their slide lists are kept (per process) by
-# report, filter and the set of images still on disk.
+# report, filter and the set of images still on disk.  The routes are sync, so
+# threadpool threads share it: every touch is under the lock (review
+# 2026-10-24b: a `move_to_end` on a key another thread had just evicted was a
+# 500); a build runs outside it.
 _CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
 _CACHE_MAX = 32
+_CACHE_LOCK = threading.Lock()
 
 
 def _dataset(db: Session, report: Report) -> dict:
@@ -169,10 +176,11 @@ def status_notes(report: Report) -> dict:
 def slides_for(db: Session, report: Report, kind: Optional[str], value: Optional[str]) -> dict:
     images = frozen_images(db, report)
     key = (report.id, kind, (value or "").strip() or None, images)
-    hit = _CACHE.get(key)
-    if hit is not None:
-        _CACHE.move_to_end(key)
-        return hit
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+        if hit is not None:
+            _CACHE.move_to_end(key)
+            return hit
     # Read when the list is built, not per move: it hashes the frozen copy.
     shown = status_notes(report)
     dataset = _dataset(db, report)
@@ -184,9 +192,10 @@ def slides_for(db: Session, report: Report, kind: Optional[str], value: Optional
     result["keys"] = {s["key"] for s in result["slides"]}
     result["sites"] = slides_mod.scope_sites(dataset)
     result["segments"] = slides_mod.scope_segments(dataset)
-    _CACHE[key] = result
-    while len(_CACHE) > _CACHE_MAX:
-        _CACHE.popitem(last=False)
+    with _CACHE_LOCK:
+        _CACHE[key] = result
+        while len(_CACHE) > _CACHE_MAX:
+            _CACHE.popitem(last=False)
     return result
 
 
@@ -259,9 +268,21 @@ def _expire_if_idle(db: Session, p: Presentation) -> bool:
     ).first()
     if row is None:
         return False
+    _forget_viewers(db, p)
+    # Closes the audit trail an idle presentation's start opened (review
+    # 2026-10-24b); no one ended it.
+    log_audit_event(db, None, "presentation_ended", resource_type="presentation",
+                    resource_id=str(p.id), details={"report_id": p.report_id, "reason": "idle"}, commit=False)
     db.commit()
     db.refresh(p)
     return True
+
+
+def _forget_viewers(db: Session, p: Presentation) -> None:
+    """An ended presentation's tabs: nothing reads them once it ended (its
+    answer lists no one watching), and a tab id is made per page load, so they
+    would only pile up (review 2026-10-24b)."""
+    db.execute(delete(PresentationViewer).where(PresentationViewer.presentation_id == p.id))
 
 
 def get_presentation(db: Session, project_id: int, presentation_id: int) -> Presentation:
@@ -285,11 +306,17 @@ def state(db: Session, p: Presentation, user: User, client_id: Optional[str]) ->
     statement, the presentation's own people (driver, starter, ender) in one
     more — the relationships then resolve from the identity map —, the agenda
     in one, the spotlight only while there is one
-    (``test_presentation_mode.py::test_the_answer_costs_the_same_for_two_watchers_or_twenty``)."""
+    (``test_presentation_mode.py::test_the_answer_costs_the_same_for_two_watchers_or_twenty``).
+    Only tabs heard from within the longest window the answer uses: a tab id
+    is made per page load, so the rows are the tabs' history, not the room
+    (review 2026-10-24b)."""
     viewers = (
         db.query(PresentationViewer, func.extract("epoch", func.now() - PresentationViewer.last_seen_at))
         .options(joinedload(PresentationViewer.user))
-        .filter(PresentationViewer.presentation_id == p.id)
+        .filter(
+            PresentationViewer.presentation_id == p.id,
+            PresentationViewer.last_seen_at >= func.now() - timedelta(seconds=max(DISPLAY_LISTED_SECONDS, WATCHING_SECONDS)),
+        )
         .order_by(PresentationViewer.id)
         .all()
     )
@@ -443,6 +470,7 @@ def live_for(db: Session, user: User) -> list:
     no one, ended or not yet)."""
     rows = (
         db.query(Presentation, Report, Project)
+        .options(joinedload(Presentation.started_by), joinedload(Presentation.driver))
         .join(Report, Report.id == Presentation.report_id)
         .join(Project, Project.id == Presentation.project_id)
         .join(ProjectMembership, and_(
@@ -700,9 +728,11 @@ def _locked_agenda(db: Session, report: Report, agenda_id: int) -> PresentationA
 
 def save_agenda(db: Session, report: Report, user: User, agenda_id: int, name: str, items,
                 expected_version: int) -> dict:
-    """A new immutable version (a rename alone makes none).  At the version
+    """A new immutable version for any change, a rename too.  At the version
     the editor saw: a save since is a 409 with the agenda as it is now, so
-    one person's edit never silently replaces another's."""
+    one person's edit never silently replaces another's — which a rename that
+    made no version broke (review 2026-10-24c: a stale save restored the old
+    name with a 200).  Saving nothing new makes no version."""
     name, items = _check_agenda_input(db, report, name, items)
     a = _locked_agenda(db, report, agenda_id)
     if a.latest_version != expected_version:
@@ -714,7 +744,7 @@ def save_agenda(db: Session, report: Report, user: User, agenda_id: int, name: s
     latest = db.query(PresentationAgendaVersion).filter(
         PresentationAgendaVersion.agenda_id == a.id, PresentationAgendaVersion.version == a.latest_version,
     ).first()
-    if latest is None or list(latest.items) != items:
+    if latest is None or list(latest.items) != items or a.name != name:
         a.latest_version += 1
         db.add(PresentationAgendaVersion(agenda_id=a.id, version=a.latest_version, items=items,
                                          created_by_id=user.id))
@@ -770,6 +800,7 @@ def end(db: Session, p: Presentation, user: User, client_id: Optional[str], *, i
     ).first()
     if row is None:
         raise _conflict(db, p, user, client_id, "ended")
+    _forget_viewers(db, p)
     log_audit_event(db, user.id, "presentation_ended", resource_type="presentation",
                     resource_id=str(p.id), details={"report_id": p.report_id}, commit=False)
     db.commit()
@@ -795,6 +826,16 @@ def report_layout(db: Session, report: Report, user: User, slide_key: str, overf
         PresentationLayoutReport.created_at > func.now() - timedelta(hours=1),
     ).first()
     if recent is not None:
+        return False
+    # `font` is the browser's own text, so the once-an-hour key above can be
+    # varied without end: a person's reports per report per hour are capped too
+    # (review 2026-10-24b).
+    this_hour = db.query(func.count(PresentationLayoutReport.id)).filter(
+        PresentationLayoutReport.report_id == report.id,
+        PresentationLayoutReport.user_id == user.id,
+        PresentationLayoutReport.created_at > func.now() - timedelta(hours=1),
+    ).scalar()
+    if this_hour >= LAYOUT_REPORTS_PER_HOUR:
         return False
     db.add(PresentationLayoutReport(report_id=report.id, slide_key=slide_key,
                                     overflow_px=max(0, min(int(overflow_px), 100_000)), font=font,

@@ -16,7 +16,7 @@ import re
 
 from app.services import presentation_layout as L
 from app.services.presentation_slides import (
-    _body_room, block_height, check_filter, parse_blocks, presentation_slides,
+    STAGE, _body_room, _split_row, _words_that_fit, block_height, check_filter, parse_blocks, presentation_slides,
 )
 
 SENTENCE = "The service accepts weak ciphers and **legacy protocols**, which lets an attacker downgrade the session."
@@ -215,3 +215,38 @@ def test_the_summarys_own_images_are_slides_at_their_place():
     # Without the frozen copy it is a slide that says so.
     missing = presentation_slides(ds, None, set())
     assert next(s for s in missing["slides"] if s["key"] == "summary:image:41")["image"]["available"] is False
+
+
+def _words_that_fit_one_by_one(words, fits):
+    """The re-measure loop `_split_row` had before review 2026-10-24b."""
+    best = 0
+    for k in range(1, len(words) + 1):
+        if fits(k):
+            best = k
+        else:
+            break
+    return best
+
+
+def test_a_cell_taller_than_a_slide_splits_as_before_by_binary_search():
+    """Old == new: the binary search finds the same cut as the word-by-word loop."""
+    size, pad = STAGE["table_size"], 2 * STAGE["cell_pad_x"]
+    cells = [
+        SENTENCE * 30,
+        "word " * 700,
+        URL + " tail words after it",
+        "**bold start** " + "plain " * 300 + "`code span` end",
+        CJK + " mixed " + CJK,
+        "",
+        "one",
+    ]
+    for c in cells:
+        words = re.split(r"[ \n]+", c)
+        for width in (120, 300, 640):
+            for room in (1, 3, 12):
+                fits = (lambda k, w=width, r=room:  # noqa: E731
+                        len(L.md_lines(" ".join(words[:k]), w - pad, size)) <= r)
+                assert _words_that_fit(words, fits) == _words_that_fit_one_by_one(words, fits), (c[:30], width, room)
+    # …and the row split itself still loses nothing.
+    heads, tails = _split_row(["word " * 2000, "short"], [400.0, 200.0], 300.0)
+    assert (heads[0] + " " + tails[0]).split() == ("word " * 2000).split()

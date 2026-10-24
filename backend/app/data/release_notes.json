@@ -2,6 +2,18 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.533.0",
+      "frontend": "5.427.0",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "changed", "text": "Presentation mode: renaming an agenda now makes a new version, so someone saving an older copy is told the agenda changed instead of quietly bringing the old name back."},
+        {"kind": "fixed", "text": "Presentation mode: opening Present while someone else was presenting no longer starts a new presentation of your own, notifying everyone, when theirs ends."},
+        {"kind": "fixed", "text": "Presentation mode: when the presentation, its agendas or a filter's slides cannot be read, the page says so and retries, instead of showing \"Nobody is presenting\", no agendas, or nothing at all."},
+        {"kind": "fixed", "text": "Presentation mode: browsing on your own no longer flashes \"Reconnecting\" between updates; choosing two filters quickly keeps the second; the filter box shows a filter another presenter set."},
+        {"kind": "fixed", "text": "Presentation mode: a long deck's slide list no longer slows the presenter's page, a table cell holding a very long text no longer slows the slides, and a burst of activity can no longer make a presentation briefly fail to answer."}
+      ]
+    },
+    {
       "backend": "2.532.1",
       "frontend": "5.426.2",
       "date": "2026-10-24",
