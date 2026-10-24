@@ -3,6 +3,14 @@
   "releases": [
     {
       "backend": "2.531.0",
+      "frontend": "5.425.1",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "fixed", "text": "Presentation mode: \"A newer version of this agenda exists\" now appears as soon as someone saves it, not at the next slide, and the agenda lists no longer stretch across the window for a long finding title."}
+      ]
+    },
+    {
+      "backend": "2.531.0",
       "frontend": "5.425.0",
       "date": "2026-10-24",
       "entries": [

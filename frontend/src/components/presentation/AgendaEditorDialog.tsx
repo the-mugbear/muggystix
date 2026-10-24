@@ -22,6 +22,7 @@ import { useOpeningKey } from '../../hooks/useOpeningKey';
 import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { anchorOptions, itemLabel } from '../../utils/presentationAgenda';
+import { selectListAtFieldWidth, selectOptionTruncates } from '../../utils/uiStyles';
 import ReorderableRows from '../reports/ReorderableRows';
 import { Button } from '../ui/button';
 import {
@@ -115,8 +116,10 @@ const Body: React.FC<Props> = ({ onOpenChange, projectId, reportId, slides, agen
         <div className="flex flex-wrap items-center gap-sm">
           <Select value={draft.id == null ? NEW : String(draft.id)} onValueChange={pick}>
             <SelectTrigger className="h-8 w-64" aria-label="Agenda"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {agendas.map((a) => <SelectItem key={a.id} value={String(a.id)}>{a.name}</SelectItem>)}
+            <SelectContent className={selectListAtFieldWidth}>
+              {agendas.map((a) => (
+                <SelectItem key={a.id} value={String(a.id)} className={selectOptionTruncates} title={a.name}>{a.name}</SelectItem>
+              ))}
               <SelectItem value={NEW}>A new agenda</SelectItem>
             </SelectContent>
           </Select>
@@ -138,9 +141,9 @@ const Body: React.FC<Props> = ({ onOpenChange, projectId, reportId, slides, agen
         <div className="flex flex-wrap items-center gap-xs">
           <Select value={adding} onValueChange={setAdding}>
             <SelectTrigger className="h-8 min-w-0 flex-1" aria-label="Item to add"><SelectValue placeholder="Choose what to add…" /></SelectTrigger>
-            <SelectContent>
+            <SelectContent className={selectListAtFieldWidth}>
               {options.map((o) => (
-                <SelectItem key={o.anchor} value={o.anchor}>
+                <SelectItem key={o.anchor} value={o.anchor} className={selectOptionTruncates} title={o.label}>
                   <span className={o.nested ? 'pl-md text-muted-foreground' : ''}>{o.label}</span>
                 </SelectItem>
               ))}

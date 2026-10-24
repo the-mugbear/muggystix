@@ -439,4 +439,16 @@ describe('presentation sync — the agenda is part of the position (E3)', () => 
     expect(B.sync.getView().pending).toBeNull();
     expect(net.labels()).toEqual([]);
   });
+
+  it('a newer version saved meanwhile arrives in an equal-revision answer', () => {
+    const server = new Server();
+    server.agenda = { agenda_id: 4, version: 1, mode: 'agenda', item_index: 0 };
+    const A = tab(server, new Network(), 3, 'A');
+    A.read();
+    const saved = A.snapshot();
+    saved.agenda = { ...saved.agenda!, latest_version: 2 };            // someone saved; no move
+    A.sync.read(saved);
+    expect(A.sync.getView().state?.revision).toBe(1);
+    expect(A.sync.getView().state?.agenda).toMatchObject({ version: 1, latest_version: 2 });
+  });
 });

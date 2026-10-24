@@ -64,6 +64,17 @@ export const scrollBelowChrome = (extra = '0.75rem'): React.CSSProperties => ({
  */
 export const inertWhen = (on: boolean): { inert?: string } => (on ? { inert: 'true' } : {});
 
+/**
+ * A Select whose options are external values (a finding's title, an agenda's
+ * name — unbounded): its list no wider than its field (`selectListAtFieldWidth`
+ * on `SelectContent`) and each option one line cut with an ellipsis
+ * (`selectOptionTruncates` on `SelectItem`, with the whole text as its
+ * `title`).  Without them a long title made the list as wide as the window
+ * (Chrome pass 2026-10-24, the presentation agenda editor).
+ */
+export const selectListAtFieldWidth = 'max-w-[var(--radix-select-trigger-width)]';
+export const selectOptionTruncates = '[&>span]:min-w-0 [&>span]:truncate';
+
 /* Re-import React's type only — kept inline to avoid a top-level React
  * import in a pure-utility module. */
 import type * as React from 'react';

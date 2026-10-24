@@ -198,7 +198,11 @@ export class PresentationSync {
     if (prev && answer.id === prev.id && answer.revision < prev.revision) return;
     this.lastAnswerAt = this.now();
     if (prev && answer.id === prev.id && answer.revision === prev.revision) {
-      this.accepted = { ...prev, watching: answer.watching, displays: answer.displays };
+      // The position is the same at an equal revision; what changes without a
+      // move is presence — and the running agenda's newest version (someone
+      // saved it), which "A newer version exists" reads (Chrome pass 2026-10-24:
+      // it was dropped until the next move).
+      this.accepted = { ...prev, watching: answer.watching, displays: answer.displays, agenda: answer.agenda };
       return;
     }
     if (prev?.you_are_driving && !answer.you_are_driving && !answer.ended) {

@@ -12,6 +12,7 @@ import type { Target } from '../../utils/presentationSync';
 import {
   backToAgenda, itemLabel, leaveAgenda, pickItem, switchAgenda, type PinnedAgenda,
 } from '../../utils/presentationAgenda';
+import { selectListAtFieldWidth, selectOptionTruncates } from '../../utils/uiStyles';
 import { Button } from '../ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 
@@ -54,9 +55,11 @@ const AgendaPanel: React.FC<Props> = ({ state, position, pinned, slides, agendas
         {onGo ? (
           <Select value={a ? String(a.agenda_id) : FULL} onValueChange={choose}>
             <SelectTrigger className="h-8 min-w-0 flex-1" aria-label="Follow"><SelectValue /></SelectTrigger>
-            <SelectContent>
+            <SelectContent className={selectListAtFieldWidth}>
               <SelectItem value={FULL}>The full report</SelectItem>
-              {agendas.map((x) => <SelectItem key={x.id} value={String(x.id)}>{x.name}</SelectItem>)}
+              {agendas.map((x) => (
+                <SelectItem key={x.id} value={String(x.id)} className={selectOptionTruncates} title={x.name}>{x.name}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         ) : (
