@@ -438,3 +438,190 @@ def test_the_status_shown_is_the_issued_reports_own_template_copys(tmp_path, mon
     assert ps.status_notes(report) == {"findings": False, "endpoints": False}
     report.template = "gone"
     assert ps.status_notes(report) == {"findings": False, "endpoints": False}
+
+
+# --- E3: agendas (stage C) -------------------------------------------------------
+
+def _agendas(project, report):
+    return _base(project, report) + "/agendas"
+
+
+def _agenda(client, project, report, items, name="Walkthrough"):
+    r = client.post(_agendas(project, report), json={"name": name, "items": items})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _amove(client, project, state, cid, key, agenda, mode="agenda", index=0, version=None, flt=None):
+    body = {"client_id": cid, "revision": state["revision"], "slide_key": key,
+            "agenda": {"agenda_id": agenda["id"], "version": version or agenda["version"], "mode": mode,
+                       "item_index": index}}
+    if flt:
+        body["host_filter"] = flt
+    return client.post(_p(project, state["id"], "move"), json=body)
+
+
+def test_every_slide_names_the_agenda_items_it_belongs_to(client, test_project, report):
+    by_key = {s["key"]: s["anchors"] for s in _slides(client, test_project, report)["slides"]}
+    assert by_key["overview:1"] == ["overview"] and by_key["summary:1"] == ["summary"]
+    assert by_key["scope:1"] == ["scope"] and by_key["f:F-01"] == ["finding:F-01"]
+    assert by_key["f:F-01:impact:1"] == ["finding:F-01", "section:F-01:impact"]
+    # An image a section places is that section's; one placed nowhere, the finding's alone.
+    assert by_key["f:F-01:image:11"] == ["finding:F-01", "section:F-01:description"]
+    assert by_key["f:F-01:image:13"] == ["finding:F-01"]
+    assert by_key["f:F-01:hosts:1"] == ["finding:F-01", "section:F-01:hosts"]
+
+
+def test_an_agenda_is_saved_as_versions_and_an_item_naming_nothing_is_refused(client, test_project, report):
+    bad = client.post(_agendas(test_project, report), json={
+        "name": "x", "items": ["overview", "finding:F-99", "section:F-02:impact"]})
+    assert bad.status_code == 422
+    assert bad.json()["detail"]["items"] == ["finding:F-99", "section:F-02:impact"]   # F-02 has no impact
+
+    a = _agenda(client, test_project, report, ["overview", "finding:F-02"])
+    assert a["version"] == 1 and a["items"] == ["overview", "finding:F-02"]
+    url = f"{_agendas(test_project, report)}/{a['id']}"
+    saved = client.put(url, json={"name": "Walkthrough", "items": ["finding:F-02", "overview"],
+                                  "expected_version": 1}).json()
+    assert saved["version"] == 2 and saved["items"] == ["finding:F-02", "overview"]
+    # A rename alone makes no version.
+    assert client.put(url, json={"name": "Short", "items": ["finding:F-02", "overview"],
+                                 "expected_version": 2}).json()["version"] == 2
+    # Someone saved since this editor opened: 409 with the agenda as it is now.
+    stale = client.put(url, json={"name": "x", "items": ["scope"], "expected_version": 1})
+    assert stale.status_code == 409 and stale.json()["detail"]["agenda"]["name"] == "Short"
+    assert [x["name"] for x in client.get(_agendas(test_project, report)).json()] == ["Short"]
+
+
+def test_next_follows_the_pinned_item_and_a_slide_belongs_to_the_item_named(client, test_project, report):
+    """Plan E3: item 1 is finding F-01, item 3 is F-01's recommendation — the
+    recommendation slide is accepted as item 1 or item 3, never as item 2."""
+    a = _agenda(client, test_project, report, ["finding:F-01", "overview", "section:F-01:recommendation", "scope"])
+    st = _start(client, test_project, report, "t")
+    st = _amove(client, test_project, st, "t", "f:F-01", a).json()
+    assert st["agenda"] == {"id": a["id"], "name": "Walkthrough", "version": 1, "latest_version": 1,
+                            "mode": "agenda", "item_index": 0, "items": a["items"]}
+    rec = "f:F-01:recommendation:1"
+    assert _amove(client, test_project, st, "t", rec, a, index=1).status_code == 422
+    as_three = _amove(client, test_project, st, "t", rec, a, index=2)
+    assert as_three.status_code == 200 and as_three.json()["agenda"]["item_index"] == 2
+    st = as_three.json()
+    assert _amove(client, test_project, st, "t", rec, a, index=0).status_code == 200
+    # Outside the item's pages, in agenda mode: refused.
+    assert _amove(client, test_project, st, "t", "summary:1", a, index=0).status_code == 422
+
+
+def test_a_takeover_keeps_the_active_item_and_exploring_freezes_it(client, test_project, report, people, act_as):
+    a = _agenda(client, test_project, report, ["finding:F-01", "overview", "section:F-01:recommendation", "scope"])
+    st = _start(client, test_project, report, "t")
+    st = _amove(client, test_project, st, "t", "f:F-01:recommendation:1", a, index=2).json()
+    act_as(people["ana"])
+    taken = client.post(_p(test_project, st["id"], "take-control"), json={"client_id": "ana"}).json()
+    # The new driver reads the same state: item 3 (index 2) is active, Next is item 4.
+    assert taken["agenda"]["item_index"] == 2 and taken["agenda"]["mode"] == "agenda"
+    # Leaving for the full report freezes the index; exploring never changes it.
+    explored = _amove(client, test_project, taken, "ana", "summary:1", a, mode="explore", index=2).json()
+    assert explored["agenda"]["mode"] == "explore" and explored["agenda"]["item_index"] == 2
+    assert _amove(client, test_project, explored, "ana", "scope:1", a, mode="explore", index=3).status_code == 422
+    # Back to the agenda: the frozen item.
+    back = _amove(client, test_project, explored, "ana", "f:F-01:recommendation:1", a, index=2)
+    assert back.status_code == 200 and back.json()["agenda"]["mode"] == "agenda"
+    # The full report, no agenda: a move with none.
+    full = _move(client, test_project, back.json(), "ana", "scope:1").json()
+    assert full["agenda"] is None
+
+
+def test_an_agenda_survives_a_filter_change_and_edits_leave_a_running_version_alone(
+        client, test_project, report):
+    a = _agenda(client, test_project, report, ["section:F-01:hosts", "finding:F-02"])
+    st = _start(client, test_project, report, "t")
+    st = _amove(client, test_project, st, "t", "f:F-01:hosts:1", a).json()
+    dmz = {"kind": "site", "value": "DMZ"}
+    st = _amove(client, test_project, st, "t", "f:F-01:hosts:1", a, flt=dmz).json()
+    assert st["agenda"]["item_index"] == 0 and st["host_filter"] == dmz
+    # Nothing matches: the one "no match" slide is still the item's page.
+    none = {"kind": "text", "value": "no-such-host"}
+    assert _amove(client, test_project, st, "t", "f:F-01:hosts:1", a, flt=none).status_code == 200
+
+    url = f"{_agendas(test_project, report)}/{a['id']}"
+    client.put(url, json={"name": "Walkthrough", "items": ["finding:F-02"], "expected_version": 1})
+    hb = client.post(_p(test_project, st["id"], "heartbeat"), json={"client_id": "t", "kind": "controller"}).json()
+    assert hb["agenda"]["version"] == 1 and hb["agenda"]["latest_version"] == 2
+    assert hb["agenda"]["items"] == ["section:F-01:hosts", "finding:F-02"]
+    # Switching to the newer version is the driver's move.
+    switched = _amove(client, test_project, hb, "t", "f:F-02", a, version=2, flt=none).json()
+    assert switched["agenda"]["version"] == 2 and switched["agenda"]["items"] == ["finding:F-02"]
+
+
+def test_an_agenda_a_live_presentation_follows_cannot_be_deleted(client, db_session, test_project, report):
+    a = _agenda(client, test_project, report, ["overview"])
+    st = _start(client, test_project, report, "t")
+    st = _amove(client, test_project, st, "t", "overview:1", a).json()
+    url = f"{_agendas(test_project, report)}/{a['id']}"
+    assert client.delete(url).status_code == 409
+    client.post(_p(test_project, st["id"], "end"), json={"client_id": "t"})
+    assert client.delete(url).status_code == 204
+    ended = db_session.get(Presentation, st["id"])
+    db_session.refresh(ended)
+    assert ended.agenda_id is None and ended.agenda_mode is None
+    assert client.get(_agendas(test_project, report)).json() == []
+
+
+def test_a_viewer_is_refused_the_agenda_and_spotlight_routes(client, test_project, report, people, act_as):
+    a = _agenda(client, test_project, report, ["overview"])
+    st = _start(client, test_project, report, "t")
+    act_as(people["vic"])
+    url = _agendas(test_project, report)
+    for method, path, body in [
+        ("get", url, None), ("post", url, {"name": "x", "items": ["overview"]}),
+        ("put", f"{url}/{a['id']}", {"name": "x", "items": ["overview"], "expected_version": 1}),
+        ("delete", f"{url}/{a['id']}", None),
+        ("post", _p(test_project, st["id"], "spotlight"), {"client_id": "t", "revision": 1, "x": 1, "y": 1}),
+    ]:
+        r = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
+        assert r.status_code == 403, (method, path, r.text)
+
+
+# --- E6: the spotlight (stage C) ---------------------------------------------------
+
+def _spot(client, project, state, cid, x=800, y=450, revision=None):
+    return client.post(_p(project, state["id"], "spotlight"),
+                       json={"client_id": cid, "revision": revision or state["revision"], "x": x, "y": y})
+
+
+def test_the_spotlight_is_the_drivers_at_the_current_revision_and_never_raises_it(
+        client, test_project, report, people, act_as):
+    st = _start(client, test_project, report, "t")
+    first = _spot(client, test_project, st, "t", 100, 200).json()
+    assert first["revision"] == st["revision"]
+    spot = first["spotlight"]
+    assert (spot["seq"], spot["revision"], spot["x"], spot["y"]) == (1, st["revision"], 100, 200)
+    assert 0 < spot["remaining_ms"] <= 5000
+    second = _spot(client, test_project, st, "t", 300, 400).json()["spotlight"]
+    assert second["seq"] == 2 and (second["x"], second["y"]) == (300, 400)
+    # Off the stage, another tab, another person: refused.
+    assert _spot(client, test_project, st, "t", 1601, 10).status_code == 422
+    assert _spot(client, test_project, st, "other").json()["detail"]["reason"] == "not_driver"
+    act_as(people["ana"])
+    assert _spot(client, test_project, st, "t").json()["detail"]["reason"] == "not_driver"
+
+
+def test_a_move_clears_the_spotlight_and_an_old_revisions_click_is_refused(client, test_project, report):
+    st = _start(client, test_project, report, "t")
+    _spot(client, test_project, st, "t")
+    moved = _move(client, test_project, st, "t", "summary:1").json()
+    assert moved["spotlight"] is None
+    # A click made on the slide before the move arrives after it: stale.
+    r = _spot(client, test_project, st, "t")
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "stale"
+
+
+def test_an_expired_spotlight_is_not_answered(client, db_session, test_project, report):
+    st = _start(client, test_project, report, "t")
+    _spot(client, test_project, st, "t")
+    p = db_session.get(Presentation, st["id"])
+    db_session.refresh(p)
+    p.spotlight_at = datetime.now(timezone.utc) - timedelta(seconds=6)
+    db_session.commit()
+    hb = client.post(_p(test_project, st["id"], "heartbeat"), json={"client_id": "t", "kind": "controller"})
+    assert hb.json()["spotlight"] is None

@@ -21,6 +21,21 @@ issued report.  ``planning``'s contract, in code:
   heartbeating and stays live.
 * Answers never carry ``driver_client_id``: they say who drives and whether
   the CALLER (its user and the client id it sent) is the driver.
+
+Stages B and C (2.531.0):
+
+* **Agendas (E3)** belong to the report; every save is a new immutable
+  version (``save_agenda``: under the agenda's row lock, at the version the
+  editor saw).  Items are anchors each naming at least one slide.  The agenda
+  state — pinned version, ``agenda`` / ``explore`` mode, the ACTIVE item — is
+  part of the position: a move carries it (``check_agenda``), and in
+  ``agenda`` mode its slide must be one of that item's pages; exploring keeps
+  the item index it will come back to.  An agenda a live presentation pins
+  cannot be deleted.
+* **The spotlight (E6)** is the driver's (same predicate as a move, at the
+  CURRENT revision), has its own ``spotlight_seq`` and never raises
+  ``revision``; the answer carries it only while it matches the revision and
+  has time left, with ``remaining_ms`` from the server's clock.
 """
 from __future__ import annotations
 
@@ -37,7 +52,8 @@ from sqlalchemy.orm import Session
 from app.core.security import log_audit_event
 from app.db.models_auth import User
 from app.db.models_presentations import (
-    CLIENT_ID_MAX, Presentation, PresentationLayoutReport, PresentationViewer, VIEWER_KINDS,
+    AGENDA_ITEMS_MAX, AGENDA_MODES, AGENDA_NAME_MAX, CLIENT_ID_MAX, Presentation, PresentationAgenda,
+    PresentationAgendaVersion, PresentationLayoutReport, PresentationViewer, VIEWER_KINDS,
 )
 from app.db.models_reports import Report, ReportImage, ReportStatus
 from app.services import presentation_slides as slides_mod
@@ -50,6 +66,8 @@ WATCHING_SECONDS = 30
 #: A Display not heard from for this long is "disconnected".
 DISPLAY_SILENT_SECONDS = 10
 FIRST_SLIDE = "overview:1"
+#: How long a spotlight shows.
+SPOTLIGHT_MS = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +280,17 @@ def state(db: Session, p: Presentation, user: User, client_id: Optional[str]) ->
     if p.ended_at is not None:
         ended = {"at": p.ended_at.isoformat(), "reason": p.ended_reason, "by": person_of(p.ended_by)}
     return {
+        **_position_state(db, p, user, client_id),
+        "ended": ended,
+        "watching": watching,
+        "displays": displays,
+        "agenda": _agenda_state(db, p),
+        "spotlight": _spotlight_state(db, p),
+    }
+
+
+def _position_state(db: Session, p: Presentation, user: User, client_id: Optional[str]) -> dict:
+    return {
         "id": p.id,
         "report_id": p.report_id,
         "revision": p.revision,
@@ -277,10 +306,39 @@ def state(db: Session, p: Presentation, user: User, client_id: Optional[str]) ->
         ),
         "started_by": person_of(p.started_by),
         "started_at": p.started_at.isoformat() if p.started_at else None,
-        "ended": ended,
-        "watching": watching,
-        "displays": displays,
     }
+
+
+def _agenda_state(db: Session, p: Presentation) -> Optional[dict]:
+    """The pinned agenda: its items (so every tab — a new driver's too —
+    reads Next from the same state), the mode and the ACTIVE item."""
+    if p.agenda_id is None:
+        return None
+    agenda = db.get(PresentationAgenda, p.agenda_id)
+    version = db.query(PresentationAgendaVersion).filter(
+        PresentationAgendaVersion.agenda_id == p.agenda_id, PresentationAgendaVersion.version == p.agenda_version,
+    ).first()
+    if agenda is None or version is None:
+        return None
+    return {
+        "id": agenda.id, "name": agenda.name, "version": p.agenda_version,
+        "latest_version": agenda.latest_version, "mode": p.agenda_mode, "item_index": p.agenda_item_index,
+        "items": list(version.items),
+    }
+
+
+def _spotlight_state(db: Session, p: Presentation) -> Optional[dict]:
+    """The spotlight while it is for the current revision and has time left;
+    ``remaining_ms`` is the server's count, so no tab compares clocks."""
+    if (p.ended_at is not None or not p.spotlight_seq or p.spotlight_at is None
+            or p.spotlight_revision != p.revision):
+        return None
+    age = db.execute(select(func.extract("epoch", func.now() - p.spotlight_at))).scalar() or 0
+    remaining = SPOTLIGHT_MS - int(float(age) * 1000)
+    if remaining <= 0:
+        return None
+    return {"seq": p.spotlight_seq, "revision": p.spotlight_revision, "x": p.spotlight_x, "y": p.spotlight_y,
+            "remaining_ms": remaining}
 
 
 def _filter_out(kind: Optional[str], value: Optional[str]) -> Optional[dict]:
@@ -383,9 +441,13 @@ def _conflict(db: Session, p: Presentation, user: User, client_id: Optional[str]
 
 
 def move(db: Session, p: Presentation, report: Report, user: User, client_id: str, seen_revision: int,
-         slide_key: str, kind: Optional[str], value: Optional[str]) -> Presentation:
+         slide_key: str, kind: Optional[str], value: Optional[str], agenda: Optional[dict] = None) -> Presentation:
+    """A navigation write: the slide, the host filter and the agenda state
+    (``agenda``: ``{agenda_id, version, mode, item_index}``, or None for the
+    full report) — all of the position, in one conditional UPDATE."""
     client_id = _client(client_id)
     kind, value = check_position(db, report, p, slide_key, kind, value)
+    a_id, a_version, a_mode, a_index = check_agenda(db, report, p, agenda, slide_key, kind, value)
     row = db.execute(
         update(Presentation)
         .where(
@@ -394,19 +456,204 @@ def move(db: Session, p: Presentation, report: Report, user: User, client_id: st
             Presentation.driver_id == user.id, Presentation.driver_client_id == client_id,
         )
         .values(slide_key=slide_key, host_filter_kind=kind, host_filter_value=value,
+                agenda_id=a_id, agenda_version=a_version, agenda_mode=a_mode, agenda_item_index=a_index,
                 revision=Presentation.revision + 1, last_move_at=func.now())
         .returning(Presentation.id)
     ).first()
     if row is None:
-        db.refresh(p)
-        if p.ended_at is not None:
-            raise _conflict(db, p, user, client_id, "ended")
-        if p.driver_id != user.id or p.driver_client_id != client_id:
-            raise _conflict(db, p, user, client_id, "not_driver")
-        raise _conflict(db, p, user, client_id, "stale")
+        _refuse_driver_write(db, p, user, client_id)
     db.commit()
     db.refresh(p)
     return p
+
+
+def _refuse_driver_write(db: Session, p: Presentation, user: User, client_id: str) -> None:
+    """Why a driver's conditional write matched no row — always raises."""
+    db.refresh(p)
+    if p.ended_at is not None:
+        raise _conflict(db, p, user, client_id, "ended")
+    if p.driver_id != user.id or p.driver_client_id != client_id:
+        raise _conflict(db, p, user, client_id, "not_driver")
+    raise _conflict(db, p, user, client_id, "stale")
+
+
+def spotlight(db: Session, p: Presentation, user: User, client_id: str, seen_revision: int,
+              x: int, y: int) -> Presentation:
+    """The driver highlights a point of the stage (E6): the move's predicate —
+    the person AND the tab, live — at the CURRENT revision, with its own
+    increasing ``spotlight_seq``.  Never raises ``revision``."""
+    client_id = _client(client_id)
+    stage = slides_mod.STAGE
+    if not (0 <= x <= stage["width"] and 0 <= y <= stage["height"]):
+        raise HTTPException(status_code=422, detail="The point is outside the stage.")
+    row = db.execute(
+        update(Presentation)
+        .where(
+            Presentation.id == p.id, Presentation.ended_at.is_(None),
+            Presentation.revision == seen_revision,
+            Presentation.driver_id == user.id, Presentation.driver_client_id == client_id,
+        )
+        .values(spotlight_seq=Presentation.spotlight_seq + 1, spotlight_revision=seen_revision,
+                spotlight_x=x, spotlight_y=y, spotlight_at=func.now())
+        .returning(Presentation.id)
+    ).first()
+    if row is None:
+        _refuse_driver_write(db, p, user, client_id)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Agendas (E3)
+# ---------------------------------------------------------------------------
+
+def agenda_pages(result: dict, anchor: str) -> list:
+    """The pages of an agenda item in a slide list (``slides_for``): the
+    slides the builder tagged with its anchor, in report order."""
+    return [s["key"] for s in result["slides"] if anchor in s["anchors"]]
+
+
+def check_agenda(db: Session, report: Report, p: Presentation, agenda: Optional[dict], slide_key: str,
+                 kind: Optional[str], value: Optional[str]) -> Tuple[Optional[int], ...]:
+    """``(agenda_id, version, mode, item_index)`` for a move, or a 422: the
+    agenda is this report's, the version exists, the item is in it; in
+    ``agenda`` mode the slide is one of THAT item's pages for the proposed
+    filter; exploring the same pinned version keeps the item it returns to.
+    The agenda row is read FOR SHARE, so a delete cannot slip in between."""
+    if agenda is None:
+        return None, None, None, None
+    mode = agenda.get("mode")
+    index = int(agenda.get("item_index") if agenda.get("item_index") is not None else -1)
+    if mode not in AGENDA_MODES:
+        raise HTTPException(status_code=422, detail="The agenda mode is agenda or explore.")
+    a = db.query(PresentationAgenda).filter(
+        PresentationAgenda.id == agenda.get("agenda_id"), PresentationAgenda.report_id == report.id,
+    ).with_for_update(read=True).first()
+    if a is None:
+        raise HTTPException(status_code=422, detail="That agenda is not one of this report's.")
+    version = db.query(PresentationAgendaVersion).filter(
+        PresentationAgendaVersion.agenda_id == a.id, PresentationAgendaVersion.version == agenda.get("version"),
+    ).first()
+    if version is None:
+        raise HTTPException(status_code=422, detail="That agenda has no such version.")
+    items = list(version.items)
+    if not 0 <= index < len(items):
+        raise HTTPException(status_code=422, detail="That agenda has no such item.")
+    if mode == "agenda":
+        if slide_key not in agenda_pages(slides_for(db, report, kind, value), items[index]):
+            raise HTTPException(status_code=422, detail=f"That slide is not part of agenda item {index + 1}.")
+    elif (p.agenda_id == a.id and p.agenda_version == version.version and p.agenda_mode == "explore"
+          and index != p.agenda_item_index):
+        raise HTTPException(status_code=422, detail="Exploring keeps the agenda item it returns to.")
+    return a.id, version.version, mode, index
+
+
+def _check_agenda_input(db: Session, report: Report, name: str, items) -> Tuple[str, list]:
+    name = (name or "").strip()
+    if not name or len(name) > AGENDA_NAME_MAX:
+        raise HTTPException(status_code=422, detail=f"An agenda needs a name of 1–{AGENDA_NAME_MAX} characters.")
+    if not isinstance(items, list) or not items or len(items) > AGENDA_ITEMS_MAX:
+        raise HTTPException(status_code=422, detail=f"An agenda holds 1–{AGENDA_ITEMS_MAX} items.")
+    items = [str(i) for i in items]
+    # Each item must name a slide of the report; the unfiltered list holds every
+    # anchor (endpoint pages exist under every filter: a "no match" slide at least).
+    known = {a for s in slides_for(db, report, None, None)["slides"] for a in s["anchors"]}
+    unknown = [i for i in items if i not in known]
+    if unknown:
+        raise HTTPException(status_code=422, detail={
+            "message": "These agenda items name nothing in this report.", "items": unknown[:20],
+        })
+    return name, items
+
+
+def _live_pinning(db: Session, agenda_id: int) -> Optional[Presentation]:
+    return db.query(Presentation).filter(
+        Presentation.agenda_id == agenda_id, Presentation.ended_at.is_(None),
+    ).first()
+
+
+def agenda_out(db: Session, a: PresentationAgenda) -> dict:
+    latest = db.query(PresentationAgendaVersion).filter(
+        PresentationAgendaVersion.agenda_id == a.id, PresentationAgendaVersion.version == a.latest_version,
+    ).first()
+    return {
+        "id": a.id, "report_id": a.report_id, "name": a.name, "version": a.latest_version,
+        "items": list(latest.items) if latest else [],
+        "created_by": person_of(a.created_by),
+        "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+        "in_live_presentation": _live_pinning(db, a.id) is not None,
+    }
+
+
+def list_agendas(db: Session, report: Report) -> list:
+    rows = db.query(PresentationAgenda).filter(PresentationAgenda.report_id == report.id).order_by(
+        func.lower(PresentationAgenda.name), PresentationAgenda.id,
+    ).all()
+    return [agenda_out(db, a) for a in rows]
+
+
+def create_agenda(db: Session, report: Report, user: User, name: str, items) -> dict:
+    name, items = _check_agenda_input(db, report, name, items)
+    a = PresentationAgenda(project_id=report.project_id, report_id=report.id, name=name, latest_version=1,
+                           created_by_id=user.id)
+    db.add(a)
+    db.flush()
+    db.add(PresentationAgendaVersion(agenda_id=a.id, version=1, items=items, created_by_id=user.id))
+    db.commit()
+    db.refresh(a)
+    return agenda_out(db, a)
+
+
+def _locked_agenda(db: Session, report: Report, agenda_id: int) -> PresentationAgenda:
+    a = db.query(PresentationAgenda).filter(
+        PresentationAgenda.id == agenda_id, PresentationAgenda.report_id == report.id,
+    ).with_for_update().first()
+    if a is None:
+        raise HTTPException(status_code=404, detail="Agenda not found")
+    return a
+
+
+def save_agenda(db: Session, report: Report, user: User, agenda_id: int, name: str, items,
+                expected_version: int) -> dict:
+    """A new immutable version (a rename alone makes none).  At the version
+    the editor saw: a save since is a 409 with the agenda as it is now, so
+    one person's edit never silently replaces another's."""
+    name, items = _check_agenda_input(db, report, name, items)
+    a = _locked_agenda(db, report, agenda_id)
+    if a.latest_version != expected_version:
+        current = agenda_out(db, a)
+        db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "message": "Someone saved this agenda since you opened it.", "agenda": current,
+        })
+    latest = db.query(PresentationAgendaVersion).filter(
+        PresentationAgendaVersion.agenda_id == a.id, PresentationAgendaVersion.version == a.latest_version,
+    ).first()
+    if latest is None or list(latest.items) != items:
+        a.latest_version += 1
+        db.add(PresentationAgendaVersion(agenda_id=a.id, version=a.latest_version, items=items,
+                                         created_by_id=user.id))
+    a.name = name
+    a.updated_at = func.now()
+    db.commit()
+    db.refresh(a)
+    return agenda_out(db, a)
+
+
+def delete_agenda(db: Session, report: Report, agenda_id: int) -> None:
+    """Refused while a live presentation runs it; the ended presentations
+    that ran it lose the reference (their agenda state is history)."""
+    a = _locked_agenda(db, report, agenda_id)
+    if _live_pinning(db, a.id) is not None:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A running presentation follows this agenda; end it first.")
+    db.execute(
+        update(Presentation).where(Presentation.agenda_id == a.id)
+        .values(agenda_id=None, agenda_version=None, agenda_mode=None, agenda_item_index=None)
+    )
+    db.delete(a)
+    db.commit()
 
 
 def take_control(db: Session, p: Presentation, user: User, client_id: str) -> Presentation:

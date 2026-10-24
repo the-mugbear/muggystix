@@ -13,6 +13,11 @@
  * server's estimate was wrong for this browser), the body is scaled down
  * uniformly until it fits — never clipped, never scrolled — a small "fitted"
  * mark is shown, and `onOverflow` reports it once.
+ *
+ * Since 5.425.0 the stage also draws the spotlight (a ring at stage
+ * coordinates, so it lands on the same word on every screen) and, for the
+ * driver, turns a click into stage coordinates (`onPoint`).  The previews of
+ * the presenter view are this same component in a smaller frame.
  */
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -164,10 +169,14 @@ export interface StageProps {
   onOverflow?: (slideKey: string, overflowPx: number, font: string) => void;
   /** Shown instead of a slide (no presentation yet, loading…). */
   placeholder?: React.ReactNode;
+  /** A ring at this point of the stage (stage coordinates) — the spotlight. */
+  spotlight?: { x: number; y: number; seq: number } | null;
+  /** A click on the slide, in stage coordinates (the driver's spotlight). */
+  onPoint?: (x: number, y: number) => void;
 }
 
 const StageView: React.FC<StageProps> = ({
-  projectId, reportId, stage, slide, token, onRendered, onOverflow, placeholder,
+  projectId, reportId, stage, slide, token, onRendered, onOverflow, placeholder, spotlight, onPoint,
 }) => {
   const frame = useRef<HTMLDivElement | null>(null);
   const body = useRef<HTMLDivElement | null>(null);
@@ -249,9 +258,20 @@ const StageView: React.FC<StageProps> = ({
     ...cssVars(stage), left: `${fitTo.left}px`, top: `${fitTo.top}px`, transform: `scale(${fitTo.scale})`,
   }), [stage, fitTo]);
 
+  // The stage is scaled as one unit, so a point on screen is a point of the
+  // stage through the same rectangle on every screen.
+  const point = onPoint && slide ? (e: React.MouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const x = Math.round(((e.clientX - r.left) / r.width) * width);
+    const y = Math.round(((e.clientY - r.top) / r.height) * height);
+    onPoint(Math.min(Math.max(x, 0), width), Math.min(Math.max(y, 0), height));
+  } : undefined;
+
   return (
     <div ref={frame} className="ps-frame" data-testid="ps-frame">
-      <div className="ps-stage" style={style} data-testid="ps-stage" data-slide={slideKey}>
+      <div className="ps-stage" style={style} data-testid="ps-stage" data-slide={slideKey}
+        data-pointable={point ? 'true' : undefined} onClick={point}>
         {slide ? (
           <>
             {slide.header && <div className="ps-header">{slide.header}</div>}
@@ -267,6 +287,10 @@ const StageView: React.FC<StageProps> = ({
               {fittedScale < 1 && <span className="ps-fitted" data-testid="ps-fitted">fitted</span>}
             </div>
             <div className="ps-footer" data-testid="ps-footer">{slide.footer}</div>
+            {spotlight && (
+              <div key={spotlight.seq} className="ps-spotlight" data-testid="ps-spotlight" aria-hidden
+                style={{ left: `${spotlight.x}px`, top: `${spotlight.y}px` }} />
+            )}
           </>
         ) : (
           <div className="ps-body" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

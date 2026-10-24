@@ -44,6 +44,7 @@ export class FakeBackend {
   live: null | {
     id: number; revision: number; slide: string; filter: Filter; driverUser: number | null;
     driverClient: string | null; startedBy: number; ended: null | { reason: string; by: number };
+    spot?: { seq: number; revision: number; x: number; y: number; at: number };
   } = null;
   viewers = new Map<string, Viewer>();
   conflicts = 0;
@@ -80,6 +81,12 @@ export class FakeBackend {
       ended: p.ended ? { at: new Date().toISOString(), reason: p.ended.reason, by: this.person(p.ended.by) } : null,
       watching: [...this.viewers.values()].filter((v) => now - v.seen < 30_000).map((v) => ({ person: this.person(v.user), kind: v.kind })),
       displays,
+      // Agendas are tested at the service and state-machine levels, not here.
+      agenda: null,
+      // The server's rule: only while it is for the current revision and has time left.
+      spotlight: p.spot && !p.ended && p.spot.revision === p.revision && now - p.spot.at < 5000
+        ? { seq: p.spot.seq, revision: p.spot.revision, x: p.spot.x, y: p.spot.y, remaining_ms: 5000 - (now - p.spot.at) }
+        : null,
     };
   }
 
@@ -153,9 +160,10 @@ export class FakeBackend {
         this.layoutReports.push(body);
         return this.json(route, 202, { recorded: true });
       }
+      if (rest === '/agendas' && method === 'GET') return this.json(route, 200, []);
     }
 
-    m = path.match(/^\/projects\/1\/presentations\/9\/(heartbeat|move|take-control|end)$/);
+    m = path.match(/^\/projects\/1\/presentations\/9\/(heartbeat|move|take-control|end|spotlight)$/);
     if (m && this.live) {
       const p = this.live;
       const action = m[1];
@@ -195,6 +203,18 @@ export class FakeBackend {
         p.slide = body.slide_key;
         p.filter = f;
         p.revision += 1;
+        return this.json(route, 200, this.state(user, body.client_id));
+      }
+      if (action === 'spotlight') {
+        // The move's predicate, at the current revision; never raises it.
+        const ok = !p.ended && body.revision === p.revision && p.driverUser === user && p.driverClient === body.client_id;
+        if (!ok) {
+          return this.json(route, 409, { detail: {
+            reason: p.ended ? 'ended' : p.driverClient !== body.client_id || p.driverUser !== user ? 'not_driver' : 'stale',
+            message: 'refused', presentation: this.state(user, body.client_id),
+          } });
+        }
+        p.spot = { seq: (p.spot?.seq ?? 0) + 1, revision: p.revision, x: body.x, y: body.y, at: Date.now() };
         return this.json(route, 200, this.state(user, body.client_id));
       }
       if (action === 'take-control') {

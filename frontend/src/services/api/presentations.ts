@@ -23,6 +23,27 @@ export interface PresentationDisplay {
   fitted: boolean;
 }
 
+export type AgendaMode = 'agenda' | 'explore';
+
+/** The agenda part of a position (5.425.0): the pinned version, following it
+ *  or exploring the full report, and the ACTIVE item (0-based). */
+export interface AgendaPosition { agenda_id: number; version: number; mode: AgendaMode; item_index: number }
+
+/** The agenda a presentation runs: its pinned version's items (anchors). */
+export interface PresentationAgendaState {
+  id: number;
+  name: string;
+  version: number;
+  latest_version: number;
+  mode: AgendaMode;
+  item_index: number;
+  items: string[];
+}
+
+/** A point the driver clicked (stage coordinates), for the current revision
+ *  only; `remaining_ms` is counted by the server. */
+export interface PresentationSpotlight { seq: number; revision: number; x: number; y: number; remaining_ms: number }
+
 export interface PresentationState {
   id: number;
   report_id: number;
@@ -38,6 +59,20 @@ export interface PresentationState {
   ended: { at: string; reason: 'ended' | 'idle'; by: PresentationPerson | null } | null;
   watching: Array<{ person: PresentationPerson | null; kind: 'display' | 'controller' | 'browse' }>;
   displays: PresentationDisplay[];
+  agenda: PresentationAgendaState | null;
+  spotlight: PresentationSpotlight | null;
+}
+
+/** A report's saved agenda: its latest version. */
+export interface PresentationAgenda {
+  id: number;
+  report_id: number;
+  name: string;
+  version: number;
+  items: string[];
+  created_by: PresentationPerson | null;
+  updated_at: string | null;
+  in_live_presentation: boolean;
 }
 
 export type SlideBlock =
@@ -67,6 +102,8 @@ export interface Slide {
   section?: string;
   empty?: boolean;
   image?: { attachment_id: number; available: boolean; height: number };
+  /** The agenda items it belongs to (`overview`, `finding:F-01`, `section:F-01:impact`…) — the server's rule. */
+  anchors: string[];
 }
 
 export type Stage = Record<string, number>;
@@ -137,12 +174,51 @@ export const heartbeatPresentation = async (
 
 export const movePresentation = async (
   projectId: number, presentationId: number,
-  body: { client_id: string; revision: number; slide_key: string; host_filter: HostFilter | null },
+  body: {
+    client_id: string; revision: number; slide_key: string; host_filter: HostFilter | null;
+    agenda: AgendaPosition | null;
+  },
   timeoutMs?: number,
 ): Promise<PresentationState> => {
   const response = await api.post(`${presentationBase(projectId, presentationId)}/move`, body,
     timeoutMs ? { timeout: timeoutMs } : undefined);
   return response.data;
+};
+
+export const spotlightPresentation = async (
+  projectId: number, presentationId: number,
+  body: { client_id: string; revision: number; x: number; y: number },
+): Promise<PresentationState> => {
+  const response = await api.post(`${presentationBase(projectId, presentationId)}/spotlight`, body);
+  return response.data;
+};
+
+export const listPresentationAgendas = async (
+  projectId: number, reportId: number, signal?: AbortSignal,
+): Promise<PresentationAgenda[]> => {
+  const response = await api.get(`${reportBase(projectId, reportId)}/agendas`, { signal });
+  return response.data;
+};
+
+export const createPresentationAgenda = async (
+  projectId: number, reportId: number, body: { name: string; items: string[] },
+): Promise<PresentationAgenda> => {
+  const response = await api.post(`${reportBase(projectId, reportId)}/agendas`, body);
+  return response.data;
+};
+
+export const savePresentationAgenda = async (
+  projectId: number, reportId: number, agendaId: number,
+  body: { name: string; items: string[]; expected_version: number },
+): Promise<PresentationAgenda> => {
+  const response = await api.put(`${reportBase(projectId, reportId)}/agendas/${agendaId}`, body);
+  return response.data;
+};
+
+export const deletePresentationAgenda = async (
+  projectId: number, reportId: number, agendaId: number,
+): Promise<void> => {
+  await api.delete(`${reportBase(projectId, reportId)}/agendas/${agendaId}`);
 };
 
 export const takeControlOfPresentation = async (

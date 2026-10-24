@@ -43,7 +43,10 @@ export function usePresentationSync(
   const moveMutation = useMutation({
     mutationFn: (args: { revision: number; target: Target }) => movePresentation(
       projectId, presentationId ?? 0,
-      { client_id: clientId, revision: args.revision, slide_key: args.target.slide_key, host_filter: args.target.host_filter },
+      {
+        client_id: clientId, revision: args.revision, slide_key: args.target.slide_key,
+        host_filter: args.target.host_filter, agenda: args.target.agenda,
+      },
       MOVE_TIMEOUT_MS,
     ),
   });

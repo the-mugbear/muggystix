@@ -16,11 +16,11 @@ import StageView from '../../components/presentation/Stage';
 
 const imageSlide: Slide = {
   key: 'f:F-01:image:11', kind: 'image', header: 'F-01 · Evidence', footer: 'f', page: 1, pages: 1, ref: 'F-01',
-  blocks: [], image: { attachment_id: 11, available: true, height: 500 },
+  blocks: [], image: { attachment_id: 11, available: true, height: 500 }, anchors: ['finding:F-01'],
 };
 const textSlide: Slide = {
   key: 'f:F-01:impact:1', kind: 'section', header: 'F-01 · Impact', footer: 'f', page: 1, pages: 1, ref: 'F-01',
-  blocks: [{ kind: 'p', md: 'Downgrade.' }],
+  blocks: [{ kind: 'p', md: 'Downgrade.' }], anchors: ['finding:F-01', 'section:F-01:impact'],
 };
 
 beforeEach(() => {

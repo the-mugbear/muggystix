@@ -7,7 +7,7 @@ starter's or a project admin's.  The rules live in
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -17,7 +17,9 @@ from app.db.models_presentations import Presentation
 from app.db.models_project import Project, ProjectRole
 from app.db.models_reports import Report, ReportImage
 from app.db.session import get_db
-from app.schemas.presentations import EndIn, HeartbeatIn, LayoutReportIn, MoveIn, ClientIn
+from app.schemas.presentations import (
+    AgendaIn, AgendaSaveIn, ClientIn, EndIn, HeartbeatIn, LayoutReportIn, MoveIn, SpotlightIn,
+)
 from app.services import presentation_service as svc
 from app.services.client_report_service import stored_file_path
 
@@ -147,8 +149,71 @@ def move(
     report = _report_of(db, project, p)
     flt = body.host_filter
     p = svc.move(db, p, report, user, body.client_id, body.revision, body.slide_key,
-                 flt.kind if flt else None, flt.value if flt else None)
+                 flt.kind if flt else None, flt.value if flt else None,
+                 body.agenda.model_dump() if body.agenda else None)
     return svc.state(db, p, user, body.client_id)
+
+
+@router.post("/presentations/{presentation_id}/spotlight")
+def spotlight(
+    presentation_id: int,
+    body: SpotlightIn,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    user: User = Depends(get_current_user),
+):
+    """The driver highlights a point of the stage for 5 s on every tab.  The
+    move's 409s (stale, not the driver, ended); never raises the revision."""
+    p = svc.get_presentation(db, project.id, presentation_id)
+    p = svc.spotlight(db, p, user, body.client_id, body.revision, body.x, body.y)
+    return svc.state(db, p, user, body.client_id)
+
+
+# --- Agendas (E3): the report's, auditor and above ------------------------------
+
+@router.get("/client-reports/{report_id}/presentation/agendas")
+def list_agendas(report_id: int, db: Session = Depends(get_db), project: Project = Depends(get_current_project)):
+    report = svc.presentable_report(db, project.id, report_id)
+    return svc.list_agendas(db, report)
+
+
+@router.post("/client-reports/{report_id}/presentation/agendas", status_code=201)
+def create_agenda(
+    report_id: int,
+    body: AgendaIn,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    user: User = Depends(get_current_user),
+):
+    report = svc.presentable_report(db, project.id, report_id)
+    return svc.create_agenda(db, report, user, body.name, body.items)
+
+
+@router.put("/client-reports/{report_id}/presentation/agendas/{agenda_id}")
+def save_agenda(
+    report_id: int,
+    agenda_id: int,
+    body: AgendaSaveIn,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    user: User = Depends(get_current_user),
+):
+    """A new version (409 when someone saved since ``expected_version``)."""
+    report = svc.presentable_report(db, project.id, report_id)
+    return svc.save_agenda(db, report, user, agenda_id, body.name, body.items, body.expected_version)
+
+
+@router.delete("/client-reports/{report_id}/presentation/agendas/{agenda_id}", status_code=204)
+def delete_agenda(
+    report_id: int,
+    agenda_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """409 while a running presentation follows it."""
+    report = svc.presentable_report(db, project.id, report_id)
+    svc.delete_agenda(db, report, agenda_id)
+    return Response(status_code=204)
 
 
 @router.post("/presentations/{presentation_id}/take-control")

@@ -36,10 +36,27 @@
  *   2026-10-24: a 422 read as unknown resent itself 179 times in 3.5 s).
  * - **Before a target is sent** the tab rechecks the highest accepted state:
  *   still driving, not ended — else the target is dropped.
+ * - **The agenda state is part of the position** (5.425.0): a target names it
+ *   too, so choosing an agenda, exploring and coming back are moves like any.
+ * - **The spotlight has its own ordering** (5.425.0): every answer's
+ *   `spotlight` is taken when its `seq` is higher than any seen — whatever
+ *   the answer's revision, so an equal-revision answer still brings it — and
+ *   its time left is counted from when the answer landed.  Which revision it
+ *   must match to be SHOWN is the tab's (`spotlightShown`): a Controller's
+ *   accepted one, a Display's RENDERED one.
  */
-import type { HostFilter, PresentationPerson, PresentationState, RenderedAck } from '../services/api';
+import type {
+  AgendaPosition, HostFilter, PresentationPerson, PresentationState, RenderedAck,
+} from '../services/api';
 
-export interface Target { slide_key: string; host_filter: HostFilter | null }
+export interface Target { slide_key: string; host_filter: HostFilter | null; agenda: AgendaPosition | null }
+
+/** A spotlight as this tab holds it: `expiresAt` on this tab's clock. */
+export interface HeldSpotlight { seq: number; revision: number; x: number; y: number; expiresAt: number }
+
+/** Whether a held spotlight rings now, on a tab showing `revision`. */
+export const spotlightShown = (s: HeldSpotlight | null, revision: number | undefined, now: number): boolean =>
+  Boolean(s && revision != null && s.revision === revision && now < s.expiresAt);
 
 /** A move the server refused for good (not a 409): its message is said. */
 export class MoveRefused extends Error {}
@@ -75,13 +92,29 @@ export interface SyncView {
   lostControlTo: PresentationPerson | null;
   /** Why the last move was refused, until the next one is asked for. */
   refused: string | null;
+  /** The highest-seq spotlight seen (shown only by `spotlightShown`). */
+  spotlight: HeldSpotlight | null;
+  /** A Display's last finished render's revision. */
+  renderedRevision: number | undefined;
 }
 
 const filterEq = (a: HostFilter | null, b: HostFilter | null) =>
   (a?.kind ?? null) === (b?.kind ?? null) && (a?.value ?? null) === (b?.value ?? null);
 
-export const samePosition = (t: Target, s: { slide_key: string; host_filter: HostFilter | null }) =>
-  t.slide_key === s.slide_key && filterEq(t.host_filter, s.host_filter);
+const agendaEq = (a: AgendaPosition | null, b: AgendaPosition | null) =>
+  (a == null && b == null) || (a != null && b != null && a.agenda_id === b.agenda_id && a.version === b.version
+    && a.mode === b.mode && a.item_index === b.item_index);
+
+/** A state's agenda as a position's part. */
+export const agendaOf = (s: Pick<PresentationState, 'agenda'>): AgendaPosition | null =>
+  s.agenda ? { agenda_id: s.agenda.id, version: s.agenda.version, mode: s.agenda.mode, item_index: s.agenda.item_index } : null;
+
+/** The position a state names. */
+export const positionOf = (s: PresentationState): Target =>
+  ({ slide_key: s.slide_key, host_filter: s.host_filter, agenda: agendaOf(s) });
+
+export const samePosition = (t: Target, s: Target) =>
+  t.slide_key === s.slide_key && filterEq(t.host_filter, s.host_filter) && agendaEq(t.agenda, s.agenda);
 
 export class PresentationSync {
   private accepted: PresentationState | null = null;
@@ -97,12 +130,17 @@ export class PresentationSync {
   private snapshot: SyncView;
   /** A Display's last finished render, sent with every heartbeat. */
   private rendered: RenderedAck | null = null;
+  private spotlight: HeldSpotlight | null = null;
+  /** The highest spotlight seq seen, per presentation. */
+  private spotlightSeq = 0;
 
   /** Record a finished render; true when it is news (a new revision or fit). */
   setRendered(ack: RenderedAck | null): boolean {
     const before = this.rendered;
     this.rendered = ack;
-    return Boolean(ack && (!before || before.revision !== ack.revision || before.fitted !== ack.fitted));
+    const news = Boolean(ack && (!before || before.revision !== ack.revision || before.fitted !== ack.fitted));
+    if (before?.revision !== ack?.revision) this.emit();
+    return news;
   }
 
   renderedAck(): RenderedAck | null {
@@ -128,10 +166,11 @@ export class PresentationSync {
     const s = this.accepted;
     const position = this.target && s?.you_are_driving && !s.ended
       ? this.target
-      : s ? { slide_key: s.slide_key, host_filter: s.host_filter } : null;
+      : s ? positionOf(s) : null;
     return {
       state: s, position, pending: this.target, inFlight: this.inFlight, reconciling: this.reconciling,
       lastAnswerAt: this.lastAnswerAt, lostControlTo: this.lostControlTo, refused: this.refused,
+      spotlight: this.spotlight, renderedRevision: this.rendered?.revision,
     };
   }
 
@@ -140,8 +179,21 @@ export class PresentationSync {
     this.listeners.forEach((fn) => fn());
   }
 
+  /** The spotlight's own rule, before (and apart from) the revision rule. */
+  private takeSpotlight(answer: PresentationState): void {
+    if (this.accepted && answer.id !== this.accepted.id) {
+      this.spotlightSeq = 0;
+      this.spotlight = null;
+    }
+    const s = answer.spotlight;
+    if (!s || s.seq <= this.spotlightSeq) return;
+    this.spotlightSeq = s.seq;
+    this.spotlight = { seq: s.seq, revision: s.revision, x: s.x, y: s.y, expiresAt: this.now() + s.remaining_ms };
+  }
+
   /** The answer rule. */
   private accept(answer: PresentationState): void {
+    this.takeSpotlight(answer);
     const prev = this.accepted;
     if (prev && answer.id === prev.id && answer.revision < prev.revision) return;
     this.lastAnswerAt = this.now();
@@ -155,7 +207,7 @@ export class PresentationSync {
     if (answer.you_are_driving || answer.ended) this.lostControlTo = null;
     this.accepted = answer;
     if (!answer.you_are_driving || answer.ended) this.target = null;
-    if (this.target && samePosition(this.target, answer)) this.target = null;
+    if (this.target && samePosition(this.target, positionOf(answer))) this.target = null;
   }
 
   /** A successful read of the presentation (a poll). */
@@ -170,7 +222,7 @@ export class PresentationSync {
   go(target: Target): boolean {
     const s = this.accepted;
     if (!s || !s.you_are_driving || s.ended) return false;
-    this.target = samePosition(target, s) && !this.inFlight ? null : target;
+    this.target = samePosition(target, positionOf(s)) && !this.inFlight ? null : target;
     this.refused = null;
     this.resentOnce = null;
     this.emit();
@@ -191,7 +243,7 @@ export class PresentationSync {
       this.emit();
       return;
     }
-    if (samePosition(this.target, s)) {
+    if (samePosition(this.target, positionOf(s))) {
       this.target = null;
       this.emit();
       return;
@@ -202,6 +254,10 @@ export class PresentationSync {
     this.transport.move(s.revision, sent).then(
       (answer) => {
         this.inFlight = false;
+        // A move the server took settles what it sent: its answer is the row
+        // after it.  (Read only by the answer's position, a target the answer
+        // shows differently — an echo missing a part — would be sent forever.)
+        if (this.target && samePosition(this.target, sent)) this.target = null;
         this.accept(answer);
         this.emit();
         this.flush();

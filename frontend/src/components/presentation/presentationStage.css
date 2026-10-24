@@ -151,3 +151,24 @@
   margin-bottom: calc(var(--ps-label-gap) * 1px);
   color: hsl(var(--muted-foreground));
 }
+
+/* The spotlight (5.425.0): a ring at stage coordinates, scaled with the stage. */
+.ps-stage[data-pointable='true'] { cursor: crosshair; }
+.ps-spotlight {
+  position: absolute;
+  width: 160px;
+  height: 160px;
+  margin: -80px 0 0 -80px;
+  border-radius: 50%;
+  border: 6px solid hsl(var(--warning));
+  box-shadow: 0 0 0 9999px hsl(0 0% 0% / 0.18), 0 0 24px hsl(var(--warning) / 0.8);
+  pointer-events: none;
+  animation: ps-spotlight-in 300ms ease-out;
+}
+@keyframes ps-spotlight-in {
+  from { transform: scale(1.6); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ps-spotlight { animation: none; }
+}

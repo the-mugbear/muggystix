@@ -17,9 +17,21 @@ Three tables:
 * ``presentation_layout_reports`` — a slide that overflowed its estimate in
   someone's browser (the fit fallback): a defect in the estimator, kept so it
   can be fixed there.
+
+Stages B and C (2.531.0):
+
+* ``presentation_agendas`` / ``presentation_agenda_versions`` — an ordered
+  selection of the report's findings and sections (E3).  Items are ANCHORS
+  (``overview``, ``summary``, ``scope``, ``finding:<ref>``,
+  ``section:<ref>:<section>``) that the slide builder tags its slides with,
+  never page keys, so pagination and the host filter cannot invalidate one.
+  Every save is a new immutable version; a running presentation is pinned to
+  one (the agenda columns on ``presentations``, part of the position).
+* The spotlight (E6) — a point the driver clicked, on ``presentations`` with
+  its own ordering (``spotlight_seq``); it never raises ``revision``.
 """
 from sqlalchemy import (
-    Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, text,
+    JSON, Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, text,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -32,10 +44,15 @@ HOST_FILTER_KINDS = ("segment", "site", "text")
 VIEWER_KINDS = ("display", "controller", "browse")
 #: Why a presentation ended.
 END_REASONS = ("ended", "idle")
+#: Following the agenda, or exploring the full report (the item index frozen).
+AGENDA_MODES = ("agenda", "explore")
 
 SLIDE_KEY_MAX = 200
 FILTER_VALUE_MAX = 200
 CLIENT_ID_MAX = 64
+AGENDA_NAME_MAX = 200
+#: The most items an agenda holds.
+AGENDA_ITEMS_MAX = 200
 
 _FILTER_KINDS_SQL = ", ".join(f"'{k}'" for k in HOST_FILTER_KINDS)
 
@@ -65,6 +82,22 @@ class Presentation(Base):
     ended_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     ended_reason = Column(String(10), nullable=True)
 
+    # The agenda state (E3) — part of the position, written only by navigation
+    # writes: the pinned version, following it or exploring, and the ACTIVE
+    # item (a slide can belong to two items, so the key cannot say which).
+    agenda_id = Column(Integer, ForeignKey("presentation_agendas.id", name="fk_presentations_agenda_id"),
+                       nullable=True)
+    agenda_version = Column(Integer, nullable=True)
+    agenda_mode = Column(String(10), nullable=True)
+    agenda_item_index = Column(Integer, nullable=True)
+
+    # The spotlight (E6): its own ordering; never raises ``revision``.
+    spotlight_seq = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    spotlight_revision = Column(Integer, nullable=True)
+    spotlight_x = Column(Integer, nullable=True)
+    spotlight_y = Column(Integer, nullable=True)
+    spotlight_at = Column(DateTime(timezone=True), nullable=True)
+
     driver = relationship("User", foreign_keys=[driver_id])
     started_by = relationship("User", foreign_keys=[started_by_id])
     ended_by = relationship("User", foreign_keys=[ended_by_id])
@@ -86,6 +119,13 @@ class Presentation(Base):
             postgresql_where=text("ended_at IS NULL"),
         ),
         Index("ix_presentations_project_id", "project_id"),
+        CheckConstraint(
+            "(agenda_id IS NULL AND agenda_version IS NULL AND agenda_mode IS NULL AND agenda_item_index IS NULL)"
+            " OR (agenda_id IS NOT NULL AND agenda_version IS NOT NULL AND agenda_mode IN ('agenda', 'explore')"
+            " AND agenda_item_index >= 0)",
+            name="ck_presentations_agenda",
+        ),
+        Index("ix_presentations_agenda_id", "agenda_id"),
     )
 
 
@@ -114,6 +154,44 @@ class PresentationViewer(Base):
         UniqueConstraint("presentation_id", "client_id", name="uq_presentation_viewers_client"),
         CheckConstraint("kind IN ('display', 'controller', 'browse')", name="ck_presentation_viewers_kind"),
         Index("ix_presentation_viewers_user_id", "user_id"),
+    )
+
+
+class PresentationAgenda(Base):
+    __tablename__ = "presentation_agendas"
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(AGENDA_NAME_MAX), nullable=False)
+    # The newest of its versions; a save makes the next one.
+    latest_version = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    created_by = relationship("User")
+
+    __table_args__ = (
+        Index("ix_presentation_agendas_report_id", "report_id"),
+        Index("ix_presentation_agendas_project_id", "project_id"),
+    )
+
+
+class PresentationAgendaVersion(Base):
+    """One save of an agenda — never changed afterwards."""
+    __tablename__ = "presentation_agenda_versions"
+
+    id = Column(Integer, primary_key=True)
+    agenda_id = Column(Integer, ForeignKey("presentation_agendas.id", ondelete="CASCADE"), nullable=False)
+    version = Column(Integer, nullable=False)
+    # The anchors, in order (``["overview", "finding:F-07", "section:F-07:recommendation", …]``).
+    items = Column(JSON, nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("agenda_id", "version", name="uq_presentation_agenda_versions_version"),
     )
 
 

@@ -11,8 +11,10 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import type { HostFilter, PresentationState } from '../../services/api';
-import { MoveConflict, MoveRefused, PresentationSync, type Target } from '../../utils/presentationSync';
+import type { HostFilter, PresentationSpotlight, PresentationState } from '../../services/api';
+import {
+  MoveConflict, MoveRefused, PresentationSync, spotlightShown, type Target,
+} from '../../utils/presentationSync';
 
 const PEOPLE = {
   1: { id: 1, name: 'Ben', profile_image: null },
@@ -27,6 +29,9 @@ class Server {
   driverUser = 1;
   driverClient = 'B';
   ended = false;
+  spotSeq = 0;
+  spot: PresentationSpotlight | null = null;
+  agenda: Target['agenda'] = null;
 
   stateFor(user: number, client: string): PresentationState {
     return {
@@ -36,7 +41,19 @@ class Server {
       driving_elsewhere: !this.ended && this.driverUser === user && this.driverClient !== client,
       ended: this.ended ? { at: 'now', reason: 'ended', by: PEOPLE[1] } : null,
       watching: [], displays: [],
+      agenda: this.agenda ? {
+        id: this.agenda.agenda_id, name: 'Walkthrough', version: this.agenda.version, latest_version: this.agenda.version,
+        mode: this.agenda.mode, item_index: this.agenda.item_index, items: ['overview'],
+      } : null,
+      // As the server answers it: only while it is for the current revision.
+      spotlight: this.spot && this.spot.revision === this.revision ? { ...this.spot } : null,
     };
+  }
+
+  /** The driver's click, at the current revision; never raises it. */
+  spotlight(x: number, y: number) {
+    this.spotSeq += 1;
+    this.spot = { seq: this.spotSeq, revision: this.revision, x, y, remaining_ms: 5000 };
   }
 
   move(user: number, client: string, revision: number, target: Target): PresentationState {
@@ -45,6 +62,7 @@ class Server {
     }
     this.slide = target.slide_key;
     this.filter = target.host_filter;
+    this.agenda = target.agenda;
     this.revision += 1;
     return this.stateFor(user, client);
   }
@@ -92,13 +110,14 @@ class Network {
 
 const flush = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
 
-const tab = (server: Server, net: Network, user: number, client: string) => {
+const tab = (server: Server, net: Network, user: number, client: string, clock?: { t: number }) => {
   let reads = 0;
   const sync = new PresentationSync({
     // The server state is decided when the request ARRIVES (answered), as on a real server.
     move: (revision, target) => net.send(`move ${client} ${target.slide_key}@${revision}`,
       () => server.move(user, client, revision, target)),
     requestRead: () => { reads += 1; },
+    now: clock ? () => clock.t : undefined,
   });
   return {
     sync,
@@ -109,7 +128,7 @@ const tab = (server: Server, net: Network, user: number, client: string) => {
   };
 };
 
-const to = (slide_key: string, host_filter: HostFilter | null = null): Target => ({ slide_key, host_filter });
+const to = (slide_key: string, host_filter: HostFilter | null = null): Target => ({ slide_key, host_filter, agenda: null });
 
 describe('presentation sync — three tabs over one server', () => {
   it('the Display follows B, then C after C takes control', async () => {
@@ -335,6 +354,89 @@ describe('presentation sync — three tabs over one server', () => {
     [A, B, C].forEach((t) => expect(t.sync.getView().state?.ended).not.toBeNull());
     await net.answer();                                                 // the in-flight move: refused, ended
     expect(B.sync.go(to('scope:1'))).toBe(false);
+    expect(net.labels()).toEqual([]);
+  });
+});
+
+describe('presentation sync — the spotlight keeps its own order (E6)', () => {
+  it('two clicks whose answers arrive out of order: the second stays', () => {
+    const server = new Server();
+    const clock = { t: 1000 };
+    const B = tab(server, new Network(), 1, 'B', clock);
+    B.read();
+    server.spotlight(100, 100);
+    const first = B.snapshot();
+    server.spotlight(900, 500);
+    const second = B.snapshot();
+    B.sync.read(second);
+    B.sync.read(first);                                                 // late, lower seq
+    expect(B.sync.getView().spotlight).toMatchObject({ seq: 2, x: 900, y: 500 });
+  });
+
+  it('a spotlight in an equal-revision answer is taken, and its time runs from when it landed', () => {
+    const server = new Server();
+    const clock = { t: 1000 };
+    const A = tab(server, new Network(), 3, 'A', clock);
+    A.read();
+    server.spotlight(10, 20);                                           // same revision as the read before
+    clock.t = 2000;
+    A.read();
+    const held = A.sync.getView().spotlight;
+    expect(held).toMatchObject({ seq: 1, revision: 1, expiresAt: 7000 });
+    expect(spotlightShown(held, 1, 6999)).toBe(true);
+    expect(spotlightShown(held, 1, 7000)).toBe(false);                  // expired
+    expect(spotlightShown(held, 2, 3000)).toBe(false);                  // another revision's slide
+  });
+
+  it('a Display rings it only once the revision it is for has RENDERED', async () => {
+    const server = new Server();
+    const net = new Network();
+    const clock = { t: 0 };
+    const A = tab(server, net, 3, 'A', clock);
+    const B = tab(server, net, 1, 'B', clock);
+    [A, B].forEach((t) => t.read());
+    A.sync.setRendered({ revision: 1, slide_key: 'overview:1', host_filter: null, fitted: false });
+    B.sync.go(to('summary:1'));
+    await net.answer();                                                 // revision 2
+    server.spotlight(5, 5);                                             // on revision 2's slide
+    A.read();                                                           // A accepted 2, still showing 1
+    const view = A.sync.getView();
+    expect(view.state?.revision).toBe(2);
+    expect(spotlightShown(view.spotlight, view.renderedRevision, clock.t)).toBe(false);
+    A.sync.setRendered({ revision: 2, slide_key: 'summary:1', host_filter: null, fitted: false });
+    const after = A.sync.getView();
+    expect(spotlightShown(after.spotlight, after.renderedRevision, clock.t + 100)).toBe(true);
+    // Expired before the render finished: never shown.
+    expect(spotlightShown(after.spotlight, after.renderedRevision, clock.t + 5000)).toBe(false);
+  });
+
+  it('a move clears it: the new revision no longer matches', async () => {
+    const server = new Server();
+    const net = new Network();
+    const B = tab(server, net, 1, 'B', { t: 0 });
+    B.read();
+    server.spotlight(5, 5);
+    B.read();
+    B.sync.go(to('summary:1'));
+    await net.answer();
+    const view = B.sync.getView();
+    expect(spotlightShown(view.spotlight, view.state?.revision, 1)).toBe(false);
+  });
+});
+
+describe('presentation sync — the agenda is part of the position (E3)', () => {
+  it('a target differing only in its agenda state is still a move', async () => {
+    const server = new Server();
+    const net = new Network();
+    const B = tab(server, net, 1, 'B');
+    B.read();
+    const explore: Target = { ...to('overview:1'), agenda: { agenda_id: 4, version: 1, mode: 'explore', item_index: 0 } };
+    expect(B.sync.go(explore)).toBe(true);
+    expect(net.labels()).toEqual(['move B overview:1@1']);
+    await net.answer();
+    // Accepted with its agenda state: the target is settled, nothing resent.
+    expect(B.sync.getView().state?.agenda?.mode).toBe('explore');
+    expect(B.sync.getView().pending).toBeNull();
     expect(net.labels()).toEqual([]);
   });
 });

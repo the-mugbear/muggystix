@@ -1498,6 +1498,27 @@ screen (`pages/Presentation.tsx`).  Its rules:
   comment, in the user menu.  Never on an agent's note (an agent's work is
   marked as the agent's) and not in dense tables.  The picture's bytes come
   as a Blob through an object URL, remembered per (user, sha).
+- **The presenter view (5.425.0)** sits under the Controller's stage: small
+  copies of the SAME stage component, never a re-layout — *Going to* (the
+  driver's target, in the warning colour, only while not accepted),
+  *Accepted*, *Next*, and *On Ana's screen* per Display, drawn from what that
+  Display acknowledged rendering, with its status.  Three Displays get a
+  preview; more are listed by name.
+- **Agendas (5.425.0)** are shown beside the slide list: which one is
+  followed ("The full report" otherwise), its items numbered with the active
+  one marked, "Exploring the full report — item 3 waits" with *Back to the
+  agenda*, and "A newer version of this agenda exists" with *Use it* for the
+  driver.  Everyone sees the panel; only the driver's controls change it.
+  *Edit agendas* opens one dialog: an agenda's items are picked from what the
+  report holds (a finding, or one of its sections indented under it) and put
+  in order with the grip / Move up / Move down rows; deleting asks twice.
+- **The spotlight (5.425.0)** is a click on the driver's stage (the cursor
+  is a crosshair, and one line under the controls says so); every tab shows a
+  ring there for five seconds, at stage coordinates so it lands on the same
+  word on every screen, the rest of the slide dimmed slightly.  It waits on
+  a slide the driver has moved away from until the move is accepted, and a
+  Display shows it only on the slide it has drawn.  No animation under
+  reduced motion.
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

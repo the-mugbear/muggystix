@@ -960,6 +960,16 @@ def main() -> None:
         db.commit()
         print(f"presentation worst-case report issued as number {number}")
 
+    # An agenda on it (2.531.0), saved through the real route: the whole of
+    # F-02, then F-01's recommendation and endpoints alone, the scope last.
+    worst_report = db.query(Report).filter(Report.project_id == pid, Report.title == worst_title).first()
+    agendas_path = f"/client-reports/{worst_report.id}/presentation/agendas"
+    if not lead("GET", agendas_path):
+        agenda = lead("POST", agendas_path, json={"name": f"{MARK} Network team walkthrough", "items": [
+            "overview", "finding:F-02", "section:F-01:recommendation", "section:F-01:hosts", "scope",
+        ]})
+        print(f"presentation agenda {agenda['id']} saved on report {worst_report.id}")
+
     # --- A NetExec import with uninterpreted lines -------------------------
     job_id = None
     if not db.query(models.IngestionJob).filter(

@@ -2,6 +2,16 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.531.0",
+      "frontend": "5.425.0",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "new", "text": "Presentation mode: a presenter view under the slide shows where you are going, what everyone has, the next slide, and what each shared screen really shows."},
+        {"kind": "new", "text": "Presentation mode: agendas. Save the order to walk a report in (whole findings or single sections) and follow it with Next; leave it to explore and come back. Every save is a new version; a running presentation keeps its own."},
+        {"kind": "new", "text": "Presentation mode: the driver clicks a point of the slide to spotlight it on every screen for five seconds."}
+      ]
+    },
+    {
       "backend": "2.530.2",
       "frontend": "5.424.1",
       "date": "2026-10-24",

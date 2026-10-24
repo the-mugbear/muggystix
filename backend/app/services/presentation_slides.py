@@ -34,6 +34,9 @@ endpoint slides "Endpoints 13–24 of 57 matching DMZ · 240 affected").  The
 footer's height is reserved from the measured footer text, so the context
 labels never take room the body was promised.
 
+Each slide also carries ``anchors`` — the agenda items it belongs to
+(``slide_anchors``, stage C): an agenda names anchors, never page keys.
+
 A finding's status note ("Risk accepted") and an endpoint's State column are
 shown only where the report's template prints them (``status_notes``, owner
 2026-10-24): the presentation says what the report says.
@@ -607,6 +610,24 @@ def _tables_with_widths(blocks: List[dict]) -> List[dict]:
     return out
 
 
+#: The sections an agenda item may name, beside the finding's written ones.
+AGENDA_SECTIONS = tuple(field for field, _ in SECTIONS) + ("hosts",)
+
+
+def slide_anchors(slide: dict) -> List[str]:
+    """The agenda anchors a slide belongs to — THE rule for "the pages of an
+    agenda item" (E3): ``overview``, ``summary`` (its images too), ``scope``;
+    a finding's every slide is ``finding:<ref>``, and a section's pages — the
+    images it places and, for ``hosts``, the endpoint pages — are also
+    ``section:<ref>:<section>``.  The browser only matches these strings."""
+    key = slide["key"]
+    ref = slide.get("ref")
+    if not ref:
+        return [key.split(":", 1)[0]]
+    section = slide.get("section") or ("hosts" if slide.get("kind") == "hosts" else None)
+    return [f"finding:{ref}"] + ([f"section:{ref}:{section}"] if section else [])
+
+
 def _numbered(pages: List[List[dict]], key_of: Callable[[int], str], header: str, footer_of: Callable[[int, int], str],
               kind: str, extra: Optional[dict] = None) -> List[dict]:
     total = len(pages)
@@ -708,6 +729,7 @@ def presentation_slides(
     for slide in slides:
         for b in slide["blocks"]:
             b.pop("_rh", None)
+        slide["anchors"] = slide_anchors(slide)
     return {
         "stage": dict(STAGE),
         "slides": slides,
@@ -798,12 +820,14 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
     images = {img["attachment_id"]: img for img in finding.get("images") or [] if img.get("printed", True)}
     shown: Set[int] = set()
 
-    def image_slides(att_id: int) -> List[dict]:
+    def image_slides(att_id: int, section: Optional[str] = None) -> List[dict]:
         if att_id in shown or att_id not in images:
             return []
         shown.add(att_id)
+        # An image a section places belongs to that section (its agenda item).
+        extra = {"ref": ref, **({"section": section} if section else {})}
         return _image_slides(att_id, images[att_id], f"f:{ref}:image:{att_id}", f"{ref} · Evidence",
-                             f"{base} · Evidence", frozen_images, probe, {"ref": ref})
+                             f"{base} · Evidence", frozen_images, probe, extra)
 
     for field, label in SECTIONS:
         md = finding.get(field) or ""
@@ -816,7 +840,7 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
         n = 0
         for what, item in paged:
             if what == "image":
-                slides += image_slides(item)
+                slides += image_slides(item, field)
                 continue
             n += 1
             slides.append({

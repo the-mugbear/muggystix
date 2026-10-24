@@ -16,16 +16,23 @@
  * session storage, which a duplicated or opened tab copies).  A reload is a new
  * tab, no longer the driver — the page says so and one click takes it back.
  * Nothing live is shown: every slide is the issued report's frozen content.
+ *
+ * Stages B and C (5.425.0): the Controller's presenter view (E2 — Going to,
+ * Accepted, Next, and what each Display really shows), agendas (E3 — the
+ * agenda state is part of the position; `utils/presentationAgenda`) and the
+ * spotlight (E6 — the driver clicks the slide; every tab rings that point for
+ * five seconds, a Display only on the revision it has RENDERED).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
+import axios from 'axios';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, ExternalLink, Loader2, MonitorUp } from 'lucide-react';
 
 import {
-  endPresentation, getLivePresentation, getPresentationSlides, reportPresentationLayout, startPresentation,
-  takeControlOfPresentation,
-  type HostFilter, type PresentationSlides, type PresentationState, type Slide,
+  endPresentation, getLivePresentation, listPresentationAgendas, reportPresentationLayout, spotlightPresentation,
+  startPresentation, takeControlOfPresentation,
+  type HostFilter, type PresentationAgenda, type PresentationSlides, type PresentationState, type Slide,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useProjectId } from '../hooks/useProjectId';
@@ -33,11 +40,16 @@ import { useProjectRole } from '../hooks/useProjectRole';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useNow } from '../hooks/useNow';
 import { usePresentationSync, type TabKind } from '../hooks/usePresentationSync';
-import { pollEvery, queryErrorText, rememberFor, useLastSettled } from '../lib/query';
+import { invalidateReads, pollEvery, queryErrorText, useLastSettled } from '../lib/query';
 import { routeId } from '../utils/routeId';
 import { formatApiError } from '../utils/apiErrors';
-import type { Target } from '../utils/presentationSync';
+import { positionOf, samePosition, spotlightShown, type HeldSpotlight, type Target } from '../utils/presentationSync';
+import { pickSlide, stepTarget, withFilterLanding, type PinnedAgenda } from '../utils/presentationAgenda';
 import StageView from '../components/presentation/Stage';
+import PresenterView from '../components/presentation/PresenterView';
+import AgendaPanel from '../components/presentation/AgendaPanel';
+import AgendaEditorDialog from '../components/presentation/AgendaEditorDialog';
+import { slideLabel, slidesQuery } from '../components/presentation/slidesQuery';
 import PersonAvatar from '../components/PersonAvatar';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -53,26 +65,36 @@ const newTabId = (): string =>
     ? crypto.randomUUID()
     : `tab-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 
-const slidesKey = (projectId: number, reportId: number, filter: HostFilter | null) =>
-  ['getPresentationSlides', projectId, reportId, filter?.kind ?? null, filter?.value ?? null] as const;
+/** The agenda a position names, with its items: the running one's pinned
+ *  version from the state, else (a choice not yet accepted) from the list. */
+export const pinnedAgenda = (
+  position: Target | null, state: PresentationState | null, agendas: PresentationAgenda[],
+): PinnedAgenda | null => {
+  const a = position?.agenda;
+  if (!a) return null;
+  if (state?.agenda && state.agenda.id === a.agenda_id && state.agenda.version === a.version) {
+    return { id: a.agenda_id, version: a.version, items: state.agenda.items };
+  }
+  const listed = agendas.find((x) => x.id === a.agenda_id && x.version === a.version);
+  return listed ? { id: listed.id, version: listed.version, items: listed.items } : null;
+};
 
-const slidesQuery = (projectId: number, reportId: number, filter: HostFilter | null) => ({
-  queryKey: slidesKey(projectId, reportId, filter),
-  queryFn: ({ signal }: { signal: AbortSignal }) => getPresentationSlides(projectId, reportId, filter, signal),
-  // An issued report never changes: its slide list for a filter is the same on every read.
-  ...rememberFor(Infinity),
-});
+/** Re-renders when a held spotlight's time runs out. */
+const useSpotlightClock = (spotlight: HeldSpotlight | null): number => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!spotlight) return undefined;
+    const left = spotlight.expiresAt - Date.now();
+    setNow(Date.now());
+    if (left <= 0) return undefined;
+    const timer = window.setTimeout(() => setNow(Date.now()), left + 20);
+    return () => window.clearTimeout(timer);
+  }, [spotlight]);
+  return now;
+};
 
 const filterLabel = (f: HostFilter | null) =>
   !f ? 'All endpoints' : f.kind === 'text' ? `Matching “${f.value}”` : `${f.kind === 'site' ? 'Site' : 'Segment'} ${f.value}`;
-
-/** Where Next / Previous go on a slide list. */
-export const stepKey = (slides: Slide[], key: string, delta: 1 | -1): string | null => {
-  const at = slides.findIndex((s) => s.key === key);
-  if (at < 0) return slides[0]?.key ?? null;
-  const next = slides[at + delta];
-  return next ? next.key : null;
-};
 
 /** The slide a host filter change lands on: the current finding's first
  *  endpoint slide, or — off a finding — the same slide. */
@@ -154,11 +176,28 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
         host_filter: urlKind && urlValue
           ? { kind: urlKind as HostFilter['kind'], value: urlValue }
           : (urlSlide ? null : state?.host_filter ?? null),
+        // Browsing walks the full report on its own: no agenda.
+        agenda: null,
       };
     }
-    if (kind === 'display') return state ? { slide_key: state.slide_key, host_filter: state.host_filter } : null;
+    if (kind === 'display') return state ? positionOf(state) : null;
     return sync.position;
   }, [kind, urlSlide, urlKind, urlValue, state, sync.position]);
+
+  // The report's agendas (E3): re-read when the presentation says a newer
+  // version of the running one exists.
+  const agendasRead = useQuery({
+    queryKey: ['listPresentationAgendas', projectId, reportId],
+    queryFn: ({ signal }) => listPresentationAgendas(projectId, reportId, signal),
+    enabled: kind === 'controller',
+  });
+  const agendas = useMemo(() => agendasRead.data ?? [], [agendasRead.data]);
+  const latestSeen = state?.agenda?.latest_version;
+  useEffect(() => {
+    if (latestSeen != null) void invalidateReads(queryClient, 'listPresentationAgendas');
+  }, [latestSeen, queryClient]);
+  const pinned = useMemo(() => pinnedAgenda(position, state, agendas), [position, state, agendas]);
+  const [editingAgendas, setEditingAgendas] = useState(false);
 
   const filter = position?.host_filter ?? null;
   const slidesRead = useQuery({ ...slidesQuery(projectId, reportId, filter), enabled: presentationId != null });
@@ -168,6 +207,14 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
   const exactSlide = slidesRead.data?.slides.find((s) => s.key === position?.slide_key) ?? null;
   // While it loads, the slide shown before stays (and is not acknowledged again).
   const slide = useLastSettled(exactSlide, { resetKey: reportId }) ?? null;
+  // The presenter view's "Accepted" is read from the list for the ACCEPTED
+  // filter (a pending filter change shows another list here).
+  const acceptedRead = useQuery({
+    ...slidesQuery(projectId, reportId, state?.host_filter ?? null),
+    enabled: presentationId != null && kind === 'controller',
+  });
+  // The unfiltered list names every agenda anchor (the editor's choices).
+  const allRead = useQuery({ ...slidesQuery(projectId, reportId, null), enabled: kind === 'controller' && editingAgendas });
 
   const layoutReport = useMutation({
     mutationFn: (body: { slide_key: string; overflow_px: number; font: string }) =>
@@ -203,9 +250,10 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
   const canNavigate = kind === 'browse' || (kind === 'controller' && Boolean(state?.you_are_driving) && !state?.ended);
   const step = useCallback((delta: 1 | -1) => {
     if (!canNavigate || !slides || !position) return;
-    const key = stepKey(slides.slides, position.slide_key, delta);
-    if (key) go({ slide_key: key, host_filter: position.host_filter });
-  }, [canNavigate, slides, position, go]);
+    // Following an agenda: its items' pages; else the full list.
+    const target = stepTarget(slides.slides, position, pinned, delta);
+    if (target) go(target);
+  }, [canNavigate, slides, position, pinned, go]);
   useKeyboardShortcuts({ j: () => step(1), k: () => step(-1) }, kind !== 'display');
 
   // The position NOW, for a filter whose slide list arrives later.
@@ -218,11 +266,37 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
     // The presentation moved while the list loaded: this landing is for a slide no
     // longer shown — drop it (code review 2026-10-24) rather than send a stale move.
     if (positionRef.current?.slide_key !== from) return;
-    go({ slide_key: filterLanding(list.slides, from), host_filter: next });
+    // The landing leaves the active agenda item's pages → exploring (the item kept).
+    go(withFilterLanding(list.slides, position, pinned, filterLanding(list.slides, from), next));
     // The filter control keeps the focus after a choice, and page keys are not
     // read while a control has it: hand j / k back to the presentation.
     window.setTimeout(() => { (document.activeElement as HTMLElement | null)?.blur?.(); }, 0);
-  }, [canNavigate, position, queryClient, projectId, reportId, go]);
+  }, [canNavigate, position, pinned, queryClient, projectId, reportId, go]);
+
+  // E6: the driver clicks the slide — at the accepted revision, so only while
+  // nothing of its own is pending (the point is ON the slide everyone has).
+  const spot = useMutation({
+    mutationFn: (p: { revision: number; x: number; y: number }) =>
+      spotlightPresentation(projectId, presentationId ?? 0, { client_id: clientId, ...p }),
+    onSuccess: (answer) => sync.read(answer),
+    onError: (error) => {
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        const answer = (error.response.data as { detail?: { presentation?: PresentationState } } | undefined)?.detail?.presentation;
+        if (answer) sync.read(answer);
+      }
+    },
+  });
+  const accepted = state ? positionOf(state) : null;
+  const showingAccepted = Boolean(position && accepted && samePosition(position, accepted));
+  const canSpotlight = kind === 'controller' && canNavigate && showingAccepted && !sync.inFlight;
+  const onPoint = useCallback((x: number, y: number) => {
+    if (state) spot.mutate({ revision: state.revision, x, y });
+  }, [spot, state]);
+  const spotlightNow = useSpotlightClock(sync.spotlight);
+  // A Display rings only the revision it has RENDERED; a Controller, the accepted one it shows.
+  const ringRevision = kind === 'display' ? sync.renderedRevision : showingAccepted ? state?.revision : undefined;
+  const ring = kind !== 'browse' && !state?.ended && spotlightShown(sync.spotlight, ringRevision, spotlightNow)
+    ? sync.spotlight : null;
 
   const take = useMutation({
     mutationFn: () => takeControlOfPresentation(projectId, presentationId ?? 0, clientId),
@@ -247,6 +321,7 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
       <div className="fixed inset-0 bg-black" data-testid="presentation-display">
         <StageView projectId={projectId} reportId={reportId} stage={slides?.stage ?? { width: 1600, height: 900 }}
           slide={state?.ended ? null : slide} token={shownRevision} onRendered={onRendered} onOverflow={onOverflow}
+          spotlight={ring}
           placeholder={
             <span className="text-2xl text-muted-foreground">
               {state?.ended ? `The presentation ended${state.ended.by ? ` — ${state.ended.by.name}` : ''}.`
@@ -313,9 +388,9 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
       ) : (
         <div className="flex min-h-0 flex-wrap items-start gap-md">
           <div className="min-w-0 flex-[3_1_640px]">
-            <div className="aspect-video w-full overflow-hidden rounded-panel border border-border">
+            <div className="aspect-video w-full overflow-hidden rounded-panel border border-border" data-testid="presentation-stage">
               <StageView projectId={projectId} reportId={reportId} stage={slides?.stage ?? { width: 1600, height: 900 }}
-                slide={slide} onOverflow={onOverflow}
+                slide={slide} onOverflow={onOverflow} spotlight={ring} onPoint={canSpotlight ? onPoint : undefined}
                 placeholder={<span className="text-muted-foreground">{slidesRead.isError ? queryErrorText(slidesRead.error, 'Could not read the slides.') : 'Loading…'}</span>} />
             </div>
             <div className="mt-sm flex flex-wrap items-center gap-sm">
@@ -364,16 +439,49 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
             {(take.isError || end.isError) && (
               <p className="mt-xs text-destructive">{formatApiError(take.error ?? end.error, 'That did not go through.')}</p>
             )}
+            {kind === 'controller' && canNavigate && (
+              <p className="mt-xs text-caption text-muted-foreground" data-testid="spotlight-hint">
+                {canSpotlight ? 'Click the slide to spotlight a point on every screen for five seconds.'
+                  : 'The spotlight waits until the slide you moved to is accepted.'}
+              </p>
+            )}
+            {spot.isError && !(axios.isAxiosError(spot.error) && spot.error.response?.status === 409) && (
+              <p className="mt-xs text-destructive">{formatApiError(spot.error, 'Could not spotlight that point.')}</p>
+            )}
+            {kind === 'controller' && state && !state.ended && slides && position && (
+              <div className="mt-md">
+                <PresenterView projectId={projectId} reportId={reportId} stage={slides.stage} state={state}
+                  slides={slides.slides} acceptedSlides={acceptedRead.data?.slides}
+                  pending={sync.pending} next={stepTarget(slides.slides, position, pinned, 1)} />
+              </div>
+            )}
           </div>
           <aside className="min-w-0 flex-[1_1_260px] space-y-sm">
             {state && <DisplayStatus state={state} />}
             {state && <Watching state={state} />}
+            {kind === 'controller' && state && !state.ended && slides && position && (
+              <AgendaPanel state={state} position={position} pinned={pinned} slides={slides.slides} agendas={agendas}
+                onGo={canNavigate ? go : undefined}
+                // Someone may have saved since: the editor opens on the list as it is now.
+                onEdit={() => { void agendasRead.refetch(); setEditingAgendas(true); }} />
+            )}
+            {editingAgendas && allRead.isError && (
+              <p className="text-caption text-destructive" role="status">
+                {queryErrorText(allRead.error, 'Could not read the report to edit its agendas.')}{' '}
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={() => { void allRead.refetch(); }}>Retry</Button>
+              </p>
+            )}
             {slides && position && (
               <SlideList slides={slides.slides} current={position.slide_key}
-                onPick={canNavigate ? (key) => go({ slide_key: key, host_filter: position.host_filter }) : undefined} />
+                onPick={canNavigate ? (key) => go(pickSlide(slides.slides, position, pinned, key)) : undefined} />
             )}
           </aside>
         </div>
+      )}
+      {kind === 'controller' && (
+        <AgendaEditorDialog open={editingAgendas && Boolean(allRead.data)} onOpenChange={setEditingAgendas}
+          projectId={projectId} reportId={reportId} slides={allRead.data?.slides ?? []} agendas={agendas}
+          initialId={state?.agenda?.id ?? null} />
       )}
     </div>
   );
@@ -449,7 +557,7 @@ const SlideList: React.FC<{ slides: Slide[]; current: string; onPick?: (key: str
     <ol className="space-y-px text-metadata">
       {slides.map((s, i) => {
         // Numbered: two slides can share a header (a finding's evidence images).
-        const label = `${i + 1}. ${s.header || 'Overview'}${s.pages > 1 ? ` — ${s.page} of ${s.pages}` : ''}`;
+        const label = `${i + 1}. ${slideLabel(s)}`;
         const here = s.key === current;
         return (
           <li key={s.key}>

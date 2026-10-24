@@ -11,6 +11,8 @@
  * pages, a host filter changed from a later endpoint page, a held key, dropped
  * heartbeats (A says it is out of sync, then catches up), a hidden tab, and
  * End.  A never shows an earlier slide after a later one; no move conflicts.
+ * Since 5.425.0 also the spotlight: B's click rings on A's Display at the same
+ * point of the stage, for five seconds, without raising the revision.
  */
 import { expect, test, type Browser, type Page } from '@playwright/test';
 
@@ -80,6 +82,23 @@ test('three people, one presentation', async ({ browser }) => {
   await expect(a.getByTestId('ps-image')).toBeVisible();
   await pick(b, 'f:F-01:hosts:3');
   await expect(shown(a)).toHaveAttribute('data-slide', 'f:F-01:hosts:3');
+
+  // E6: B clicks a point of the slide; A's Display rings that point (stage
+  // coordinates, so the same place at A's size), and the revision does not move.
+  const revisionBefore = be.live!.revision;
+  const bStage = b.getByTestId('presentation-stage').locator('[data-testid=ps-stage]');
+  const box = (await bStage.boundingBox())!;
+  await bStage.click({ position: { x: box.width / 4, y: box.height / 2 } });
+  await expect(a.getByTestId('ps-spotlight')).toBeVisible();
+  // A click lands on a whole screen pixel: within a stage pixel or two of the point.
+  expect(Math.abs(be.live!.spot!.x - 400)).toBeLessThanOrEqual(2);
+  expect(Math.abs(be.live!.spot!.y - 450)).toBeLessThanOrEqual(2);
+  expect(be.live!.revision).toBe(revisionBefore);
+  // …and the ring sits at a quarter of A's stage width.
+  const aStage = (await shown(a).boundingBox())!;
+  const ring = (await a.getByTestId('ps-spotlight').boundingBox())!;
+  expect(Math.abs(ring.x + ring.width / 2 - (aStage.x + aStage.width / 4))).toBeLessThan(4);
+  await expect(a.getByTestId('ps-spotlight')).toHaveCount(0, { timeout: 8_000 });   // five seconds
 
   // A host filter changed from endpoint page 3 lands on page 1 of the filtered list.
   await b.getByRole('combobox', { name: 'Endpoints shown' }).click();
