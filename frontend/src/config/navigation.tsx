@@ -141,10 +141,9 @@ export const HUB_DEFS: HubDef[] = [
   // Every agent surface lives here: a session's page (/agent-sessions) is an
   // owned path, so the sidebar still says where you are when you drill into
   // one.  The hub is "Agents" (UX walkthrough U11): it holds only agent
-  // surfaces and opens a page titled "Agent Sessions".  Its ADDRESS stays
-  // `/workflows`, the hub's former name, so bookmarked links keep working.
+  // surfaces and opens a page titled "Agent Sessions".
   {
-    id: 'agents', label: 'Agents', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck,
+    id: 'agents', label: 'Agents', path: '/agents', requiredRole: 'viewer', Icon: ShieldCheck,
     defaultChildPath: '/agent-activity', ownedPaths: ['/agent-sessions'],
   },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
@@ -275,7 +274,7 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Gauge, keywords: ['evidence', 'coverage', 'assessed', 'eligible', 'trust', 'assurance', 'gap', 'parser', 'quality'], order: 6.7 },
   },
 
-  // Agents hub (id `workflows`) — v2.337.0: agents run one project session that does every
+  // Agents hub (id `agents`) — v2.337.0: agents run one project session that does every
   // kind of work. 5.313.0 — the operator drives their agent (no approval), so
   // Agent Sessions leads the hub and is its default. Recon runs are gone
   // (5.313.1): an agent reads a scope and uploads to its session. Test plans

@@ -6,7 +6,7 @@
  * filterable by status, severity, source and owner.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
@@ -69,7 +69,7 @@ import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 
 import ProposedFindingsLine from '../components/findings/ProposedFindingsLine';
-import { OBSERVATIONS_TO_JUDGE_PATH, observationsPathFromFindingsView } from '../utils/observationsPath';
+import { OBSERVATIONS_TO_JUDGE_PATH } from '../utils/observationsPath';
 import {
   HOST_STATE_FILTER_LABEL, SOURCE_LABEL, SOURCE_OPTIONS, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates,
   matchesStatusFilter,
@@ -136,17 +136,9 @@ const ownerFilterOf = (raw: string | null, myId: number | null | undefined): Own
 
 /**
  * The project's findings — the judged record reports are built from.
- *
- * 5.404.0 — the scanner observations it used to hold as a second view are an
- * Inventory page of their own (`/observations`, with an inspector); an old
- * `?view=observations` link lands there, narrowed to what is not yet judged
- * (what that view listed).
+ * Scanner observations are their own Inventory page (`/observations`).
  */
 const Findings: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  if (searchParams.get('view') === 'observations') {
-    return <Navigate to={observationsPathFromFindingsView(searchParams)} replace />;
-  }
   return (
     <div className="p-md md:p-lg">
       <div className="mb-md">

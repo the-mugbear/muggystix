@@ -556,7 +556,7 @@ frontend/src/
 │   │             projects the reader administers; only where the installation tracks remediation)
 │   │ Inventory:  Hosts, HostDetail, Names, ScannerObservationsPage (/observations, with its
 │   │             inspector), Query (/query, pipe queries + saved), Scans, ScanDetail, ScanDiff,
-│   │             ScansHub (/scans: the one import history; redirects the old ?view=results), Scopes
+│   │             (Scans is /scans: the one import history), Scopes
 │   │ Findings:   Findings, FindingDetail, Reports, ReportDetail,
 │   │             Remediation (only where the installation tracks remediation)
 │   │ Posture:    SecurityPosture, Segments, Patterns, Evidence

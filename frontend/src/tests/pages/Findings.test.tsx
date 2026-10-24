@@ -783,28 +783,24 @@ describe('Findings — empty states', () => {
   });
 });
 
-// 5.404.0 — Scanner observations left this page for Inventory.  An old
-// `?view=observations` link lands on the new page with the view's filters,
-// narrowed to what is not yet judged (what the view listed).
-describe('Findings — the old Scanner observations view', () => {
-  it('redirects to the Inventory page, keeping its filters', async () => {
+// Scanner observations are an Inventory page of their own; the old
+// `?view=observations` redirect is gone (owner, 2026-10-23), so the address
+// is simply the findings list.
+describe('Findings — no view of scanner observations', () => {
+  it('an old `?view=observations` address shows the findings list', async () => {
     mocked.listFindings.mockClear();
-    const Where: React.FC = () => {
-      const [params] = useSearchParams();
-      return <p data-testid="observations-page">{params.toString()}</p>;
-    };
     render(
       <TooltipProvider>
-        <MemoryRouter initialEntries={['/findings?view=observations&obs_severity=high']}>
+        <MemoryRouter initialEntries={['/findings?view=observations']}>
           <Routes>
             <Route path="/findings" element={<Findings />} />
-            <Route path="/observations" element={<Where />} />
+            <Route path="/observations" element={<p data-testid="observations-page" />} />
           </Routes>
         </MemoryRouter>
       </TooltipProvider>,
     );
-    expect(await screen.findByTestId('observations-page')).toHaveTextContent('obs_severity=high&obs_judged=waiting');
-    expect(api.listFindings).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.listFindings).toHaveBeenCalled());
+    expect(screen.queryByTestId('observations-page')).not.toBeInTheDocument();
   });
 });
 

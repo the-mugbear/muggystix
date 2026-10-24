@@ -133,10 +133,10 @@ describe('navigation manifest', () => {
     expect(NAV_PAGES.map((p) => p.path)).not.toContain('/test-plans');
     expect(NAV_PAGES.map((p) => p.path)).not.toContain('/executions');
     expect(HUBS.find((h) => h.id === 'agents')!.defaultChildPath).toBe('/agent-activity');
-    // U11 — the hub holds only agent surfaces, so it is "Agents"; its
-    // address is unchanged so `/workflows` links keep working.
+    // U11 — the hub holds only agent surfaces, so it is "Agents", at
+    // `/agents` (its former address `/workflows` is gone — owner, 2026-10-23).
     expect(HUBS.find((h) => h.id === 'agents')!.label).toBe('Agents');
-    expect(HUBS.find((h) => h.id === 'agents')!.path).toBe('/workflows');
+    expect(HUBS.find((h) => h.id === 'agents')!.path).toBe('/agents');
     expect(HUBS.map((h) => h.label)).not.toContain('Workflows');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
@@ -155,20 +155,17 @@ describe('navigation manifest', () => {
     }
   });
 
-  it('App.tsx sends the old paths to their new homes', () => {
+  it('App.tsx keeps no redirect for a retired address', () => {
     const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8');
-    // Both of Ingestion Results' old paths open the Scans page's import
-    // history with the equivalent filter (5.418.0: one history).
-    expect(src).toMatch(/path="\/parse-errors" element={<RedirectToImportResults \/>}/);
-    expect(src).toMatch(/path="\/ingestion-results" element={<RedirectToImportResults \/>}/);
-    // …with the old address's query and hash, through the one function that
-    // builds that address (tests/utils/importResultsPath.test.tsx pins what it
-    // makes of a query).
-    expect(src).toMatch(/<Navigate to={`\$\{importResultsPath\(new URLSearchParams\(search\)\)\}\$\{hash\}`} replace \/>/);
-    // 5.383.0 — `/assist-sessions` and `/assist-sessions/:id` (a session by an
-    // id it no longer has) have no route: they are the not-found page.  The
-    // redirect page, its look-up and the server's routes went together.
-    expect(src).not.toMatch(/path="\/assist-sessions/);
+    // Kept for bookmarks until every installation had upgraded; removed
+    // (owner, 2026-10-23), so each is the not-found page.  `/` is the one
+    // redirect left: it is the app's front door, not a retired address.
+    for (const old of ['dashboard', 'test-plans', 'executions', 'agent-sessions"', 'insights', 'ingestion-results',
+      'parse-errors', 'workflows', 'assist-sessions']) {
+      expect(src, old).not.toMatch(new RegExp(`path="/${old}`));
+    }
+    expect(src).not.toMatch(/RedirectToImportResults|ScansHub/);
+    expect(src.match(/<Navigate /g)).toHaveLength(1);
     expect(src).not.toMatch(/AssistSessions/);
     expect(src).toMatch(/path="\*" element={<NotFound \/>}/);
     expect(src).toMatch(/path="\/agent-sessions\/:sessionId"[\s\S]{0,200}?<AgentSessionDetail \/>/);

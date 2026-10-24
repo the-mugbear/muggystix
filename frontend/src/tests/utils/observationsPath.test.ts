@@ -1,27 +1,27 @@
 /**
- * Scanner observations moved from the Findings page's second view to
- * Inventory (5.404.0).  An old link — a bookmark, a shared address — lands on
- * the new page with what that view showed: its filters and page, narrowed to
- * what is not yet judged unless it had asked for the judged too.
+ * The Scanner observations page's addresses.  (An old `/findings?view=
+ * observations` link redirected here until every installation had upgraded;
+ * the redirect and its helper are gone — owner, 2026-10-23.)
  */
 import { describe, expect, it } from 'vitest';
 
-import { OBSERVATIONS_TO_JUDGE_PATH, observationsPathFromFindingsView } from '../../utils/observationsPath';
+import {
+  OBSERVATIONS_TO_JUDGE_PATH, issueFromWeaknessHash, observationPath, weaknessHash,
+} from '../../utils/observationsPath';
 
-const from = (search: string) => observationsPathFromFindingsView(new URLSearchParams(search));
-
-describe('observationsPathFromFindingsView', () => {
-  it('the bare view is the list of what still waits', () => {
-    expect(from('view=observations')).toBe('/observations?obs_judged=waiting');
+describe('observationsPath', () => {
+  it('names the list of what still waits', () => {
     expect(OBSERVATIONS_TO_JUDGE_PATH).toBe('/observations?obs_judged=waiting');
   });
 
-  it('keeps the filters and the page', () => {
-    expect(from('view=observations&obs_severity=critical&obs_search=ssh&page=3'))
-      .toBe('/observations?obs_severity=critical&obs_search=ssh&page=3&obs_judged=waiting');
+  it('opens one issue in the inspector', () => {
+    expect(observationPath('check:smb-signing')).toBe('/observations?issue=check%3Asmb-signing');
   });
 
-  it('the old "include covered" switch is the new default: no narrowing', () => {
-    expect(from('view=observations&obs_judged=1&obs_min=5')).toBe('/observations?obs_min=5');
+  it("a host page's hash names the issue back, and nothing else", () => {
+    expect(issueFromWeaknessHash(weaknessHash('title:Weak TLS / 1.0'))).toBe('title:Weak TLS / 1.0');
+    expect(issueFromWeaknessHash('#section-ports')).toBeNull();
+    expect(issueFromWeaknessHash('weakness-x')).toBeNull();
+    expect(issueFromWeaknessHash('#%E0%A4%A')).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 /**
- * HubRedirect — a hub path (/inventory, /workflows, /collaboration,
+ * HubRedirect — a hub path (/inventory, /agents, /collaboration,
  * /settings) sends the user straight to a child page instead of rendering an
  * interim card-grid landing.  That landing was redundant: the secondary-nav
  * tab strip already lists the same children on every child page, so the

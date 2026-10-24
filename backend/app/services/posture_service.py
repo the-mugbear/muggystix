@@ -146,7 +146,7 @@ def _gather_signals(
             kind="systemic", title=b["label"],
             blast_radius=f"{b['affected_hosts']} hosts ({pct}%) · {b.get('subnet_spread', 0)} subnets · {b.get('site_spread', 0)} sites",
             action=b.get("recommended_action") or "Remediate estate-wide",
-            severity=(b.get("severity") or "high"), owner=None, link="/insights/systemic",
+            severity=(b.get("severity") or "high"), owner=None, link="/posture/patterns",
         ))
 
     # C. Critical findings on a tier-1/2 site (action).
@@ -161,7 +161,7 @@ def _gather_signals(
                     kind="site", title=f"{s['site']} — {crit} critical",
                     blast_radius=f"Tier {tier} site · {s['host_count']} hosts · {s['exposure']['active_findings']} active findings",
                     action=s["recommended_action"]["text"],
-                    severity="critical", owner=s.get("owner_name"), link="/insights",
+                    severity="critical", owner=s.get("owner_name"), link="/posture/segments",
                 ))
 
     # NOTE: agent workflow state is deliberately NOT a strategic-posture signal:
@@ -203,7 +203,7 @@ def _gather_signals(
                     f"{s['site']}: {gap} of {s['expected_host_count']} expected hosts not found",
                     kind="coverage", title=f"{s['site']} — coverage gap",
                     blast_radius=f"{gap} expected hosts undiscovered", action="Extend recon to close the gap",
-                    severity="medium", owner=s.get("owner_name"), link="/insights",
+                    severity="medium", owner=s.get("owner_name"), link="/posture/segments",
                 ))
 
     signals.sort(key=lambda s: -s["score"])

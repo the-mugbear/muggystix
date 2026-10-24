@@ -5,8 +5,7 @@
  * Ingestion results (`?view=results`).  Now the uploads that were not imported
  * are rows of the history, in the server's one order; "Needs attention" and
  * the other status counts are its filter (each count is the server's and
- * opens exactly its list); a link to one upload lists that upload, open; and
- * an old `?view=results` address lands on the same filter, query kept.  A
+ * opens exactly its list); a link to one upload lists that upload, open.  A
  * viewer is given none of it: no upload rows (the server's), no counts, and
  * no lead figure that would open a list they cannot read.
  */
@@ -42,7 +41,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 }));
 vi.mock('../../components/scans/FormatRetryDialog', () => ({ default: () => null }));
 
-import ScansHub from '../../pages/ScansHub';
+import Scans from '../../pages/Scans';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import { formatInstant } from '../../utils/scanTime';
 
@@ -73,7 +72,7 @@ const history = (items: Array<{ kind: string; id: number }>, over: Record<string
 
 const open = (entry: string) => {
   const router = createMemoryRouter(
-    [{ path: '/scans', element: <TooltipProvider><ScansHub /></TooltipProvider> }],
+    [{ path: '/scans', element: <TooltipProvider><Scans /></TooltipProvider> }],
     { initialEntries: [entry] },
   );
   render(<RouterProvider router={router} />);
@@ -198,17 +197,9 @@ describe('Scans — one history of imports and of the uploads that were not impo
   });
 });
 
-describe('Scans — the old Ingestion results address', () => {
-  it('lands on the history with the same filter, query kept, replacing the entry', async () => {
-    const router = open('/scans?view=results&status=failed&search=dmz&page=2&sort=status');
-    await waitFor(() => expect(router.state.location.search).toBe('?status=failed&search=dmz'));
-    expect(router.state.historyAction).toBe('REPLACE');
-    await waitFor(() => expect(lastHistoryCall()).toMatchObject({ status: 'failed', search: 'dmz' }));
-  });
-
-  it('a link to one row of it lands on that upload', async () => {
-    const router = open('/scans?view=results&job_id=484');
-    await waitFor(() => expect(router.state.location.search).toBe('?job_id=484'));
+describe("Scans — an upload's own address", () => {
+  it('a link to one upload asks the history for that upload', async () => {
+    open('/scans?job_id=484');
     await waitFor(() => expect(lastHistoryCall()).toMatchObject({ jobId: 484 }));
   });
 });

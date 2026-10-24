@@ -13,7 +13,6 @@ import ErrorBoundary from './components/ErrorBoundary';
 import HubRedirect from './components/HubRedirect';
 import SessionExpiryNotice from './components/SessionExpiryNotice';
 import { ListPageSkeleton, DetailSkeleton, CardListSkeleton } from './components/PageSkeleton';
-import { importResultsPath } from './utils/importResultsPath';
 import Login from './pages/Login';
 import NotFound, { ProjectsRedirect } from './pages/NotFound';
 
@@ -58,7 +57,7 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/integrations', kind: 'list' },
   { pattern: '/operations', kind: 'cards' },
   { pattern: '/inventory', kind: 'cards' },
-  { pattern: '/workflows', kind: 'cards' },
+  { pattern: '/agents', kind: 'cards' },
   { pattern: '/collaboration', kind: 'cards' },
   { pattern: '/settings', kind: 'cards' },
   { pattern: '/administration', kind: 'cards' },
@@ -80,10 +79,6 @@ const RouteSkeleton: React.FC = () => {
   if (kind === 'cards') return <CardListSkeleton />;
   return <ListPageSkeleton />;
 };
-// v3 alpha.11 — Dashboard.tsx removed; / and /dashboard redirect to
-// /operations.  My Queue + My Tasks widgets extracted into
-// MyQueueCard / MyTasksCard components used by Operations.
-//
 // v4.0.0-alpha.0 — every protected page is React.lazy()'d so the
 // initial paint pays only for Login + Layout shell + the first
 // destination route.  Login stays eagerly imported because it's the
@@ -91,10 +86,9 @@ const RouteSkeleton: React.FC = () => {
 // auth.  Suspense fallback uses ListPageSkeleton — it matches the
 // shape of most pages closely enough that the swap is invisible for
 // the common case.
-// One page, one import history (5.418.0): the uploads that were not imported
-// are its rows too (they were the Ingestion results view, and a page before
-// 5.380.0); ScansHub only redirects the old `?view=results` address.
-const Scans = lazy(() => import('./pages/ScansHub'));
+// One page, one import history: the uploads that were not imported are its
+// rows too.
+const Scans = lazy(() => import('./pages/Scans'));
 const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
 const Hosts = lazy(() => import('./pages/Hosts'));
@@ -152,11 +146,6 @@ const ReportDetail = lazy(() => import('./pages/ReportDetail'));
 const ReportDefaults = lazy(() => import('./pages/ReportDefaults'));
 const ReportTemplates = lazy(() => import('./pages/ReportTemplates'));
 
-/** `/parse-errors?status=failed` → `/scans?status=failed`. */
-function RedirectToImportResults() {
-  const { search, hash } = useLocation();
-  return <Navigate to={`${importResultsPath(new URLSearchParams(search))}${hash}`} replace />;
-}
 
 // Route-level error boundary for the page area inside Layout. Keyed on
 // pathname so navigating to another page clears a page-specific crash, while a
@@ -237,14 +226,7 @@ function App() {
                     <Suspense fallback={<RouteSkeleton />}>
                       <RoutedErrorBoundary>
                       <Routes>
-                      {/* v3 alpha.11 — / and /dashboard both redirect
-                          to /operations.  Dashboard.tsx absorbed:
-                          counter tiles ↔ Operations coverage tiles;
-                          My Queue + My Tasks ↔ MyQueueCard/MyTasksCard
-                          under Operations' Mine toggle; Team Activity
-                          ↔ /activity (Collaboration page). */}
                       <Route path="/" element={<Navigate to="/operations" replace />} />
-                      <Route path="/dashboard" element={<Navigate to="/operations" replace />} />
                       {/* v3 alpha.5 — Operations: coverage-first project
                           coordination view.  Additive — does not replace
                           Dashboard, Activity, or any existing surface. */}
@@ -273,7 +255,7 @@ function App() {
                         }
                       />
                       <Route
-                        path="/workflows"
+                        path="/agents"
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <HubRedirect hubId="agents" />
@@ -306,13 +288,6 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* 5.320.0 — test plans and execution runs are gone:
-                          tests are proposed on hosts and shown on each
-                          host's page.  Old links (bookmarks, earlier
-                          notifications) land on the hosts that have tests
-                          still to do. */}
-                      <Route path="/test-plans/*" element={<Navigate to="/hosts?q=has%3Aplanned" replace />} />
-                      <Route path="/executions/*" element={<Navigate to="/agent-activity" replace />} />
                       <Route
                         path="/scans"
                         element={
@@ -348,8 +323,7 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* 5.404.0 — Inventory; it was the Findings page's
-                          second view (`/findings?view=observations` redirects). */}
+                      {/* Scanner observations, on Inventory. */}
                       <Route
                         path="/observations"
                         element={
@@ -455,9 +429,6 @@ function App() {
                           ended in 5.383.0: they are the not-found page.) */}
                       {/* v5.312.0 — one agent session: its state, controls,
                           the work it opened, notes and calls. */}
-                      {/* The list lives at /agent-activity; /agent-sessions is
-                          the URL a reader types from a session's own address. */}
-                      <Route path="/agent-sessions" element={<Navigate to="/agent-activity" replace />} />
                       <Route
                         path="/agent-sessions/:sessionId"
                         element={
@@ -531,8 +502,6 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* Legacy path → new Segments page (Phase 3 IA). */}
-                      <Route path="/insights" element={<Navigate to="/posture/segments" replace />} />
                       <Route
                         path="/posture/evidence"
                         element={
@@ -549,16 +518,6 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* Legacy path → new Patterns page (Phase 3 IA). */}
-                      <Route path="/insights/systemic" element={<Navigate to="/posture/patterns" replace />} />
-                      {/* 5.418.0 — Ingestion Results is part of the Scans page's
-                          one import history.  Both of its old paths land there,
-                          and links and bookmarks keep their filters (?status=…,
-                          ?job_id=…).  No in-app link uses them any more
-                          (utils/importResultsPath builds the real address);
-                          they stay for bookmarks and old notification links. */}
-                      <Route path="/ingestion-results" element={<RedirectToImportResults />} />
-                      <Route path="/parse-errors" element={<RedirectToImportResults />} />
                       <Route
                         path="/default-credentials"
                         element={

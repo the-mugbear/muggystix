@@ -222,17 +222,8 @@ class Settings:
 
     # How long an import may go WITHOUT PROGRESS (seconds) before it is
     # stopped — never how long it may run (owner, 2026-10-17; see
-    # services/ingestion_stall.py).  INGESTION_JOB_TIMEOUT, the wall-clock cap
-    # it replaced, is still read when this is not set — a value an operator
-    # put in .env keeps meaning "how long", now "how long without progress" —
-    # with a warning at boot; read until the release after the next remote
-    # deployment.
-    INGESTION_STALL_TIMEOUT: int = int(
-        os.getenv("INGESTION_STALL_TIMEOUT") or os.getenv("INGESTION_JOB_TIMEOUT") or "1800"
-    )  # 30 minutes
-    INGESTION_JOB_TIMEOUT_STILL_SET: bool = (
-        os.getenv("INGESTION_JOB_TIMEOUT") is not None and os.getenv("INGESTION_STALL_TIMEOUT") is None
-    )
+    # services/ingestion_stall.py).
+    INGESTION_STALL_TIMEOUT: int = int(os.getenv("INGESTION_STALL_TIMEOUT") or "1800")  # 30 minutes
     # How many times the orphan reaper will auto-requeue a job whose worker
     # died mid-parse (transient OOM/restart) before giving up and failing it.
     # The stored upload is reused, so this is a free retry — only crashes that
@@ -244,7 +235,7 @@ class Settings:
     # explicit re-process need no re-upload.  Before this, nothing removed
     # finished jobs' files at all.  0 disables retention (remove at once).
     INGESTION_RETAIN_FILES_DAYS: int = int(os.getenv("INGESTION_RETAIN_FILES_DAYS", "7"))
-    # Orphan detection window = this multiple of INGESTION_JOB_TIMEOUT of
+    # Orphan detection window = this multiple of INGESTION_STALL_TIMEOUT of
     # heartbeat silence before a 'processing' job is treated as a dead worker's
     # leftover. A live parser heartbeats every few seconds, so even 1x is safe;
     # 1.5x keeps a comfortable margin while surfacing stuck jobs far sooner than

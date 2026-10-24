@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.527.1",
+      "frontend": "5.422.1",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "changed", "text": "The Agents section's address is /agents."},
+        {"kind": "fixed", "text": "Posture's \"where to focus\" links to patterns and segments open those pages directly."},
+        {"kind": "before_upgrading", "text": "Old bookmarks no longer redirect: /dashboard, /test-plans, /executions, /agent-sessions, /insights, /workflows, /ingestion-results and /parse-errors now show \"page not found\". Update any you keep."},
+        {"kind": "before_upgrading", "text": "The INGESTION_JOB_TIMEOUT setting is no longer read: if your .env still sets it, rename it to INGESTION_STALL_TIMEOUT."}
+      ]
+    },
+    {
       "backend": "2.527.0",
       "frontend": "5.422.0",
       "date": "2026-10-23",

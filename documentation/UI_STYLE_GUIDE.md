@@ -735,11 +735,9 @@ current filters (not Failed, which counts dismissed uploads too) and whose
 link is the address that chip writes — so it opens exactly that list.
 Analysts only, like the count; the strip's header gives no failure figure of
 its own.  **A link to an import's result
-is built by `utils/importResultsPath(params?)`** (`/scans?status=…`).
-`/parse-errors`, `/ingestion-results` and the old `/scans?view=results` are
-redirects for bookmarks and old notification links only, landing on the same
-filter with the query kept — no page or component names them
-(`tests/utils/importResultsPath.test.ts`).
+is built by `utils/importResultsPath(params?)`** (`/scans?status=…`); the old
+addresses `/parse-errors`, `/ingestion-results` and `/scans?view=results` are
+gone, and nothing names them (`tests/utils/importResultsPath.test.ts`).
 
 **A time column shows one time and its heading names it.**  The Scans
 history is ordered by upload, so its column is "Uploaded" on every row; a
