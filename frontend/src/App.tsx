@@ -143,6 +143,7 @@ const Reports = lazy(() => import('./pages/Reports'));
 const Remediation = lazy(() => import('./pages/Remediation'));
 const RemediationDeadlines = lazy(() => import('./pages/RemediationDeadlines'));
 const ReportDetail = lazy(() => import('./pages/ReportDetail'));
+const Presentation = lazy(() => import('./pages/Presentation'));
 const ReportDefaults = lazy(() => import('./pages/ReportDefaults'));
 const ReportTemplates = lazy(() => import('./pages/ReportTemplates'));
 
@@ -204,6 +205,24 @@ function App() {
                 <Suspense fallback={<RouteSkeleton />}>
                   <ForceTwoFactorSetup />
                 </Suspense>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Presentation mode's Display (5.424.0): the tab whoever shares their
+              screen shares — the report's slides full screen, no app chrome.
+              Auditor and above, as every client-report route. */}
+          <Route
+            path="/reports/:reportId/present/display"
+            element={
+              <ProtectedRoute>
+                <ProjectProvider>
+                  <Suspense fallback={<RouteSkeleton />}>
+                    <ProtectedRoute requiredRole="auditor">
+                      <Presentation display />
+                    </ProtectedRoute>
+                  </Suspense>
+                </ProjectProvider>
               </ProtectedRoute>
             }
           />
@@ -397,6 +416,15 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="auditor">
                             <ReportTemplates />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* Presentation mode's Controller (and `?browse=1`). */}
+                      <Route
+                        path="/reports/:reportId/present"
+                        element={
+                          <ProtectedRoute requiredRole="auditor">
+                            <Presentation />
                           </ProtectedRoute>
                         }
                       />

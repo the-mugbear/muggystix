@@ -76,6 +76,9 @@ def _serialize_note(note: AnnotationModel) -> Annotation:
         body=note.body,
         author_id=note.user_id,
         author_name=author_name,
+        author_profile_image=(
+            note.author.profile_image_sha256 if note.author and (note.actor_type or "user") == "user" else None
+        ),
         parent_id=note.parent_id,
         note_type=note.note_type,
         pinned=bool(note.pinned),

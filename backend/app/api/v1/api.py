@@ -5,7 +5,7 @@ from app.api.v1.endpoints import (
     # v2.509.0 — the Query page (a pipe query language) and saved queries.
     queries,
     webhooks, dashboard, upload,
-    scopes, subnet_labels, export, parse_errors, reports, report_drafts, client_reports,
+    scopes, subnet_labels, export, parse_errors, reports, report_drafts, client_reports, presentations,
     auth, two_factor,
     audit, users, projects, notifications,
     portfolio, oversight, feedback, llm_providers,
@@ -271,6 +271,8 @@ project_router.include_router(reports.router, prefix="/reports", tags=["reports"
 project_router.include_router(report_drafts.router, prefix="/reports", tags=["reports"])
 # v2.380.0 — the client report (Quarto): drafts, issued reports, addenda.
 project_router.include_router(client_reports.router, prefix="/client-reports", tags=["client-reports"])
+# v2.530.0 — presentation mode: a shared, driven view of an issued report.
+project_router.include_router(presentations.router, tags=["presentations"])
 # v2.295.0 — the /agents CRUD surface is gone.  It existed to mint and manage
 # the *unscoped* global agent key, the one credential that reached every plan
 # in a project with full write authority.  Agent rows are auto-provisioned by

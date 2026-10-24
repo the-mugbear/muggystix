@@ -937,6 +937,29 @@ def main() -> None:
         issued = lead("POST", f"/client-reports/{draft['id']}/issue")
         print(f"client report {issued['id']} issued as number {issued['number']}")
 
+    # --- Presentation mode's worst case (2.530.0) -----------------------------
+    # An ISSUED report whose frozen dataset is the worst case the slide builder
+    # and the browser are checked against (backend/tests/presentation_worst_case.py:
+    # an oversized paragraph, a 300-line code block, a 16-column table, a long
+    # scope, a finding on 500 endpoints).  Presentation mode reads only the
+    # frozen dataset, so it is written as one — no findings behind it, no files.
+    worst_title = f"{MARK} Presentation worst case (frozen fixture)"
+    if not db.query(Report).filter(Report.project_id == pid, Report.title == worst_title).first():
+        sys.path.insert(0, "/app")
+        from tests import presentation_worst_case as worst  # noqa: E402
+
+        number = (db.query(Report.number).filter(Report.project_id == pid, Report.number.isnot(None))
+                  .order_by(Report.number.desc()).limit(1).scalar() or 0) + 1
+        dataset = worst.dataset()
+        dataset["report"]["number"] = number
+        dataset["report"]["title"] = worst_title
+        db.add(Report(project_id=pid, kind="full", status=ReportStatus.ISSUED, title=worst_title, template="pentest",
+                      number=number, snapshot={"dataset": dataset}, render_status="done",
+                      created_by_id=users["acc-lead"].id, issued_by_id=users["acc-lead"].id,
+                      issued_at=datetime.now(timezone.utc)))
+        db.commit()
+        print(f"presentation worst-case report issued as number {number}")
+
     # --- A NetExec import with uninterpreted lines -------------------------
     job_id = None
     if not db.query(models.IngestionJob).filter(

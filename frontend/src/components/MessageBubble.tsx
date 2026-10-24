@@ -11,6 +11,8 @@
  * indenting — indentation and left/right alignment cannot both carry meaning.
  */
 import React from 'react';
+
+import PersonAvatar, { type AvatarPerson } from './PersonAvatar';
 import { CornerDownRight } from 'lucide-react';
 
 import { AgentAuthorBadge } from './AgentAuthorBadge';
@@ -23,6 +25,9 @@ export interface MessageBubbleProps {
   mine: boolean;
   author: string;
   actorType?: 'user' | 'agent' | null;
+  /** The author's picture (5.424.0) — a person's message only: an agent's
+   *  note is marked as the agent's, never shown with its operator's face. */
+  authorPerson?: AvatarPerson | null;
   createdAt: string;
   edited?: boolean;
   editedAt?: string | null;
@@ -55,7 +60,7 @@ const excerptOf = (text: string, max = 90) => {
 };
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({
-  mine, author, actorType, createdAt, edited, editedAt, replyingTo, meta, metaControls, actions, id, className, children,
+  mine, author, actorType, authorPerson, createdAt, edited, editedAt, replyingTo, meta, metaControls, actions, id, className, children,
 }) => (
   <div id={id} data-side={mine ? 'mine' : 'theirs'}
     className={cn('flex min-w-0 scroll-mt-24 flex-col', mine ? 'items-end' : 'items-start', className)}>
@@ -64,6 +69,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       {mine && metaControls}
       <div className={cn('flex min-w-0 flex-wrap items-center gap-xs', mine && 'justify-end')}>
         {meta}
+        {authorPerson && actorType !== 'agent' && <PersonAvatar person={authorPerson} size={20} />}
         <span className="truncate text-metadata font-semibold text-foreground" title={author}>
           {mine ? 'You' : author}
         </span>

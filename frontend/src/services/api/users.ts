@@ -121,3 +121,24 @@ export const getOwnProjectMemberships = async (signal?: AbortSignal): Promise<Us
   const response = await api.get<UserProjectMembership[]>('/users/profile/projects', { signal });
   return response.data;
 };
+
+/** The signed-in user's profile picture (5.424.0): a square PNG / JPEG the
+ *  page has already cropped and scaled; answers the new picture's SHA-256. */
+export const setOwnProfileImage = async (image: Blob): Promise<{ profile_image: string | null }> => {
+  const form = new FormData();
+  form.append('file', image, image.type === 'image/jpeg' ? 'picture.jpg' : 'picture.png');
+  const response = await api.put('/users/profile/image', form);
+  return response.data;
+};
+
+export const removeOwnProfileImage = async (): Promise<{ profile_image: string | null }> => {
+  const response = await api.delete('/users/profile/image');
+  return response.data;
+};
+
+/** A user's picture by its SHA-256 — the address names the bytes, so a
+ *  read is remembered per (user, sha) for good. */
+export const fetchProfileImage = async (userId: number, sha: string, signal?: AbortSignal): Promise<Blob> => {
+  const response = await api.get(`/users/${userId}/profile-image/${sha}`, { responseType: 'blob', signal });
+  return response.data as Blob;
+};

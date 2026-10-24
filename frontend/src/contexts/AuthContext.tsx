@@ -16,6 +16,8 @@ interface User {
   created_at?: string;
   last_login?: string | null;
   must_change_password?: boolean;
+  /** The profile picture's SHA-256, or null (5.424.0). */
+  profile_image?: string | null;
 }
 
 type AuthStatus = 'checking' | 'authenticated' | 'anonymous';

@@ -21,6 +21,8 @@ import { personInitials } from '../utils/people';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import PersonAvatar from '../components/PersonAvatar';
+import ProfilePictureControl from '../components/ProfilePictureControl';
 import { Input } from '../components/ui/input';
 import { PasswordInput } from '../components/ui/password-input';
 import { Label } from '../components/ui/label';
@@ -217,12 +219,16 @@ const Profile: React.FC = () => {
       {/* Identity header — who you are, in one row (was a mostly-empty card
           beside the form). */}
       <header className="flex min-w-0 items-center gap-md">
-        <div
-          className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary text-subheading font-semibold text-primary-foreground"
-          aria-hidden
-        >
-          {personInitials(user.full_name, user.username)}
-        </div>
+        {user.profile_image ? (
+          <PersonAvatar person={{ id: user.id, name: user.full_name || user.username, profile_image: user.profile_image }} size={48} />
+        ) : (
+          <div
+            className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary text-subheading font-semibold text-primary-foreground"
+            aria-hidden
+          >
+            {personInitials(user.full_name, user.username)}
+          </div>
+        )}
         <div className="min-w-0">
           <h1 className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs text-page-title">
             <span className="min-w-0 truncate" title={user.full_name || user.username}>
@@ -245,6 +251,7 @@ const Profile: React.FC = () => {
       </header>
 
         <PostureSection title="Profile information">
+            <div className="mb-md"><ProfilePictureControl /></div>
             <form onSubmit={handleProfileSubmit} className="flex max-w-md flex-col gap-md">
               {/* v5.288.0 — the username is shown as text, not as an input:
                   a read-only field styled like the editable Full Name one

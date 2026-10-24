@@ -92,7 +92,7 @@ export type PollInterval =
   /** From the query's own state — e.g. faster while something is live, `null` to stop when a job is finished. */
   | ((query: Query<any, any, any, any>) => number | null | undefined);
 
-export function pollEvery(interval: PollInterval) {
+export function pollEvery(interval: PollInterval, { inBackground = false }: { inBackground?: boolean } = {}) {
   if (interval == null || (typeof interval === 'number' && interval <= 0)) return {};
   return {
     refetchInterval: (query: Query<any, any, any, any>) => {
@@ -100,7 +100,12 @@ export function pollEvery(interval: PollInterval) {
       if (ms == null || ms <= 0) return false as const;
       return query.state.status === 'error' ? ms * 2 : ms;
     },
-    refetchIntervalInBackground: false,
+    // A poll stops while its tab is hidden — except one that must keep
+    // FOLLOWING (`inBackground`: presentation mode's Display and Controller,
+    // 5.424.0), where a hidden tab would stop following the driver and drop out
+    // of the watching list.  A browser may still throttle a hidden tab's
+    // timers; the presentation says how long it has been out of sync.
+    refetchIntervalInBackground: inBackground,
     // Once on return to the tab — but only for a poll that is still running:
     // a job that finished is not asked about again.
     refetchOnWindowFocus: (query: Query<any, any, any, any>) => {

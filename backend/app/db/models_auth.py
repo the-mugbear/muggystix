@@ -81,6 +81,13 @@ class User(Base):
     # protection, not a limit: failed attempts are counted from the audit log.
     totp_last_step = Column(BigInteger, nullable=True)
 
+    # The profile picture (2.530.0): the SHA-256 of the stored bytes and their
+    # type, both NULL when there is none.  The file is
+    # ``uploads/profile_images/<id>/<sha>.<ext>``, named by its content, and
+    # ``profile_image_service`` is its one writer.
+    profile_image_sha256 = Column(String(64), nullable=True)
+    profile_image_type = Column(String(20), nullable=True)
+
     # Audit fields
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -127,6 +134,11 @@ class User(Base):
     # rights at all, so a stray value must not be storable.
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'member')", name="ck_users_role"),
+        CheckConstraint(
+            "(profile_image_sha256 IS NULL) = (profile_image_type IS NULL)"
+            " AND (profile_image_type IS NULL OR profile_image_type IN ('image/png', 'image/jpeg'))",
+            name="ck_users_profile_image",
+        ),
     )
 
 

@@ -1,0 +1,153 @@
+/*
+ * The presentation stage (5.424.0).  Every size comes from the server's
+ * `stage` (services/presentation_layout.py STAGE), set as CSS variables on
+ * the stage element — the measurer and this sheet read the same numbers.
+ * Only the shipped fonts (@fontsource IBM Plex Sans / Mono); a glyph they lack
+ * falls back to the system, which the server counts at its worst case.
+ */
+.ps-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.ps-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(var(--ps-width) * 1px);
+  height: calc(var(--ps-height) * 1px);
+  transform-origin: 0 0;
+  box-sizing: border-box;
+  padding: calc(var(--ps-pad-top) * 1px) calc(var(--ps-pad-x) * 1px) calc(var(--ps-pad-bottom) * 1px);
+  display: flex;
+  flex-direction: column;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: calc(var(--ps-body-size) * 1px);
+  line-height: var(--ps-body-line);
+  overflow-wrap: anywhere;
+}
+
+.ps-stage * { box-sizing: border-box; }
+
+.ps-header {
+  flex: none;
+  margin-bottom: calc(var(--ps-header-gap) * 1px);
+  font-size: calc(var(--ps-header-size) * 1px);
+  line-height: var(--ps-header-line);
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+}
+
+.ps-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ps-body-inner { transform-origin: 0 0; }
+
+.ps-footer {
+  flex: none;
+  margin-top: calc(var(--ps-footer-gap) * 1px);
+  font-size: calc(var(--ps-footer-size) * 1px);
+  line-height: var(--ps-footer-line);
+  color: hsl(var(--muted-foreground));
+}
+
+/* Blocks: margins and sizes are the measurer's. */
+.ps-block { margin: 0 0 calc(var(--ps-block-gap) * 1px); }
+.ps-block p, .ps-block ul, .ps-block ol, .ps-block blockquote { margin: 0; font-size: inherit; line-height: inherit; }
+.ps-block > div { display: block; }
+.ps-block > div > * { margin-block: 0; }
+.ps-block code { font-family: 'IBM Plex Mono', monospace; font-size: 0.9em; }
+.ps-h { font-weight: 700; }
+.ps-li { display: flex; margin-bottom: calc(var(--ps-item-gap) * 1px); }
+.ps-li-marker { flex: none; width: calc(var(--ps-list-indent) * 1px); text-align: right; padding-right: 12px; }
+.ps-quote {
+  padding-left: calc(var(--ps-quote-indent) * 1px - 4px);
+  border-left: 4px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+}
+.ps-rule { height: calc(var(--ps-rule-height) * 1px); display: flex; align-items: center; }
+.ps-rule hr { width: 100%; border: 0; border-top: 2px solid hsl(var(--border)); margin: 0; }
+
+.ps-code {
+  margin: 0 0 calc(var(--ps-block-gap) * 1px);
+  padding: calc(var(--ps-code-pad-y) * 1px) calc(var(--ps-code-pad-x) * 1px);
+  background: hsl(var(--muted));
+  border-radius: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: calc(var(--ps-code-size) * 1px);
+  line-height: var(--ps-code-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ps-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin: 0 0 calc(var(--ps-block-gap) * 1px);
+  font-size: calc(var(--ps-table-size) * 1px);
+  line-height: var(--ps-table-line);
+}
+.ps-table th, .ps-table td {
+  padding: calc(var(--ps-cell-pad-y) * 1px) calc(var(--ps-cell-pad-x) * 1px);
+  border-bottom: 1px solid hsl(var(--border));
+  vertical-align: top;
+  text-align: left;
+  font-size: inherit;
+  line-height: inherit;
+}
+.ps-table th { font-weight: 600; }
+
+.ps-title {
+  margin: 0 0 calc(var(--ps-title-gap) * 1px);
+  font-size: calc(var(--ps-title-size) * 1px);
+  line-height: var(--ps-title-line);
+  font-weight: 700;
+}
+
+.ps-counts { display: flex; gap: 24px; height: 150px; align-items: stretch; }
+.ps-count {
+  flex: 1;
+  border-top: 6px solid currentColor;
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.ps-count-n { font-size: 56px; line-height: 1.1; font-weight: 700; color: hsl(var(--foreground)); }
+.ps-count-label { font-size: 22px; color: hsl(var(--muted-foreground)); }
+
+.ps-facts { display: flex; gap: 48px; height: 120px; align-items: center; font-size: 28px; }
+.ps-fact-label { font-size: 20px; color: hsl(var(--muted-foreground)); display: block; }
+
+.ps-image { display: flex; align-items: center; justify-content: center; margin-bottom: 16px; }
+.ps-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.ps-image-missing {
+  border: 2px dashed hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ps-fitted {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 14px;
+  color: hsl(var(--muted-foreground));
+}
+.ps-continued {
+  font-size: calc(var(--ps-label-size) * 1px);
+  line-height: var(--ps-label-line);
+  margin-bottom: calc(var(--ps-label-gap) * 1px);
+  color: hsl(var(--muted-foreground));
+}

@@ -87,6 +87,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import { FileButtons, RENDER_POLL_MS, isRendering, reportKindLabel } from '../components/reports/issuedReport';
+import PresentLine from '../components/reports/PresentLine';
 
 const FORMAT_LABEL = REPORT_FORMAT_LABEL;
 const when = (iso: string | null) => formatTimestamp(iso);
@@ -970,6 +971,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         </div>
         <h1 className="mt-xxs break-words text-page-title">{report.title}</h1>
         <p className="mt-xxs max-w-3xl text-body text-muted-foreground">{lead}</p>
+        {!isDraft && <PresentLine reportId={report.id} />}
         {report.superseded_by && (
           <p className="text-caption">
             Superseded by <Link className="text-info hover:underline" to={`/reports/${report.superseded_by.id}`}>report #{report.superseded_by.number}</Link>.

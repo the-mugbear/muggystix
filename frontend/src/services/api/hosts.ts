@@ -356,6 +356,8 @@ export interface Annotation {
   body: string;
   author_id: number;
   author_name: string | null;
+  /** The author's profile picture (SHA-256), a person's note only (5.424.0). */
+  author_profile_image?: string | null;
   parent_id?: number | null;
   // Labels on a thread's root note. (A note is discussion: status, assignee,
   // due date and resolution went in 5.325.0.)

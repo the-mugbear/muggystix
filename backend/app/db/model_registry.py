@@ -36,6 +36,7 @@ from app.db import (  # noqa: F401
     models_host_tests,
     models_integrations,
     models_llm,
+    models_presentations,
     models_project,
     models_proposals,
     models_remediation,

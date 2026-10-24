@@ -62,6 +62,7 @@ export * from './api/oversight';
 export * from './api/parse-errors';
 export * from './api/portfolio';
 export * from './api/posture';
+export * from './api/presentations';
 export * from './api/projects';
 export * from './api/proposals';
 export * from './api/query';

@@ -12,6 +12,8 @@ vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-router-dom')>()),
   useNavigate: () => navigate,
 }));
+// The menu shows a profile picture through the barrel (5.424.0); none here.
+vi.mock('../../services/api', () => ({ fetchProfileImage: vi.fn() }));
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: null, projects: account.projects }),
 }));

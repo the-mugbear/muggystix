@@ -122,6 +122,8 @@ class UserProfile(BaseModel):
     is_active: bool
     last_login: Optional[datetime]
     created_at: datetime
+    # The profile picture's SHA-256 (``GET /users/{id}/profile-image/{sha}``), or null.
+    profile_image: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -520,7 +522,8 @@ def get_profile(current_user: User = Depends(get_current_user)):
         role=current_user.role,
         is_active=current_user.is_active,
         last_login=current_user.last_login,
-        created_at=current_user.created_at
+        created_at=current_user.created_at,
+        profile_image=current_user.profile_image_sha256,
     )
 
 

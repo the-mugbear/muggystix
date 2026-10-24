@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.530.0",
+      "frontend": "5.424.0",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "new", "text": "Presentation mode: present an issued report from its page (Present). One person drives (j and k, the slide list, a filter of the affected endpoints); others in the project, auditor and above, join from their own browsers and can take control in one click. Share the display tab: it always follows."},
+        {"kind": "new", "text": "Each slide fits the shared screen (long text continues on the next one) and says which report, finding and page it is, and how many endpoints match the filter. Drivers see whether the display has caught up."},
+        {"kind": "new", "text": "Profile pictures: add one on your Profile page (crop it to a square there). It is shown in presentation mode, beside your comments and in the user menu, to people who share a project with you."},
+        {"kind": "before_upgrading", "text": "This release adds three tables and two columns to the database; nothing existing is changed. Profile pictures are stored with the other uploads and are part of the usual backup."}
+      ]
+    },
+    {
       "backend": "2.529.0",
       "frontend": "5.423.0",
       "date": "2026-10-24",

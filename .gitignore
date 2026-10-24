@@ -301,3 +301,6 @@ documentation/MCP_*_RUN_*.md
 documentation/acceptance/
 bluestick_migration_failure_*.txt
 /planning
+# Playwright output (presentation mode e2e)
+frontend/test-results/
+frontend/playwright-report/

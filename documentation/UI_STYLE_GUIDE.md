@@ -1407,7 +1407,9 @@ const save = useMutation({
 - **Polling is an option of the query**: `...pollEvery(ms)`, or
   `pollEvery((query) => stillRunning(query.state.data) ? 2500 : null)` for a
   job — visible tab only, once on return to the tab, half as often while the
-  server is failing.  No `setInterval`.
+  server is failing.  No `setInterval`.  A poll that must keep FOLLOWING in a
+  hidden tab passes `pollEvery(ms, { inBackground: true })` — presentation
+  mode's heartbeat alone (§49).
 - **An action from a click that is not a write** (a download, a dry run, a
   one-off lookup) is a `useMutation` too: it carries the pending and error
   state.  A preview that follows what is typed is a `useQuery` with the
@@ -1458,6 +1460,44 @@ const save = useMutation({
 Named exceptions (each carries an `eslint-disable` saying why): the sign-in
 check on load in `AuthContext` and the staged-upload orchestration
 (`hooks/useUploadReview`, which takes its API as an injected object).
+
+### 49. Presentation mode: a fixed stage, three kinds of tab (2026-10-24, 5.424.0)
+
+Presentation mode shows an issued report to a room through someone's shared
+screen (`pages/Presentation.tsx`).  Its rules:
+
+- **The stage is fixed, the slides are the server's.**  A slide is laid out
+  on a 1600 × 900 logical stage scaled to its frame as ONE unit
+  (`components/presentation/Stage.tsx`), so a line wraps at the same word on
+  every screen.  What is on a slide is decided by the server
+  (`services/presentation_slides.py`); the page only draws it, at the sizes
+  the server measured by (`stage`, set as CSS variables in
+  `presentationStage.css`).  Nothing scrolls inside a slide and nothing is
+  cut: long text continues on the next slide ("Impact — 2 of 3").  The one
+  exception is the fit fallback — a slide that still overflows in one
+  browser is scaled down there, marked "fitted" and reported — and the
+  Playwright overflow suite fails the gate if any slide needs it with the
+  shipped fonts.
+- **Only the shipped fonts on the stage** (`@fontsource` IBM Plex Sans /
+  Mono, imported by the stage alone); the app's own pages keep theirs.
+- **Context on every slide.**  The footer says which report (number, date),
+  which finding and which page; an endpoint page says what it is a part of
+  ("Endpoints 13–24 of 57 matching DMZ · 240 affected") — a filtered view is
+  never read as the whole finding.
+- **Three kinds of tab.**  The *Display* (`/reports/:id/present/display`,
+  outside the app layout) is the one shared — it always follows and has no
+  controls.  The *Controller* (`/reports/:id/present`) drives: Previous /
+  Next (`j` / `k`), the slide list (numbered — two slides can share a
+  header), the host filter, End; for everyone else "Now driving: Ana" and
+  Take control.  *Browse* (`?browse=1`) keeps its own position in its own
+  address and sends nothing.  A tab says when it is out of sync
+  ("Reconnecting — in sync 14 s ago"), when it lost control ("Ana took
+  control") and when the caller drives from another tab.
+- **A person is shown by their picture or initials, one component**
+  (`components/PersonAvatar`): in presentation mode, beside a person's
+  comment, in the user menu.  Never on an agent's note (an agent's work is
+  marked as the agent's) and not in dense tables.  The picture's bytes come
+  as a Blob through an object URL, remembered per (user, sha).
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

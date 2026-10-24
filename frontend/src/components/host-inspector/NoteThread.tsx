@@ -172,6 +172,7 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
         mine={mine}
         author={authorLabel}
         actorType={note.actor_type}
+        authorPerson={note.author_profile_image ? { id: note.author_id, name: note.author_name, profile_image: note.author_profile_image } : null}
         createdAt={note.created_at}
         edited={wasEdited(note)}
         replyingTo={quoted ? {

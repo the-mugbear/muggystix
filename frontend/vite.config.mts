@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { visualizer } from 'rollup-plugin-visualizer'
@@ -41,5 +42,7 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
+    // The Playwright suites (`npm run e2e`) run in real browsers, not here.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   }
 })

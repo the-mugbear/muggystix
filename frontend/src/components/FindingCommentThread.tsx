@@ -255,6 +255,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
         mine={authored}
         author={safeFallback(note.author_name, 'Unknown analyst')}
         actorType={note.actor_type}
+        authorPerson={note.author_profile_image ? { id: note.author_id, name: note.author_name, profile_image: note.author_profile_image } : null}
         createdAt={note.created_at}
         edited={wasEdited(note)}
         editedAt={note.updated_at}

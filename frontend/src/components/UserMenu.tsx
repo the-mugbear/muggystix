@@ -14,6 +14,7 @@ import {
   ViewerEyeIcon,
 } from './AppIcons';
 import { Avatar, AvatarFallback } from './ui/avatar';
+import PersonAvatar from './PersonAvatar';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -89,6 +90,8 @@ const UserMenu: React.FC = () => {
 
   const initial = user.username.charAt(0).toUpperCase();
   const displayName = user.full_name || user.username;
+  // The picture, when there is one (5.424.0); else the initial as before.
+  const me = user.profile_image ? { id: user.id, name: displayName, profile_image: user.profile_image } : null;
 
   return (
     <>
@@ -99,21 +102,25 @@ const UserMenu: React.FC = () => {
             className="rounded-full focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
             aria-label="Open user menu"
           >
-            <Avatar className="size-8 bg-primary text-primary-foreground">
-              <AvatarFallback className="bg-primary text-primary-foreground">
-                {initial}
-              </AvatarFallback>
-            </Avatar>
+            {me ? <PersonAvatar person={me} size={32} /> : (
+              <Avatar className="size-8 bg-primary text-primary-foreground">
+                <AvatarFallback className="bg-primary text-primary-foreground">
+                  {initial}
+                </AvatarFallback>
+              </Avatar>
+            )}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-72">
           <div className="px-md py-sm">
             <div className="mb-xs flex items-center gap-sm">
-              <Avatar className="size-10 bg-primary text-primary-foreground">
-                <AvatarFallback className="bg-primary text-metadata text-primary-foreground">
-                  {initial}
-                </AvatarFallback>
-              </Avatar>
+              {me ? <PersonAvatar person={me} size={40} /> : (
+                <Avatar className="size-10 bg-primary text-primary-foreground">
+                  <AvatarFallback className="bg-primary text-metadata text-primary-foreground">
+                    {initial}
+                  </AvatarFallback>
+                </Avatar>
+              )}
               <div className="min-w-0">
                 <div className="truncate text-body font-medium">{displayName}</div>
                 <div className="text-metadata text-muted-foreground">{user.role}</div>

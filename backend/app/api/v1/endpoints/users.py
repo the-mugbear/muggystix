@@ -7,7 +7,8 @@ changing roles, activating/deactivating accounts.
 
 from typing import List, Optional
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from fastapi import APIRouter, Depends, File, HTTPException, status, Request, Query, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +22,7 @@ from app.core.security import (
     log_audit_event,
 )
 from app.api.deps import get_current_user, require_role, get_client_info
+from app.services import profile_image_service
 from app.services.agent_session_service import end_sessions_of_operator
 from app.services.paging import page_envelope
 
@@ -218,6 +220,40 @@ def update_own_profile(
     db.commit()
 
     return {"message": "Profile updated successfully"}
+
+
+class ProfileImageResponse(BaseModel):
+    profile_image: Optional[str] = None
+
+
+@router.put(
+    "/profile/image",
+    response_model=ProfileImageResponse,
+    summary="Set own profile picture",
+)
+def set_own_profile_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """A square PNG or JPEG (the page crops and scales it to 256 × 256), at
+    most 512 KB.  The same picture again changes nothing."""
+    data = file.file.read(profile_image_service.MAX_BYTES + 1)
+    user = profile_image_service.set_picture(db, current_user.id, data, file.content_type or "")
+    return {"profile_image": user.profile_image_sha256}
+
+
+@router.delete(
+    "/profile/image",
+    response_model=ProfileImageResponse,
+    summary="Remove own profile picture",
+)
+def remove_own_profile_image(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profile_image_service.remove_picture(db, current_user.id)
+    return {"profile_image": None}
 
 
 # ------------------------------------------------------------------ #
@@ -645,6 +681,47 @@ def admin_reset_two_factor(
     return {"message": f"2FA reset for user {user.username}"}
 
 
+@router.get(
+    "/{user_id}/profile-image/{sha}",
+    summary="A user's profile picture",
+    responses={404: {"description": "No such picture for this reader"}},
+)
+def get_profile_image(
+    user_id: int,
+    sha: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """The picture whose SHA-256 is ``sha`` — the address names one set of
+    bytes, so it is cached as immutable.  Seen by the person, users who
+    share a project with them, and global admins; anything else (another
+    user, an old sha) is the same 404."""
+    path, content_type = profile_image_service.readable_picture(db, current_user, user_id, sha)
+    return FileResponse(path=str(path), media_type=content_type,
+                        headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
+@router.delete(
+    "/{user_id}/profile-image",
+    response_model=MessageResponse,
+    summary="Remove a user's profile picture (admin)",
+)
+def remove_user_profile_image(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    if db.get(User, user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    removed = profile_image_service.remove_picture(db, user_id)
+    if removed:
+        log_audit_event(db=db, user_id=current_user.id, action="profile_image_removed",
+                        resource_type="user", resource_id=str(user_id), commit=True,
+                        **get_client_info(request))
+    return {"message": "Profile picture removed" if removed else "No profile picture to remove"}
+
+
 @router.delete(
     "/{user_id}",
     response_model=MessageResponse,
@@ -715,5 +792,6 @@ def delete_user(
         **client_info
     )
     db.commit()
+    profile_image_service.discard_all(user_id)
 
     return {"message": f"User {username} deleted successfully"}

@@ -23,7 +23,11 @@
 #   2. Backend lint: `ruff check` in the same image — pyflakes (F) rules only
 #      (backend/ruff.toml), --no-cache.  Any finding fails the gate.
 #   3. Frontend: `tsc --noEmit`, `eslint` (no warnings allowed), then
-#      `vitest run` (on the host; needs node).
+#      `vitest run`, then the Playwright suites (`npx playwright test`:
+#      presentation mode's rendered overflow check and multi-user run,
+#      against the Vite dev server and an in-memory backend — no stack
+#      needed; Chromium from `npx playwright install chromium`).  On the
+#      host; needs node.
 #   4. scripts/test-alembic-roundtrip.sh — every migration down and back up
 #      against a throwaway Postgres, then `alembic check` (models vs
 #      migrations).  Skipped by --fast.
@@ -720,7 +724,7 @@ backend_lint() {
 # --- 3. Frontend ------------------------------------------------------------
 frontend_checks() {
     local started=$SECONDS log="$LOG_DIR/frontend.log"
-    banner "3/4 Frontend (tsc --noEmit, eslint, vitest run)"
+    banner "3/4 Frontend (tsc --noEmit, eslint, vitest run, playwright)"
     if ! command -v npx >/dev/null 2>&1; then
         record "frontend tsc" FAIL "npx is not on PATH (install Node; see frontend/Dockerfile for the version)"
         record "frontend vitest" FAIL "not run"
@@ -749,6 +753,15 @@ frontend_checks() {
         record "frontend vitest" PASS "$(grep -E '^ *Tests +' "$log" | tail -1 | sed -E 's/^ *Tests +//; s/\x1b\[[0-9;]*m//g') ($(elapsed "$started"))"
     else
         record "frontend vitest" FAIL "failures — $log"
+    fi
+    started=$SECONDS
+    log="$LOG_DIR/playwright.log"
+    if ( cd "$SRC/frontend" && CI=1 npx playwright test ) 2>&1 | tee "$log"; then
+        record "frontend e2e" PASS "$(grep -E '^ *[0-9]+ passed' "$log" | tail -1 | sed -E 's/^ *//; s/\x1b\[[0-9;]*m//g') ($(elapsed "$started"))"
+    elif grep -q "Executable doesn't exist" "$log"; then
+        record "frontend e2e" FAIL "no Playwright browser — cd frontend && npx playwright install chromium"
+    else
+        record "frontend e2e" FAIL "failures — $log"
     fi
 }
 

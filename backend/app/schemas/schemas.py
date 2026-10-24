@@ -143,6 +143,9 @@ class Annotation(AnnotationBase):
     id: int
     author_id: Optional[int] = Field(None, validation_alias="user_id")
     author_name: Optional[str] = None
+    # The author's profile picture (its SHA-256; 2.530.0) — a person's
+    # comment only: an agent's note never carries its operator's face.
+    author_profile_image: Optional[str] = None
     parent_id: Optional[int] = None
     # Thread labels, set on the root note.  A note is discussion: no status,
     # assignee or due date (v2.446.0).
