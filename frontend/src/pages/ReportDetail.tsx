@@ -882,7 +882,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         )}
         {formats.includes('docx') && (
           <p className="mt-xs text-caption text-muted-foreground">
-            For a PDF, open the Word report and export it (File › Save as PDF): the PDF keeps the Word design.
+            The Word report’s table of contents lists the sections without page numbers until you update it
+            (right-click it › Update field in Word, Update index in LibreOffice). For a PDF, open the Word report
+            and export it (File › Save as PDF): the PDF keeps the Word design.
           </p>
         )}
       </PostureSection>

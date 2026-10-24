@@ -38,6 +38,12 @@ Post-process the Word report — the two things Word styles cannot do:
    was made for a caption above).  Per paragraph, because which side of its
    table a caption is on is not something a style can know.
 
+7. The table of contents' entries, written into its field in Word's shape
+   (`fill_table_of_contents`): Pandoc leaves the field empty, and a viewer
+   fills it only when asked.  No page numbers (nothing here lays pages out),
+   and nothing asks the viewer to rebuild it at opening — Word did that
+   before it had a layout and printed "1" on every line.
+
 Everything else the original prototype's script did is now either a style in
 reference.docx or no longer needed (checked by rendering the template with
 screenshots, 2026-09-23):
@@ -91,18 +97,28 @@ for _prefix, _uri in {
 
 
 def fill_table_of_contents(body):
-    """Write the table of contents' entries into its field, so it is never
-    empty in a viewer that does not compute fields.
+    """Write the table of contents' entries into its field, in the shape Word
+    writes one, so it is never empty in a viewer that does not compute fields.
 
-    Pandoc writes the table as a TOC field with no result.  Word fills it
-    only when it updates fields (`ask_word_to_update_fields`) — which it does
-    not do in Protected View, where a downloaded file opens — and LibreOffice
-    may not at all: the report opened with an empty table of contents (owner,
-    2026-10-14).  Here the field's result is the document's level-1 and
-    level-2 headings, one TOC1 / TOC2 paragraph each, linked to the heading's
-    bookmark when it has one.  No page numbers (only a layout engine knows
-    them); Word replaces the whole result with its own, numbered, when it
-    updates the field.  Returns the number of entries written."""
+    Pandoc writes the table as a TOC field with no result — begin, instruction
+    and separator alone in one paragraph, the end alone in the next — and a
+    viewer computes it only when asked: the report opened with an empty table
+    of contents (owner, 2026-10-14).  Here the field's result is the
+    document's level-1 and level-2 headings, one TOC1 / TOC2 paragraph each,
+    linked to the heading's bookmark when it has one, written as Word writes
+    a table of contents: the FIRST entry in the field's own paragraph, after
+    its field runs, and the END marker closing the LAST entry's paragraph.
+    LibreOffice reads pandoc's shape with the result OUTSIDE its index object
+    (an empty grey index, the entries under it as plain paragraphs, and an
+    index update adds a second table over them — owner, 2026-10-23); it reads
+    Word's shape with the entries inside, and an update replaces them.
+
+    No page numbers: only a layout engine knows them, and this is not one.
+    Nor is the field left `dirty` — Word would rebuild it when the file
+    opens, BEFORE it has laid the pages out, and printed "1" on every line
+    (owner, on Windows); the reader updates the index for the numbers (Word:
+    right-click › Update field; LibreOffice: right-click › Update index).
+    Returns the number of entries written."""
     sdt = None
     for candidate in body.iter(f"{NS}sdt"):
         gallery = candidate.find(f".//{NS}docPartGallery")
@@ -121,14 +137,17 @@ def fill_table_of_contents(body):
     if field_p is None:
         return 0
     # Begin, instruction and separate stay where they are; the END marker —
-    # in the same run as the others, as Pandoc writes it — moves to a run in a
-    # paragraph of its own after the entries, so the entries are the field's
-    # result (Word replaces them, rather than adding a second table).
-    end_fld = end_holder = None
+    # in the same run as the others, as Pandoc writes it — moves to the end
+    # of the last entry's paragraph, so the entries are the field's result
+    # (a viewer replaces them, rather than adding a second table).
+    end_fld = end_holder = begin_fld = None
     for run in field_p.findall(f"{NS}r"):
         for fld in run.findall(f"{NS}fldChar"):
-            if fld.get(f"{NS}fldCharType") == "end":
+            kind = fld.get(f"{NS}fldCharType")
+            if kind == "end":
                 end_fld, end_holder = fld, run
+            elif kind == "begin":
+                begin_fld = fld
     if end_fld is None:
         return 0
     # A heading's bookmark is the body-level element just before it.
@@ -150,23 +169,31 @@ def fill_table_of_contents(body):
             entries.append((level, text, anchor))
     if not entries:
         return 0
+    if begin_fld is not None and f"{NS}dirty" in begin_fld.attrib:
+        del begin_fld.attrib[f"{NS}dirty"]        # never rebuilt at opening: see the docstring
     end_holder.remove(end_fld)
-    end_run = ET.Element(f"{NS}r")
-    end_run.append(end_fld)
-    position = list(content).index(field_p) + 1
+    paragraphs = []
     for level, text, anchor in entries:
-        para = ET.Element(f"{NS}p")
-        ppr = ET.SubElement(para, f"{NS}pPr")
+        para = field_p if not paragraphs else ET.Element(f"{NS}p")   # the first entry shares the field's paragraph
+        ppr = para.find(f"{NS}pPr")
+        if ppr is None:
+            ppr = ET.Element(f"{NS}pPr")
+            para.insert(0, ppr)
         ET.SubElement(ppr, f"{NS}pStyle", {f"{NS}val": f"TOC{level}"})
         holder = ET.SubElement(para, f"{NS}hyperlink", {f"{NS}anchor": anchor}) if anchor else para
         run = ET.SubElement(holder, f"{NS}r")
         t = ET.SubElement(run, f"{NS}t", {"{http://www.w3.org/XML/1998/namespace}space": "preserve"})
         t.text = text
+        paragraphs.append(para)
+    ET.SubElement(paragraphs[-1], f"{NS}r").append(end_fld)             # the END closes the last entry
+    position = list(content).index(field_p) + 1
+    for para in paragraphs[1:]:
         content.insert(position, para)
         position += 1
-    closing = ET.Element(f"{NS}p")
-    closing.append(end_run)
-    content.insert(position, closing)
+    for para in paragraphs:                                             # no whitespace text inside a paragraph
+        para.text = None
+        for child in para:
+            child.tail = None
     return len(entries)
 
 
@@ -257,9 +284,12 @@ def put_bookmarks_in_their_paragraphs(body):
         body.remove(start)
         if end is not None and end in parents:
             parents[end].remove(end)
+        if end is None:
+            end = ET.Element(f"{NS}bookmarkEnd", {f"{NS}id": start.get(f"{NS}id")})
+        start.tail = end.tail = None          # the body's line breaks do not come along into the paragraph
         ppr = holder.find(f"{NS}pPr")
         holder.insert(list(holder).index(ppr) + 1 if ppr is not None else 0, start)
-        holder.append(end if end is not None else ET.Element(f"{NS}bookmarkEnd", {f"{NS}id": start.get(f"{NS}id")}))
+        holder.append(end)
         moved += 1
     return moved
 
@@ -691,31 +721,6 @@ def keep_table_captions_with_their_tables(body, styles_path):
     return count
 
 
-def ask_word_to_update_fields(tmpdir):
-    """Have Word fill in the document's fields when it opens it.
-
-    Pandoc writes the table of contents as a Word FIELD with no result: it is
-    computed by the program that opens the file, and Word computes it only
-    when asked — so every report opened with an empty table of contents
-    (owner, 2026-10-14).  `w:updateFields` in settings.xml is that request:
-    Word fills the table (with page numbers) on opening, after asking once.
-    Returns True when the setting was added."""
-    path = os.path.join(tmpdir, "word", "settings.xml")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            xml = fh.read()
-    except OSError:
-        return False
-    if "w:updateFields" in xml:
-        return False
-    new, n = re.subn(r"(<w:settings\b[^>]*>)", r'\1<w:updateFields w:val="true"/>', xml, count=1)
-    if not n:
-        return False
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(new)
-    return True
-
-
 def fix_document(docx_path, verbose=False, assets_dir="."):
     tmpdir = tempfile.mkdtemp()
     try:
@@ -738,7 +743,6 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
 
         new_parts, removed, replaced = apply_template_images(tmpdir, installed_assets(assets_dir))
         classified = apply_classification(tmpdir, report_classification(assets_dir))
-        ask_word_to_update_fields(tmpdir)
 
         # Same parts, same order ([Content_Types].xml first, as Word expects).
         with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:

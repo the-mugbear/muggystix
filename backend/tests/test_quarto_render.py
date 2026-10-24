@@ -1425,40 +1425,58 @@ def _hf(*runs: str) -> str:
 
 
 @needs_template
-def test_word_is_asked_to_fill_in_the_table_of_contents_on_opening(tmp_path):
-    """Pandoc writes the table of contents as a field with no result, and
-    Word computes it only when asked: every report opened with an empty one
-    (owner, 2026-10-14).  The post-processor adds the request, once, and
-    both shipped copies of it are the same file."""
+def test_no_viewer_is_asked_to_rebuild_the_table_of_contents_at_opening(tmp_path):
+    """The post-processor once asked Word to update every field when the file
+    opened (`w:updateFields`, and Pandoc's `w:dirty` on the TOC field).  Word
+    did so BEFORE it had laid the pages out and printed "1" beside every entry
+    (owner, on Windows); LibreOffice ignored the request.  Neither request is
+    made now: the entries stand without page numbers until the reader updates
+    the index.  Both shipped copies of the script are the same file."""
+    import zipfile
+    import xml.etree.ElementTree as ET
     fix = _post_processor()
-    word = tmp_path / "word"
-    word.mkdir()
-    settings = word / "settings.xml"
-    settings.write_text(
-        '<?xml version="1.0"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:zoom w:percent="100"/></w:settings>', encoding="utf-8",
+    assert not hasattr(fix, "ask_word_to_update_fields")
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr>'
+        '<w:sdtContent><w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/><w:instrText>TOC \\o "1-2"</w:instrText>'
+        '<w:fldChar w:fldCharType="separate"/><w:fldChar w:fldCharType="end"/></w:r></w:p></w:sdtContent></w:sdt>'
+        '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>1. One</w:t></w:r></w:p>'
+        '</w:body>'
     )
-    assert fix.ask_word_to_update_fields(str(tmp_path)) is True
-    text = settings.read_text(encoding="utf-8")
-    assert '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:updateFields w:val="true"/>' in text
-    assert fix.ask_word_to_update_fields(str(tmp_path)) is False             # never twice
-    assert text.count("w:updateFields") == 1
-    assert fix.ask_word_to_update_fields(str(tmp_path / "missing")) is False  # no settings part: left alone
+    assert fix.fill_table_of_contents(body) == 1
+    assert "dirty" not in ET.tostring(body, encoding="unicode")
+    # A whole document through fix_document: its settings part gains no update request.
+    docx = tmp_path / "r.docx"
+    with zipfile.ZipFile(docx, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("word/document.xml", f'<w:document xmlns:w="{w}"><w:body><w:p/></w:body></w:document>')
+        zf.writestr("word/settings.xml", f'<w:settings xmlns:w="{w}"><w:zoom w:percent="100"/></w:settings>')
+    fix.fix_document(str(docx), assets_dir=str(tmp_path))
+    with zipfile.ZipFile(docx) as zf:
+        assert "updateFields" not in zf.read("word/settings.xml").decode()
     brief = TEMPLATE.parent / "executive-brief" / "scripts" / "fix-docx-report.py"
     assert brief.read_bytes() == (TEMPLATE / "scripts" / "fix-docx-report.py").read_bytes()
 
 
 @needs_template
 def test_the_table_of_contents_is_written_into_its_field(tmp_path):
-    """Word fills a TOC field only when it updates fields — not in Protected
-    View — and LibreOffice may not at all: the report showed an empty table
-    of contents (owner, 2026-10-14).  The post-processor writes the headings
-    as the field's RESULT: inside it (between separate and end, so Word
-    replaces them instead of adding a second table), linked to each heading's
-    bookmark, which Pandoc puts just before the heading."""
+    """A viewer fills a TOC field only when asked: the report showed an empty
+    table of contents (owner, 2026-10-14).  The post-processor writes the
+    headings as the field's RESULT, in the shape Word writes one: the first
+    entry in the field's own paragraph after its begin / instruction /
+    separator, each later entry a paragraph of its own, and the END marker
+    closing the LAST entry's paragraph — never a result paragraph with
+    nothing in it.  Pandoc's shape (field runs alone, the end alone) made
+    LibreOffice put the entries OUTSIDE its index object: an empty grey index
+    with the entries under it as plain text, and an index update adding a
+    second table (owner, 2026-10-23).  Each entry links to its heading's
+    bookmark (beside the heading, where Pandoc puts it)."""
     import xml.etree.ElementTree as ET
     fix = _post_processor()
     w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{w}}}"
     body = ET.fromstring(
         f'<w:body xmlns:w="{w}">'
         '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr>'
@@ -1473,14 +1491,22 @@ def test_the_table_of_contents_is_written_into_its_field(tmp_path):
         '</w:body>'
     )
     assert fix.fill_table_of_contents(body) == 2
-    xml = ET.tostring(body, encoding="unicode")
-    content = xml[xml.index("sdtContent"):]
-    order = [content.index(k) for k in ('fldCharType="begin"', 'fldCharType="separate"', "1. Project information",
-                                         "1.1 Details", 'fldCharType="end"')]
-    assert order == sorted(order)                                    # the entries are the field's result
-    assert 'anchor="project-information"' in content                 # linked to the bookmark beside the heading
-    assert "Deeper" not in content[:content.index("</ns0:sdtContent>" if "ns0:" in content else "sdtContent>")]
-    assert "TOC2" in content and "TOC1" in content
+    content = body.find(f".//{W}sdtContent")
+    paragraphs = content.findall(f"{W}p")
+    assert len(paragraphs) == 3                                       # title, then ONE paragraph per entry
+    title, first, last = paragraphs
+    def kinds(p):
+        return [f.get(f"{W}fldCharType") for f in p.iter(f"{W}fldChar")]
+    assert kinds(first) == ["begin", "separate"] and kinds(last) == ["end"]
+    assert [c.tag.split("}")[1] for c in first] == ["pPr", "r", "hyperlink"]   # style, field runs, then the entry
+    assert first.find(f"{W}pPr/{W}pStyle").get(f"{W}val") == "TOC1"
+    assert first.find(f"{W}hyperlink").get(f"{W}anchor") == "project-information"
+    assert "".join(t.text for t in first.iter(f"{W}t")) == "1. Project information"
+    assert last.find(f"{W}pPr/{W}pStyle").get(f"{W}val") == "TOC2"
+    assert [c.tag.split("}")[1] for c in last] == ["pPr", "r", "r"]  # the entry's run, then the END's
+    assert "".join(t.text for t in last.iter(f"{W}t")) == "1.1 Details"
+    assert "Deeper" not in ET.tostring(content, encoding="unicode")   # level 3 is not listed
+    assert all(p.text is None and all(c.tail is None for c in p) for p in paragraphs)
     # No table of contents: nothing happens.
     assert fix.fill_table_of_contents(ET.fromstring(f'<w:body xmlns:w="{w}"><w:p/></w:body>')) == 0
 
@@ -1496,18 +1522,18 @@ def test_section_bookmarks_are_moved_into_their_heading(tmp_path):
     fix = _post_processor()
     w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     W = f"{{{w}}}"
-    body = ET.fromstring(
-        f'<w:body xmlns:w="{w}">'
-        '<w:bookmarkStart w:id="1" w:name="findings"/>'
-        '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>4. Findings</w:t></w:r></w:p>'
-        '<w:bookmarkStart w:id="2" w:name="sec-finding-11"/>'
-        '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>4.1 SMB</w:t></w:r></w:p>'
-        '<w:p><w:r><w:t>Body.</w:t></w:r></w:p>'
-        '<w:bookmarkEnd w:id="2"/><w:bookmarkEnd w:id="1"/>'
-        '<w:bookmarkStart w:id="3" w:name="tbl"/>'
-        '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
-        '<w:bookmarkEnd w:id="3"/>'
-        '<w:bookmarkStart w:id="4" w:name="last"/>'
+    body = ET.fromstring(                                              # Pandoc's line breaks between body elements
+        f'<w:body xmlns:w="{w}">\n    '
+        '<w:bookmarkStart w:id="1" w:name="findings"/>\n    '
+        '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>4. Findings</w:t></w:r></w:p>\n    '
+        '<w:bookmarkStart w:id="2" w:name="sec-finding-11"/>\n    '
+        '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>4.1 SMB</w:t></w:r></w:p>\n    '
+        '<w:p><w:r><w:t>Body.</w:t></w:r></w:p>\n    '
+        '<w:bookmarkEnd w:id="2"/>\n    <w:bookmarkEnd w:id="1"/>\n    '
+        '<w:bookmarkStart w:id="3" w:name="tbl"/>\n    '
+        '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>\n    '
+        '<w:bookmarkEnd w:id="3"/>\n    '
+        '<w:bookmarkStart w:id="4" w:name="last"/>\n'
         '</w:body>'
     )
     assert fix.put_bookmarks_in_their_paragraphs(body) == 3
@@ -1519,6 +1545,7 @@ def test_section_bookmarks_are_moved_into_their_heading(tmp_path):
         assert inner == ["pPr", "bookmarkStart", "r", "bookmarkEnd"], inner
         start, end = para.find(f"{W}bookmarkStart"), para.find(f"{W}bookmarkEnd")
         assert start.get(f"{W}name") == mark and end.get(f"{W}id") == start.get(f"{W}id")
+        assert start.tail is None and end.tail is None                   # the body's line breaks stayed outside
     cell = body.find(f"{W}tbl").find(f".//{W}p")
     assert [child.tag.split("}")[1] for child in cell] == ["bookmarkStart", "r", "bookmarkEnd"]
     # The table of contents still finds a heading's bookmark (now inside it).

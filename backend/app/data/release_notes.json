@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.527.2",
+      "frontend": "5.422.2",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "changed", "text": "The Word report no longer asks Word to rebuild its table of contents on opening, which printed page 1 beside every entry. The entries have no page numbers until you update the table (right-click it: Update field in Word, Update index in LibreOffice); the draft page says so."},
+        {"kind": "fixed", "text": "The Word report's table of contents now opens as a real table of contents in LibreOffice too: the entries sit inside it and an index update replaces them instead of adding a second table under the first."}
+      ]
+    },
+    {
       "backend": "2.527.1",
       "frontend": "5.422.1",
       "date": "2026-10-23",
