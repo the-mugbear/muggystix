@@ -162,3 +162,17 @@ CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue /app/uploads/note_attach
 FROM production AS report-worker
 COPY --from=quarto /opt/quarto /opt/quarto
 RUN ln -s /opt/quarto/bin/quarto /usr/local/bin/quarto && quarto --version
+# LibreOffice, headless, ONLY to number the Word report's table of contents:
+# the post-processor lays a copy of the finished .docx out and reads each
+# entry's page (fix-docx-report.py → measure_toc_pages); what LibreOffice would
+# save is never kept.  python3-uno is the bridge, for Debian's /usr/bin/python3
+# (not the app's venv).  The metric-compatible fonts bring its pagination
+# closer to Word's; Aptos itself cannot ship, so a number can still differ by
+# a page, which the reader's "Update field" corrects.  Without it the entries
+# simply carry no numbers.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice-writer-nogui python3-uno \
+        fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && soffice --version

@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.528.0",
+      "frontend": "5.422.3",
+      "date": "2026-10-23",
+      "entries": [
+        {"kind": "changed", "text": "The Word report's table of contents now has page numbers, worked out when the report is made. Word may break a page differently, so update the table once in Word before sending (right-click it, Update field)."},
+        {"kind": "before_upgrading", "text": "The report worker's image now includes LibreOffice, used only to number the Word report's table of contents; it is about 400 MB larger to build and download."}
+      ]
+    },
+    {
       "backend": "2.527.2",
       "frontend": "5.422.2",
       "date": "2026-10-23",

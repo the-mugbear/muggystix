@@ -1497,7 +1497,10 @@ def test_the_table_of_contents_is_written_into_its_field(tmp_path):
     title, first, last = paragraphs
     def kinds(p):
         return [f.get(f"{W}fldCharType") for f in p.iter(f"{W}fldChar")]
-    assert kinds(first) == ["begin", "separate"] and kinds(last) == ["end"]
+    # The table's field opens in the first entry's paragraph (that entry's own
+    # PAGEREF field follows it there) and closes in the last's (that entry has
+    # no bookmark, so no page field).
+    assert kinds(first) == ["begin", "separate", "begin", "separate", "end"] and kinds(last) == ["end"]
     assert [c.tag.split("}")[1] for c in first] == ["pPr", "r", "hyperlink"]   # style, field runs, then the entry
     assert first.find(f"{W}pPr/{W}pStyle").get(f"{W}val") == "TOC1"
     assert first.find(f"{W}hyperlink").get(f"{W}anchor") == "project-information"
@@ -1509,6 +1512,103 @@ def test_the_table_of_contents_is_written_into_its_field(tmp_path):
     assert all(p.text is None and all(c.tail is None for c in p) for p in paragraphs)
     # No table of contents: nothing happens.
     assert fix.fill_table_of_contents(ET.fromstring(f'<w:body xmlns:w="{w}"><w:p/></w:body>')) == 0
+
+
+needs_libreoffice = pytest.mark.skipif(
+    shutil.which("soffice") is None, reason="LibreOffice is not present here (the report-worker image has it)",
+)
+
+
+@needs_template
+def test_each_table_of_contents_entry_carries_a_page_field_its_number_written_from_a_layout(tmp_path):
+    """Owner, 2026-10-23: "add a render time pass".  Each entry with a
+    bookmark ends in a right-aligned dotted tab at the text width and a
+    PAGEREF field to that bookmark (Word's own TOC shape, so "Update field"
+    still works); its result is filled from LibreOffice's layout of the
+    finished file — all or nothing, and only when the measured entries pair
+    with ours heading by heading (a number beside the wrong heading is worse
+    than none)."""
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{w}}}"
+
+    def body():
+        return ET.fromstring(
+            f'<w:body xmlns:w="{w}">'
+            '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr>'
+            '<w:sdtContent><w:p><w:r><w:fldChar w:fldCharType="begin"/><w:instrText>TOC \\o "1-2" \\h</w:instrText>'
+            '<w:fldChar w:fldCharType="separate"/><w:fldChar w:fldCharType="end"/></w:r></w:p></w:sdtContent></w:sdt>'
+            '<w:bookmarkStart w:id="1" w:name="sec_one"/>'
+            '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>1. One</w:t></w:r></w:p>'
+            '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:bookmarkStart w:id="2" w:name="sec_two"/>'
+            '<w:r><w:t>1.1  Two</w:t></w:r></w:p>'
+            '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:left="1440" w:right="1080"/></w:sectPr>'
+            '</w:body>'
+        )
+
+    b = body()
+    assert fix.fill_table_of_contents(b) == 2
+    first = b.find(f".//{W}sdtContent/{W}p")
+    tab = first.find(f"{W}pPr/{W}tabs/{W}tab")
+    assert (tab.get(f"{W}val"), tab.get(f"{W}leader"), tab.get(f"{W}pos")) == ("right", "dot", str(12240 - 1440 - 1080))
+    instr = [t.text for t in b.iter(f"{W}instrText")]
+    assert instr[1:] == [" PAGEREF sec_one \\h ", " PAGEREF sec_two \\h "]
+    # The field sits inside the entry's link, after its text: the paragraph keeps its shape.
+    assert [c.tag.split("}")[1] for c in first] == ["pPr", "r", "hyperlink"]
+    entries = fix._toc_entries(b)
+    assert [text for text, _ in entries] == ["1. One", "1.1  Two"]
+    assert all(result.text == "" for _, result in entries)          # no layout yet: no number
+
+    # Measured, paired heading by heading (whitespace and case aside): written.
+    assert fix.write_toc_page_numbers(b, [("1. One", "3"), ("1.1 two", "4")]) == 2
+    assert [result.text for _, result in fix._toc_entries(b)] == ["3", "4"]
+    # A list that does not pair writes nothing — by text, or by count.
+    for measured in ([("1. One", "3"), ("Something else", "4")], [("1. One", "3")]):
+        fresh = body()
+        fix.fill_table_of_contents(fresh)
+        assert fix.write_toc_page_numbers(fresh, measured) == 0
+        assert [result.text for _, result in fix._toc_entries(fresh)] == ["", ""]
+    # No page size stated: an A4 page's text width.
+    assert fix.text_width(ET.fromstring(f'<w:body xmlns:w="{w}"/>')) == fix._DEFAULT_TEXT_WIDTH
+
+
+@needs_template
+def test_without_libreoffice_the_entries_simply_carry_no_numbers(tmp_path, monkeypatch):
+    """The render never fails for the numbers: no LibreOffice (every image but
+    the report worker's), or one that fails, leaves the entries unnumbered."""
+    fix = _post_processor()
+    monkeypatch.setattr(fix.shutil, "which", lambda name: None)
+    docx = tmp_path / "r.docx"
+    docx.write_bytes(b"not read")
+    assert fix.measure_toc_pages(str(docx)) is None
+
+
+@needs_template
+@needs_quarto
+@needs_libreoffice
+def test_the_rendered_sample_numbers_its_table_of_contents(tmp_path):
+    """End to end in the report-worker image: the sample's Word report comes
+    out of the post-processor with a page number on every entry, the numbers
+    never going back (a heading is never on an earlier page than the one
+    before it), and the design is ours — LibreOffice's own save is never kept
+    (the reference styles survive)."""
+    import xml.etree.ElementTree as ET
+    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    docx = quarto_render.render(TEMPLATE, manifest.get("entry", "report.qmd"), data, ["docx"], tmp_path,
+                                postprocess=manifest.get("postprocess"), timeout=300)["docx"]
+    with zipfile.ZipFile(docx) as z:
+        document = z.read("word/document.xml")
+        styles = z.read("word/styles.xml").decode("utf-8")
+    fix = _post_processor()
+    body = ET.fromstring(document).find(f"{fix.NS}body")
+    pages = [result.text for _, result in fix._toc_entries(body)]
+    assert len(pages) >= 5
+    assert all((p or "").isdigit() for p in pages), pages
+    numbers = [int(p) for p in pages]
+    assert numbers == sorted(numbers) and numbers[0] >= 1
+    assert 'w:styleId="TOC1"' in styles and "LibreOffice" not in document.decode("utf-8")
 
 
 def test_section_bookmarks_are_moved_into_their_heading(tmp_path):

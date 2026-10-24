@@ -113,11 +113,15 @@ def fill_table_of_contents(body):
     index update adds a second table over them — owner, 2026-10-23); it reads
     Word's shape with the entries inside, and an update replaces them.
 
-    No page numbers: only a layout engine knows them, and this is not one.
-    Nor is the field left `dirty` — Word would rebuild it when the file
-    opens, BEFORE it has laid the pages out, and printed "1" on every line
-    (owner, on Windows); the reader updates the index for the numbers (Word:
-    right-click › Update field; LibreOffice: right-click › Update index).
+    Each entry with a bookmark ends in a right-aligned, dotted tab and a
+    PAGEREF field to that bookmark, as Word writes one — its result empty
+    here: only a layout engine knows page numbers, and this is not one.
+    `write_toc_page_numbers` fills them from LibreOffice's layout when the
+    report worker has it (`measure_toc_pages`); without it they stay empty
+    until the reader updates the index (Word: right-click › Update field;
+    LibreOffice: right-click › Update index).  The field is never left
+    `dirty` — Word would rebuild it when the file opens, BEFORE it has laid
+    the pages out, and printed "1" on every line (owner, on Windows).
     Returns the number of entries written."""
     sdt = None
     for candidate in body.iter(f"{NS}sdt"):
@@ -172,6 +176,7 @@ def fill_table_of_contents(body):
     if begin_fld is not None and f"{NS}dirty" in begin_fld.attrib:
         del begin_fld.attrib[f"{NS}dirty"]        # never rebuilt at opening: see the docstring
     end_holder.remove(end_fld)
+    width = text_width(body)
     paragraphs = []
     for level, text, anchor in entries:
         para = field_p if not paragraphs else ET.Element(f"{NS}p")   # the first entry shares the field's paragraph
@@ -180,10 +185,15 @@ def fill_table_of_contents(body):
             ppr = ET.Element(f"{NS}pPr")
             para.insert(0, ppr)
         ET.SubElement(ppr, f"{NS}pStyle", {f"{NS}val": f"TOC{level}"})
+        if anchor:
+            tabs = ET.SubElement(ppr, f"{NS}tabs")
+            ET.SubElement(tabs, f"{NS}tab", {f"{NS}val": "right", f"{NS}leader": "dot", f"{NS}pos": str(width)})
         holder = ET.SubElement(para, f"{NS}hyperlink", {f"{NS}anchor": anchor}) if anchor else para
         run = ET.SubElement(holder, f"{NS}r")
         t = ET.SubElement(run, f"{NS}t", {"{http://www.w3.org/XML/1998/namespace}space": "preserve"})
         t.text = text
+        if anchor:
+            _page_reference(holder, anchor)
         paragraphs.append(para)
     ET.SubElement(paragraphs[-1], f"{NS}r").append(end_fld)             # the END closes the last entry
     position = list(content).index(field_p) + 1
@@ -195,6 +205,193 @@ def fill_table_of_contents(body):
         for child in para:
             child.tail = None
     return len(entries)
+
+
+#: A text width for an A4 page with one-inch margins, in twentieths of a point —
+#: the table of contents' page column when the document states no page size.
+_DEFAULT_TEXT_WIDTH = 9026
+
+
+def text_width(body):
+    """The body's text width (page width less both margins), in twips."""
+    sect = body.find(f"{NS}sectPr")
+    size = sect.find(f"{NS}pgSz") if sect is not None else None
+    margins = sect.find(f"{NS}pgMar") if sect is not None else None
+    try:
+        page = int(size.get(f"{NS}w"))
+        left = int(margins.get(f"{NS}left") or margins.get(f"{NS}start") or 0)
+        right = int(margins.get(f"{NS}right") or margins.get(f"{NS}end") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return _DEFAULT_TEXT_WIDTH
+    return page - left - right if page > left + right else _DEFAULT_TEXT_WIDTH
+
+
+def _page_reference(holder, anchor):
+    """A tab and a PAGEREF field to `anchor`, its result an empty text run that
+    `write_toc_page_numbers` fills."""
+    def run(child_tag, attrs=None, text=None):
+        r = ET.SubElement(holder, f"{NS}r")
+        child = ET.SubElement(r, f"{NS}{child_tag}", attrs or {})
+        if text is not None:
+            child.text = text
+        return child
+    run("tab")
+    run("fldChar", {f"{NS}fldCharType": "begin"})
+    run("instrText", {"{http://www.w3.org/XML/1998/namespace}space": "preserve"}, f" PAGEREF {anchor} \\h ")
+    run("fldChar", {f"{NS}fldCharType": "separate"})
+    run("t", {"{http://www.w3.org/XML/1998/namespace}space": "preserve"}, "")
+    run("fldChar", {f"{NS}fldCharType": "end"})
+
+
+def _toc_entries(body):
+    """`[(text, result_t), …]`: each table-of-contents entry's heading text and
+    the text element of its PAGEREF field's result, in order."""
+    entries = []
+    for sdt in body.iter(f"{NS}sdt"):
+        gallery = sdt.find(f".//{NS}docPartGallery")
+        if gallery is None or gallery.get(f"{NS}val") != "Table of Contents":
+            continue
+        for p in sdt.iter(f"{NS}p"):
+            style = p.find(f"{NS}pPr/{NS}pStyle")
+            if style is None or not (style.get(f"{NS}val") or "").startswith("TOC"):
+                continue
+            text, result, state = [], None, "text"
+            for el in p.iter():
+                if el.tag == f"{NS}instrText" and "PAGEREF" in (el.text or ""):
+                    state = "pageref"
+                elif el.tag == f"{NS}fldChar" and state == "pageref" and el.get(f"{NS}fldCharType") == "separate":
+                    state = "result"
+                elif el.tag == f"{NS}t":
+                    if state == "text":
+                        text.append(el.text or "")
+                    elif state == "result" and result is None:
+                        result = el
+            if result is not None:
+                entries.append(("".join(text).strip(), result))
+        break
+    return entries
+
+
+def _same_heading(ours, theirs):
+    return " ".join(ours.split()).casefold() == " ".join(theirs.split()).casefold()
+
+
+def write_toc_page_numbers(body, measured):
+    """Put `measured` — `[(heading text, page), …]` in the table's order, from
+    LibreOffice's layout — into each entry's PAGEREF result.  All or nothing:
+    a list that does not pair with the entries text by text writes no number
+    (a page beside the wrong heading is worse than none).  Returns how many
+    were written."""
+    entries = _toc_entries(body)
+    if not entries or len(entries) != len(measured):
+        return 0
+    if not all(_same_heading(text, heading) for (text, _), (heading, _page) in zip(entries, measured)):
+        return 0
+    for (_, result), (_heading, page) in zip(entries, measured):
+        result.text = str(page)
+    return len(entries)
+
+
+#: How long LibreOffice may take to lay the document out and number its pages.
+MEASURE_TIMEOUT_SECONDS = 120
+
+
+def measure_toc_pages(docx_path):
+    """The table of contents' entries and page numbers as LibreOffice lays the
+    document out: `[(heading text, page), …]`, or None when it cannot say —
+    LibreOffice is not installed (only the report worker image has it), it
+    failed, or it timed out.  A render never fails for this: the entries then
+    keep no numbers.  Runs this script again under the system Python, the one
+    LibreOffice's UNO bridge is built for (`--measure-toc`), on a COPY: what
+    LibreOffice would save is never kept, so the Word design is untouched."""
+    import subprocess
+
+    uno_python = "/usr/bin/python3"
+    if shutil.which("soffice") is None or not os.path.exists(uno_python):
+        return None
+    work = tempfile.mkdtemp()
+    try:
+        copy = os.path.join(work, "measure.docx")
+        shutil.copyfile(docx_path, copy)
+        done = subprocess.run(
+            [uno_python, os.path.abspath(__file__), "--measure-toc", copy],
+            capture_output=True, text=True, timeout=MEASURE_TIMEOUT_SECONDS,
+        )
+        if done.returncode != 0:
+            print(f"  Table of contents left without page numbers: {done.stderr.strip()[-300:]}", file=sys.stderr)
+            return None
+        return [(heading, page) for heading, page in json.loads(done.stdout)]
+    except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        print(f"  Table of contents left without page numbers: {exc}", file=sys.stderr)
+        return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _measure_with_libreoffice(docx_path):
+    """`--measure-toc`, under the system Python: start a private headless
+    LibreOffice, open the document hidden, update its table of contents (which
+    lays the pages out and follows the document's own page numbering) and
+    print its entries as JSON `[[heading, page], …]`."""
+    import subprocess
+    import time
+    import uuid
+
+    import uno  # noqa: F401 — LibreOffice's bridge, in the system Python only
+    from com.sun.star.beans import PropertyValue
+
+    profile = tempfile.mkdtemp()
+    pipe = f"bluestick_{uuid.uuid4().hex}"
+    office = subprocess.Popen(
+        ["soffice", "--headless", "--invisible", "--nologo", "--norestore", "--nodefault",
+         f"-env:UserInstallation={uno.systemPathToFileUrl(profile)}", f"--accept=pipe,name={pipe};urp;"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    doc = desktop = None
+    try:
+        local = uno.getComponentContext()
+        resolver = local.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", local)
+        context = None
+        for _ in range(120):
+            try:
+                context = resolver.resolve(f"uno:pipe,name={pipe};urp;StarOffice.ComponentContext")
+                break
+            except Exception:
+                if office.poll() is not None:
+                    raise RuntimeError("LibreOffice exited before it accepted a connection")
+                time.sleep(0.5)
+        if context is None:
+            raise RuntimeError("LibreOffice did not accept a connection")
+        desktop = context.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", context)
+        hidden = PropertyValue()
+        hidden.Name, hidden.Value = "Hidden", True
+        doc = desktop.loadComponentFromURL(uno.systemPathToFileUrl(os.path.abspath(docx_path)), "_blank", 0, (hidden,))
+        indexes = doc.getDocumentIndexes()
+        lines = []
+        for i in range(indexes.getCount()):
+            index = indexes.getByIndex(i)
+            if not index.supportsService("com.sun.star.text.ContentIndex"):
+                continue
+            index.update()
+            for line in index.getAnchor().getString().replace("\r\n", "\n").split("\n"):
+                heading, tab, page = line.rpartition("\t")
+                if tab and page.strip():
+                    lines.append([heading.strip(), page.strip()])
+            break
+        print(json.dumps(lines))
+    finally:
+        try:
+            if doc is not None:
+                doc.close(True)
+            if desktop is not None:
+                desktop.terminate()
+        except Exception:
+            pass
+        try:
+            office.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            office.kill()
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 #: What Word accepts as a bookmark name: a letter first, then letters, digits
@@ -745,15 +942,32 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         classified = apply_classification(tmpdir, report_classification(assets_dir))
 
         # Same parts, same order ([Content_Types].xml first, as Word expects).
+        parts = [n for n in names if n not in removed] + new_parts
         with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for name in [n for n in names if n not in removed] + new_parts:
+            for name in parts:
                 zf.write(os.path.join(tmpdir, name), name)
+
+        # The table of contents' page numbers, from LibreOffice's layout of the
+        # finished file (only the report worker has it); written into OUR file.
+        numbered = 0
+        measured = measure_toc_pages(docx_path) if _toc_entries(body) else None
+        if measured:
+            numbered = write_toc_page_numbers(body, measured)
+            if numbered:
+                tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
+                with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for name in parts:
+                        zf.write(os.path.join(tmpdir, name), name)
+            else:
+                print("  Table of contents left without page numbers: LibreOffice's entries did not "
+                      "match the headings", file=sys.stderr)
 
         if verbose:
             print(f"  Aligned {aligned} table(s) as their style says, kept {kept} caption(s) with their table, "
                   f"added a border to {count} image(s), put {bookmarks} bookmark(s) in their heading, "
                   f"gave {renamed} bookmark(s) a name Word accepts, "
-                  f"placed {replaced} template image(s), wrote the classification in {classified} place(s) "
+                  f"placed {replaced} template image(s), wrote the classification in {classified} place(s), "
+                  f"numbered {numbered} table-of-contents entr{'y' if numbered == 1 else 'ies'} "
                   f"→ {docx_path}")
         return count
     finally:
@@ -772,6 +986,9 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--measure-toc":
+        _measure_with_libreoffice(sys.argv[2])     # under the system Python: see measure_toc_pages
+        sys.exit(0)
     args = parse_args()
     if not os.path.exists(args.input):
         print(f"Error: {args.input} not found")

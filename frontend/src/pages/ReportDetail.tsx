@@ -882,9 +882,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         )}
         {formats.includes('docx') && (
           <p className="mt-xs text-caption text-muted-foreground">
-            The Word report’s table of contents lists the sections without page numbers until you update it
-            (right-click it › Update field in Word, Update index in LibreOffice). For a PDF, open the Word report
-            and export it (File › Save as PDF): the PDF keeps the Word design.
+            The Word report’s table of contents is numbered as LibreOffice lays the pages out; Word may break
+            a page differently, so before sending it, update the table once (right-click it › Update field).
+            For a PDF, open the Word report and export it (File › Save as PDF): the PDF keeps the Word design.
           </p>
         )}
       </PostureSection>
