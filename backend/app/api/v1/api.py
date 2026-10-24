@@ -84,6 +84,10 @@ api_router.include_router(projects.router, prefix="/projects", tags=["projects"]
                           dependencies=[Depends(require_password_changed)])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"],
                           dependencies=[Depends(require_password_changed)])
+# v2.532.0 — the live presentations the caller can join, across their projects
+# (the bell's glow); the presentation routes themselves are per project, below.
+api_router.include_router(presentations.account_router, tags=["presentations"],
+                          dependencies=[Depends(require_password_changed)])
 api_router.include_router(portfolio.router, prefix="/portfolio", tags=["portfolio"],
                           dependencies=[Depends(require_password_changed)])
 # v2.461.0 — the installation's remediation settings and the cross-project

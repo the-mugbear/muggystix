@@ -73,6 +73,9 @@ export const notificationHref = (n: Linkable): string | null => {
   // The installation's own alerts (B-OPS-3: disk, import backlog, a silent
   // worker) and the reaper's unrecoverable jobs open where those are shown.
   if (n.source_type?.startsWith('operational:') || n.source_type === 'ingestion_jobs') return '/system-settings';
+  // Someone started presenting a report (5.426.0): its presentation — the
+  // Controller says "Nobody is presenting this report" once it has ended.
+  if (n.source_type === 'report_presentation' && n.source_id) return `/reports/${n.source_id}/present`;
   if (n.source_type === 'scan' && n.source_id) return `/hosts?scan_ids=${n.source_id}`;
   if (n.source_type === 'report_job' && n.source_id) return `/hosts?reports=1&job=${n.source_id}`;
   if (n.source_type === 'note' && n.finding_id && n.source_id) return `/findings/${n.finding_id}#note-${n.source_id}`;

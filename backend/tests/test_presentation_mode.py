@@ -24,7 +24,7 @@ from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import settings
 from app.db.models_auth import AuditLog, User, UserRole
 from app.db.models_presentations import Presentation, PresentationViewer
-from app.db.models_project import ProjectMembership, ProjectRole
+from app.db.models_project import Notification, ProjectMembership, ProjectRole
 from app.db.models_reports import Report, ReportImage
 from app.main import app
 
@@ -438,6 +438,59 @@ def test_the_status_shown_is_the_issued_reports_own_template_copys(tmp_path, mon
     assert ps.status_notes(report) == {"findings": False, "endpoints": False}
     report.template = "gone"
     assert ps.status_notes(report) == {"findings": False, "endpoints": False}
+
+
+# --- owner 2026-10-24: everyone who can join is told, and the bell glows while it is live ---
+
+def test_starting_tells_every_member_who_can_join_once(client, db_session, test_project, report, people, act_as):
+    gone = _member(db_session, test_project, 505, "gone", ProjectRole.AUDITOR)
+    gone.is_active = False
+    db_session.commit()
+    act_as(people["ana"])
+    _start(client, test_project, report, "ana-tab")
+    told = db_session.query(Notification).filter(Notification.type == "presentation").all()
+    # Auditor and above, active, the starter excepted — never the viewer.
+    assert {n.user_id for n in told} == {people["ben"].id, people["adm"].id} | (
+        {report.created_by_id} if db_session.query(ProjectMembership).filter_by(
+            project_id=test_project.id, user_id=report.created_by_id).first() else set())
+    n = next(x for x in told if x.user_id == people["ben"].id)
+    assert (n.source_type, n.source_id, n.project_id) == ("report_presentation", report.id, test_project.id)
+    assert n.title == "Ana is presenting report #3" and n.actor_id == people["ana"].id
+    # A second Start joins the live one and tells nobody again.
+    act_as(people["ben"])
+    _start(client, test_project, report, "ben-tab")
+    assert db_session.query(Notification).filter(Notification.type == "presentation").count() == len(told)
+
+
+def test_the_live_list_is_for_those_who_can_join_while_it_is_live(
+        client, db_session, test_project, report, people, act_as):
+    st = _start(client, test_project, report, "t")
+    act_as(people["ben"])
+    live = client.get("/api/v1/presentations/live")
+    assert live.status_code == 200, live.text
+    [item] = live.json()
+    assert item["presentation_id"] == st["id"] and item["report_id"] == report.id
+    assert item["project_id"] == test_project.id and item["project_name"] == test_project.name
+    assert item["report_number"] == 3 and item["driver"]["id"] == st["driver"]["id"]
+    # A viewer has no presentation mode: nothing to glow for.
+    act_as(people["vic"])
+    assert client.get("/api/v1/presentations/live").json() == []
+    # An archived project's is not listed.
+    act_as(people["ben"])
+    test_project.status = "archived"
+    db_session.commit()
+    assert client.get("/api/v1/presentations/live").json() == []
+    test_project.status = "active"
+    db_session.commit()
+    # Idle by the idle rule (no move, no heartbeat for 30 minutes): listed by no
+    # one before anyone's read ends it — and the next read does end it.
+    p = db_session.get(Presentation, st["id"])
+    p.last_move_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+    db_session.commit()
+    assert client.get("/api/v1/presentations/live").json() == []
+    hb = client.post(_p(test_project, st["id"], "heartbeat"), json={"client_id": "ben", "kind": "controller"})
+    assert hb.json()["ended"]["reason"] == "idle"
+    assert client.get("/api/v1/presentations/live").json() == []
 
 
 # --- E3: agendas (stage C) -------------------------------------------------------

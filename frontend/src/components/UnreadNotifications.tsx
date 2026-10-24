@@ -20,6 +20,9 @@ import { invalidateReads } from '../lib/query';
 import { isCrossProjectPath, useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
 import { useOpenInProject } from '../hooks/useOpenInProject';
+import { useLivePresentations, whoPresents } from '../hooks/useLivePresentations';
+import { useAuth } from '../contexts/AuthContext';
+import PersonAvatar from './PersonAvatar';
 import { cn } from '../utils/cn';
 import { notificationHref } from '../utils/notificationLinks';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -121,6 +124,7 @@ export const BellPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const { notifications, total, failed, loading, open, markAllRead } = useUnreadNotifications();
   return (
     <div className="min-w-0">
+      <PresentingNow onJoined={onClose} />
       <div className="mb-xs flex flex-wrap items-center justify-between gap-sm">
         <h2 className="text-metadata font-semibold text-foreground">
           {loading ? 'Notifications' : failed ? 'Notifications'
@@ -150,6 +154,46 @@ export const BellPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </button>
       </div>
     </div>
+  );
+};
+
+/** The bell's first section while a presentation is live in one of the
+ *  reader's projects (5.426.0): who presents which report, where, and Join —
+ *  the presentation's Controller, in its own project.  Read from what is live
+ *  (`useLivePresentations`), so it is gone when the presentation ends. */
+export const PresentingNow: React.FC<{ onJoined: () => void }> = ({ onJoined }) => {
+  const { live } = useLivePresentations();
+  const { user } = useAuth();
+  const { openInProject } = useOpenInProject();
+  const toast = useToast();
+  if (live.length === 0) return null;
+  return (
+    <section aria-label="Presenting now" className="mb-sm border-l-4 border-info bg-info/10 px-sm py-xs" data-testid="presenting-now">
+      <h2 className="text-metadata font-semibold text-foreground">Presenting now</h2>
+      <ul className="mt-xxs space-y-xxs">
+        {live.map((p) => (
+          <li key={p.presentation_id} className="flex min-w-0 items-center gap-sm">
+            <PersonAvatar person={p.driver} size={20} />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-metadata" title={p.report_title}>
+                <span className="font-medium">{whoPresents(p.driver, user?.id)}</span>
+                {p.report_number ? ` report #${p.report_number}` : ''} — {p.report_title}
+              </span>
+              <span className="block truncate text-caption text-muted-foreground" title={p.project_name}>In {p.project_name}</span>
+            </span>
+            <Button size="sm" className="h-7 shrink-0" onClick={() => {
+              if (!openInProject(p.project_id, `/reports/${p.report_id}/present`)) {
+                toast.warning(NOT_A_MEMBER);
+                return;
+              }
+              onJoined();
+            }}>
+              Join
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 };
 

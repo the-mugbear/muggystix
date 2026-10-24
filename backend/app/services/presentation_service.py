@@ -44,7 +44,7 @@ from datetime import timedelta
 from typing import Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -55,8 +55,10 @@ from app.db.models_presentations import (
     AGENDA_ITEMS_MAX, AGENDA_MODES, AGENDA_NAME_MAX, CLIENT_ID_MAX, Presentation, PresentationAgenda,
     PresentationAgendaVersion, PresentationLayoutReport, PresentationViewer, VIEWER_KINDS,
 )
+from app.db.models_project import Project, ProjectMembership
 from app.db.models_reports import Report, ReportImage, ReportStatus
 from app.services import presentation_slides as slides_mod
+from app.services.notification_service import NotificationService
 from app.services.person import person_of
 
 IDLE_MINUTES = 30
@@ -211,18 +213,23 @@ def live_presentation(db: Session, report: Report) -> Optional[Presentation]:
     return p
 
 
-def _expire_if_idle(db: Session, p: Presentation) -> bool:
-    last_seen = select(func.max(PresentationViewer.last_seen_at)).where(
-        PresentationViewer.presentation_id == p.id
-    ).scalar_subquery()
+def _recently_active():
+    """THE idle rule as SQL: a move, or any tab's heartbeat, within
+    ``IDLE_MINUTES`` — what keeps a presentation live (``_expire_if_idle``
+    ends one without it; ``live_for`` lists only those with it)."""
     cutoff = func.now() - timedelta(minutes=IDLE_MINUTES)
+    return or_(
+        Presentation.last_move_at >= cutoff,
+        select(PresentationViewer.id).where(
+            PresentationViewer.presentation_id == Presentation.id, PresentationViewer.last_seen_at >= cutoff,
+        ).exists(),
+    )
+
+
+def _expire_if_idle(db: Session, p: Presentation) -> bool:
     row = db.execute(
         update(Presentation)
-        .where(
-            Presentation.id == p.id, Presentation.ended_at.is_(None),
-            Presentation.last_move_at < cutoff,
-            or_(last_seen.is_(None), last_seen < cutoff),
-        )
+        .where(Presentation.id == p.id, Presentation.ended_at.is_(None), ~_recently_active())
         .values(ended_at=func.now(), ended_reason="idle", revision=Presentation.revision + 1,
                 driver_client_id=None)
         .returning(Presentation.id)
@@ -379,9 +386,42 @@ def start(db: Session, report: Report, user: User, client_id: str) -> Presentati
         return existing
     log_audit_event(db, user.id, "presentation_started", resource_type="presentation",
                     resource_id=str(p.id), details={"report_id": report.id}, commit=False)
+    # Everyone who can join is told, in the same transaction (owner,
+    # 2026-10-24); a second Start joins the live one and tells nobody.
+    NotificationService(db).notify_presentation_started(report, user)
     db.commit()
     db.refresh(p)
     return p
+
+
+def live_for(db: Session, user: User) -> list:
+    """The live presentations the caller can join, across their projects —
+    the bell's "Presenting now" (owner, 2026-10-24): projects where their
+    MEMBERSHIP is auditor and above (viewers have no presentation mode), not
+    archived, and still active by the idle rule (an idle one is listed by
+    no one, ended or not yet)."""
+    rows = (
+        db.query(Presentation, Report, Project)
+        .join(Report, Report.id == Presentation.report_id)
+        .join(Project, Project.id == Presentation.project_id)
+        .join(ProjectMembership, and_(
+            ProjectMembership.project_id == Presentation.project_id, ProjectMembership.user_id == user.id,
+        ))
+        .filter(
+            Presentation.ended_at.is_(None),
+            ProjectMembership.role.in_(NotificationService.PRESENTATION_ROLES),
+            Project.is_archived.is_(False),
+            _recently_active(),
+        )
+        .order_by(Presentation.started_at.desc(), Presentation.id.desc())
+        .all()
+    )
+    return [{
+        "presentation_id": p.id, "project_id": project.id, "project_name": project.name,
+        "report_id": report.id, "report_number": report.number, "report_title": report.title,
+        "started_by": person_of(p.started_by), "driver": person_of(p.driver),
+        "started_at": p.started_at.isoformat() if p.started_at else None,
+    } for p, report, project in rows]
 
 
 def heartbeat(db: Session, p: Presentation, report: Report, user: User, client_id: str, kind: str,

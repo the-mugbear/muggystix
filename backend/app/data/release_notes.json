@@ -2,6 +2,14 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.532.0",
+      "frontend": "5.426.0",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "new", "text": "When someone starts presenting a report, everyone in the project who can join (auditors and above) is notified, and the notification bell glows while the presentation runs. Open the bell and choose Join to follow along."}
+      ]
+    },
+    {
       "backend": "2.531.0",
       "frontend": "5.425.1",
       "date": "2026-10-24",

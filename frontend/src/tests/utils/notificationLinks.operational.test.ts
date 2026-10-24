@@ -10,6 +10,15 @@ import { notificationHref } from '../../utils/notificationLinks';
 const system = (source_type: string) =>
   notificationHref({ type: 'system', source_type, source_id: null, host_id: null, finding_id: null });
 
+// 5.426.0 (owner, 2026-10-24) — someone started presenting a report: its presentation.
+describe('a presentation started', () => {
+  it('opens the report’s presentation', () => {
+    expect(notificationHref({
+      type: 'presentation', source_type: 'report_presentation', source_id: 31, host_id: null, finding_id: null,
+    })).toBe('/reports/31/present');
+  });
+});
+
 // 5.417.0 — a session's scope proposals open just those, every person's,
 // where "Accept all shown" decides them together.
 describe('scope proposals', () => {

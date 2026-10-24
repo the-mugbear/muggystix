@@ -181,6 +181,24 @@
 .attention-once { animation: nm-attention-once 1.8s ease-out 0.2s 1 both; }
 
 /*
+ * A presentation is live in one of the reader's projects (5.426.0): the bell
+ * keeps a steady ring in the info colour — never the unread badge's red — and
+ * a slow pulse around it.  The pulse is motion on TOP of the steady ring, so
+ * under reduced motion (the blanket rule below cuts every animation short)
+ * the steady ring is what stays.
+ */
+@keyframes nm-bell-live {
+  0% { box-shadow: 0 0 0 2px hsl(var(--info) / 0.9), 0 0 0 2px hsl(var(--info) / 0.45); }
+  70% { box-shadow: 0 0 0 2px hsl(var(--info) / 0.9), 0 0 0 9px hsl(var(--info) / 0); }
+  100% { box-shadow: 0 0 0 2px hsl(var(--info) / 0.9), 0 0 0 9px hsl(var(--info) / 0); }
+}
+.bs-bell-live {
+  box-shadow: 0 0 0 2px hsl(var(--info) / 0.9);
+  color: hsl(var(--info));
+  animation: nm-bell-live 2.4s ease-out infinite;
+}
+
+/*
  * Reduced-motion respect (beta.5 audit fix).  When the user has set
  * `prefers-reduced-motion: reduce` at the OS level, blanket-disable
  * the global animation + transition utilities.  Critical motion

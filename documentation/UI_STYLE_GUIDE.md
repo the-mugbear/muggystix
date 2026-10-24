@@ -1519,6 +1519,14 @@ screen (`pages/Presentation.tsx`).  Its rules:
   a slide the driver has moved away from until the move is accepted, and a
   Display shows it only on the slide it has drawn.  No animation under
   reduced motion.
+- **A presentation in progress (5.426.0)** makes the notification bell glow:
+  a steady ring in the info colour — never the unread badge's red, which
+  keeps meaning "unread" — with a slow pulse around it (reduced motion: the
+  steady ring alone).  Its tooltip and accessible name say a presentation is
+  in progress; the panel opens with a "Presenting now" section — who
+  presents which report, in which project, and *Join* (the Controller, in
+  that project).  Both come from what is live and go when it ends; the
+  "is presenting" notification in the list is the record that it happened.
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

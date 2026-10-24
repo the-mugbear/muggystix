@@ -11,7 +11,10 @@ vi.mock('react-router-dom', async () => vi.importActual<typeof import('react-rou
 const notifications = vi.hoisted(() => ({
   getNotifications: vi.fn(), markNotificationsRead: vi.fn(), markAllNotificationsRead: vi.fn(),
 }));
+const live = vi.hoisted(() => ({ list: vi.fn(), openInProject: vi.fn() }));
+vi.mock('../../hooks/useOpenInProject', () => ({ useOpenInProject: () => ({ openInProject: live.openInProject }) }));
 vi.mock('../../services/api', () => ({
+  listLivePresentations: (...a: unknown[]) => live.list(...a),
   getUnreadNotificationCount: vi.fn().mockResolvedValue(0),
   getNotifications: (...a: unknown[]) => notifications.getNotifications(...a),
   markNotificationsRead: (...a: unknown[]) => notifications.markNotificationsRead(...a),
@@ -39,6 +42,7 @@ vi.mock('../../contexts/ThemeContext', () => ({
 }));
 
 import Layout from '../../components/Layout';
+import { whoPresents } from '../../hooks/useLivePresentations';
 
 const renderAt = (path: string) =>
   render(
@@ -56,6 +60,39 @@ describe('Layout shell', () => {
     otherProjects = [];
     remediationTracked = false;
     document.title = 'BlueStick';
+    live.list.mockReset().mockResolvedValue([]);
+    live.openInProject.mockReset().mockReturnValue(true);
+    notifications.getNotifications.mockResolvedValue({ notifications: [], total_unread: 0 });
+  });
+
+  // Owner 2026-10-24: a presentation in progress makes the bell glow, and its
+  // panel opens with "Presenting now" and Join — read from what is live.
+  it('the bell glows while a presentation is live, and its panel offers Join in that project', async () => {
+    const first = renderAt('/hosts');
+    await waitFor(() => expect(live.list).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Notifications' })).not.toHaveAttribute('data-live');
+    first.unmount();
+
+    live.list.mockResolvedValue([{
+      presentation_id: 9, project_id: 2, project_name: 'Theirs', report_id: 31, report_number: 4,
+      report_title: 'Internal test', started_by: null, driver: { id: 5, name: 'Ana', profile_image: null },
+      started_at: null,
+    }]);
+    renderAt('/hosts');
+    const bell = await screen.findByRole('button', { name: 'Notifications — a presentation is in progress' });
+    expect(bell).toHaveAttribute('data-live', 'true');
+    fireEvent.click(bell);
+    const row = await screen.findByTestId('presenting-now');
+    expect(row).toHaveTextContent('Ana is presenting report #4 — Internal test');
+    expect(row).toHaveTextContent('In Theirs');
+    fireEvent.click(within(row).getByRole('button', { name: 'Join' }));
+    expect(live.openInProject).toHaveBeenCalledWith(2, '/reports/31/present');
+  });
+
+  it('names the reader as "you" when they are the one presenting', () => {
+    expect(whoPresents({ id: 7, name: 'Ben', profile_image: null }, 7)).toBe('You are presenting');
+    expect(whoPresents({ id: 5, name: 'Ana', profile_image: null }, 7)).toBe('Ana is presenting');
+    expect(whoPresents(null, 7)).toBe('Someone is presenting');
   });
 
   // Analyst walkthrough 2026-10-10: the entry was offered to everyone, and

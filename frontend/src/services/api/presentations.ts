@@ -116,6 +116,26 @@ export interface PresentationSlides {
   segments: string[];
 }
 
+/** A live presentation the reader can join, in one of their projects (5.426.0). */
+export interface LivePresentation {
+  presentation_id: number;
+  project_id: number;
+  project_name: string;
+  report_id: number;
+  report_number: number | null;
+  report_title: string;
+  started_by: PresentationPerson | null;
+  driver: PresentationPerson | null;
+  started_at: string | null;
+}
+
+/** The live presentations the reader can join, across their projects
+ *  (auditor and above; the bell's glow and "Presenting now"). */
+export const listLivePresentations = async (signal?: AbortSignal): Promise<LivePresentation[]> => {
+  const response = await api.get('/presentations/live', { signal });
+  return response.data;
+};
+
 const reportBase = (projectId: number, reportId: number) =>
   `${projectPath(projectId)}/client-reports/${reportId}/presentation`;
 const presentationBase = (projectId: number, presentationId: number) =>

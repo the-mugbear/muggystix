@@ -148,7 +148,7 @@ class Notification(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
-    type = Column(String(50), nullable=False)  # mention, note_reply, host_note, finding_comment, assignment, proposal, scan_update, report_ready, report_failed, retest, system (older rows: status_change)
+    type = Column(String(50), nullable=False)  # mention, note_reply, host_note, finding_comment, assignment, proposal, scan_update, report_ready, report_failed, retest, presentation, system (older rows: status_change)
     title = Column(String(255), nullable=False)
     body = Column(Text)
     source_type = Column(String(50))  # note, host, scan, project

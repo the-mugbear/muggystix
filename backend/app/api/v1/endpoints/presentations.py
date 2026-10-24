@@ -28,6 +28,17 @@ router = APIRouter(dependencies=[
     Depends(require_project_role(ProjectRole.AUDITOR)),
 ])
 
+#: Not under a project: the caller's own live presentations, across projects.
+account_router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+@account_router.get("/presentations/live")
+def live_presentations(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The live presentations the caller can join — in projects where they
+    are auditor and above — for the bell's glow and its "Presenting now"
+    rows (owner, 2026-10-24)."""
+    return svc.live_for(db, user)
+
 
 def _report_of(db: Session, project: Project, p: Presentation) -> Report:
     return svc.presentable_report(db, project.id, p.report_id)

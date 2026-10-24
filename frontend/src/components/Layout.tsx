@@ -12,6 +12,7 @@ import { useAppTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useRoleGate } from '../hooks/useProjectRole';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
+import { useLivePresentations, whoPresents } from '../hooks/useLivePresentations';
 import { useCurrentPageSubject } from '../hooks/usePageSubject';
 import { useHorizontalOverflowGuard } from '../hooks/useHorizontalOverflowGuard';
 import { useProject } from '../contexts/ProjectContext';
@@ -196,7 +197,7 @@ export default function Layout({ children }: LayoutProps) {
     // re-ran on every render.
   }, [location.pathname]);
   const { themeName, setThemeName, availableThemes } = useAppTheme();
-  const { hasPermission, isAuthenticated } = useAuth();
+  const { hasPermission, isAuthenticated, user } = useAuth();
   // Nav entries: `analyst` / `auditor` mean the PROJECT role (R32); `admin`
   // the account role.  The same gate ProtectedRoute applies to the route.
   const allowed = useRoleGate();
@@ -229,6 +230,16 @@ export default function Layout({ children }: LayoutProps) {
   // (A page that marks notifications read invalidates this read, so the bell
   // drops at once instead of on the next minute's.)
   const unreadCount = notificationsOn ? unread.data ?? 0 : 0;
+  // 5.426.0 (owner, 2026-10-24) — a presentation is live in one of the
+  // reader's projects: the bell glows (its own colour, not the unread badge's)
+  // until it ends; the panel opens with "Presenting now" and Join.
+  const { live: livePresentations } = useLivePresentations({ enabled: isAuthenticated, poll: true });
+  const presenting = livePresentations.length > 0;
+  const presentingLine = presenting
+    ? (livePresentations.length === 1
+      ? `${whoPresents(livePresentations[0].driver, user?.id)}${livePresentations[0].report_number ? ` report #${livePresentations[0].report_number}` : ''} in ${livePresentations[0].project_name}.`
+      : `${livePresentations.length} presentations are in progress.`)
+    : null;
 
   // Global Cmd/Ctrl+K to open the command palette.  Matches the
   // common command-bar convention (Linear, GitHub, etc.) and gives
@@ -702,8 +713,9 @@ export default function Layout({ children }: LayoutProps) {
               <Button
                 variant="outline"
                 size="icon"
-                aria-label="Notifications"
-                className="relative"
+                aria-label={presenting ? 'Notifications — a presentation is in progress' : 'Notifications'}
+                className={cn('relative', presenting && 'bs-bell-live')}
+                data-live={presenting ? 'true' : undefined}
               >
                 <BellRingsIcon className="size-4" />
                 {unreadCount > 0 && (
@@ -732,6 +744,7 @@ export default function Layout({ children }: LayoutProps) {
               </PopoverTrigger>
             </TooltipTrigger>
             <TooltipContent>
+              {presentingLine && <span className="block font-semibold">{presentingLine}</span>}
               {notificationsStale
                 ? `Counts may be stale — server unreachable. Last known: ${unreadCount} unread.`
                 : unreadCount > 0

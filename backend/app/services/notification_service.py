@@ -645,6 +645,40 @@ class NotificationService:
             out.append(notification)
         return out
 
+    #: Who can open presentation mode (owner, 2026-10-24: auditor and above).
+    PRESENTATION_ROLES = (ProjectRole.ADMIN.value, ProjectRole.ANALYST.value, ProjectRole.AUDITOR.value)
+
+    def notify_presentation_started(self, report, starter: User) -> List[Notification]:
+        """Someone started presenting an issued report (owner, 2026-10-24):
+        every active member who can join — auditor and above, the starter
+        excepted.  ``type: presentation``, ``source_type: report_presentation``,
+        ``source_id`` the report (the link opens its presentation, which says
+        so once the presentation has ended).  While it is live the bell also
+        glows (``GET /presentations/live``).  The caller commits."""
+        recipients = [
+            uid for (uid,) in self.db.query(ProjectMembership.user_id)
+            .join(User, User.id == ProjectMembership.user_id)
+            .filter(
+                ProjectMembership.project_id == report.project_id,
+                ProjectMembership.role.in_(self.PRESENTATION_ROLES),
+                User.is_active.is_(True),
+                ProjectMembership.user_id != starter.id,
+            )
+            .order_by(ProjectMembership.user_id)
+        ]
+        number = f"report #{report.number}" if report.number else "a report"
+        out = []
+        for uid in recipients:
+            notification = Notification(
+                user_id=uid, project_id=report.project_id, type="presentation",
+                title=f"{display_name(starter)} is presenting {number}"[:255],
+                body=f"{report.title} — join from the bell, or from the report's page.",
+                source_type="report_presentation", source_id=report.id, actor_id=starter.id,
+            )
+            self.db.add(notification)
+            out.append(notification)
+        return out
+
     def notify_report_job_finished(self, job) -> Optional[Notification]:
         """Tell the requester their async report finished (completed or failed).
 
