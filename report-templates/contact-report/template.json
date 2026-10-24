@@ -11,6 +11,7 @@
   "scope_inline_max": null,
   "scope_domains_inline_max": null,
   "evidence_records": true,
+  "status_notes": {"findings": true, "endpoints": true},
   "images": {
     "fields": ["description", "impact", "recommendation", "references", "steps_to_reproduce"],
     "trailing": true

@@ -33,13 +33,17 @@ report's number and date, the finding's reference, the section page — on
 endpoint slides "Endpoints 13–24 of 57 matching DMZ · 240 affected").  The
 footer's height is reserved from the measured footer text, so the context
 labels never take room the body was promised.
+
+A finding's status note ("Risk accepted") and an endpoint's State column are
+shown only where the report's template prints them (``status_notes``, owner
+2026-10-24): the presentation says what the report says.
 """
 from __future__ import annotations
 
 import ipaddress
 import re
 from dataclasses import dataclass
-from typing import Callable, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from app.services import presentation_layout as L
 from app.services.presentation_layout import BODY_WIDTH, STAGE
@@ -57,6 +61,10 @@ SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 
 #: The endpoint table's columns: share of the body width.
 HOST_COLUMNS = (("Address", 0.24), ("Name", 0.46), ("Port", 0.16), ("State", 0.14))
+#: … for a report whose template does not print an endpoint's state.
+HOST_COLUMNS_NO_STATE = (("Address", 0.26), ("Name", 0.56), ("Port", 0.18))
+#: What a template that does not say prints (``status_notes``): neither.
+NO_STATUS = {"findings": False, "endpoints": False}
 SCOPE_SUBNET_COLUMNS = (("Subnet", 0.24), ("Site", 0.26), ("Description", 0.50))
 SCOPE_DOMAIN_COLUMNS = (("Domain", 0.70), ("Subdomains", 0.30))
 
@@ -613,11 +621,15 @@ def _numbered(pages: List[List[dict]], key_of: Callable[[int], str], header: str
 
 def presentation_slides(
     dataset: dict, host_filter: Optional[HostFilter] = None, frozen_images: Optional[Set[int]] = None,
+    status_notes: Optional[Dict[str, bool]] = None,
 ) -> dict:
     """``{"stage", "slides", "filter"}`` for a frozen dataset.  ``frozen_images``
     are the attachment ids the report holds a copy of (``report_images``);
-    a printed image outside it is a slide saying it is not available."""
+    a printed image outside it is a slide saying it is not available.
+    ``status_notes``: what the report's template prints of a finding's status
+    and an endpoint's state (``{"findings", "endpoints"}``; None: neither)."""
     frozen_images = frozen_images or set()
+    status_notes = status_notes or NO_STATUS
     rep_line = _report_line(dataset)
     rep = dataset.get("report") or {}
     slides: List[dict] = []
@@ -691,7 +703,7 @@ def presentation_slides(
 
     match = _matcher(dataset, host_filter)
     for finding in dataset.get("findings") or []:
-        slides += _finding_slides(finding, rep_line, match, host_filter, frozen_images, probe)
+        slides += _finding_slides(finding, rep_line, match, host_filter, frozen_images, probe, status_notes)
 
     for slide in slides:
         for b in slide["blocks"]:
@@ -757,7 +769,7 @@ def _sequence(md: str, room: float) -> List[Tuple[str, object]]:
 
 
 def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[HostFilter],
-                    frozen_images: Set[int], probe: str) -> List[dict]:
+                    frozen_images: Set[int], probe: str, status_notes: Dict[str, bool]) -> List[dict]:
     ref = str(finding.get("ref") or "")
     if not _REF.match(ref):
         return []
@@ -770,7 +782,8 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
     room = _body_room(head, f"{base} — {probe}")
     title = {"kind": "title", "md": L.strip_evidence_refs(finding.get("title") or "")}
     facts = {"kind": "facts", "severity": finding.get("severity"), "severity_label": sev,
-             "cvss_score": finding.get("cvss_score"), "status_note": finding.get("status_note"),
+             "cvss_score": finding.get("cvss_score"),
+             "status_note": finding.get("status_note") if status_notes["findings"] else None,
              "affected_count": int(finding.get("affected_count") or 0)}
     title_lines = len(L.md_lines(title["md"], BODY_WIDTH, S["title_size"], bold=True))
     if title_lines > 3:
@@ -835,9 +848,9 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
         return slides
     rows = [[
         str(ep.get("address") or ""), str(ep.get("name") or ep.get("hostname") or ""),
-        str(ep.get("port") or ""), str(ep.get("state") or ""),
+        str(ep.get("port") or ""), *([str(ep.get("state") or "")] if status_notes["endpoints"] else []),
     ] for ep in matched]
-    table = _table_block(HOST_COLUMNS, rows)
+    table = _table_block(HOST_COLUMNS if status_notes["endpoints"] else HOST_COLUMNS_NO_STATE, rows)
     pages = paginate([table], room)
     of = f"{len(matched):,}{flabel} · {total_affected:,} affected" if host_filter else f"{total_affected:,}"
     done = 0                       # endpoints whose row has STARTED on an earlier slide

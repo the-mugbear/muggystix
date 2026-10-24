@@ -373,7 +373,7 @@ services:
         # in this file (the services above read the mounted file).  Kept equal
         # to platform_version.json by scripts/bump-version.py and
         # versionConsistency.test.ts.
-        BACKEND_VERSION: ${APP_VERSION:-2.530.1}
+        BACKEND_VERSION: ${APP_VERSION:-2.530.2}
         # Stamped by generate-build-info.js (shown under About BlueStick).
         FRONTEND_VERSION: ${FRONTEND_VERSION:-5.424.1}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.

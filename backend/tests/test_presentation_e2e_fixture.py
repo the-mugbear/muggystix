@@ -40,7 +40,9 @@ def _expected() -> str:
     variants = {}
     for name, (kind, value) in {"none": (None, None), "site:DMZ": ("site", "DMZ"),
                                 "text:long": ("text", worst.LONG_FILTER)}.items():
-        result = presentation_slides(ds, check_filter(ds, kind, value), set(worst.FROZEN_IMAGES))
+        # The widest case: a template that prints the status and the State column.
+        result = presentation_slides(ds, check_filter(ds, kind, value), set(worst.FROZEN_IMAGES),
+                                     {"findings": True, "endpoints": True})
         result["sites"] = scope_sites(ds)
         result["segments"] = scope_segments(ds)
         variants[name] = result

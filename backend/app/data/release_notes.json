@@ -2,6 +2,14 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.530.2",
+      "frontend": "5.424.1",
+      "date": "2026-10-24",
+      "entries": [
+        {"kind": "changed", "text": "Presentation mode shows a finding's status (\"Risk accepted\", \"Remediated during the assessment\") and the endpoints' State column only when the report's template prints them, so a presentation says what the report says. The Penetration test report prints neither."}
+      ]
+    },
+    {
       "backend": "2.530.1",
       "frontend": "5.424.1",
       "date": "2026-10-24",

@@ -930,3 +930,40 @@ def test_the_brief_prints_the_author_and_a_written_disclaimer_too():
         data["engagement"].pop(key)
     out = _fill("executive-brief", data)
     assert "Prepared by" not in out and "point-in-time analysis" in out
+
+
+# --- owner 2026-10-24: what a template says of a finding's status and an endpoint's state ---
+
+@needs_templates
+@pytest.mark.parametrize("name", (*SHIPPED, "contact-report"))
+def test_the_status_declaration_is_what_the_template_prints(name, monkeypatch):
+    """``status_notes`` in template.json says whether the template prints a
+    finding's status and an endpoint's state; presentation mode shows them
+    only where it does.  The fill decides: a template "prints" one when its
+    output changes with it."""
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(ROOT))
+    declared = templates.get_template(name).status_notes
+    sample = _sample(name)
+    first = sample["findings"][0]
+    assert first["status"] == "confirmed" and first["affected"][0]["state"] is None, name
+    # The contact's list prints a deadline in the state's cell when there is one.
+    if "deadline" in first["affected"][0]:
+        first["affected"][0]["deadline"] = None
+    plain = _fill(name, sample)
+
+    finding = copy.deepcopy(sample)
+    finding["findings"][0].update(status="remediated", status_note="Remediated during the assessment")
+    endpoint = copy.deepcopy(sample)
+    endpoint["findings"][0]["affected"][0]["state"] = "Remediated"
+    measured = {"findings": _fill(name, finding) != plain, "endpoints": _fill(name, endpoint) != plain}
+    assert declared == measured, name
+
+
+def test_a_malformed_status_declaration_is_a_template_problem(tmp_path, monkeypatch):
+    folder = tmp_path / "odd"
+    folder.mkdir()
+    (folder / "report.qmd").write_text("x\n")
+    (folder / "template.json").write_text(json.dumps({"title": "Odd", "status_notes": {"findings": "yes"}}))
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(tmp_path))
+    with pytest.raises(templates.TemplateError, match="status_notes"):
+        templates.get_template("odd")

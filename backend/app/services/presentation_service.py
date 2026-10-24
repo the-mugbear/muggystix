@@ -98,6 +98,31 @@ def _dataset(db: Session, report: Report) -> dict:
     return dataset
 
 
+def status_notes(report: Report) -> dict:
+    """What the report's template prints of a finding's status and an
+    endpoint's state (``template.json`` → ``status_notes``): the issued
+    report's own frozen copy says; a copy frozen before the key existed (or
+    a report issued before copies) falls back to the installed template of
+    the same name; a template that does not say, or cannot be read, prints
+    neither (owner, 2026-10-24: the presentation says what the report says)."""
+    from app.services import report_template_service
+    from app.services.client_report_service import frozen_template_dir
+
+    declared = None
+    try:
+        folder = frozen_template_dir(report)
+        if folder is not None:
+            declared = report_template_service.load_folder(folder).status_notes
+    except (ValueError, OSError):
+        pass
+    if declared is None and report.template:
+        try:
+            declared = report_template_service.get_template(report.template).status_notes
+        except (ValueError, OSError):
+            pass
+    return dict(declared) if declared is not None else dict(slides_mod.NO_STATUS)
+
+
 def slides_for(db: Session, report: Report, kind: Optional[str], value: Optional[str]) -> dict:
     images = frozen_images(db, report)
     key = (report.id, kind, (value or "").strip() or None, images)
@@ -105,12 +130,14 @@ def slides_for(db: Session, report: Report, kind: Optional[str], value: Optional
     if hit is not None:
         _CACHE.move_to_end(key)
         return hit
+    # Read when the list is built, not per move: it hashes the frozen copy.
+    shown = status_notes(report)
     dataset = _dataset(db, report)
     try:
         flt = slides_mod.check_filter(dataset, kind, value)
     except slides_mod.FilterError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    result = slides_mod.presentation_slides(dataset, flt, set(images))
+    result = slides_mod.presentation_slides(dataset, flt, set(images), shown)
     result["keys"] = {s["key"] for s in result["slides"]}
     result["sites"] = slides_mod.scope_sites(dataset)
     result["segments"] = slides_mod.scope_segments(dataset)

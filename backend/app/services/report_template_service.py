@@ -102,6 +102,13 @@ class ReportTemplate:
     # 2026-10-14: a report should not name the identifying tool unless the
     # template asks): only a literal ``true`` in template.json.
     corroboration: bool = False
+    # Whether the template prints a finding's status ("Risk accepted",
+    # "Remediated during the assessment") and an endpoint's state
+    # ("Remediated"), from template.json → "status_notes": {"findings": …,
+    # "endpoints": …} — a presentation shows them only where the report does
+    # (owner, 2026-10-24).  None: the template does not say (one written, or
+    # an issued copy frozen, before the key existed).
+    status_notes: Optional[Dict[str, bool]] = None
     # Which evidence images the template prints (review 2026-10-01 S2), from
     # template.json → "images": the written fields whose placed images it
     # prints, and whether it prints the rest in a trailing evidence block.
@@ -133,6 +140,7 @@ class ReportTemplate:
             "scope_domains_inline_max": self.scope_domains_inline_max,
             "evidence_records": self.evidence_records,
             "corroboration": self.corroboration,
+            "status_notes": self.status_notes,
             "images": self.images,
             "kind": self.kind,
         }
@@ -200,6 +208,15 @@ def _load(folder: Path, *, uploads: bool = True) -> ReportTemplate:
             )
         cutoffs[key] = value
     image_fields, image_trailing = _image_declaration(folder.name, data.get("images"))
+    status_notes = data.get("status_notes")
+    if status_notes is not None and not (
+        isinstance(status_notes, dict) and set(status_notes) == {"findings", "endpoints"}
+        and all(isinstance(v, bool) for v in status_notes.values())
+    ):
+        raise TemplateError(
+            f"{folder.name}: template.json: status_notes must be "
+            '{"findings": true or false, "endpoints": true or false}.'
+        )
     kind = data.get("kind", "client")
     if kind not in TEMPLATE_KINDS:
         raise TemplateError(
@@ -212,6 +229,7 @@ def _load(folder: Path, *, uploads: bool = True) -> ReportTemplate:
         postprocess=post, assets=assets,
         evidence_records=data.get("evidence_records") is True,
         corroboration=data.get("corroboration") is True,
+        status_notes=dict(status_notes) if status_notes is not None else None,
         image_fields=image_fields, image_trailing=image_trailing, kind=kind,
         extends=base.name if base is not None else None, **cutoffs,
     )

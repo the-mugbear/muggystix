@@ -27,6 +27,7 @@ WIDE_TABLE = ("| " + " | ".join(f"Col{i}" for i in range(16)) + " |\n|" + "---|"
                           for r in range(30)))
 URL = "https://example.com/" + "a" * 400
 CJK = "中文测试文本" * 60
+BOTH = {"findings": True, "endpoints": True}
 
 
 def _dataset(**finding_over):
@@ -85,6 +86,7 @@ def test_every_slide_is_within_its_budget():
     assert _over_budget(result) == []
     flt = check_filter(_dataset(), "site", "DMZ")
     assert _over_budget(presentation_slides(_dataset(), flt)) == []
+    assert _over_budget(presentation_slides(_dataset(), flt, None, BOTH)) == []
 
 
 def test_the_list_is_the_same_on_every_read():
@@ -147,6 +149,28 @@ def test_endpoint_rows_are_paged_by_measured_height_and_counted_once():
     assert all(nxt[0] == cur[1] + 1 for cur, nxt in zip(nums, nums[1:]))
     # Rows whose hostname wraps take more room: not a fixed count per slide.
     assert len({len(b["rows"]) for s in pages for b in s["blocks"]}) > 1
+
+
+def test_status_and_state_are_shown_only_where_the_template_prints_them():
+    """Owner 2026-10-24 (option c): the presentation says what the report says."""
+    ds = _dataset(status_note="Remediated during the assessment",
+                  affected=[{"address": "10.0.0.1", "hostname": "h1", "name": None, "port": "443/tcp",
+                             "state": "Remediated"}], affected_count=1)
+
+    def shown(status_notes):
+        result = presentation_slides(ds, None, None, status_notes)
+        facts = next(b for b in _slides_of(result, "f:F-01")[0]["blocks"] if b["kind"] == "facts")
+        table = next(b for b in _slides_of(result, "f:F-01:hosts:")[0]["blocks"] if b["kind"] == "table")
+        return facts["status_note"], table["header"], table["rows"][0]
+
+    note, header, row = shown(None)                     # a template that does not say: neither
+    assert note is None and header == ["Address", "Name", "Port"] and row == ["10.0.0.1", "h1", "443/tcp"]
+    assert shown({"findings": False, "endpoints": False}) == (note, header, row)
+    note, header, row = shown(BOTH)
+    assert note == "Remediated during the assessment"
+    assert header == ["Address", "Name", "Port", "State"] and row[-1] == "Remediated"
+    assert shown({"findings": True, "endpoints": False})[1:] == (["Address", "Name", "Port"],
+                                                                 ["10.0.0.1", "h1", "443/tcp"])
 
 
 def test_the_footer_says_what_a_filtered_page_is_part_of():

@@ -403,3 +403,38 @@ def test_the_answer_is_json_serialisable_and_names_people_one_way(client, test_p
     st = _start(client, test_project, report, "t")
     json.dumps(st)
     assert set(st["driver"]) == {"id", "name", "profile_image"}
+
+
+# --- owner 2026-10-24: status and state only where the report's template prints them ---
+
+def test_the_status_shown_is_the_issued_reports_own_template_copys(tmp_path, monkeypatch):
+    from app.services import client_report_service as crs
+    from app.services import presentation_service as ps
+
+    installed = tmp_path / "report-templates" / "pentest"
+    installed.mkdir(parents=True)
+    (installed / "report.qmd").write_text("---\ntitle: x\n---\n")
+
+    def declare(status_notes):
+        manifest = {"title": "t", "entry": "report.qmd", "formats": ["html"]}
+        if status_notes is not None:
+            manifest["status_notes"] = status_notes
+        (installed / "template.json").write_text(json.dumps(manifest))
+
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(installed.parent))
+    report = Report(id=7, project_id=3, title="r", template="pentest", status="issued", snapshot={"dataset": {}})
+    declare({"findings": True, "endpoints": False})
+    report.snapshot["template"] = crs.freeze_report_template(report)
+
+    # The installed template changes after the issue: the frozen copy decides.
+    declare({"findings": False, "endpoints": True})
+    assert ps.status_notes(report) == {"findings": True, "endpoints": False}
+
+    # A copy frozen before the key existed, or no copy: the installed template's.
+    del report.snapshot["template"]
+    assert ps.status_notes(report) == {"findings": False, "endpoints": True}
+    # A template that does not say, or no such template: neither.
+    declare(None)
+    assert ps.status_notes(report) == {"findings": False, "endpoints": False}
+    report.template = "gone"
+    assert ps.status_notes(report) == {"findings": False, "endpoints": False}
