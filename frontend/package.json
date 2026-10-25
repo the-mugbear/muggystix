@@ -1,6 +1,6 @@
 {
   "name": "networkMapper-frontend",
-  "version": "5.427.0",
+  "version": "5.427.1",
   "private": true,
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",

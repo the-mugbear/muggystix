@@ -85,6 +85,7 @@ const sections: GuideSection[] = [
           <li><strong>Project selector</strong> — switch the active project from the sidebar; every data page re-scopes to it. Once projects span more than one year the menu lists them by the year they start (a project with no start date counts under the year it was created): it opens on the current project&rsquo;s year, and another year or <em>All</em> is one click.</li>
           <li><strong>Themes</strong> — the theme picker in the top bar offers several looks, including a phosphor terminal mode.</li>
           <li><strong>One account per browser</strong> — the sign-in is shared by every tab. Signing in as a different account (or signing out) in one tab reloads the others, so no tab keeps showing the previous account's project.</li>
+          <li><strong>Your picture</strong> — set a profile picture on your Profile page (the user menu, top-right); it is cropped to a square and shown in the user menu, beside your comments and in presentation mode to the people who share a project with you.</li>
         </UnorderedList>
       </div>
     ),
@@ -101,6 +102,7 @@ const sections: GuideSection[] = [
           <li>Quick-nav chords jump to the main pages — e.g. <Mono>g h</Mono> Hosts, <Mono>g s</Mono> Scans, <Mono>g p</Mono> Proposals, <Mono>g i</Mono> Inventory, <Mono>g o</Mono> Operations.</li>
           <li>On Hosts, Findings, Scanner observations, Names and Collaboration, <Mono>j</Mono> / <Mono>k</Mono> (or the arrow keys) move a row cursor and <Mono>Enter</Mono> opens the row. On a list that refreshes itself (Proposals, Findings, Names, Collaboration) the cursor stays on its row, not on its position.</li>
           <li>On Proposals, <Mono>j</Mono> / <Mono>k</Mono> move through the queue, <Mono>Enter</Mono> opens the finding, <Mono>a</Mono> accepts the highlighted proposal and <Mono>r</Mono> opens its reject reason. Press <Mono>?</Mono> anywhere for the full list.</li>
+          <li>On a finding&rsquo;s page opened from the Findings list, <Mono>j</Mono> / <Mono>k</Mono> step to the next and previous finding of that list. In presentation mode the Controller steps with <Mono>j</Mono> / <Mono>k</Mono>, the arrow keys or a presenter remote&rsquo;s Page Down / Page Up.</li>
           <li>Single-letter keys do nothing while you are typing in a field, while a dropdown or menu is open, while a dialog is open, or with a modifier key held; holding <Mono>a</Mono> or <Mono>r</Mono> down acts once.</li>
           <li>Take a host into review by setting its review status — <strong>In Review</strong>, then <strong>Reviewed</strong>. Review is shared by the team: <Mono>follow:mine</Mono> lists the hosts <em>you</em> have In Review, <Mono>follow:in_review</Mono> the hosts <em>anyone</em> has In Review, <Mono>follow:reviewed</Mono> the hosts anyone marked Reviewed, and <Mono>follow:none</Mono> the hosts nobody has taken yet.</li>
           <li>Upload multiple scan files at once — each becomes its own import, and the review lets you start all the recognised ones with one click.</li>

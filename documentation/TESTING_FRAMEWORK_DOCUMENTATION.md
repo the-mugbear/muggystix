@@ -1,11 +1,12 @@
 # BlueStick Testing Guide
 
-> **Last verified against:** backend 2.450.0 / frontend 5.329.0 (2026-10-02)
+> **Last verified against:** backend 2.533.0 / frontend 5.427.0 (2026-10-25)
 
 ## Current Test Stack
 
 - Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage measurement configured in [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini) (a `--cov-fail-under` floor that no routine run enforces — every recipe and `check.sh` pass `--no-cov`; see "The gates"). For the size of the suite, `pytest --collect-only -q | tail -1` is the source.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
+- Frontend browser suites: Playwright (`@playwright/test`, a dev dependency) from [`frontend/e2e`](/home/charles/Projects/Tools/NetworkMapper/frontend/e2e) — `npm run e2e`; Chromium once from `cd frontend && npx playwright install chromium`. Vitest excludes `e2e/`.
 
 ## The gates (run locally — there is no hosted CI)
 
@@ -37,8 +38,12 @@ The gates, for running one alone:
 - **Backend** — `python -m pytest -q` in a one-off container (recipe below). The recipes and
   `check.sh` pass `--no-cov` for speed, so the `--cov-fail-under=68` floor in
   `backend/pytest.ini` is **not enforced by any routine run**; drop `--no-cov` to measure it.
-- **Frontend** — Node 22 (the image's major): `tsc --noEmit` → `vitest run` (what `check.sh`
-  runs, on the host); `npm run build` is the image build's step and runs `tsc --noEmit` again.
+- **Frontend** — Node 22 (the image's major): `tsc --noEmit` → `npm run lint` (a warning fails
+  it) → `vitest run` → `CI=1 npx playwright test` (what `check.sh` runs, on the host; the last is
+  the step "frontend e2e": presentation mode's rendered overflow check and multi-user run drive
+  Chromium against the Vite dev server and an in-memory backend, `e2e/fakeBackend.ts`, so no
+  stack is needed — without the browser the step fails saying how to install it);
+  `npm run build` is the image build's step and runs `tsc --noEmit` again.
   `tsconfig.json` has `noUnusedLocals` / `noUnusedParameters` on, so an unused import fails it
   (and fails the image build).
 
@@ -122,6 +127,23 @@ npx tsc --noEmit
 ```
 
 Strict-mode TypeScript is enforced; every PR should typecheck clean before merge.
+
+### Browser suites (Playwright, 5.424.0)
+
+`frontend/e2e/` holds what a unit test cannot see — real layout in a real browser. `npm run e2e`
+(or `CI=1 npx playwright test`, as the gate runs it) starts the Vite dev server and serves an
+in-memory backend (`e2e/fakeBackend.ts`, which mirrors the presentation routes' rules — keep it in
+step with `presentation_service`). `presentation-overflow.spec.ts` draws every slide of a
+worst-case report (`e2e/fixtures/presentation-worst-case.json`) at three window sizes and three
+filters: with the shipped fonts no slide may overflow or need the fit fallback; with a system font
+forced in, nothing may be clipped and each overflow must be fitted and reported. The fixture is
+the slide builder's own output, pinned by `backend/tests/test_presentation_e2e_fixture.py`
+(regenerate it after a change to the estimator). `presentation-multi-user.spec.ts` runs three
+browser contexts — a display, a driver and a browser who takes control — through moves, a filter
+change, dropped heartbeats, a hidden tab, the spotlight and End, and asserts the display's slides
+are a subsequence of the driven order with no conflicts. The width table the server paginates by
+(`backend/app/data/presentation_metrics.json`) is pinned to the shipped fonts by
+`tests/presentation/presentationMetrics.test.ts`.
 
 Lint (ESLint, `frontend/eslint.config.mjs`):
 
@@ -221,7 +243,11 @@ Update these WITH the change, never around it:
 | `test_parser_coverage.py` | every format has an entry in `app/data/parser_coverage.json` (the "What BlueStick reads" page), and what it claims matches what the parsers write |
 | `test_host_list_query_budget.py`, `test_ingestion_query_budget.py`, `test_host_loading.py` | the /hosts list does not issue a query per host; ingestion dedup stays linear in host count; querying hosts is one statement |
 | `test_host_query_suggest.py::test_every_value_source_is_enumerable_or_deliberately_not` | every `/hosts` DSL field has a value source the autocomplete enumerates, or is `enum`/`window`/`free` on purpose |
-| `test_quarto_render.py::test_hostile_text_stays_text_in_every_format`, `test_report_templates_shipped.py`, `test_report_templates_escaping.py`, `test_report_template_assets.py` | every template in `report-templates/` keeps hostile text as text (run in the report-worker image — Quarto tests skip in the backend image); every shipped template is offered with no problems |
+| `test_quarto_render.py::test_hostile_text_stays_text_in_every_format`, `test_report_templates_shipped.py`, `test_report_templates_escaping.py`, `test_report_template_assets.py` | every template in `report-templates/` keeps hostile text as text (run in the report-worker image — Quarto tests skip in the backend image); every shipped template is offered with no problems; each shipped template's `status_notes` declaration equals whether its fill changes with a finding's status / an endpoint's state (presentation mode follows it) |
+| `test_quarto_render.py::test_the_rendered_sample_numbers_its_table_of_contents` | the Word report's table-of-contents entries carry page numbers measured from a LibreOffice layout in the report-worker image, never going back; it skips — and so fails the gate — where `soffice` is not present (2.528.0) |
+| `test_presentation_e2e_fixture.py`, `frontend/src/tests/presentation/presentationMetrics.test.ts` | the Playwright fixture `frontend/e2e/fixtures/presentation-worst-case.json` is the slide builder's own output; the width table `presentation_metrics.json` matches the shipped fonts (2.530.0) |
+| `test_finding_queue_neighbours.py` | the finding page's Previous / Next (`GET /findings/{id}/neighbours`) walks exactly the rows the Findings list pages through, for every sort, direction and filter set; a finding that left the list steps from where it sat (2.529.0) |
+| `test_server_links_are_routes.py`, `frontend/src/tests/navigation.test.ts` | every `link="/…"` the backend builds is a route `App.tsx` has; `App.tsx` keeps no redirect for a retired address — `/` → `/operations` is its one `<Navigate>` (2.527.1) |
 | `test_service_router_boundary.py` | a module under `app/services` never imports from `app.api`; an endpoint module never imports another endpoint module's `_private` name; `app/api/deps.py` / `app/api/params.py` never import a router |
 | `test_finding_loading.py`, `test_read_path_review.py` | querying findings is one statement and loads no endpoints; rewritten Hosts predicates return the same hosts as the old ones, within a statement budget, the revision's indexes match the models, and no host predicate is an `IN (subquery)` (`test_no_host_predicate_is_an_in_subquery_any_more`) |
 | `test_agent_role_route_matrix.py` | every agent read's role floor, declared on its route with `agent_read_floor(...)`, equals the role its page asks of a person — a table of every such read, checked both ways |

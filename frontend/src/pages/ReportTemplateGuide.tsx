@@ -83,7 +83,7 @@ const PIPELINE: Stage[] = [
   },
   {
     title: 'Post-process (per format)',
-    does: 'The script template.json names for a format runs on the rendered file — for Word, the logo and cover in place, the classification in header and footer, captions kept with their tables.',
+    does: 'The script template.json names for a format runs on the rendered file — for Word, the logo and cover in place, the classification in header and footer, captions kept with their tables, and the table of contents numbered from a LibreOffice layout of a copy (Word may break a page differently; the reader updates the table once).',
     inputs: [
       { name: 'scripts/… (postprocess)', owner: 'template', note: 'pentest: fix-docx-report.py' },
       { name: 'data.json', owner: 'bluestick', note: 'what the script may read' },
@@ -258,7 +258,7 @@ const sections: GuideSection[] = [
     content: (
       <div>
         <UnorderedList>
-          <li><Mono>template.json</Mono> — the manifest: title and description (what people choose by), formats, which images it prints, its own images (assets), the Word post-processor, and <Mono>extends</Mono>.</li>
+          <li><Mono>template.json</Mono> — the manifest: title and description (what people choose by), formats, which images it prints, its own images (assets), the Word post-processor, whether it prints a finding&rsquo;s status and an endpoint&rsquo;s state (<Mono>status_notes</Mono> — presentation mode shows them only where the template does), and <Mono>extends</Mono>.</li>
           <li><Mono>report.qmd</Mono> — the report itself. Its front matter sets the title page (<Mono>bluestick-meta</Mono>: title, subtitle, author) and the filters; its body is every section in order.</li>
           <li><Mono>partials/*.qmd</Mono> — reusable pieces pulled in with <Mono>include</Mono> (a finding, its affected systems, how it was confirmed).</li>
           <li><Mono>reference.docx</Mono> — Word styles: fonts, headings, tables, title page, header and footer.</li>

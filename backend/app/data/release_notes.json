@@ -3,6 +3,15 @@
   "releases": [
     {
       "backend": "2.533.0",
+      "frontend": "5.427.1",
+      "date": "2026-10-25",
+      "entries": [
+        {"kind": "changed", "text": "The user guide has a section on presenting a report (Administration → Presenting a report): starting and joining, the shared display, driving, the spotlight, agendas and their versions."},
+        {"kind": "changed", "text": "The user guide also covers the finding page's Previous / Next through the Findings list, profile pictures, the new keys and the Word report's table of contents; the report-template guide names the status declaration and the table-of-contents step."}
+      ]
+    },
+    {
+      "backend": "2.533.0",
       "frontend": "5.427.0",
       "date": "2026-10-24",
       "entries": [

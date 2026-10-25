@@ -1,5 +1,5 @@
 import React from 'react';
-import { FolderTree, ShieldCheck, FileDown, PenLine } from 'lucide-react';
+import { FolderTree, ShieldCheck, FileDown, PenLine, MonitorUp } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -191,7 +191,7 @@ const sections: GuideSection[] = [
           <li><strong>What it includes</strong> — confirmed, accepted-risk and remediated findings with their written report text; systems marked false positive are left out; findings still under investigation are counted, not shown.</li>
           <li><strong>Draft, preview, issue</strong> — an analyst creates and edits a draft and previews it. <em>New report</em> asks for a title and a template; when a draft of that kind is already in progress it says so, with <em>Continue it</em> (or <em>View drafts</em> when there are several), and still lets you start another. A draft&rsquo;s page has three sections — <strong>Details</strong>, <strong>Review</strong> and <strong>Preview &amp; issue</strong> — under a bar that always says whether there are unsaved changes, with <em>Discard changes</em>, <em>Save draft</em> and <em>Preview</em> (<em>Save &amp; preview</em> while something is unsaved). Review holds the one <strong>Before issuing</strong> checklist — the report details still empty, the findings still missing report text, proposals nobody has decided, images without a caption, text naming a BlueStick record, and the notes the client will read — and, above it, what blocks issuing. Each line opens where it is fixed: a detail opens its field under Details; a finding opens its report text with a bar that says how many are left and steps to the <em>Previous</em> and <em>Next</em> one, and <em>Back to the report</em>. The <strong>template</strong> is chosen in the report&rsquo;s header, saved with the draft, and is the one it is issued with; a required template file that is not installed is said on the page, because it stops preview and issue. A preview renders in the background and the page says when it is ready, and then whether it is still <em>current</em>: it says <em>out of date</em> once the findings, details, images or template it was built from have changed (checked again when you come back to the window and before you issue), and <em>could not verify</em> when it cannot tell. An HTML preview <em>opens in a new tab</em> (if the browser blocks the tab, the file is downloaded instead, and the page says so), and every preview can be downloaded: its <em>Download</em> button shows <em>Downloading…</em> and then <em>Downloaded</em>, so a file is not fetched twice by mistake (an issued report&rsquo;s files do the same). The assessment team and the distribution list print in the order shown: drag a row by its grip, or use its <em>Move up</em> / <em>Move down</em> buttons. A project admin <strong>issues</strong> it: the report is numbered and frozen, and never changes afterwards. A correction is a <strong>revision</strong> — a new draft that supersedes the original.</li>
           <li><strong>Addenda</strong> — an addendum reports only what changed since an issued report: new findings, findings on new systems, and a finding whose <strong>severity was re-rated</strong> (shown with its previous severity). A change of title or status is not reported.</li>
-          <li><strong>Formats</strong> — HTML, Word (<Mono>.docx</Mono>) and the QMD source (<Mono>.zip</Mono>), as the template allows. There is no PDF: export it from Word. In the QMD source the written text stays in <Mono>data.json</Mono> and is filled in when the report is rendered — it is not pasted into <Mono>report.qmd</Mono>.</li>
+          <li><strong>Formats</strong> — HTML, Word (<Mono>.docx</Mono>) and the QMD source (<Mono>.zip</Mono>), as the template allows. There is no PDF: export it from Word. The Word file&rsquo;s table of contents carries page numbers from a layout made on the server (LibreOffice); Word may break a page differently, so before sending it update the table once in Word (right-click it &rsaquo; <em>Update field</em>). In the QMD source the written text stays in <Mono>data.json</Mono> and is filled in when the report is rendered — it is not pasted into <Mono>report.qmd</Mono>.</li>
           <li><strong>Images and test results</strong> — only images ticked <em>In report</em> on a finding print, and where depends on the template; the report page says how many print in the text, how many under Evidence, and which are not printed and why. An issued report keeps its own copies of its images. With the Penetration test template, a finding&rsquo;s Evidence section prints its written <em>Evidence</em> text, then each test result that showed the finding as how it was confirmed (tool, command, trimmed output), then every ticked image no section places — each after the text of the comment or note it is attached to, as written. The report page says how many notes print that way, and the issue dialog repeats it.</li>
           <li><strong>Report details follow the project</strong> — executive summary, client, author, classification, engagement type, team, distribution, system description, other targets and disclaimer are set once on <em>Reports → Report defaults</em>, and every draft follows them until it is issued: change a default and every draft that follows it changes too. On a draft&rsquo;s Details the values read as text in sections; <em>Edit</em> opens a section, <em>Done</em> keeps the change (still unsaved), <em>Cancel</em> puts the section back as it was when you pressed Edit, and <em>Save draft</em> saves everything. A value you changed is marked <em>Customised for this report</em>, with <em>Use the project&rsquo;s</em> beside it to follow the project again; setting a text back to the project&rsquo;s value, or clearing it, does the same. A change can become the standard for future drafts: <em>Update project defaults…</em> lists this draft&rsquo;s customised details with the project&rsquo;s value, the draft&rsquo;s, and how many other drafts follow each — tick the ones to make the project&rsquo;s defaults, and this draft follows them again. The team and the distribution list are customised, and made the default, as a whole — a report can list nobody on purpose, and the page says so. The Reports list says who started each draft and when, which details it customises and its template when not the project&rsquo;s. An addendum or a revision starts with the details its report was issued with; an addendum&rsquo;s summary (its <em>Summary of changes</em>) is always its own. Issued reports keep what they were issued with.</li>
           <li><strong>Author and disclaimer</strong> — who produced the report, and the disclaimer it closes with: the report&rsquo;s override, else the project&rsquo;s default, else the installation&rsquo;s, which a global administrator sets under Administration → System → Report writing → <em>Report defaults</em>. In the project&rsquo;s defaults an empty one says what the installation&rsquo;s is, and <em>Edit a copy</em> starts from the installation&rsquo;s disclaimer. With no disclaimer written anywhere the template prints its own; with no author anywhere the report lists it under <em>Before issuing</em>. With no team saved in the defaults, the project&rsquo;s analysts and admins are the team.</li>
@@ -199,6 +199,7 @@ const sections: GuideSection[] = [
           <li><strong>The Penetration test report&rsquo;s tables</strong> — its summary table links each finding by its section number (it no longer prints Ref there, nor Status, Port and Note columns), a table written in report text can carry a numbered caption (a <Mono>Table:</Mono> line after it), and the Word header and footer print the report&rsquo;s classification.</li>
           <li><strong>A large scope</strong> is not printed: the report gives totals and names a separate scope CSV with its SHA-256, which you download from the report's page and send with it.</li>
           <li><strong>Templates</strong> — three ship: Penetration test report, Executive brief, Remediation worklist. They are listed, with their files, on <em>Reports → Report templates</em>, where a global administrator uploads the logo, cover image and Word reference file.</li>
+          <li><strong>Presenting it</strong> — an issued report can be walked through on a shared screen in presentation mode; see <em>Presenting a report</em> below.</li>
         </UnorderedList>
         <Subhead>Tool-ready lists and the inventory download (Hosts page)</Subhead>
         <UnorderedList>
@@ -214,6 +215,46 @@ const sections: GuideSection[] = [
       </div>
     ),
   },
+  {
+    id: 'presenting',
+    title: 'Presenting a report',
+    Icon: MonitorUp,
+    summary: 'An issued report as slides on a shared screen: one person drives, the team follows or takes control, an agenda sets the order.',
+    content: (
+      <div>
+        <Para>
+          Presentation mode shows an <strong>issued</strong> report to a room through someone&rsquo;s
+          shared screen. It needs <strong>auditor</strong> or above on the project; a draft cannot be
+          presented. What it shows is the report&rsquo;s frozen content — the same findings, systems and
+          images the issued file has — laid out as slides on a fixed stage, so every screen shows the
+          same slide broken at the same word. Nothing is cut: long text continues on the next slide
+          (&ldquo;Impact — 2 of 3&rdquo;), and every slide&rsquo;s footer says which report, which finding
+          and which page it is.
+        </Para>
+        <Subhead>Starting and joining</Subhead>
+        <UnorderedList>
+          <li><strong>Present</strong> — on an issued report&rsquo;s page (Findings → Reports) opens the <strong>Controller</strong> and starts the presentation. While someone is presenting, the same place says who is driving, with <em>Join the presentation</em> and <em>Open the display</em>.</li>
+          <li><strong>The Display</strong> — <em>Open the display</em> opens a plain tab with nothing but the slide: share that one on the room&rsquo;s screen. It only follows; it has no controls. Left open after the presentation ends, it picks up the next presentation of the same report by itself.</li>
+          <li><strong>Everyone is told</strong> — starting a presentation notifies every member who can join, and the notification bell glows while it runs; the bell opens with <em>Presenting now</em> and <em>Join</em>. A presentation nobody has open for 30 minutes ends by itself.</li>
+        </UnorderedList>
+        <Subhead>Driving</Subhead>
+        <UnorderedList>
+          <li><strong>One driver at a time</strong> — the Controller shows who is driving. Previous / Next (<Mono>j</Mono> / <Mono>k</Mono>, the arrow keys, or a presenter remote&rsquo;s Page Down / Page Up) and the numbered slide list move every following screen. Anyone who joined takes over with <em>Take control</em>, in one click; the previous driver is told. <em>End</em> belongs to the person who started it or a project admin.</li>
+          <li><strong>Host filter</strong> — a segment, a site or a text filter narrows each finding&rsquo;s endpoint pages to the matching systems; the footer says so (&ldquo;Endpoints 13–24 of 57 matching DMZ · 240 affected&rdquo;), so a filtered page is never read as the whole finding.</li>
+          <li><strong>Spotlight</strong> — a click on the driver&rsquo;s slide rings that point on every screen for five seconds, at the same place on every screen.</li>
+          <li><strong>Browse on my own</strong> — reads the slides in your own tab without moving anyone; <em>Take control</em> from there when it is your turn.</li>
+          <li><strong>The presenter view</strong> — under the Controller&rsquo;s stage: the slide you are going to, the one everyone has, the next one, and what each shared display really shows right now (a display still catching up is marked).</li>
+          <li><strong>What a slide says about status</strong> — a finding&rsquo;s status (&ldquo;Risk accepted&rdquo;, &ldquo;Remediated during the assessment&rdquo;) and an endpoint&rsquo;s State column appear only where the report&rsquo;s template prints them, so the presentation says what the report says. The Penetration test report prints neither.</li>
+        </UnorderedList>
+        <Subhead>Agendas</Subhead>
+        <UnorderedList>
+          <li><strong>Save the order</strong> — <em>Edit agendas</em> on the Controller builds an agenda from what the report holds: whole findings, or single sections of a finding (its impact, its affected systems…), in the order to present them. A report can have several agendas; everyone sees the panel beside the slide list, and only the driver changes which one is followed.</li>
+          <li><strong>Follow it</strong> — with an agenda chosen, <em>Next</em> walks its items; the active item is marked. Picking a slide outside the item explores the full report (&ldquo;Exploring the full report — item 3 waits&rdquo;), and <em>Back to the agenda</em> returns to the item.</li>
+          <li><strong>Versions</strong> — every save is a new version. A running presentation keeps the version it started with; when someone saves a newer one, the driver is offered <em>Use it</em> and the slide is kept where it can be. An agenda in use by a live presentation cannot be deleted.</li>
+        </UnorderedList>
+      </div>
+    ),
+  },
 ];
 
 const AdminGuide: React.FC = () => (
@@ -222,8 +263,8 @@ const AdminGuide: React.FC = () => (
       intro={
         <span>
           Running the platform: isolating engagements into projects, controlling who can do what,
-          telling an AI how your reports are written, and getting data back out as tool-ready lists
-          or formal reports.
+          telling an AI how your reports are written, getting data back out as tool-ready lists
+          or formal reports, and presenting an issued report to a room.
         </span>
       }
       sections={sections}

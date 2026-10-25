@@ -1,6 +1,6 @@
 # Contributing / Maintaining BlueStick
 
-> **Verified against:** backend 2.450.0 / frontend 5.329.0 (2026-10-01).
+> **Verified against:** backend 2.533.0 / frontend 5.427.0 (2026-10-25).
 
 This is the orientation a developer needs to maintain BlueStick safely. It captures the
 project's **conventions and invariants** — the things that aren't obvious from reading the
@@ -92,7 +92,11 @@ with `report-templates/` mounted, and **fails if any test skipped for want of Qu
 templates**: in the plain `backend` image (the recipe further down) the client-report tests,
 the hostile-text contract among them, skip, and that run is green without them; (2) `ruff check`
 over `backend/` in the same image — any finding fails the gate (see "Lint" above); (3) frontend
-`tsc --noEmit`, `npm run lint -- --max-warnings 0` (ESLint, below) and `vitest run`; (4) `scripts/test-alembic-roundtrip.sh`, which ends with
+`tsc --noEmit`, `npm run lint -- --max-warnings 0` (ESLint, below), `vitest run` and the Playwright
+suites (`CI=1 npx playwright test`, the step "frontend e2e" — presentation mode's rendered overflow
+check and multi-user run in `frontend/e2e/`, against the Vite dev server and an in-memory backend,
+so no stack is needed; once, `cd frontend && npx playwright install chromium`, else the step fails
+saying so); (4) `scripts/test-alembic-roundtrip.sh`, which ends with
 `alembic check` (`--fast` skips this step). Every step runs even when one fails, a one-screen summary ends the run, and
 the exit status is non-zero on any failure. It needs the stack up and the images built, builds
 and pulls nothing, and cannot migrate the development database (nothing it runs is the migration step). From a git worktree it tests the
@@ -104,7 +108,7 @@ and back up, so a migration needs a genuinely reversible `downgrade()`; `alembic
 model/migration drift. **Backend** — `pytest` (the recipe below; it passes `--no-cov`, as
 `check.sh` does, so the `--cov-fail-under` floor in `backend/pytest.ini` is **not** enforced by
 any routine run — drop `--no-cov` to measure coverage by hand). **Frontend** — `tsc --noEmit` →
-`npm run lint` → `vitest run` (what `check.sh` runs; `npm run build` is run by the image build,
+`npm run lint` → `vitest run` → `npm run e2e` (what `check.sh` runs; `npm run build` is run by the image build,
 not by the gate). `tsc` runs with `noUnusedLocals` / `noUnusedParameters`, so an unused import
 fails the gate and the image build. **ESLint** (`frontend/eslint.config.mjs`) is a small rule set
 on purpose — what nothing else enforces: the Rules of Hooks (error), effect dependencies
@@ -114,7 +118,7 @@ file save and `formatTimestamp` as the one absolute moment. The gate allows no w
 `exhaustive-deps` warning fails it. A convention that can be a lint rule belongs there, not in a
 test that greps the source.
 
-- **Frontend** checks run on the host: `cd frontend && npx tsc --noEmit && npm run lint && npx vitest run`.
+- **Frontend** checks run on the host: `cd frontend && npx tsc --noEmit && npm run lint && npx vitest run && npm run e2e`.
 - **Backend** tests do **not** run on the host — there's no host `pytest`, and `app/` is baked
   into the backend image (compose bind-mounts only `tests/`, `pytest.ini`, `scripts/`, `artifacts/`,
   `uploads/`, `documentation/AGENT_GUIDE.md`, `platform_version.json`, `report-templates/` (read-only, so template
