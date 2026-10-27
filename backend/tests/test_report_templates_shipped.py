@@ -253,6 +253,35 @@ def test_a_large_scope_is_summarised_and_its_file_named_not_printed():
     assert "10.0.5.0/24" not in brief and "10\\.0\\.5\\.0\\/24" not in brief
 
 
+def _separators(out: str) -> list[str]:
+    """The pipe-table separator lines of a filled template."""
+    return [ln for ln in out.splitlines() if re.fullmatch(r"\|[-:| ]+\|", ln) and "-" in ln]
+
+
+@needs_templates
+def test_every_pipe_table_separator_is_wide_enough_for_pandoc_to_size_its_columns():
+    """Pandoc sizes a pipe table's columns by its dashes only when the
+    separator line is over 72 characters; shorter, it leaves the widths to
+    Word, which sizes the table to its contents — "Scope by site" was a
+    narrow centred box among full-width tables (review 2026-10-26).  Every
+    table a pentest render can print, in every data shape."""
+    sample = _sample("pentest")
+    for data in (sample, _addendum(sample), _with_scope(sample, 3000), _with_affected(sample, 203)):
+        seps = _separators(_fill("pentest", data))
+        assert seps
+        assert not [s for s in seps if len(s) <= 72], [s for s in seps if len(s) <= 72]
+
+
+@needs_templates
+def test_a_test_results_lead_line_is_its_own_paragraph():
+    """The bold "nmap against 192.0.2.10, …, by Alex Tester" line ended in a
+    Jinja tag, which took its newline: the summary under it joined the
+    paragraph ("…by Alex Tester The SMB service answers…"; render of
+    2026-10-26)."""
+    out = _fill("pentest", _sample("pentest"))
+    assert "by Alex Tester\n\nThe SMB service answers" in out
+
+
 def _with_affected(sample: dict, n: int) -> dict:
     """The first finding on ``n`` systems: plain addresses (every second one
     on a port), one reached by an in-scope name and one remediated."""
@@ -426,10 +455,14 @@ def test_the_summary_tables_link_each_finding_by_its_section_number():
     sample = _sample("pentest")
     out = _fill("pentest", sample)
     summary = out.split("Summary of findings")[1].split("{{< pagebreak >}}")[0]
-    assert "| Section | Severity | Finding |" in summary
+    # Systems = the affected count (review 2026-10-26: a 455-host finding and
+    # a 1-host one read alike in the summary), as the addendum's table and
+    # the Executive brief already print it.
+    assert "| Section | Severity | Finding | Systems |" in summary
     rows = [ln for ln in summary.splitlines() if ln.startswith("| [")]
     assert [ln.split(" | ")[0] for ln in rows] == [f"| [-@sec-finding-{f['id']}]" for f in sample["findings"]]
-    assert "| [-@sec-finding-12] | High | Anonymous LDAP bind returns the directory |" in rows
+    assert "| [-@sec-finding-12] | High | Anonymous LDAP bind returns the directory | 2 |" in rows
+    assert [ln.rsplit(" | ", 1)[1] for ln in rows] == [f"{f['affected_count']} |" for f in sample["findings"]]
     assert "](#" not in summary and "| Ref |" not in out
     # Every reference has its heading, and no heading keeps the old id.
     for f in sample["findings"]:

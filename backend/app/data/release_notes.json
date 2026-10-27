@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.533.1",
+      "frontend": "5.427.1",
+      "date": "2026-10-26",
+      "entries": [
+        {"kind": "changed", "text": "The penetration test report's Summary of findings has a Systems column: how many systems each finding affects, as the addendum table and the Executive brief already show."},
+        {"kind": "fixed", "text": "Word report: commands and tool output are now monospaced, framed and wrap at the margin instead of running past it; a figure's caption has space under it, so consecutive screenshots no longer touch."},
+        {"kind": "fixed", "text": "Word report: finding sub-headings (Affected systems, Description, Impact, Steps to reproduce) are bold and sized below the finding's own heading, so an appendix finding's sections no longer read as body text."},
+        {"kind": "fixed", "text": "Word report: the Networks, Domains and Scope by site tables span the page like the others; \"N systems are affected\", \"Command:\" and \"Output:\" sit flush with the table or code block under them and stay on its page; a test result's lead line no longer runs into its summary."}
+      ]
+    },
+    {
       "backend": "2.533.0",
       "frontend": "5.427.1",
       "date": "2026-10-25",

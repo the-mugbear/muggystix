@@ -1282,6 +1282,54 @@ def test_every_table_label_keeps_with_its_table_in_word():
 
 
 @needs_template
+def test_the_partials_labels_are_table_labels_too():
+    """Review 2026-10-26: "N systems are affected." over the four-across grid
+    and "Command:" / "Output:" over a test result's code block printed as
+    body text — indented half an inch from the block under them, and free to
+    end a page without it.  Both partials print them in Table Label."""
+    affected = (TEMPLATE / "partials" / "_affected.qmd").read_text(encoding="utf-8")
+    assert '::: {custom-style="Table Label"}\n<< rows|length >> systems are affected.\n:::\n' in affected
+    confirmations = (TEMPLATE / "partials" / "_confirmations.qmd").read_text(encoding="utf-8")
+    assert '::: {custom-style="Table Label"}\nCommand:\n:::\n\n<< code(c, "command") >>' in confirmations
+    assert ('::: {custom-style="Table Label"}\nOutput<% if c.output_truncated %> (excerpt)<% endif %>:\n:::\n\n'
+            '<< code(c, "output") >>') in confirmations
+
+
+@needs_template
+def test_code_headings_and_figure_captions_have_their_word_styles():
+    """Review 2026-10-26 (a user's 117-page Word report).  reference.docx had
+    no Source Code style, so Pandoc added its own, which turns word wrap OFF
+    (long commands ran past the margin); its Verbatim Char — the run style
+    every code run and token style is based on — named no font, so code
+    printed in the body font.  Image Caption had no space after it (back-to-
+    back screenshots touched), and Heading 1–3 were one size with Heading 4 /
+    5 plain 11 pt, so an appendix finding's "5.1.1.2.2 Steps to reproduce"
+    read as body text."""
+    with zipfile.ZipFile(TEMPLATE / "reference.docx") as z:
+        styles = z.read("word/styles.xml").decode()
+
+    def style(sid):
+        m = re.search(rf'<w:style [^>]*w:styleId="{sid}".*?</w:style>', styles, re.S)
+        assert m, sid
+        return m.group(0)
+
+    source = style("SourceCode")
+    assert "<w:wordWrap" not in source                              # Word's default: wrap
+    assert '<w:link w:val="VerbatimChar"/>' in source and "<w:shd " in source and "<w:pBdr>" in source
+    assert re.search(r'<w:rFonts [^>]*w:ascii="Consolas"', style("VerbatimChar"))
+    caption = re.search(r'<w:spacing w:before="\d+" w:after="(\d+)"/>', style("ImageCaption"))
+    assert caption and int(caption.group(1)) >= 120
+
+    def size(sid):
+        m = re.search(r'<w:sz w:val="(\d+)"/>', style(sid))
+        return int(m.group(1)) if m else None
+
+    assert size("Heading1") == size("Heading2") > size("Heading3") > size("Heading4") == size("Heading5")
+    for sid in ("Heading3", "Heading4", "Heading5"):
+        assert "<w:b/>" in style(sid) and "<w:spacing " in style(sid), sid
+
+
+@needs_template
 def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
     """v2.410.0 — the original template's formatting, reclaimed without its
     Quarto cross-references (and the wrapper tables a script had to flatten):
@@ -2342,14 +2390,16 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     label, value = (int(w) for w in re.findall(r'<w:gridCol w:w="(\d+)"', details))
     assert value == 3 * label
 
-    # --- the summary table: Section | Severity | Finding -----------------------
+    # --- the summary table: Section | Severity | Finding | Systems -------------
     summary = html[html.index("<strong>Summary of findings</strong>"):]     # its label is above it
     summary = summary[summary.index("<table"):summary.index("</table>")]
-    assert re.findall(r"<th(?: [^>]*)?>(.*?)</th>", summary, re.S) == ["Section", "Severity", "Finding"]
-    rows = re.findall(r"<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>", summary, re.S)
+    assert re.findall(r"<th(?: [^>]*)?>(.*?)</th>", summary, re.S) == ["Section", "Severity", "Finding", "Systems"]
+    rows = re.findall(r"<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>",
+                      summary, re.S)
     assert len(rows) == len(data["findings"]) == 4
     numbers = {}
-    for finding, (section, severity, title) in zip(data["findings"], rows):
+    for finding, (section, severity, title, systems) in zip(data["findings"], rows):
+        assert systems.strip() == str(finding["affected_count"])       # review 2026-10-26
         link = re.fullmatch(
             rf'\s*<a href="#sec-finding-{finding["id"]}"[^>]*>(?:<span[^>]*>)?\s*([0-9A-Za-z.]+)\s*(?:</span>)?</a>\s*',
             section, re.S,
