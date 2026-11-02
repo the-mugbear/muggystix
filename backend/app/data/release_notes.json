@@ -2,6 +2,16 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.534.0",
+      "frontend": "5.427.1",
+      "date": "2026-11-02",
+      "entries": [
+        {"kind": "fixed", "text": "Word report: no blank page after a page a section or finding filled to the bottom — each page break now sits on the heading that follows it. The table of contents' server-made page numbers are closer to Word's for the same reason."},
+        {"kind": "fixed", "text": "Word report: the links in Summary of findings keep working after you update the table of contents in Word — the table now uses hidden bookmarks of its own instead of the findings' link targets."},
+        {"kind": "fixed", "text": "Word report: a screenshot placed inside a numbered step sits inside its frame and its caption is centred (the step's indent no longer applies inside the frame); a framed screenshot keeps with its caption."}
+      ]
+    },
+    {
       "backend": "2.533.1",
       "frontend": "5.427.1",
       "date": "2026-10-26",

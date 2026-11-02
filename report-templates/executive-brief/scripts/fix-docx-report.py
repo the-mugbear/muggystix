@@ -42,7 +42,28 @@ Post-process the Word report — the two things Word styles cannot do:
    (`fill_table_of_contents`): Pandoc leaves the field empty, and a viewer
    fills it only when asked.  No page numbers (nothing here lays pages out),
    and nothing asks the viewer to rebuild it at opening — Word did that
-   before it had a layout and printed "1" on every line.
+   before it had a layout and printed "1" on every line.  Each entry points
+   at a hidden `_Toc<n>` bookmark of its own in the heading, as Word's do
+   (review 2026-11-02): the heading's own bookmark stays for the summary
+   tables' links, and a rebuild of the table in Word, which replaces the
+   `_Toc` bookmarks, touches nothing those links use.
+
+8. Page breaks as "page break before" (review 2026-11-02).  Quarto writes
+   `{{< pagebreak >}}` as a paragraph holding nothing but a page-break run;
+   when the page before it is full that paragraph lands on a new page and
+   breaks again, leaving a blank page (seen in a 125-page report; it also
+   put LibreOffice's page numbers a page off Word's at every finding that
+   wrapped a line later in one than the other).  Each becomes
+   `pageBreakBefore` on the paragraph that follows it, which both suppress
+   at the top of a page (`page_breaks_before_their_paragraphs`).
+
+9. A framed screenshot inside a list item (a step of "Steps to reproduce")
+   loses the list's indent (review 2026-11-02): Pandoc gives the figure
+   paragraph and its caption the list's continuation numbering, whose
+   half-inch indent applied INSIDE the exact-width frame cell — the picture
+   sat right of its frame, spilling over the border, the caption off
+   centre.  The framed paragraph also keeps with the caption under it
+   explicitly, not only through its style.
 
 Everything else the original prototype's script did is now either a style in
 reference.docx or no longer needed (checked by rendering the template with
@@ -116,6 +137,11 @@ def fill_table_of_contents(body):
     Each entry with a bookmark ends in a right-aligned, dotted tab and a
     PAGEREF field to that bookmark, as Word writes one — its result empty
     here: only a layout engine knows page numbers, and this is not one.
+    The bookmark is the entry's OWN, a hidden `_Toc<n>` written around the
+    heading's text for the table alone, as Word writes them: the heading's
+    own bookmark (the summary tables' link target) is left to those links,
+    so a rebuild of the table in Word — which replaces the `_Toc` bookmarks
+    — touches nothing they use (review 2026-11-02).
     `write_toc_page_numbers` fills them from LibreOffice's layout when the
     report worker has it (`measure_toc_pages`); without it they stay empty
     until the reader updates the index (Word: right-click › Update field;
@@ -154,7 +180,8 @@ def fill_table_of_contents(body):
                 begin_fld = fld
     if end_fld is None:
         return 0
-    # A heading's bookmark is the body-level element just before it.
+    # A heading with a bookmark (its own, inside it or the body-level element
+    # just before it) gets an entry with a page field; one without, text only.
     entries, pending = [], None
     for child in list(body):
         if child.tag == f"{NS}bookmarkStart":
@@ -170,24 +197,27 @@ def fill_table_of_contents(body):
         pending = None
         text = "".join(t.text or "" for t in child.iter(f"{NS}t")).strip() if level else ""
         if text:
-            entries.append((level, text, anchor))
+            entries.append((level, text, child if anchor else None))
     if not entries:
         return 0
     if begin_fld is not None and f"{NS}dirty" in begin_fld.attrib:
         del begin_fld.attrib[f"{NS}dirty"]        # never rebuilt at opening: see the docstring
     end_holder.remove(end_fld)
     width = text_width(body)
+    next_id = 1 + max((int(m.get(f"{NS}id") or 0) for m in body.iter(f"{NS}bookmarkStart")), default=0)
     paragraphs = []
-    for level, text, anchor in entries:
+    for level, text, heading in entries:
+        anchor = None
+        if heading is not None:
+            anchor = f"_Toc{next_id}"
+            _bookmark_around_text(heading, anchor, str(next_id))
+            next_id += 1
         para = field_p if not paragraphs else ET.Element(f"{NS}p")   # the first entry shares the field's paragraph
-        ppr = para.find(f"{NS}pPr")
-        if ppr is None:
-            ppr = ET.Element(f"{NS}pPr")
-            para.insert(0, ppr)
-        ET.SubElement(ppr, f"{NS}pStyle", {f"{NS}val": f"TOC{level}"})
+        _set_paragraph_property(para, _element("pStyle", {f"{NS}val": f"TOC{level}"}))
         if anchor:
-            tabs = ET.SubElement(ppr, f"{NS}tabs")
+            tabs = _element("tabs")
             ET.SubElement(tabs, f"{NS}tab", {f"{NS}val": "right", f"{NS}leader": "dot", f"{NS}pos": str(width)})
+            _set_paragraph_property(para, tabs)
         holder = ET.SubElement(para, f"{NS}hyperlink", {f"{NS}anchor": anchor}) if anchor else para
         run = ET.SubElement(holder, f"{NS}r")
         t = ET.SubElement(run, f"{NS}t", {"{http://www.w3.org/XML/1998/namespace}space": "preserve"})
@@ -205,6 +235,24 @@ def fill_table_of_contents(body):
         for child in para:
             child.tail = None
     return len(entries)
+
+
+def _element(name, attrs=None):
+    return ET.Element(f"{NS}{name}", attrs or {})
+
+
+def _bookmark_around_text(p, name, bookmark_id):
+    """A bookmark `name` around the paragraph's content — its start after
+    the paragraph's properties (and any bookmark already starting there), its
+    end last — the shape Word writes a heading's `_Toc` bookmark in."""
+    at = 0
+    for i, child in enumerate(list(p)):
+        if child.tag in (f"{NS}pPr", f"{NS}bookmarkStart"):
+            at = i + 1
+        else:
+            break
+    p.insert(at, _element("bookmarkStart", {f"{NS}id": bookmark_id, f"{NS}name": name}))
+    p.append(_element("bookmarkEnd", {f"{NS}id": bookmark_id}))
 
 
 #: A text width for an A4 page with one-inch margins, in twentieths of a point —
@@ -491,11 +539,53 @@ def put_bookmarks_in_their_paragraphs(body):
     return moved
 
 
+def _is_page_break_only(p):
+    """A paragraph holding nothing but a page-break run — what Quarto writes
+    for `{{< pagebreak >}}`."""
+    if p.tag != f"{NS}p" or p.find(f".//{NS}br[@{NS}type='page']") is None:
+        return False
+    return not any(el.tag in (f"{NS}t", f"{NS}drawing", f"{NS}tbl") for el in p.iter())
+
+
+def page_breaks_before_their_paragraphs(body):
+    """Each body-level paragraph that is only a page break becomes
+    `pageBreakBefore` on the paragraph after it, and goes (review
+    2026-11-02).  A page-break paragraph that lands at the top of a page —
+    because the content before it ended exactly at the bottom of the one
+    before — breaks again and leaves a blank page; "page break before" on
+    a paragraph already at the top of a page is a no-op in Word and in
+    LibreOffice, whose layout numbers the table of contents.  One followed
+    by a table, or by nothing, is left as it is (both shipped templates
+    break only before a heading).  Returns the number converted."""
+    children = list(body)
+    converted = 0
+    for p, following in zip(children, children[1:]):
+        if not _is_page_break_only(p) or following.tag != f"{NS}p":
+            continue
+        _set_paragraph_property(following, _element("pageBreakBefore"))
+        body.remove(p)
+        converted += 1
+    return converted
+
+
+def _is_image_caption(p):
+    style = p.find(f"{NS}pPr/{NS}pStyle") if p.tag == f"{NS}p" else None
+    return style is not None and style.get(f"{NS}val") == "ImageCaption"
+
+
 def add_image_borders(body):
     """Wrap each top-level image paragraph in a single-cell table with a tight
     border.  The cell border sits outside the cell content, giving the
     tightest possible frame — unlike a:ln, which is centred on the shape
-    boundary and can render asymmetrically on pictures."""
+    boundary and can render asymmetrically on pictures.
+
+    The framed paragraph keeps with the caption under it (explicitly: an
+    operator's own styles file may not say so on Captioned Figure), and
+    neither it nor that caption carries a list's numbering or indent — a
+    figure inside a list item (a step of "Steps to reproduce") would
+    otherwise sit half an inch right INSIDE its exact-width frame, and the
+    centred caption off centre (review 2026-11-02).  The list itself goes
+    on: the next item keeps its number."""
     targets = []
     for idx, child in enumerate(list(body)):
         if child.tag != f"{NS}p":
@@ -530,6 +620,12 @@ def add_image_borders(body):
         spacing = ET.SubElement(pPr, f"{NS}spacing")
         spacing.set(f"{NS}before", "0")
         spacing.set(f"{NS}after", "0")
+        # No list numbering or indent inside the frame; keep with the caption.
+        _drop_list_properties(child)
+        _set_paragraph_property(child, _element("keepNext"))
+        following = list(body)[idx + 1] if idx + 1 < len(body) else None
+        if following is not None and _is_image_caption(following):
+            _drop_list_properties(following)
 
         targets.append((idx, child, width_emu // 635, height_emu // 635))
 
@@ -567,6 +663,15 @@ def add_image_borders(body):
     for elem in children:
         body.append(elem)
     return len(targets)
+
+
+def _drop_list_properties(p):
+    pPr = p.find(f"{NS}pPr")
+    if pPr is None:
+        return
+    for name in ("numPr", "ind"):
+        for old in pPr.findall(f"{NS}{name}"):
+            pPr.remove(old)
 
 
 # --- 2. the template's own images --------------------------------------------
@@ -935,6 +1040,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         count = add_image_borders(body)
         bookmarks = put_bookmarks_in_their_paragraphs(body)
         renamed = word_safe_bookmark_names(body)
+        breaks = page_breaks_before_their_paragraphs(body)      # after the bookmarks: the heading is the neighbour
         fill_table_of_contents(body)
         tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
 
@@ -966,6 +1072,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
             print(f"  Aligned {aligned} table(s) as their style says, kept {kept} caption(s) with their table, "
                   f"added a border to {count} image(s), put {bookmarks} bookmark(s) in their heading, "
                   f"gave {renamed} bookmark(s) a name Word accepts, "
+                  f"turned {breaks} page break(s) into a page break before, "
                   f"placed {replaced} template image(s), wrote the classification in {classified} place(s), "
                   f"numbered {numbered} table-of-contents entr{'y' if numbered == 1 else 'ies'} "
                   f"→ {docx_path}")

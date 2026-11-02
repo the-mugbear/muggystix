@@ -1519,8 +1519,9 @@ def test_the_table_of_contents_is_written_into_its_field(tmp_path):
     nothing in it.  Pandoc's shape (field runs alone, the end alone) made
     LibreOffice put the entries OUTSIDE its index object: an empty grey index
     with the entries under it as plain text, and an index update adding a
-    second table (owner, 2026-10-23).  Each entry links to its heading's
-    bookmark (beside the heading, where Pandoc puts it)."""
+    second table (owner, 2026-10-23).  Each entry whose heading has a
+    bookmark (beside the heading, where Pandoc puts it) links a hidden
+    `_Toc` bookmark of its own written into that heading (2.534.0)."""
     import xml.etree.ElementTree as ET
     fix = _post_processor()
     w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -1551,7 +1552,10 @@ def test_the_table_of_contents_is_written_into_its_field(tmp_path):
     assert kinds(first) == ["begin", "separate", "begin", "separate", "end"] and kinds(last) == ["end"]
     assert [c.tag.split("}")[1] for c in first] == ["pPr", "r", "hyperlink"]   # style, field runs, then the entry
     assert first.find(f"{W}pPr/{W}pStyle").get(f"{W}val") == "TOC1"
-    assert first.find(f"{W}hyperlink").get(f"{W}anchor") == "project-information"
+    assert first.find(f"{W}hyperlink").get(f"{W}anchor") == "_Toc2"
+    heading = body.find(f"{W}p")
+    assert [s.get(f"{W}name") for s in heading.iter(f"{W}bookmarkStart")] == ["_Toc2"]
+    assert body.find(f"{W}bookmarkStart").get(f"{W}name") == "project-information"   # Pandoc's, untouched
     assert "".join(t.text for t in first.iter(f"{W}t")) == "1. Project information"
     assert last.find(f"{W}pPr/{W}pStyle").get(f"{W}val") == "TOC2"
     assert [c.tag.split("}")[1] for c in last] == ["pPr", "r", "r"]  # the entry's run, then the END's
@@ -1600,8 +1604,21 @@ def test_each_table_of_contents_entry_carries_a_page_field_its_number_written_fr
     first = b.find(f".//{W}sdtContent/{W}p")
     tab = first.find(f"{W}pPr/{W}tabs/{W}tab")
     assert (tab.get(f"{W}val"), tab.get(f"{W}leader"), tab.get(f"{W}pos")) == ("right", "dot", str(12240 - 1440 - 1080))
+    # Each entry points at a hidden `_Toc` bookmark of its own, written around
+    # the heading's text (review 2026-11-02): a rebuild of the table in Word
+    # replaces those, and the headings' own bookmarks — the summary tables'
+    # link targets — stay as they were.
     instr = [t.text for t in b.iter(f"{W}instrText")]
-    assert instr[1:] == [" PAGEREF sec_one \\h ", " PAGEREF sec_two \\h "]
+    assert instr[1:] == [" PAGEREF _Toc3 \\h ", " PAGEREF _Toc4 \\h "]
+    assert [h.get(f"{W}anchor") for h in b.iter(f"{W}hyperlink")] == ["_Toc3", "_Toc4"]
+    one, two = [p for p in b.findall(f"{W}p") if p.find(f"{W}pPr/{W}pStyle").get(f"{W}val").startswith("Heading")]
+    assert [(c.tag.split("}")[1], c.get(f"{W}name")) for c in one] == [
+        ("pPr", None), ("bookmarkStart", "_Toc3"), ("r", None), ("bookmarkEnd", None)]
+    assert [(c.tag.split("}")[1], c.get(f"{W}name")) for c in two] == [
+        ("pPr", None), ("bookmarkStart", "sec_two"), ("bookmarkStart", "_Toc4"), ("r", None), ("bookmarkEnd", None)]
+    assert b.find(f"{W}bookmarkStart").get(f"{W}name") == "sec_one"         # the body-level one is untouched
+    ids = [s.get(f"{W}id") for s in b.iter(f"{W}bookmarkStart")]
+    assert len(ids) == len(set(ids)) == 4                                     # never an id Pandoc used
     # The field sits inside the entry's link, after its text: the paragraph keeps its shape.
     assert [c.tag.split("}")[1] for c in first] == ["pPr", "r", "hyperlink"]
     entries = fix._toc_entries(b)
@@ -1657,6 +1674,16 @@ def test_the_rendered_sample_numbers_its_table_of_contents(tmp_path):
     numbers = [int(p) for p in pages]
     assert numbers == sorted(numbers) and numbers[0] >= 1
     assert 'w:styleId="TOC1"' in styles and "LibreOffice" not in document.decode("utf-8")
+    # Review 2026-11-02: no page-break paragraph is left in the body (each
+    # became a page break before its heading), and the table's entries point
+    # at hidden `_Toc` bookmarks of their own while the summary table still
+    # links the findings' own.
+    W = fix.NS
+    assert not any(fix._is_page_break_only(p) for p in body)
+    assert sum(1 for p in body if p.find(f"{W}pPr/{W}pageBreakBefore") is not None) >= 5
+    anchors = [h.get(f"{W}anchor") for h in body.iter(f"{W}hyperlink") if h.get(f"{W}anchor")]
+    assert len(pages) == sum(1 for a in anchors if a.startswith("_Toc"))
+    assert any(a.startswith("sec_finding_") for a in anchors)
 
 
 def test_section_bookmarks_are_moved_into_their_heading(tmp_path):
@@ -1738,6 +1765,91 @@ def test_every_bookmark_gets_a_name_word_accepts_and_its_links_follow(tmp_path):
     assert anchors == ["sec_finding_11_2", names[2], "findings", "elsewhere-x"]   # an unknown anchor is left
     assert "PAGEREF sec_finding_11_2 \\h" in body.find(f".//{W}instrText").text
     assert fix.word_safe_bookmark_names(body) == 0           # once done, nothing to do
+
+
+@needs_template
+def test_a_page_break_becomes_a_page_break_before_on_the_paragraph_after_it(tmp_path):
+    """Review 2026-11-02: Quarto writes `{{< pagebreak >}}` as a paragraph
+    holding only a page-break run.  When the page before it is full, that
+    paragraph lands on a new page and breaks again — a blank page (seen in
+    a 125-page report, and the reason LibreOffice's page numbers were a
+    page off Word's at every finding that wrapped a line later in one than
+    the other).  Each becomes `pageBreakBefore` on the paragraph after it,
+    which Word and LibreOffice suppress at the top of a page.  A break
+    followed by a table or by nothing, or a paragraph with text or a
+    picture beside its break, is left as it is."""
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{w}}}"
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+        '<w:p><w:pPr><w:pStyle w:val="Heading1"/><w:keepNext/><w:spacing w:before="0"/></w:pPr>'
+        '<w:bookmarkStart w:id="1" w:name="findings"/><w:r><w:t>4. Findings</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p>'
+        '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+        '<w:p><w:r><w:t>No properties yet.</w:t></w:r></w:p>'
+        '<w:p><w:r><w:t>Text and a break: </w:t><w:br w:type="page"/></w:r></w:p>'
+        '<w:p><w:r><w:t>After it.</w:t></w:r></w:p>'
+        '<w:p><w:r><w:br w:type="textWrapping"/></w:r></w:p>'
+        '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+        '<w:tbl><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl>'
+        '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+        '</w:body>'
+    )
+    assert fix.page_breaks_before_their_paragraphs(body) == 2
+    tags = [c.tag.split("}")[1] for c in body]
+    assert tags == ["p", "p", "p", "p", "p", "p", "tbl", "p"]
+    heading, plain, mixed, after, wrap, before_table, _tbl, last = list(body)
+    assert [c.tag.split("}")[1] for c in heading.find(f"{W}pPr")] == ["pStyle", "keepNext", "pageBreakBefore", "spacing"]
+    assert [c.tag.split("}")[1] for c in plain.find(f"{W}pPr")] == ["pageBreakBefore"]
+    assert [c.tag.split("}")[1] for c in plain] == ["pPr", "r"]
+    for p in (mixed, after, wrap, before_table, last):
+        assert p.find(f"{W}pPr/{W}pageBreakBefore") is None
+    assert len(body.findall(f".//{W}br[@{W}type='page']")) == 3        # the mixed one, the one before the table, the last
+    assert fix.page_breaks_before_their_paragraphs(body) == 0            # once done, nothing to do
+
+
+@needs_template
+def test_a_framed_figure_keeps_with_its_caption_and_carries_no_list_indent(tmp_path):
+    """Review 2026-11-02: an image inside a numbered step ("Steps to
+    reproduce") gets the list's continuation numbering from Pandoc — on the
+    figure paragraph AND its caption — whose half-inch indent applied inside
+    the exact-width frame cell: the picture sat right of its frame, over the
+    border, and the centred caption off centre.  Neither carries the list's
+    numbering or indent after framing; the list goes on (the next item's
+    numbering is untouched).  The framed paragraph keeps with the caption
+    under it explicitly, not only through the Captioned Figure style, which
+    an operator's own styles file may not have."""
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{w}}}"
+    drawing = ('<w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+               '<wp:extent cx="914400" cy="635000"/></wp:inline></w:drawing></w:r>')
+    num = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1000"/></w:numPr>'
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        f'<w:p><w:pPr>{num}</w:pPr><w:r><w:t>2. Confirm it:</w:t></w:r></w:p>'
+        f'<w:p><w:pPr><w:pStyle w:val="CaptionedFigure"/>{num}<w:ind w:left="720" w:hanging="360"/></w:pPr>{drawing}</w:p>'
+        f'<w:p><w:pPr><w:pStyle w:val="ImageCaption"/>{num}<w:ind w:left="720"/><w:jc w:val="center"/></w:pPr>'
+        '<w:r><w:t>Figure 1: Scan result</w:t></w:r></w:p>'
+        f'<w:p><w:pPr>{num}</w:pPr><w:r><w:t>3. Note the banner.</w:t></w:r></w:p>'
+        f'<w:p><w:pPr><w:pStyle w:val="CaptionedFigure"/></w:pPr>{drawing}</w:p>'
+        '<w:p><w:pPr><w:pStyle w:val="ImageCaption"/></w:pPr><w:r><w:t>Figure 2: Outside a list</w:t></w:r></w:p>'
+        '</w:body>'
+    )
+    assert fix.add_image_borders(body) == 2
+    step, frame, caption, next_step, frame2, caption2 = list(body)
+    assert frame.tag == f"{W}tbl" and frame2.tag == f"{W}tbl"
+    framed = frame.find(f".//{W}p")
+    assert [c.tag.split("}")[1] for c in framed.find(f"{W}pPr")] == ["pStyle", "keepNext", "spacing"]
+    assert [c.tag.split("}")[1] for c in caption.find(f"{W}pPr")] == ["pStyle", "jc"]
+    for item in (step, next_step):                                        # the list itself goes on
+        assert item.find(f"{W}pPr/{W}numPr/{W}numId").get(f"{W}val") == "1000"
+    framed2 = frame2.find(f".//{W}p")
+    assert [c.tag.split("}")[1] for c in framed2.find(f"{W}pPr")] == ["pStyle", "keepNext", "spacing"]
+    assert [c.tag.split("}")[1] for c in caption2.find(f"{W}pPr")] == ["pStyle"]
 
 
 @needs_template
@@ -2419,11 +2531,12 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     # Word: a link to the heading's bookmark, per finding — the bookmark
     # INSIDE the heading paragraph (at body level Word sent every link to the
     # top of the document; owner, 2026-10-14) and named as Word allows
-    # (no hyphen; 2026-10-21).
+    # (no hyphen; 2026-10-21).  A heading after a page break also carries
+    # the page break before it (2.534.0).
     for finding in data["findings"]:
         assert f'w:anchor="sec_finding_{finding["id"]}"' in doc, finding["id"]
-        assert re.search(rf'<w:p><w:pPr><w:pStyle w:val="Heading\d" /></w:pPr><w:bookmarkStart w:id="\d+" '
-                         rf'w:name="sec_finding_{finding["id"]}" />', doc), finding["id"]
+        assert re.search(rf'<w:p><w:pPr><w:pStyle w:val="Heading\d" />(<w:pageBreakBefore />)?</w:pPr>'
+                         rf'<w:bookmarkStart w:id="\d+" w:name="sec_finding_{finding["id"]}" />', doc), finding["id"]
     assert "w:anchor=\"sec-" not in doc and "w:name=\"sec-" not in doc
 
     # --- the finding's own table: no Status; affected systems: no Port, no Note --
