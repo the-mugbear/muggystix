@@ -490,7 +490,7 @@ class NmapXMLParser:
                 title=vuln['title'], severity=severity,
                 # One script can report several vulnerabilities.
                 plugin_id=script_id, key_on_title=True, port_id=port_id,
-                cve_id=vuln['cves'][0] if vuln['cves'] else None, cvss_score=vuln['cvss'],
+                cve_id=vuln['cves'][0] if vuln['cves'] else None, cve_ids=vuln['cves'], cvss_score=vuln['cvss'],
                 description=vuln['description'],
                 references=(vuln['refs'] + vuln['cves'][1:]) or None,
                 plugin_output="\n".join(filter(None, (

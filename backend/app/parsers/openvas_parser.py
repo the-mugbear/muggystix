@@ -323,6 +323,8 @@ class OpenVASParser:
             # metric says exploit code exists.  Never inferred from severity,
             # and EPSS is a probability, not a statement that one exists.
             exploitable=vector_states_exploit(cvss_vector),
+            # Every CVE the NVT names (the first is cve_id, the identity).
+            cve_ids=([cve_id] if cve_id else []) + extra_cves,
         )
         return True
 

@@ -2,6 +2,18 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.536.0",
+      "frontend": "5.428.0",
+      "date": "2026-11-06",
+      "entries": [
+        {"kind": "new", "text": "Reference → Tool coverage says, per tool, what it can state on an observation: severity, CVSS, CVE ids, whether an exploit exists. A column a tool cannot state is left empty and never defaulted; an import that tried would be refused."},
+        {"kind": "new", "text": "Each observation now records which CVSS its score is (2.0, 3.0, 3.1 or 4.0) — the Query page's cvss_version column — because scores of different versions are not one scale."},
+        {"kind": "new", "text": "Every CVE a scanner names on an observation is kept, not only the first. The Hosts filter cve:, the Scanner observations search and the Query page's cves column find an observation by any of them; the first CVE still identifies the issue."},
+        {"kind": "changed", "text": "A scanner observation's severity, CVSS, CVE ids and exploit flag are now only what the tool stated. Nikto rates nothing, so its findings show severity \"unknown\" (they were shown as Low) and no longer count under has:low or in Low totals; catalog checks keep the catalog's severity."},
+        {"kind": "before_upgrading", "text": "The upgrade adds the CVSS version to existing observations from their stored vectors and records each observation's first CVE in the new list; CVEs a scanner named beyond the first were not kept before and appear on the next upload. Nothing is deleted."}
+      ]
+    },
+    {
       "backend": "2.535.0",
       "frontend": "5.427.2",
       "date": "2026-11-06",

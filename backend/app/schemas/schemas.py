@@ -244,6 +244,8 @@ class HostVulnerability(BaseModel):
     source: Optional[str] = None
     cvss_score: Optional[float] = None
     cvss_vector: Optional[str] = None
+    # 2.536.0 — which CVSS the score is (2.0 / 3.0 / 3.1 / 4.0; null: no vector).
+    cvss_version: Optional[str] = None
     cve_id: Optional[str] = None
     scan_id: Optional[int] = None          # first recorded by (v2.332.0: never moves)
     last_seen_scan_id: Optional[int] = None

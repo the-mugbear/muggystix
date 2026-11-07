@@ -539,6 +539,8 @@ def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None
         "source": source,
         "cvss_score": vuln.cvss_score,
         "cvss_vector": vuln.cvss_vector,
+        # 2.536.0 — which CVSS the score is (2.0 / 3.0 / 3.1 / 4.0; null: no vector).
+        "cvss_version": vuln.cvss_version,
         "cve_id": vuln.cve_id,
         # Scanner-agnostic identity of the ISSUE (services.vuln_identity).
         # Serialized rather than recomputed client-side so the grouping the

@@ -297,6 +297,7 @@ class NucleiParser:
             solution=str(info.get("remediation") or "").strip() or None,
             cvss_score=cvss if cvss else None,
             cve_id=cves[0] if cves else None,
+            cve_ids=cves,
             references=references or None,
             name_id=name_id,
             # One template id, several results (one per matcher).

@@ -108,6 +108,14 @@ const ToolSection: React.FC<{
   focused: boolean;
 }> = ({ entry, levelLabels, filtered, focused }) => {
   const { tool, signals, gaps } = entry;
+  // The server's declaration of what the tool can state (source_statements);
+  // the page only words it.
+  const statementWords = (s: NonNullable<typeof tool.statements>): string => {
+    const said = [
+      s.severity && 'severity', s.cvss && 'CVSS', s.cve && 'CVE ids', s.exploitability && 'whether an exploit exists',
+    ].filter((w): w is string => Boolean(w));
+    return said.length > 0 ? said.join(', ') : 'nothing of its own (its observations are catalog checks)';
+  };
   return (
     <div
       id={toolAnchor(tool.id)}
@@ -124,7 +132,11 @@ const ToolSection: React.FC<{
             </SectionCount>
           </>
         }
-        description={tool.accepted_input}
+        description={
+          tool.statements
+            ? `${tool.accepted_input} On an observation this tool states: ${statementWords(tool.statements)}; what it cannot state is left empty, never defaulted.`
+            : tool.accepted_input
+        }
         actions={
           <div className="flex max-w-md flex-wrap justify-end gap-xxs">
             {tool.formats.map((f) => (

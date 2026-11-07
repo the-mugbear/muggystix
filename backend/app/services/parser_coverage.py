@@ -32,6 +32,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from app.services.format_registry import FORMATS
+from app.services.source_statements import statements_for_tool_id
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "parser_coverage.json"
 
@@ -123,5 +124,9 @@ def coverage_payload() -> Dict[str, object]:
             {"file_type": ft, "label": FORMATS[ft].label if ft in FORMATS else ft}
             for ft in tool.formats
         ]
+        # 2.536.0 — what the tool can STATE on a scanner observation
+        # (source_statements, the one declaration); None for a tool that
+        # writes no observation rows.
+        data["statements"] = statements_for_tool_id(tool.id)
         tools.append(data)
     return {"levels": LEVELS, "tools": tools}

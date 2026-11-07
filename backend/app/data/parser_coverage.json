@@ -1750,7 +1750,7 @@
             "Vulnerability.severity"
           ],
           "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
-          "note": "Nikto does not rate its findings: every native JSON, native CSV and text finding is stored LOW (map_text_severity('low')). Only a non-native JSON/CSV carrying a `severity` value is mapped (critical/high/medium/low/info or a numeric score)."
+          "note": "Nikto does not rate its findings: every native JSON, native CSV and text finding is stored with severity UNKNOWN (2.536.0; until then an invented LOW). Only a non-native JSON/CSV carrying a `severity` value is mapped (critical/high/medium/low/info or a numeric score). An UNKNOWN row ranks below informational and matches no has:<severity> filter."
         },
         {
           "what": "CVE",

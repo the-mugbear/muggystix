@@ -13,7 +13,7 @@ import ijson
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models_vulnerability import VulnerabilitySource
+from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.streaming_json import file_ends_early, iter_json_records
 from app.parsers.parser_utils import (
     ProgressBeat,
@@ -237,7 +237,11 @@ class NiktoParser:
             description=description,
             plugin_id=str(entry.get("id") or entry.get("osvdb") or "") or None,
             cve_id=entry.get("cve"),
-            severity=map_text_severity(entry.get("severity")) if entry.get("severity") else map_text_severity("low"),
+            # Nikto rates nothing: a severity is stored only when the file
+            # (a wrapper format) states one; otherwise UNKNOWN, never an
+            # invented LOW (2.536.0 — a statement a tool did not make is
+            # never written).
+            severity=map_text_severity(entry.get("severity")) if entry.get("severity") else VulnerabilitySeverity.UNKNOWN,
             # v2.390.0 — the reference link in the references column (it went
             # into the description only), and the request that found it.
             references=[str(refs)] if refs and isinstance(refs, str) else None,
@@ -266,7 +270,7 @@ class NiktoParser:
                     description=row.get("description") or row.get("msg"),
                     plugin_id=row.get("id") or row.get("osvdb"),
                     cve_id=row.get("cve"),
-                    severity=map_text_severity(row.get("severity")) if row.get("severity") else map_text_severity("low"),
+                    severity=map_text_severity(row.get("severity")) if row.get("severity") else VulnerabilitySeverity.UNKNOWN,
                 )
 
     def _parse_native_csv(self, handle, scan: models.Scan) -> None:
@@ -295,7 +299,7 @@ class NiktoParser:
                 description=description,
                 plugin_id=plugin_id,
                 cve_id=None,
-                severity=map_text_severity("low"),
+                severity=VulnerabilitySeverity.UNKNOWN,
             )
 
     def _observe_time_line(self, match: re.Match) -> None:
@@ -372,7 +376,7 @@ class NiktoParser:
                         description=f"{title.strip()}\nSee: {ref.strip()}" if ref else title.strip(),
                         plugin_id=plugin_id,
                         cve_id=None,
-                        severity=map_text_severity("low"),
+                        severity=VulnerabilitySeverity.UNKNOWN,
                     )
 
     def _record_finding(

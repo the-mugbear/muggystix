@@ -36,6 +36,7 @@ const tools = (): Tool[] => [
     ],
     gaps: ['State: VULNERABLE results create no scanner observation.'],
     unverified: [],
+    statements: null,
   },
   {
     id: 'dirbuster',
@@ -48,6 +49,7 @@ const tools = (): Tool[] => [
     ],
     gaps: [],
     unverified: ['No real capture of dirb.'],
+    statements: { severity: true, cvss: false, cve: true, exploitability: false },
   },
   {
     id: 'nuclei',
@@ -60,6 +62,7 @@ const tools = (): Tool[] => [
     ],
     gaps: [],
     unverified: [],
+    statements: null,
   },
 ];
 

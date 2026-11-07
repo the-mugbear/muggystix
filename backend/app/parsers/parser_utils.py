@@ -14,6 +14,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from app.db import models
+from app.db.models_vulnerability import VulnerabilityCve
 
 logger = logging.getLogger(__name__)
 from app.db.models_vulnerability import (
@@ -22,7 +23,9 @@ from app.db.models_vulnerability import (
     VulnerabilitySource,
 )
 from app.services import scan_sightings
+from app.services.cvss_service import cvss_version_of
 from app.services.host_deduplication_service import HostDeduplicationService
+from app.services.source_statements import refuse_undeclared
 
 
 IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -913,6 +916,28 @@ def map_text_severity(value: Optional[str]) -> VulnerabilitySeverity:
         return VulnerabilitySeverity.UNKNOWN
 
 
+def record_cves(db: Session, vulnerability: Vulnerability, cve_ids: Optional[Iterable[str]]) -> None:
+    """Keep EVERY CVE a tool named for a row in ``vulnerability_cves``
+    (2.536.0) — the one writer, for ``upsert_vulnerability`` and the Nessus
+    path.  Ids are upper-cased and deduplicated; a CVE already recorded stays
+    (a later report naming fewer never removes one).  ``vulnerability.cve_id``
+    (the first, the identity) is always among them.  The row must be flushed
+    (it needs its id)."""
+    wanted = {str(c).strip().upper() for c in (cve_ids or ()) if c and str(c).strip()}
+    if vulnerability.cve_id:
+        wanted.add(vulnerability.cve_id.strip().upper())
+    if not wanted:
+        return
+    have = {
+        row.cve_id for row in
+        db.query(VulnerabilityCve.cve_id).filter(VulnerabilityCve.vulnerability_id == vulnerability.id)
+    }
+    for cve in sorted(wanted - have):
+        db.add(VulnerabilityCve(vulnerability_id=vulnerability.id, cve_id=cve[:50]))
+    if wanted - have:
+        db.flush()
+
+
 def refresh_reobserved_vulnerability(
     existing: Vulnerability,
     *,
@@ -958,6 +983,7 @@ def refresh_reobserved_vulnerability(
         existing.cvss_score = cvss_score
     if cvss_vector:
         existing.cvss_vector = cvss_vector
+        existing.cvss_version = cvss_version_of(cvss_vector)
     existing.description = description or existing.description
     existing.cve_id = cve_id or existing.cve_id
     existing.solution = solution or existing.solution
@@ -982,6 +1008,9 @@ def upsert_vulnerability(
     description: Optional[str] = None,
     cvss_score: Optional[float] = None,
     cve_id: Optional[str] = None,
+    # 2.536.0 — EVERY CVE the tool named (``vulnerability_cves``; the first
+    # stays ``cve_id``, the identity).  None = just ``cve_id``.
+    cve_ids: Optional[Iterable[str]] = None,
     solution: Optional[str] = None,
     references: Optional[list[str]] = None,
     # v2.323.0 — the named endpoint the finding was observed at (web scanners
@@ -1010,6 +1039,11 @@ def upsert_vulnerability(
     # None leaves a stored vector alone.
     cvss_vector: Optional[str] = None,
 ) -> Vulnerability:
+    # A statement the source is declared unable to make is a programming
+    # error, refused here (source_statements).  A catalog check's severity is
+    # the CATALOG's statement (record_misconfig), not the tool's: not checked.
+    refuse_undeclared(source, severity=None if check_id else severity, cvss_score=cvss_score,
+                      cvss_vector=cvss_vector, cve_id=cve_id, exploitable=exploitable)
     cvss_vector = cvss_vector.strip()[:200] if cvss_vector and cvss_vector.strip() else None
     # v2.387.0 — values are clipped to their columns.  A Nikto message longer
     # than 200 characters (source_plugin_name is String(200)) raised
@@ -1056,6 +1090,7 @@ def upsert_vulnerability(
         )
         if check_id:
             existing.check_id = check_id
+        record_cves(db, existing, cve_ids if cve_ids is not None else [cve_id] if cve_id else None)
         scan_sightings.see(db, scan_sightings.VULNERABILITY, existing.id, scan_id)
         return existing
 
@@ -1066,6 +1101,7 @@ def upsert_vulnerability(
         severity=severity,
         cvss_score=cvss_score,
         cvss_vector=cvss_vector,
+        cvss_version=cvss_version_of(cvss_vector),
         source=source,
         source_plugin_name=title[:200],
         host_id=host_id,
@@ -1082,6 +1118,7 @@ def upsert_vulnerability(
     )
     db.add(vulnerability)
     db.flush()
+    record_cves(db, vulnerability, cve_ids)
     scan_sightings.see(db, scan_sightings.VULNERABILITY, vulnerability.id, scan_id)
     return vulnerability
 

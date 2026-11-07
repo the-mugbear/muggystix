@@ -24,7 +24,9 @@ from sqlalchemy.orm import Query, Session, aliased
 from app.db.models import DNSName, Host, Port, WebInterface
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingSeverity, FindingSource, FindingStatus
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource, severity_rank
+from app.db.models_vulnerability import (
+    Vulnerability, VulnerabilityCve, VulnerabilitySeverity, VulnerabilitySource, severity_rank,
+)
 from app.services import host_query_predicates as P
 from app.services.engagement_metrics_service import observation_judged_on_host
 from app.services.finding_service import HOST_COUNT_EXPR
@@ -202,6 +204,15 @@ _ISSUE_FINDING = (
     .scalar_subquery()
 )
 
+# Every CVE the scanner named for the row (``vulnerability_cves``, 2.536.0),
+# as one text; a row with none gives NULL.
+_ALL_CVES = (
+    select(func.string_agg(VulnerabilityCve.cve_id, " "))
+    .where(VulnerabilityCve.vulnerability_id == Vulnerability.id)
+    .correlate(Vulnerability)
+    .scalar_subquery()
+)
+
 
 def _host_link(row: tuple) -> Optional[str]:
     return f"/hosts/{row[0]}" if row[0] is not None else None
@@ -286,7 +297,13 @@ DATASETS: Dict[str, Dataset] = {
             QueryColumn("issue", Vulnerability.issue_key, "text",
                         "The issue key — one per issue across scanners (as on Scanner observations)."),
             QueryColumn("check", Vulnerability.check_id, "text", "The misconfiguration check id, if one."),
-            QueryColumn("cvss", Vulnerability.cvss_score, "float", "The CVSS base score."),
+            QueryColumn("cvss", Vulnerability.cvss_score, "float",
+                        "The CVSS base score, on the scale cvss_version names (2.0, 3.x and 4.0 are not one scale)."),
+            QueryColumn("cvss_version", Vulnerability.cvss_version, "text",
+                        "Which CVSS the score is: 2.0, 3.0, 3.1 or 4.0 (null: no vector stored)."),
+            QueryColumn("cves", _ALL_CVES, "text",
+                        "Every CVE the scanner named for the row, space-separated (cve is the first). "
+                        "where like(cves, \"%CVE-2023-38408%\") matches a row that leads with another id."),
             QueryColumn("exploitable", Vulnerability.exploitable, "bool",
                         "What the scanner states about exploit code: true — an exploit is reported; false — "
                         "the scanner can say and reported none; null — this source makes no such statement "

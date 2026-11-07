@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
-from sqlalchemy import String, and_, case, cast, distinct, false, func, literal, or_
+from sqlalchemy import String, and_, case, cast, distinct, false, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg
 from sqlalchemy.orm import Session, joinedload
@@ -30,7 +30,7 @@ from app.db.models import Host, Port
 from app.db.models_findings import Finding, FindingHost, FindingSource, FindingStatus
 from app.db.models_host_tests import ACTIVE_TEST_STATUSES, TESTED_OUTCOMES, HostTest
 from app.db.models_proposals import EvidenceRecord
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
+from app.db.models_vulnerability import Vulnerability, VulnerabilityCve, VulnerabilitySeverity, VulnerabilitySource
 from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
 from app.services.host_query_common import escape_like
@@ -288,9 +288,17 @@ def list_issues(
     if search and search.strip():
         # Escaped like every other search: "100%" and "a_b" are text.
         like = f"%{escape_like(search.strip())}%"
+        # ... and (2.536.0) any further CVE the tool named for the row.
+        other_cve = (
+            select(literal("1"))
+            .select_from(VulnerabilityCve)
+            .where(VulnerabilityCve.vulnerability_id == Vulnerability.id,
+                   VulnerabilityCve.cve_id.ilike(like, escape="\\"))
+            .exists()
+        )
         query = query.filter(or_(
             Vulnerability.title.ilike(like, escape="\\"), Vulnerability.cve_id.ilike(like, escape="\\"),
-            Vulnerability.plugin_id.ilike(like, escape="\\"),
+            Vulnerability.plugin_id.ilike(like, escape="\\"), other_cve,
         ))
     # v2.415.0 — kind: a catalog check's rows all carry it (its issue key is
     # the check); otherwise the issue's severity decides.

@@ -812,7 +812,8 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="Derived boolean flag — takes one of the values below.",
               enum_descriptions={k: _HAS_KEYWORDS[k][1] for k in _HAS_KEYWORDS}),
     FieldSpec("cve", lambda c, v: P.cve_predicate(v), trgm=True, value_source="cve",
-              description="A scanner observation’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
+              description="A scanner observation’s CVE id (substring) — the one it leads with or any "
+                          "other the scanner listed (Nessus, OpenVAS, nmap, Nuclei, testssl, Nikto)."),
     FieldSpec("vuln", lambda c, v: P.vuln_predicate(v), trgm=True, value_source="vuln",
               description="A scanner observation’s title / plugin name — Nessus, OpenVAS, Nikto."),
     FieldSpec("issue", lambda c, v: P.issue_predicate(v), value_source="issue",

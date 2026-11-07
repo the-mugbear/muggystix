@@ -175,6 +175,17 @@ export interface ToolCoverage {
   gaps: string[];
   /** What was not checked against real output of the tool. */
   unverified: string[];
+  /** 5.428.0 — what the tool can STATE on a scanner observation (severity,
+   *  CVSS, CVE, exploitability); null for a tool that writes none. A column
+   *  a tool cannot state stays empty, never a default that reads as one. */
+  statements: SourceStatements | null;
+}
+
+export interface SourceStatements {
+  severity: boolean;
+  cvss: boolean;
+  cve: boolean;
+  exploitability: boolean;
 }
 
 export interface ParserCoverageResponse {

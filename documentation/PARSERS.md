@@ -526,7 +526,9 @@ ingest via `cert_fields.derive_cert_fields(tls_info)`.
   report (80 when none is given) + **`Vulnerability` rows** (`source=NIKTO`;
   `title`/`description` from the finding message, `plugin_id` from the
   Nikto/OSVDB id, `cve_id`, `references` and the request evidence as
-  `plugin_output`, severity → defaults LOW). Missing-security-header results
+  `plugin_output`; severity is UNKNOWN unless a wrapper format states one —
+  Nikto rates nothing, and a statement a tool did not make is never written,
+  v2.536.0). Missing-security-header results
   are catalog checks (`record_misconfig`, v2.414.0), and the name tested is
   bound to the row (`name_id`). No WebInterface rows.
 - **DirBuster family** (DirBuster/Gobuster/Feroxbuster/ffuf/Dirsearch;
@@ -953,10 +955,24 @@ class MyToolParser:
   **keyword-only** (the positional form is a `TypeError`); also takes
   `plugin_id`, `port_id`, `description`, `cvss_score`, `cve_id`, `solution`,
   `references`, `name_id` (the named endpoint a web finding was observed at),
-  `exploitable`, `check_id`, `key_on_title` and `plugin_output` — read the
-  signature. The way to create a scanner `Vulnerability` (handles app-level
-  dedup and the required `db.flush()`); a **catalog weakness** goes through
-  `record_misconfig` (`app/services/misconfig_checks.py`) instead.
+  `exploitable`, `cve_ids` (every CVE the tool named — `vulnerability_cves`,
+  v2.536.0; the first stays `cve_id`, the identity), `check_id`, `key_on_title`
+  and `plugin_output` — read the signature. The way to create a scanner
+  `Vulnerability` (handles app-level dedup and the required `db.flush()`); a
+  **catalog weakness** goes through `record_misconfig`
+  (`app/services/misconfig_checks.py`) instead.
+  **A field is the tool's statement, and a statement the tool did not make is
+  never written** (v2.536.0): `app/services/source_statements.py` declares per
+  `VulnerabilitySource` what the tool can state (severity, CVSS, CVE,
+  exploitability); `upsert_vulnerability` and the Nessus path refuse a value
+  the source is declared unable to state (`UndeclaredStatement` — a
+  programming error at the write, not a rule to remember; a catalog check's
+  severity is the catalog's and is not checked). A tool that rates nothing
+  writes `VulnerabilitySeverity.UNKNOWN`; one that says nothing about
+  exploits passes no `exploitable`; `cvss_version` is derived from the vector
+  by `cvss_service.cvss_version_of` on insert and refresh, never by a parser.
+  A new parser adds its declaration there first; the Tool coverage page shows
+  it (`parser_coverage.coverage_payload` → `statements`).
 - `write_record(db, write, *, observed=None, on_rollback=None,
   retry_races=False) -> RecordOutcome` — one input record that may be
   skipped; `record_savepoint(db, observed=None, on_rollback=None)` is the

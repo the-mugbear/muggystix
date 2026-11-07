@@ -178,6 +178,22 @@ def _clean_score(score: Optional[float]) -> Optional[float]:
     return round(value, 1)
 
 
+def cvss_version_of(vector: Optional[str]) -> Optional[str]:
+    """Which CVSS a stored vector is — ``"3.0"`` / ``"3.1"`` / ``"4.0"`` from
+    its prefix, ``"2.0"`` for a bare or ``CVSS2#`` 2.0 vector, None for no
+    vector or one of no recognised shape.  The ONE derivation
+    (``vulnerabilities.cvss_version``, 2.536.0); the migration's SQL mirrors
+    it."""
+    text = (vector or "").strip()
+    if not text:
+        return None
+    match = _PREFIX.match(text)
+    if match:
+        return match.group(1)
+    body = text[6:] if text.upper().startswith("CVSS2#") else text
+    return "2.0" if body.strip("()").startswith("AV:") else None
+
+
 def score_vector(vector: str) -> Tuple[str, Optional[float]]:
     """``(normalised vector, computed score)`` — the score is None for 4.0.
     Raises ``CvssError`` for anything that is not a readable base vector."""

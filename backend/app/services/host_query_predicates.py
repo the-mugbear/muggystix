@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence
 
-from sqlalchemy import and_, case, cast, func, literal_column, or_, false
+from sqlalchemy import and_, case, cast, func, literal_column, or_, false, select
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import exists
 from sqlalchemy.sql.elements import ColumnElement
@@ -41,7 +41,7 @@ from app.services.engagement_metrics_service import REVIEW_STATES
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 from app.services.host_test_queries import planned_host_ids, tested_host_ids
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+from app.db.models_vulnerability import Vulnerability, VulnerabilityCve, VulnerabilitySeverity
 from app.db.models_confidence import NetexecResult
 
 # Leaf module — no import cycle (host_query imports *us*, not the reverse).
@@ -587,12 +587,21 @@ def weak_tls_predicate() -> ColumnElement:
 # pins old == new, negated too.
 
 def cve_predicate(values: Sequence[str]) -> ColumnElement:
-    """Host has a vulnerability whose ``cve_id`` ILIKE-matches any value."""
-    conditions = [
-        Vulnerability.cve_id.ilike(f'%{escape_like(v)}%', escape='\\')
-        for v in values
-    ]
-    return _host_has(Vulnerability.host_id, or_(*conditions))
+    """Host has a vulnerability any of whose CVEs ILIKE-matches any value —
+    the first (``cve_id``) or any other the tool named (``vulnerability_cves``,
+    2.536.0), as a correlated EXISTS on the row."""
+    patterns = [f'%{escape_like(v)}%' for v in values]
+    first = or_(*[Vulnerability.cve_id.ilike(p, escape='\\') for p in patterns])
+    others = (
+        select(literal_column("1"))
+        .select_from(VulnerabilityCve)
+        .where(
+            VulnerabilityCve.vulnerability_id == Vulnerability.id,
+            or_(*[VulnerabilityCve.cve_id.ilike(p, escape='\\') for p in patterns]),
+        )
+        .exists()
+    )
+    return _host_has(Vulnerability.host_id, or_(first, others))
 
 
 def vuln_predicate(values: Sequence[str]) -> ColumnElement:

@@ -297,6 +297,7 @@ class TestsslParser:
                 port_id=port_id,
                 description=str(rec.get("finding") or "") or None,
                 cve_id=cves[0].upper() if cves else None,
+                cve_ids=cves,
                 name_id=name_id,
             )
             count += 1
