@@ -926,6 +926,7 @@ def refresh_reobserved_vulnerability(
     cvss_vector: Optional[str] = None,
     cve_id: Optional[str] = None,
     plugin_output: Optional[str] = None,
+    exploitable: Optional[bool] = None,
 ) -> None:
     """Bring a stored scanner row up to date from a later scan's report of
     it.  The one rule for every source (``upsert_vulnerability`` and the
@@ -933,6 +934,11 @@ def refresh_reobserved_vulnerability(
     re-rates its checks, and the queue tiers and critical counts read this
     column — and every other field keeps its stored value when the new
     report carries none.  ``references`` is the stored (JSON) text.
+
+    ``exploitable`` is the scanner's statement this time, tri-state as the
+    column is: ``True`` / ``False`` replaces the stored value in either
+    direction (the latest statement wins, as the severity does); ``None`` —
+    the report says nothing — keeps it.
 
     ``scan_id`` ("first recorded by") never moves; the re-observation lands
     on ``last_seen_scan_id``.  The caller records the sighting
@@ -959,6 +965,8 @@ def refresh_reobserved_vulnerability(
         existing.references = references
     if plugin_output:
         existing.plugin_output = plugin_output
+    if exploitable is not None:
+        existing.exploitable = exploitable
 
 
 def upsert_vulnerability(
@@ -981,9 +989,11 @@ def upsert_vulnerability(
     # when the existing row has none.
     name_id: Optional[int] = None,
     # v2.413.0 — exploitability for the source-agnostic `has:exploit` /
-    # `exploitport:` filters (nmap's vulners marks entries is_exploit; the
-    # Nessus path sets it in VulnerabilityService).  None leaves it alone; a
-    # re-observation only ever raises it.
+    # `exploitport:` filters.  Tri-state since 2.535.0 (the column's
+    # docstring): True / False is the scanner's statement and is stored as
+    # given, on insert and on re-observation (``refresh_reobserved_vulnerability``);
+    # None — the source has no such statement — stores NULL and keeps a
+    # stored value.  A tool that cannot say passes nothing.
     exploitable: Optional[bool] = None,
     # v2.415.0 — the misconfiguration-catalog check the row is (its issue key
     # and kind); set by record_misconfig and the scanner mappings.
@@ -1042,10 +1052,8 @@ def upsert_vulnerability(
             description=description, solution=solution,
             references=json.dumps(references) if references else None,
             cvss_score=cvss_score, cvss_vector=cvss_vector, cve_id=cve_id,
-            plugin_output=plugin_output,
+            plugin_output=plugin_output, exploitable=exploitable,
         )
-        if exploitable:
-            existing.exploitable = True
         if check_id:
             existing.check_id = check_id
         scan_sightings.see(db, scan_sightings.VULNERABILITY, existing.id, scan_id)
@@ -1069,7 +1077,7 @@ def upsert_vulnerability(
         references=json.dumps(references) if references else None,
         plugin_output=plugin_output,
         last_seen_scan_id=scan_id,
-        exploitable=bool(exploitable),
+        exploitable=exploitable,
         check_id=check_id,
     )
     db.add(vulnerability)

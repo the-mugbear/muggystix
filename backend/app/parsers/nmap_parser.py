@@ -476,7 +476,8 @@ class NmapXMLParser:
                                  f"{entry['id']}. A version match, not a test."),
                     references=[f"https://vulners.com/cve/{entry['id']}"],
                     plugin_output=f"vulners: {entry['cpe']} → {entry['id']} (CVSS {entry['cvss']})",
-                    exploitable=entry['is_exploit'] or None,
+                    # vulners states is_exploit on every entry: a bool both ways.
+                    exploitable=bool(entry['is_exploit']),
                 )
             return
         vulns = nse_vulns.vulns_lib_results(script_elem)

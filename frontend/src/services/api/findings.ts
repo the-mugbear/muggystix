@@ -612,9 +612,12 @@ export interface ObservationIssue {
   /** v5.298.0 — misconfiguration (a catalog check, whichever tool reported
    *  it) / vulnerability / informational. */
   kind?: WeaknessKind;
-  /** A scanner reports an exploit for it on at least one host — a lead for
-   *  what to test first, not a statement that it was exploited. */
-  exploitable?: boolean;
+  /** Tri-state (5.427.2). `true`: a scanner reports an exploit for it on at
+   *  least one host — a lead for what to test first, not a statement that it
+   *  was exploited. `false`: every scanner that can say reported none.
+   *  `null`: no scanner that saw it states exploitability (Nikto, Nuclei,
+   *  NetExec, testssl…) — unknown, not "no exploit". */
+  exploitable?: boolean | null;
   /** 5.418.0 (review 2026-10-16, O1 / O2): the scanners' check ids (the
    *  first 5), the highest CVSS, the ports it was seen on (the first 8;
    *  `port_count` is all of them) and when an import last recorded it. */

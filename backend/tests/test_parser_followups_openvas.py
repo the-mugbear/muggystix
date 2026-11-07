@@ -92,10 +92,14 @@ def test_exploit_maturity_metric():
     assert vector_states_exploit("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:POC/RL:OF/RC:C")
     assert vector_states_exploit("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:A")
     assert not vector_states_exploit("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
-    assert not vector_states_exploit("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:U")
-    assert not vector_states_exploit("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:X")
-    assert not vector_states_exploit("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:ND")
-    assert not vector_states_exploit(None)
+    # Tri-state (2.535.0): E:U is a statement that none exists; "not
+    # defined" and a base-only vector state nothing.
+    assert vector_states_exploit("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:U") is False
+    assert vector_states_exploit("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:U/RL:OF/RC:C") is False
+    assert vector_states_exploit("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:X") is None
+    assert vector_states_exploit("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:ND") is None
+    assert vector_states_exploit("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") is None
+    assert vector_states_exploit(None) is None
 
 
 def test_the_vector_is_stored_from_either_shape(db_session, test_project, tmp_path):
@@ -111,9 +115,10 @@ def test_exploitable_only_when_the_report_says_so(db_session, test_project, tmp_
     _import(db_session, test_project, tmp_path)
     vulns = _vulns(db_session, test_project.id)
     assert vulns["Exploit code exists"].exploitable is True
-    # A 9.8 and a 10.0 with no exploit statement: severity is not evidence.
-    assert vulns["Modern NVT"].exploitable is False
-    assert vulns["No vector at all"].exploitable is False
+    # A 9.8 and a 10.0 with no exploit statement: severity is not evidence,
+    # and "nothing stated" is NULL, not false (2.535.0).
+    assert vulns["Modern NVT"].exploitable is None
+    assert vulns["No vector at all"].exploitable is None
 
 
 def test_a_reimport_without_the_vector_keeps_it(db_session, test_project, tmp_path):

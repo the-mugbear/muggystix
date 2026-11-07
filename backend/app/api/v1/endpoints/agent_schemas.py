@@ -130,7 +130,12 @@ class AssistFinding(BaseModel):
     plugin_id: Optional[str] = Field(None, description="Scanner plugin id (e.g. Nessus).")
     cvss_score: Optional[float] = Field(None, description="CVSS base score 0–10, when scored.")
     source: str = Field(..., description="Scanner that reported it (nessus / openvas / …).")
-    exploitable: bool = Field(False, description="Flagged exploitable by the scanner.")
+    exploitable: Optional[bool] = Field(
+        None,
+        description="What the scanner states about exploit code: true — an exploit is reported (PoC or "
+                    "better); false — the scanner can say and reported none; null — this source makes no "
+                    "such statement (Nikto, Nuclei, NetExec, testssl, a hand-written row). Null is not 'no exploit'.",
+    )
     port_number: Optional[int] = Field(None, description="Affected port; null for host-level findings.")
     service_name: Optional[str] = Field(None, description="Service on the affected port, when known.")
     description: Optional[str] = Field(None, description="Finding description (may be truncated).")

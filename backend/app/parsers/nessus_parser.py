@@ -47,7 +47,9 @@ class NessusVulnerability:
     port: int
     protocol: str
     service_name: Optional[str]
-    exploitable: bool
+    # Tri-state, as the column is: True / False is what the item states
+    # (``_is_exploitable``); None — the item carries no exploit tag at all.
+    exploitable: Optional[bool]
     patch_publication_date: Optional[datetime]
     vuln_publication_date: Optional[datetime]
     # v2.390.0 — read and dropped before: the plugin's see-also links and
@@ -451,8 +453,17 @@ class NessusParser:
         logger.warning(f"Could not parse date: {date_str}")
         return None
 
-    def _is_exploitable(self, report_item: ET.Element) -> bool:
-        """Determine if vulnerability is exploitable based on various indicators"""
+    def _is_exploitable(self, report_item: ET.Element) -> Optional[bool]:
+        """What the item states about exploit code — tri-state.
+
+        ``True``: an exploit is reported (``exploit_available``, a Metasploit
+        / Core Impact / Canvas module, or ``exploit_code_maturity`` at
+        proof-of-concept or better).  ``False``: the item carries the
+        ``exploit_available`` or ``exploit_code_maturity`` tag and it says
+        none (Nessus writes ``exploit_available=false`` on a plugin it has
+        looked up).  ``None``: the item has neither tag — most informational
+        and many local-check plugins — so nothing is stated.
+        """
         # Check for explicit exploit information
         exploit_available = self._get_text_or_none(report_item, 'exploit_available')
         if exploit_available and exploit_available.lower() == 'true':
@@ -478,5 +489,8 @@ class NessusParser:
         if exploit_code and exploit_code.lower() in ['functional', 'high', 'proof-of-concept']:
             return True
 
-        return False
+        # A tag that is present and says none is a statement; no tag is not.
+        if exploit_available is not None or exploit_code is not None:
+            return False
+        return None
 

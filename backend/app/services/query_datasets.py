@@ -287,7 +287,10 @@ DATASETS: Dict[str, Dataset] = {
                         "The issue key — one per issue across scanners (as on Scanner observations)."),
             QueryColumn("check", Vulnerability.check_id, "text", "The misconfiguration check id, if one."),
             QueryColumn("cvss", Vulnerability.cvss_score, "float", "The CVSS base score."),
-            QueryColumn("exploitable", Vulnerability.exploitable, "bool", "A scanner reports an exploit for it."),
+            QueryColumn("exploitable", Vulnerability.exploitable, "bool",
+                        "What the scanner states about exploit code: true — an exploit is reported; false — "
+                        "the scanner can say and reported none; null — this source makes no such statement "
+                        "(Nikto, Nuclei, NetExec, testssl…). isnull(exploitable) is 'unknown', not 'no exploit'."),
             QueryColumn("port", Port.port_number, "int", "The port it was seen on (null: host-level)."),
             QueryColumn("protocol", Port.protocol, "text", "The port's protocol."),
             QueryColumn("service", Port.service_name, "text", "The port's service."),

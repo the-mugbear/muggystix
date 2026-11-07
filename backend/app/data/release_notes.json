@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.535.0",
+      "frontend": "5.427.2",
+      "date": "2026-11-06",
+      "entries": [
+        {"kind": "changed", "text": "An observation's exploit flag now has three states: a scanner reported an exploit, a scanner looked and reported none, or no scanner that saw it can say. Nikto, Nuclei, NetExec, testssl and hand-written rows never state it, so they read as not stated instead of \"no exploit\"."},
+        {"kind": "changed", "text": "The Scanner observations inspector says \"No exploit reported\" only when a scanner said so. On the Query page the exploitable column is true, false or null (isnull(exploitable) lists the unknowns); the agents' answers carry the same three values."},
+        {"kind": "changed", "text": "On a re-upload the scanner's latest statement about an exploit wins in both directions; a report that says nothing keeps what was recorded. Nessus, OpenVAS (the CVSS vector's exploit-maturity metric) and nmap's vulners are the sources that state it."},
+        {"kind": "before_upgrading", "text": "Observations recorded as \"no exploit\" without the scanner having said so become not stated, except OpenVAS rows whose vector says unproven and nmap vulners rows. A Nessus exploit_available=false cannot be told from a missing tag, so re-upload the scan to record it. Nothing is deleted."}
+      ]
+    },
+    {
       "backend": "2.534.0",
       "frontend": "5.427.1",
       "date": "2026-11-02",

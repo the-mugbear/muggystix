@@ -637,12 +637,12 @@ def check_predicate(checks: Iterable[str]) -> ColumnElement:
 
 
 def has_exploit_predicate() -> ColumnElement:
-    """Host has a vulnerability flagged exploitable.
+    """Host has a vulnerability a scanner reports an exploit for.
 
-    Source-agnostic: reads ``Vulnerability.exploitable``, which only the Nessus
-    path populates today — the moment another scanner sets it, its rows match
-    here with no change.  See ``exploit_on_port_predicate`` for the port-scoped
-    variant."""
+    Source-agnostic: reads ``Vulnerability.exploitable`` ``IS TRUE`` — the
+    column is tri-state (Nessus, OpenVAS and nmap's vulners state it; other
+    sources leave NULL, "nothing said"), and only a stated exploit matches.
+    See ``exploit_on_port_predicate`` for the port-scoped variant."""
     return _host_has(Vulnerability.host_id, Vulnerability.exploitable.is_(True))
 
 

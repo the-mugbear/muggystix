@@ -111,10 +111,12 @@ def test_exploitable_narrows_to_issues_a_scanner_reports_an_exploit_for(client, 
     _vuln(db_session, estate["hosts"][2], estate["scan"].id, "SMB Signing not required", exploitable=True,
           source="openvas")
     everything = client.get(_url(test_project)).json()["items"]
+    # Tri-state (2.535.0): the estate's rows state nothing (NULL), so their
+    # issues say null — unknown — not false.
     assert {r["issue_key"]: r["exploitable"] for r in everything} == {
         "title:smb signing not required": True,
-        "title:tls version 1.0 protocol detection": False,
-        "cve:CVE-2023-38408": False,
+        "title:tls version 1.0 protocol detection": None,
+        "cve:CVE-2023-38408": None,
     }
     only = client.get(_url(test_project), params={"exploitable": "true"}).json()
     assert only["total"] == 1 and [r["issue_key"] for r in only["items"]] == ["title:smb signing not required"]

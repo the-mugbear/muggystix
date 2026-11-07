@@ -181,9 +181,11 @@ class IssueRow:
     # v2.415.0 — misconfiguration (a catalog check) / vulnerability /
     # informational (misconfig_checks.vuln_kind, at the issue's severity).
     kind: str = KIND_VULNERABILITY
-    # A scanner says an exploit exists for it, on at least one host.  A lead
-    # for what to test first — not a statement that it was exploited.
-    exploitable: bool = False
+    # Tri-state (2.535.0): True — a scanner says an exploit exists for it on
+    # at least one host (a lead for what to test first, not a statement that
+    # it was exploited); False — every statement any scanner made says none;
+    # None — no scanner that saw it can say.
+    exploitable: Optional[bool] = None
     # Review 2026-10-16, O1 / O2 — what tells two rows apart and what a
     # triage needs without opening each: the scanners' own check ids, the
     # highest CVSS any of its rows gives, the ports it was seen on (the first
@@ -272,7 +274,10 @@ def list_issues(
     # query still, no second pass over the groups.
     title = _of_most_severe_row(db, Vulnerability.title)
     cve = func.coalesce(_of_most_severe_row(db, Vulnerability.cve_id), func.max(Vulnerability.cve_id))
-    has_exploit = func.bool_or(func.coalesce(Vulnerability.exploitable, false()))
+    # bool_or skips NULLs: true if any row states an exploit, false if the
+    # only statements say none, NULL when no row states anything — the
+    # issue's flag is tri-state as the rows are.
+    has_exploit = func.bool_or(Vulnerability.exploitable)
     cvss = func.max(Vulnerability.cvss_score)
     last_seen = func.max(Vulnerability.last_seen)
     query = base.with_entities(
@@ -373,7 +378,7 @@ def list_issues(
             finding_status=f.status if f else None,
             kind=(KIND_MISCONFIGURATION if r.issue_key.startswith("check:")
                   else KIND_INFORMATIONAL if int(r.rank or 0) <= info_rank else KIND_VULNERABILITY),
-            exploitable=bool(r.exploitable),
+            exploitable=r.exploitable,
             plugin_ids=sorted(plugin_ids.get(r.issue_key, []))[:PLUGIN_ID_CAP],
             cvss_score=float(r.cvss_score) if r.cvss_score is not None else None,
             ports=list(ports.get(r.issue_key, ((), 0))[0]),

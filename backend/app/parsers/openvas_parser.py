@@ -51,15 +51,24 @@ _FLUSH_BATCH_SIZE = 100
 
 
 _EXPLOIT_MATURITY = re.compile(r"(?:^|/)E:(POC|P|F|H|A)(?:/|$)", re.IGNORECASE)
+_EXPLOIT_UNPROVEN = re.compile(r"(?:^|/)E:U(?:/|$)", re.IGNORECASE)
 
 
-def vector_states_exploit(vector: Optional[str]) -> bool:
-    """True when a CVSS vector's exploit-maturity metric says exploit code
-    exists: ``E:P`` / ``E:F`` / ``E:H`` (3.x), ``E:POC`` / ``E:F`` / ``E:H``
-    (2.0), ``E:A`` / ``E:P`` (4.0) — the same bar as the Nessus path's
-    ``exploit_code_maturity``.  ``E:U`` (unproven), ``E:X`` / ``E:ND`` (not
-    defined) and a base-only vector state nothing."""
-    return bool(vector and _EXPLOIT_MATURITY.search(vector))
+def vector_states_exploit(vector: Optional[str]) -> Optional[bool]:
+    """What a CVSS vector's exploit-maturity metric states — tri-state, as
+    ``Vulnerability.exploitable`` is.  ``True``: exploit code exists —
+    ``E:P`` / ``E:F`` / ``E:H`` (3.x), ``E:POC`` / ``E:F`` / ``E:H`` (2.0),
+    ``E:A`` / ``E:P`` (4.0) — the same bar as the Nessus path's
+    ``exploit_code_maturity``.  ``False``: ``E:U`` (unproven — the metric
+    was set and says none).  ``None``: ``E:X`` / ``E:ND`` (not defined), a
+    base-only vector or no vector state nothing."""
+    if not vector:
+        return None
+    if _EXPLOIT_MATURITY.search(vector):
+        return True
+    if _EXPLOIT_UNPROVEN.search(vector):
+        return False
+    return None
 
 
 def _observe_report_time(clock: ScanClock, raw: Optional[str]) -> None:
@@ -313,7 +322,7 @@ class OpenVASParser:
             # Only what the report states: a vector whose exploit-maturity
             # metric says exploit code exists.  Never inferred from severity,
             # and EPSS is a probability, not a statement that one exists.
-            exploitable=vector_states_exploit(cvss_vector) or None,
+            exploitable=vector_states_exploit(cvss_vector),
         )
         return True
 

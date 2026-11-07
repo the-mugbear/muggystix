@@ -34,7 +34,11 @@ export const issueMetaParts = (issue: IssueFacts, { withKind = false } = {}): Is
   if (issue.kind && (withKind || issue.kind === 'misconfiguration')) {
     parts.push({ key: 'kind', text: withKind ? (KIND_LABEL[issue.kind] ?? issue.kind) : 'misconfiguration', badge: 'outline' });
   }
+  // Tri-state: true is said everywhere; false ("the scanner looked and
+  // reports none") only where every kind is named, the inspector; null — no
+  // scanner that saw it can say — is nothing, not "no exploit".
   if (issue.exploitable) parts.push({ key: 'exploit', text: withKind ? 'Exploit reported' : 'exploit reported', badge: 'destructive-outline' });
+  else if (issue.exploitable === false && withKind) parts.push({ key: 'exploit', text: 'No exploit reported' });
   if (issue.cve_id) parts.push({ key: 'cve', text: issue.cve_id });
   const plugins = issue.plugin_ids ?? [];
   if (plugins.length > 0) parts.push({ key: 'plugin', text: `${plugins.length > 1 ? 'checks' : 'check'} ${plugins.join(', ')}` });

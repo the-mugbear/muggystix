@@ -301,7 +301,10 @@ Notes:
   gets `os_family` derived from it at ingest (`os_family_from_name` in the
   dedup service, v2.421.0) when no scanner reported one.
 - **nmap scanner observations** (v2.413.0+) — vulners and vuln-category NSE
-  results become `NMAP` `Vulnerability` rows (CVEs, exploitability), and
+  results become `NMAP` `Vulnerability` rows (CVEs, exploitability: a vulners
+  entry states `is_exploit` both ways, so the row is `true` or `false`; a
+  vuln script's `VULNERABLE (Exploitable)` state is `true` and any other
+  state says nothing, `NULL`), and
   catalog checks are recorded through `record_misconfig` (VNC without auth, SMB
   signing not required, SMBv1, deprecated TLS, an expired certificate).
 - **nmap** streams XML via `iterparse_safe`; relabels itself masscan if
@@ -418,10 +421,18 @@ issue.
   (CVSS + `plugin_output` are persisted as of the plugin-output
   migration; re-upload old scans to backfill — the columns are populated only on
   (re-)ingest.)
-- **`exploitable`** is derived from `exploit_available` /
-  `metasploit_name` / `core_impact_name` / `canvas_package` /
-  `exploit_code_maturity ∈ {functional, high, proof-of-concept}`. (Re-upload
-  old scans to backfill; only emitted since v2.83.2.)
+- **`exploitable`** is tri-state (v2.535.0; the column's docstring is the
+  owner): `true` from `exploit_available` / `metasploit_name` /
+  `core_impact_name` / `canvas_package` / `exploit_code_maturity ∈
+  {functional, high, proof-of-concept}`; `false` when the item carries the
+  `exploit_available` or `exploit_code_maturity` tag and it says none (Nessus
+  writes `exploit_available=false` on plugins it has looked up); `NULL` when
+  the item has neither tag — nothing stated. On a re-upload the latest
+  statement wins in both directions and an item that says nothing keeps the
+  stored value (`parser_utils.refresh_reobserved_vulnerability`, the one rule
+  for every source). Rows written before v2.535.0 as `false` with nothing
+  stated were set to `NULL` by revision `a3f1c7e9d2b4`; re-upload to record
+  the explicit statement.
 
 **OpenVAS / Greenbone** (`.xml`; streamed per `<result>`, savepoint per result):
 - **Host:** `ip_address` (`state=up`); `hostname` from the result's
@@ -438,12 +449,14 @@ issue.
   `solution`, `references` (URLs, CERT-Bund/DFN-CERT ids, further CVEs),
   `plugin_output` (the detection result and QoD), `source=OPENVAS`. Severity
   from CVSS numeric, falling back to `<threat>` text.
-- **`exploitable`** is set only when the stored vector's exploit-maturity
-  metric says exploit code exists (`E:P` / `E:F` / `E:H`, 2.0 `E:POC`, 4.0
-  `E:A` — `openvas_parser.vector_states_exploit`). A GVM report has no other
+- **`exploitable`** comes only from the stored vector's exploit-maturity
+  metric (`openvas_parser.vector_states_exploit`, tri-state): `true` when it
+  says exploit code exists (`E:P` / `E:F` / `E:H`, 2.0 `E:POC`, 4.0 `E:A`),
+  `false` on `E:U` (unproven — the metric was set and says none), `NULL` on
+  `E:X` / `E:ND`, a base-only vector or none. A GVM report has no other
   statement that an exploit exists: nothing is inferred from severity, and
   EPSS is not read as one. Most feed vectors are base-only, so most OpenVAS
-  rows stay not-exploitable.
+  rows state nothing.
 - None of these element names has been checked against a real GVM export (the
   suite has none); both vector shapes are accepted for that reason.
 

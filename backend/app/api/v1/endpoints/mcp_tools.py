@@ -760,8 +760,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "check id. Paged: `total` counts all "
             "matching issues. severity narrows to one "
             "severity; exploitable=true keeps issues a scanner reports an exploit "
-            "for (each row says `exploitable` — a report, not proof it was "
-            "exploited). assist_list_observation_hosts lists one issue's hosts."
+            "for (each row says `exploitable`: true — a report, not proof it was "
+            "exploited; false — a scanner that can say reported none; null — no "
+            "scanner that saw it states exploitability, which is not 'no exploit'). "
+            "assist_list_observation_hosts lists one issue's hosts."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations",

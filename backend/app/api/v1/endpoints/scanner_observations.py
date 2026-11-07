@@ -44,9 +44,11 @@ class IssueRowOut(BaseModel):
     finding_status: Optional[str] = None
     # v2.415.0 — misconfiguration / vulnerability / informational.
     kind: str = "vulnerability"
-    # A scanner reports an exploit for it on at least one host (a lead, not a
-    # statement that it was exploited).
-    exploitable: bool = False
+    # Tri-state (2.535.0): true — a scanner reports an exploit for it on at
+    # least one host (a lead, not a statement that it was exploited); false —
+    # every scanner that can say reported none; null — no scanner that saw it
+    # states exploitability at all (Nikto, Nuclei, NetExec, testssl…).
+    exploitable: Optional[bool] = None
     plugin_ids: List[str] = Field(default_factory=list, description="The scanners' check ids for it (the first 5)")
     cvss_score: Optional[float] = Field(None, description="The highest CVSS base score any of its rows gives")
     ports: List[int] = Field(default_factory=list, description="The ports it was seen on, the first 8 by number")
