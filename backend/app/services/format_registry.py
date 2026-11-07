@@ -101,6 +101,11 @@ FORMATS: Dict[str, FormatSpec] = {
               "looks_like_nikto"),
         _spec("nuclei_json", "Nuclei JSON / JSONL", "vuln", "app.parsers.nuclei_parser", "NucleiParser", "Nuclei results (JSON/JSONL)",
               "looks_like_nuclei"),
+        # 2.537.0 — the tool-agnostic observation format: any tool, script or
+        # agent writes one JSON object per observation, every field its own
+        # explicit statement; recognised by its "schema" key.
+        _spec("observations_jsonl", "BlueStick observations (any tool)", "vuln", "app.parsers.observations_parser",
+              "ObservationsParser", "BlueStick observation lines (JSON lines / JSON)", "looks_like_observations"),
         _spec("httpx_json", "httpx JSON / JSONL", "web", "app.parsers.httpx_parser", "HttpxParser", "httpx web fingerprint (JSON/JSONL)",
               "app.parsers.httpx_parser:looks_like_httpx"),
         _spec("whatweb_json", "WhatWeb JSON", "web", "app.parsers.whatweb_parser", "WhatwebParser", "whatweb web fingerprint (JSON/JSONL)",
@@ -160,6 +165,7 @@ NOT_JSON_SHAPED = "not-json-shaped"
 DETECTION: Tuple[Tuple[Tuple[str, ...], Tuple[object, ...]], ...] = (
     ((".gnmap",), ("nmap_gnmap",)),
     ((".json", ".jsonl", ".ndjson"), (
+        "observations_jsonl",
         "httpx_json", "whatweb_json", "testssl_json", "nuclei_json", "bloodhound_json", "amass_json",
         "dnsx_json", "rdap_json", "naabu_json", "netexec_json", "masscan_json", "eyewitness_json",
         "nikto_json", "smbmap_json", "dirbuster_json",

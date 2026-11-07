@@ -71,6 +71,10 @@ MATRIX = [
     # project: a project write to the gate (the route then answers 422 / 404).
     ("keep a cut-short upload", "POST", "/api/v1/agent/uploads/999999/keep-truncated",
      {"analyst": True, "auditor": False, "viewer": False}),
+    # Observations as JSON (2.537.0): a project write like the upload it
+    # goes through (the route then answers 422 to an empty body).
+    ("record observations", "POST", "/api/v1/agent/observations",
+     {"analyst": True, "auditor": False, "viewer": False}),
 ]
 
 

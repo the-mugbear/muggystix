@@ -1344,6 +1344,7 @@ def get_assist_host_vulnerabilities(
             cve_id=v.cve_id,
             plugin_id=v.plugin_id,
             cvss_score=v.cvss_score,
+            cvss_version=v.cvss_version,
             source=_src(v),
             exploitable=v.exploitable,
             port_number=num,

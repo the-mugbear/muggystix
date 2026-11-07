@@ -361,7 +361,7 @@ def test_the_parsers_on_the_shared_reader_are_the_documented_ones():
     }
     assert found == {
         "amass", "dirbuster", "dnsx", "eyewitness", "httpx", "naabu",
-        "nikto", "nuclei", "smbmap", "testssl", "whatweb",
+        "nikto", "nuclei", "observations", "smbmap", "testssl", "whatweb",
     }
 
 

@@ -175,6 +175,9 @@ CUT_IS_DETECTABLE: Dict[str, Shape] = {
     "bloodhound_json": _array("data"),
     "netexec_json": _MEMBERS,
     "rdap_json": _LINES,
+    # 2.537.0 — the tool-agnostic observation format: JSON lines through the
+    # shared reader.
+    "observations_jsonl": _LINES,
 }
 
 #: Formats in which a cut cannot be told from a short or a bad line.  They are

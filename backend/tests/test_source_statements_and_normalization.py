@@ -223,6 +223,26 @@ def test_the_cve_filter_finds_a_host_by_a_cve_the_row_did_not_lead_with(db_sessi
     assert {i for (i,) in db_session.query(Host.id).filter(P.cve_predicate(["CVE-1999-0001"]))} == set()
 
 
+def test_an_unrated_issue_is_not_informational(db_session, test_project):
+    """UNKNOWN (the tool rated nothing) ranks below info but is unrated, not
+    informational — the list's kind and its ``kind=`` filter say so, as
+    ``misconfig_checks.vuln_kind`` does for one row (seen in Chrome,
+    2026-11-06: a Nikto issue labelled Informational)."""
+    host = _host(db_session, test_project.id, "10.78.2.1")
+    scan = _scan(db_session, test_project.id, tool="nikto")
+    db_session.add_all([
+        Vulnerability(host_id=host.id, scan_id=scan.id, title="Unrated", source="nikto",
+                      severity=VulnerabilitySeverity.UNKNOWN),
+        Vulnerability(host_id=host.id, scan_id=scan.id, title="Rated info", source="nikto",
+                      severity=VulnerabilitySeverity.INFO),
+    ])
+    db_session.commit()
+    kinds = {r.title: r.kind for r in svc.list_issues(db_session, test_project.id, judged="any").items}
+    assert kinds == {"Unrated": "vulnerability", "Rated info": "informational"}
+    assert [r.title for r in svc.list_issues(db_session, test_project.id, judged="any", kind="informational").items] == ["Rated info"]
+    assert [r.title for r in svc.list_issues(db_session, test_project.id, judged="any", kind="vulnerability").items] == ["Unrated"]
+
+
 def test_the_observations_search_finds_an_issue_by_any_of_its_cves(db_session, test_project, two_cves):
     found = svc.list_issues(db_session, test_project.id, judged="any", search="CVE-2023-51385").items
     assert [r.title for r in found] == ["Leads with one, names two"]

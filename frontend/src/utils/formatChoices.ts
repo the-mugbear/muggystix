@@ -44,6 +44,7 @@ export const FORMAT_EXTENSIONS: Record<string, readonly string[]> = {
   nikto_csv: CSV,
   nikto_output: TEXT,
   nuclei_json: JSON_LINES,
+  observations_jsonl: JSON_LINES,
   httpx_json: JSON_LINES,
   whatweb_json: JSON_LINES,
   testssl_json: JSON_LINES,

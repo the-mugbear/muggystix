@@ -310,10 +310,13 @@ def list_issues(
     elif kind:
         raise ObservationError(f"Unknown kind '{kind}'")
     query = query.group_by(key)
+    # An UNKNOWN-rated issue (rank 0: the tool rated nothing) is not
+    # informational — it is unrated; it stays a vulnerability, as
+    # ``misconfig_checks.vuln_kind`` says for one row (2.537.0).
     if kind == KIND_VULNERABILITY:
-        query = query.having(rank > info_rank)
+        query = query.having(rank != info_rank)
     elif kind == KIND_INFORMATIONAL:
-        query = query.having(rank <= info_rank)
+        query = query.having(rank == info_rank)
     if severity:
         wanted = next((r for r, s in _SEVERITY_OF_RANK.items() if s == severity.lower()), None)
         if wanted is None:
@@ -385,7 +388,7 @@ def list_issues(
             finding_id=f.id if f else None,
             finding_status=f.status if f else None,
             kind=(KIND_MISCONFIGURATION if r.issue_key.startswith("check:")
-                  else KIND_INFORMATIONAL if int(r.rank or 0) <= info_rank else KIND_VULNERABILITY),
+                  else KIND_INFORMATIONAL if int(r.rank or 0) == info_rank else KIND_VULNERABILITY),
             exploitable=r.exploitable,
             plugin_ids=sorted(plugin_ids.get(r.issue_key, []))[:PLUGIN_ID_CAP],
             cvss_score=float(r.cvss_score) if r.cvss_score is not None else None,

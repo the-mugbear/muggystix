@@ -135,6 +135,10 @@ _CREATES_A_ROW = {
     # second one is refused 409): never "idempotent", and not marked additive
     # for the same reason as the credential request.
     "keep_truncated_upload",
+    # 2.537.0: each call queues an import of the observations it carries (an
+    # identical body is refused 409 by the duplicate guard; a changed one
+    # imports again): additive, never "idempotent".
+    "record_observations",
 }
 
 

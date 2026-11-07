@@ -78,6 +78,9 @@ STATEMENTS: Dict[VulnerabilitySource, SourceStatements] = {
     VulnerabilitySource.SMBMAP: SourceStatements(severity=False, cvss=False, cve=False, exploitability=False),
     # dnsx: catalog checks only.
     VulnerabilitySource.DNSX: SourceStatements(severity=False, cvss=False, cve=False, exploitability=False),
+    # The tool-agnostic observation format: every field is the uploader's
+    # explicit statement or its explicit absence, so it may state anything.
+    VulnerabilitySource.EXTERNAL: _ALL,
 }
 
 

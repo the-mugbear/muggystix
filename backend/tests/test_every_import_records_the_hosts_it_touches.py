@@ -328,7 +328,23 @@ def _copy(source: Path) -> Callable[[Path, str], Path]:
     return lambda tmp_path, name: _text(source.read_text())(tmp_path, name)
 
 
+# The tool-agnostic observation format (2.537.0): two hosts, one named, one
+# host-level observation, one catalog check.
+_OBSERVATIONS = "\n".join([
+    '{"schema": "bluestick-observation/1", "tool": "homebrew-scanner", "host": "10.91.0.1", '
+    '"hostname": "web01.example.test", "port": 443, "protocol": "tcp", "service": "https", '
+    '"title": "Outdated TLS library", "severity": "high", "cves": ["CVE-2024-0001", "CVE-2024-0002"], '
+    '"cvss": {"score": 9.8, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}, "exploitable": true, '
+    '"observed_at": "2026-11-06T10:00:00Z"}',
+    '{"schema": "bluestick-observation/1", "host": "10.91.0.2", "title": "Default community string", '
+    '"port": 161, "protocol": "udp", "exploitable": null}',
+    '{"schema": "bluestick-observation/1", "host": "10.91.0.2", "check_id": "smb_signing_not_required", '
+    '"port": 445, "evidence": "signing: False"}',
+]) + "\n"
+
 CASES: Dict[str, Case] = {
+    "observations_jsonl": Case("observations.jsonl", _text(_OBSERVATIONS), ["10.91.0.1", "10.91.0.2"],
+                               "WRITTEN HERE in the format app/parsers/observations_parser.py documents"),
     # --- ports -------------------------------------------------------------
     "nmap_xml": Case("sweep.xml", _nmap, ["10.20.0.1", "10.20.0.2"], f"{_PARTIAL} nmap_file"),
     "nmap_gnmap": Case("out.gnmap", _text(_GNMAP_TWO), ["10.41.0.1", "10.41.0.2"],

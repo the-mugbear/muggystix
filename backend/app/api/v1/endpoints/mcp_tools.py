@@ -330,7 +330,11 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_get_host_vulnerabilities": {
         "description": (
             "One host's raw scanner rows, worst first: severity, CVE / plugin id, "
-            "title, port, CVSS, description, solution, scanner evidence. Paged. "
+            "title, port, CVSS (with cvss_version — 2.0, 3.x and 4.0 are not one scale), "
+            "description, solution, scanner evidence. Paged. Each field is what that "
+            "scanner stated: severity `unknown` = it rated nothing (Nikto); `exploitable` "
+            "true = an exploit reported, false = it can say and reported none, null = this "
+            "source never says — not 'no exploit'. "
             "These are scanner observations: each `id` is a vulnerability id (what "
             "propose_observation and a host test's `vulnerability_id` take), NOT a "
             "finding id. `finding_id` / `finding_status` name the finding that "
@@ -1239,6 +1243,29 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # The ask-first rule is the session's
     # (agent_policy.render_truncated_upload_rule); it is said here too because
     # an agent may read a tool and nothing else.
+    "record_observations": {
+        "description": (
+            "Record scanner observations for a tool BlueStick has no parser for, or "
+            "your own findings, as JSON — the BlueStick observation format without a "
+            "file: `observations` is a list of objects, each with `host` (an address, "
+            "required), `title` (required unless `check_id` names a weakness-catalog "
+            "check), and optionally `hostname`, `port`, `protocol`, `service`, "
+            "`severity` (critical / high / medium / low / info), `description`, "
+            "`solution`, `references`, `cvss` {score, vector}, `cves`, `exploitable` "
+            "(true / false / null), `plugin_id`, `evidence`, `observed_at`, `tool`. "
+            "Write ONLY what the tool or you actually established and leave the rest "
+            "out: an omitted severity is recorded as unknown, an omitted exploitable as "
+            "not stated — never false or low for 'nothing said'. The rows are scanner "
+            "observations (not findings) on the hosts named, attributed to this session, "
+            "imported through the same path as an upload: the answer is a job to poll "
+            "with get_upload_job; a line that could not be placed or read is named in its "
+            "warnings. An identical body already imported is a 409. Needs an operator "
+            "who may write to the project."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/observations",
+        "additive": True,
+    },
     "keep_truncated_upload": {
         "description": (
             "ASK THE OPERATOR FIRST. For an upload of this session that failed with "

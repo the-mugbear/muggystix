@@ -195,8 +195,11 @@ const sections: GuideSection[] = [
       <div>
         <Para>
           Two things are kept apart. <strong>Scanner observations</strong> are what the tools
-          reported on a host (Nessus, OpenVAS, Nuclei, Nikto, nmap scripts, testssl, NetExec…),
-          not yet judged. A <strong>finding</strong> is an issue the team has taken up: made by
+          reported on a host (Nessus, OpenVAS, Nuclei, Nikto, nmap scripts, testssl, NetExec… or any
+          other tool through the BlueStick observation format), not yet judged. Each field of an
+          observation is what that tool stated: a severity of &quot;unknown&quot; means the tool rated
+          nothing (Nikto never does), and an exploit flag is reported, reported none, or not stated —
+          never a default. A <strong>finding</strong> is an issue the team has taken up: made by
           promoting a scanner observation or a test result that showed the issue, or written by
           hand — <em>Add finding</em> in a host&rsquo;s Findings section, for an issue no scanner row
           or test result on that host stands for. The <strong>Findings</strong> page (Findings hub) lists findings.{' '}

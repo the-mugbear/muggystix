@@ -2,7 +2,7 @@
  * Inventory → Query (5.405.0): a pipe query language over hosts, ports and
  * scanner observations, and saved / shared queries — the owner, 2026-10-16.
  *
- *   observations has:exploit | stats dc(host) as hosts by title | sort -hosts | head 20
+ *   observations has:exploit | stats dc(host) as hosts, values(title) as title by issue | sort -hosts | head 20
  *
  * The committed query is the address (`?q=`): a link, Back and a group's
  * drill-down all land on it, and the answer is `['runQuery', projectId, q]`.
@@ -63,7 +63,10 @@ import { useQueryColumnValues } from '../components/query/useQueryColumnValues';
 import { formatTimestamp } from '../utils/relativeTime';
 import { hostsPageFor, queryPath } from '../utils/queryPath';
 
-const EXAMPLE = 'observations | where severity IN ("critical", "high") | stats dc(host) as hosts by title | sort -hosts | head 20';
+// Grouped BY ISSUE and counting HOSTS — the Scanner observations page's own
+// grouping and unit, so the numbers match it (5.428.1; by title / count did
+// not: titles split and merge issues, count is rows per host, port and tool).
+const EXAMPLE = 'observations | where severity IN ("critical", "high") | stats dc(host) as hosts, values(title) as title by issue | sort -hosts | head 20';
 
 /** A values() cell shows this many values; the rest are "+N more", which
  *  opens the group's rows (review Q13: twenty addresses cut to one line). */
@@ -935,8 +938,10 @@ const Query: React.FC = () => {
                 always describe the row&apos;s host — on ports, port:445 means the host has 445 open. | where compares
                 the dataset&apos;s own columns, and = is exact and case-sensitive (like() is not): where port=445 is
                 the row&apos;s port. After stats or top, | where and | fields work on the answer:
-                … | stats count by title | where count &gt; 5. Every row of a stats or top answer opens exactly
-                its rows.
+                … | stats dc(host) as hosts by issue | where hosts &gt; 5. Every row of a stats or top answer opens
+                exactly its rows. To match the Scanner observations page, group observations by issue (its key
+                across scanners) and count dc(host): count is rows — one per host, port and tool — and a title
+                is one scanner&apos;s wording. isnull(exploitable) is &quot;not stated&quot;, not &quot;no exploit&quot;.
               </>
             )}
           />

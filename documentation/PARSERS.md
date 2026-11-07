@@ -197,7 +197,7 @@ the complete records when asked (`CUT_IS_DETECTABLE` in
 | Masscan XML | The XML rule. | Every closed `<host>` (masscan writes one per port). |
 | Nessus (.nessus) | The XML rule (expat is its reader). | Every closed `<ReportHost>`; the one the cut fell in is dropped whole. Unit: hosts. No port history is written for Nessus, as before. |
 | OpenVAS / Greenbone XML | The XML rule. | Every closed `<result>` (the report's per-host blocks, which follow the results, are then usually missing). |
-| amass / subfinder JSON, directory brute-force JSON, dnsx, EyeWitness JSON, httpx, naabu JSON, Nikto JSON, Nuclei, SMBMap JSON, testssl, WhatWeb | The shared reader (`streaming_json.iter_json_records`): the JSON rule for a document, the JSON-lines rule for one object per line. | Every closed record of the array; every complete line. A single Nikto host object keeps the complete items of its `vulnerabilities` array, with the object's target (written before the array). |
+| amass / subfinder JSON, directory brute-force JSON, dnsx, EyeWitness JSON, httpx, naabu JSON, Nikto JSON, Nuclei, BlueStick observations, SMBMap JSON, testssl, WhatWeb | The shared reader (`streaming_json.iter_json_records`): the JSON rule for a document, the JSON-lines rule for one object per line. | Every closed record of the array; every complete line. A single Nikto host object keeps the complete items of its `vulnerabilities` array, with the object's target (written before the array). |
 | Masscan JSON | Its own record-by-record reader: the text left after the last complete record is the beginning of a JSON value, or the file opened `[` and never closed it. The old closing line `{finished: 1}` is a complete file. | Every complete record. |
 | BloodHound JSON | Its loader asks the shared rule (`streaming_json.iter_document`) at any size. | Every closed object of the array. |
 | NetExec JSON | When the object does not load, the shared rule over its top-level members. | Every complete member (a host, or a share of the one host a spider_plus file is about). A file whose hosts sit under ONE wrapping key holds no complete member. |
@@ -460,6 +460,41 @@ issue.
 - None of these element names has been checked against a real GVM export (the
   suite has none); both vector shapes are accepted for that reason.
 
+**BlueStick observations — the tool-agnostic format** (`.jsonl` / `.ndjson` /
+`.json`; `app/parsers/observations_parser.py`, v2.537.0; `source=EXTERNAL`):
+- **Why:** a tool BlueStick has no parser for, a script, or an agent working
+  from its own output writes one JSON object per observation, so new tools
+  need no parser and an agent's own findings land as ordinary scanner
+  observations (direct and attributed to its session through the upload —
+  an observation is not a conclusion, so it is not a proposal).
+- **Shape:** every line carries `"schema": "bluestick-observation/1"` (the
+  sniffer, `looks_like_observations`, first among the JSON formats; the
+  filename is not read). `host` (an address, required — a line with a name
+  only is skipped and counted, never placed by the name), `hostname`, `port`,
+  `protocol` (tcp / udp / sctp; default tcp), `service`, `title` (required
+  unless `check_id`), `severity`, `description`, `solution`, `references`,
+  `cvss` (`{score, vector}`), `cves` (a list), `exploitable` (true / false /
+  null), `plugin_id`, `evidence` (→ `plugin_output`), `observed_at` (RFC 3339
+  with an offset → the scan's time), `tool` (→ `Scan.tool_name`, the first
+  line's; else the upload's `tool_name`; else `external`), `check_id` (a
+  weakness-catalog check: the catalog's title and severity, the line's
+  evidence, through `record_misconfig`).
+- **Every field is the uploader's statement; an absent field is the explicit
+  absence of one** (the normalization rule, `source_statements`): no
+  `severity` → `UNKNOWN`, no `exploitable` → NULL (not "no exploit"), no
+  `cvss` → no score; `cvss_version` is derived from the vector by the writer,
+  never read from the line; every CVE is kept (`vulnerability_cves`), the
+  first is `cve_id`. A severity word that is not one, a port out of range, a
+  non-boolean `exploitable`, an unknown `check_id` or a missing `title` is a
+  skipped line, counted in the import's warning — never guessed, never the
+  file. A port named is recorded open (the observation proves it answered).
+- **Records:** `iter_json_records` (lines or an array under `observations`);
+  a cut last line is cut short like every JSON-lines format; one
+  `write_record` per line; `ProgressBeat` between lines; `ScanClock` from
+  `observed_at`. Rows key on `(plugin_id, title)` (`key_on_title=True`).
+- Tests: `tests/test_observations_format.py`; the every-format contracts hold
+  it through `CASES` (`observations_jsonl`).
+
 **NetExec (NXC)** (`.json` or console text; auto-detected; read with
 `read_tool_text`, so a UTF-16 capture from PowerShell's `>` and NUL bytes are
 handled, v2.420.0; read WHOLE — its JSON is one object and console lines are
@@ -528,7 +563,8 @@ ingest via `cert_fields.derive_cert_fields(tls_info)`.
   Nikto/OSVDB id, `cve_id`, `references` and the request evidence as
   `plugin_output`; severity is UNKNOWN unless a wrapper format states one —
   Nikto rates nothing, and a statement a tool did not make is never written,
-  v2.536.0). Missing-security-header results
+  v2.536.0; revision `e5a8c3d1f7b4` re-rated the LOW rows older parsers
+  wrote; an empty `cve` is no CVE id). Missing-security-header results
   are catalog checks (`record_misconfig`, v2.414.0), and the name tested is
   bound to the row (`name_id`). No WebInterface rows.
 - **DirBuster family** (DirBuster/Gobuster/Feroxbuster/ffuf/Dirsearch;
@@ -704,6 +740,12 @@ closed on an empty or non-Nuclei file.
 ---
 
 ## Part 2 — Adding a new parser
+
+> Read [NORMALIZATION.md](NORMALIZATION.md) first: the rule every parser
+> follows (a field is the tool's statement; nothing stated is written as
+> nothing), the per-source declaration a new parser adds before anything
+> else, and the no-code alternative — the BlueStick observation format — that
+> is often the right answer for a tool nobody else will upload.
 
 A parser is a small class with one job: turn a file into a `Scan` plus the host
 / port / finding rows it implies, reusing the shared toolkit so dedup,

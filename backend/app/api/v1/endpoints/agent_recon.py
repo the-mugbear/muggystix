@@ -7,7 +7,9 @@ the output to its session as results land.  The key is project-scoped and a
 project has exactly one scope, so no read names one (``/agent/scope/…``).
 """
 
+import json
 from datetime import datetime
+from io import BytesIO
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile
@@ -26,6 +28,8 @@ from app.api.v1.endpoints.agent_schemas import (
     AgentRowsPage, KeepTruncatedUploadRequest, ReconUploadResponse, ReconJobStatus, agent_page,
 )
 from app.api.v1.endpoints.agent_common import load_agent_session
+from app.api.v1.endpoints.agent_schemas import ObservationsBody
+from app.parsers.observations_parser import SCHEMA_PREFIX as OBSERVATION_SCHEMA_PREFIX
 from app.services.agent_policy import TRUNCATED_UPLOAD_ASK_FIRST
 from app.services.default_scope import project_scope
 from app.services.import_attention_service import failure_kind
@@ -367,6 +371,92 @@ async def upload_scanner_output(
         message="Upload queued for parsing",
         batch_id=job.batch_id,
         batch=scan_batch.label if scan_batch is not None else None,
+    )
+
+
+@router.post(
+    "/observations",
+    response_model=ReconUploadResponse,
+    status_code=201,
+    summary="Record scanner observations as JSON (the BlueStick observation format)",
+)
+async def record_observations(
+    request: Request,
+    body: ObservationsBody,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """2.537.0 — the observation format as a request body (MCP
+    ``record_observations``): for a tool BlueStick has no parser for, or the
+    agent's own findings, from a client that cannot upload a file.
+
+    ONE implementation: the objects are written as JSON lines and handed to
+    the SAME ingestion path as ``POST /agent/uploads`` with the format named
+    (``observations_jsonl`` — ``app/parsers/observations_parser.py``), so the
+    job, its batch, the duplicate guard (an identical body already imported
+    is a 409 ``duplicate_scan``), the heartbeat, the per-line skipping and
+    the attribution to this session are the upload's.  Poll
+    ``GET /agent/uploads/{job_id}``; a line that could not be placed or read
+    is named in the job's warnings.
+    """
+    from app.services.ingestion_service import DuplicateUploadError, ingestion_service
+    from app.services.scan_batch_service import get_or_create_session_batch
+
+    session = await run_in_threadpool(load_agent_session, db, request)
+
+    lines = []
+    for record in body.observations:
+        if not isinstance(record, dict):
+            raise HTTPException(status_code=422, detail="Every observation is a JSON object.")
+        line = dict(record)
+        line.setdefault("schema", OBSERVATION_SCHEMA_PREFIX + "1")
+        if body.tool and not line.get("tool"):
+            line["tool"] = body.tool
+        lines.append(json.dumps(line, ensure_ascii=False))
+    data = ("\n".join(lines) + "\n").encode("utf-8")
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+    upload = UploadFile(file=BytesIO(data), filename=f"observations-session{session.id}-{stamp}.jsonl")
+
+    opts: Dict[str, Any] = {
+        "project_id": agent.project_id,
+        "agent_session_id": session.id,
+        "source": "agent",
+        "format_override": "observations_jsonl",
+    }
+    if body.tool:
+        opts["tool_name_hint"] = body.tool
+
+    scan_batch = None
+    if body.batch and body.batch.strip():
+        try:
+            scan_batch = await run_in_threadpool(
+                get_or_create_session_batch,
+                db, project_id=agent.project_id, agent_session_id=session.id, label=body.batch,
+            )
+        except Exception:
+            await run_in_threadpool(db.rollback)
+            raise HTTPException(status_code=503, detail="The upload batch is busy; retry in a few seconds.")
+
+    try:
+        job = await ingestion_service.create_job(
+            db=db, upload=upload, submitted_by_id=None, options=opts,
+            batch_id=scan_batch.id if scan_batch is not None else None,
+        )
+    except DuplicateUploadError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    def _finish():
+        db.commit()
+        db.refresh(job)
+        ingestion_service.enqueue_job(job.id, db=db)
+
+    await run_in_threadpool(_finish)
+    return ReconUploadResponse(
+        job_id=job.id, filename=job.original_filename, status=job.status,
+        message=f"{len(lines)} observation{'s' if len(lines) != 1 else ''} queued for import",
+        batch_id=job.batch_id, batch=scan_batch.label if scan_batch is not None else None,
     )
 
 

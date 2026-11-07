@@ -2,6 +2,65 @@
   "_comment": "What BlueStick reads from each tool (v2.411.0), audited against the parsers; see app/services/parser_coverage.py. Change a tool's rows in the same commit as its parser.",
   "tools": [
     {
+      "id": "external",
+      "name": "BlueStick observations (any tool)",
+      "formats": ["observations_jsonl"],
+      "registry_tools": [],
+      "accepted_input": "One JSON object per observation, as JSON lines (.jsonl / .ndjson) or a JSON array (.json), each carrying \"schema\": \"bluestick-observation/1\" — written by a tool BlueStick has no parser for, a script, or an agent working from its own output (v2.537.0). Every field is the uploader's statement and an absent field is the explicit absence of one. A file whose last line is cut fails as cut short and keeps nothing; an analyst can then import what the file holds.",
+      "signals": [
+        {
+          "what": "Host, name, port and service",
+          "input": "`host` (an address, required), `hostname`, `port`, `protocol` (tcp / udp / sctp, default tcp), `service`",
+          "level": "field",
+          "stored_as": ["Host.ip_address", "Host.hostname", "Port.port_number", "Port.protocol", "Port.state", "Port.service_name"],
+          "shown": "Hosts list; Host inspector › Ports table; Scan page hosts and ports",
+          "note": "A line with no `host` address is skipped and counted, never placed by its name. A port named is recorded open — the observation proves it answered. The name is bound to the observation (`name_id`)."
+        },
+        {
+          "what": "Observation",
+          "input": "`title` (required unless `check_id`), `description`, `solution`, `references`, `plugin_id`, `evidence`",
+          "level": "observation",
+          "stored_as": ["Vulnerability.title", "Vulnerability.description", "Vulnerability.solution", "Vulnerability.references", "Vulnerability.plugin_id", "Vulnerability.plugin_output"],
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations · Filter: vuln: · Also: promoted to a finding",
+          "note": "Rows carry source `external`; the tool is the first line's `tool`, else the upload's tool name, else `external`, on the scan."
+        },
+        {
+          "what": "Severity",
+          "input": "`severity`: critical / high / medium / low / info / unknown",
+          "level": "observation",
+          "stored_as": ["Vulnerability.severity"],
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low",
+          "note": "Absent is UNKNOWN — never a default rating. A word that is not a severity is a skipped line."
+        },
+        {
+          "what": "CVSS, CVEs and whether an exploit exists",
+          "input": "`cvss`: {`score`, `vector`}; `cves`: a list; `exploitable`: true / false / null",
+          "level": "observation",
+          "stored_as": ["Vulnerability.cvss_score", "Vulnerability.cvss_vector", "Vulnerability.cvss_version", "Vulnerability.cve_id", "Vulnerability.exploitable"],
+          "shown": "Host inspector › Scanner observations detail; Inventory › Scanner observations · Filter: cve:, has:exploit, exploitport:",
+          "note": "The CVSS version is derived from the vector, never read from the line. Every CVE is kept (the first is the identity). `exploitable` absent or null is not stated — not \"no exploit\"; anything but a boolean is a skipped line."
+        },
+        {
+          "what": "Catalog check",
+          "input": "`check_id` naming a weakness-catalog check, with `evidence`",
+          "level": "observation",
+          "stored_as": ["Vulnerability.check_id"],
+          "shown": "Host inspector › Weaknesses; Inventory › Scanner observations · Filter: check:, kind:misconfiguration",
+          "note": "The line is that check: the catalog's title and severity, the line's evidence. An id the catalog does not know is a skipped line."
+        },
+        {
+          "what": "When it was observed",
+          "input": "`observed_at` (RFC 3339 with an offset)",
+          "level": "field",
+          "stored_as": ["Scan.start_time", "Scan.end_time"],
+          "shown": "Scan page",
+          "note": null
+        }
+      ],
+      "gaps": [],
+      "unverified": []
+    },
+    {
       "id": "nmap",
       "name": "Nmap",
       "formats": [

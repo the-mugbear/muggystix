@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.51.0"
+PROMPT_VERSION = "4.52.0"
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None
@@ -208,7 +208,10 @@ def build_session_instructions(
         f"scanner observations) and `/agent/scope/*` (what is in scope, and "
         f"target files).\n"
         f"- **Direct writes, attributed to {user_label}:** scanner output "
-        f"(`POST /agent/uploads`), notes and corrections on hosts, tests "
+        f"(`POST /agent/uploads` — any format BlueStick parses, or the BlueStick "
+        f"observation format for a tool it does not and for your own findings: "
+        f"write only what was actually established, the guide says how), notes "
+        f"and corrections on hosts, tests "
         f"proposed on hosts (`POST /agent/host-tests`), and what you ran and "
         f"what came back (`POST /agent/evidence`).\n"
         f"- **Proposals a person accepts or rejects** (`POST /agent/proposals/*`): "

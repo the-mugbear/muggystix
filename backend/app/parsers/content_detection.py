@@ -828,6 +828,15 @@ def looks_like_nuclei(sample: bytes, filename: str) -> bool:
     return _has_any(rec, ("info", "matched-at"))
 
 
+def looks_like_observations(sample: bytes, filename: str) -> bool:
+    """Detect the BlueStick observation format (``observations_parser``):
+    JSON lines or an array whose records carry ``"schema":
+    "bluestick-observation/<n>"`` — a key no scanner's JSON uses.  Structure
+    only; the filename is not read."""
+    _, rec = _peek_json_shape(sample)
+    return isinstance(rec, dict) and str(rec.get("schema") or "").lower().startswith("bluestick-observation/")
+
+
 def looks_like_rdap(sample: bytes, filename: str) -> bool:
     """Detect RDAP network-registration output (NDJSON or a single object).
 

@@ -82,6 +82,12 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
     hint: 'XML root <report>; or "openvas", "greenbone" or "gvm" in the filename.',
   },
   {
+    tool: 'BlueStick observations (any tool)',
+    formats: '.jsonl / .ndjson / .json',
+    desc: 'One JSON object per observation with "schema": "bluestick-observation/1" — for a tool BlueStick has no parser for, a script, or an agent working from its own output. Every field is the uploader’s statement: no severity is unknown, no exploit flag is not stated, never a default. A port named is recorded open; check_id names a weakness-catalog check.',
+    hint: 'Records carrying "schema": "bluestick-observation/…"; the filename is not used. The tool is the line’s "tool", else the upload’s tool name.',
+  },
+  {
     tool: 'Nuclei',
     formats: '.json / .jsonl / .ndjson',
     desc: '-je JSON export or -jsonl lines. Every template match becomes a scanner observation with Nuclei’s severity; results with no IP (DNS / file templates) are reported as skipped.',

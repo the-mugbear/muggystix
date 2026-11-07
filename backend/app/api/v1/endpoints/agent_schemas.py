@@ -128,7 +128,9 @@ class AssistFinding(BaseModel):
     title: str = Field(..., description="Finding title / plugin name.")
     cve_id: Optional[str] = Field(None, description="CVE id when the finding carries one.")
     plugin_id: Optional[str] = Field(None, description="Scanner plugin id (e.g. Nessus).")
-    cvss_score: Optional[float] = Field(None, description="CVSS base score 0–10, when scored.")
+    cvss_score: Optional[float] = Field(None, description="CVSS base score 0–10, when scored — on the scale cvss_version names.")
+    cvss_version: Optional[str] = Field(
+        None, description="Which CVSS the score is: 2.0, 3.0, 3.1 or 4.0 (null: no vector stored). Scores of different versions are not one scale.")
     source: str = Field(..., description="Scanner that reported it (nessus / openvas / …).")
     exploitable: Optional[bool] = Field(
         None,
@@ -493,6 +495,33 @@ class AgentHostUpdateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Schemas — scope reads and uploads
 # ---------------------------------------------------------------------------
+
+class ObservationsBody(BaseModel):
+    """2.537.0 — scanner observations as JSON (MCP ``record_observations``):
+    the BlueStick observation format's objects, handed to the SAME parser as
+    an uploaded ``.jsonl`` through the ordinary upload path, so a client with
+    no shell can record what a tool with no parser, or the agent itself,
+    established.  Each object: ``host`` (an address, required), ``title``
+    (required unless ``check_id``), optional ``hostname``, ``port``,
+    ``protocol``, ``service``, ``severity``, ``description``, ``solution``,
+    ``references``, ``cvss {score, vector}``, ``cves``, ``exploitable``
+    (true / false / null), ``plugin_id``, ``evidence``, ``observed_at``,
+    ``tool``, ``check_id``.  Every field is a statement; leave out what was not
+    established — an omitted severity is unknown, an omitted exploit flag is
+    not stated, never a default."""
+    observations: List[Dict[str, Any]] = Field(
+        ..., min_length=1, max_length=500,
+        description="One object per observation, in the BlueStick observation format (the `schema` key is added when absent).",
+    )
+    tool: Optional[str] = Field(
+        None, max_length=100,
+        description="The tool these came from, for objects that do not name their own `tool` (named on the scan).",
+    )
+    batch: Optional[str] = Field(
+        None, max_length=200,
+        description="Join this session's upload batch of that label (as an upload's `batch` form field).",
+    )
+
 
 class ReconUploadResponse(BaseModel):
     job_id: int

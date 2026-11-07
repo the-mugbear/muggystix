@@ -53,7 +53,7 @@ read off the server's registry and is the list.
 | The tool catalogue | `list_tools` (a reference for people — never a permission list), `suggest_tool` (propose a tool the catalogue lacks, for a curator; it grants nothing) |
 | Configured scanners | `list_scanner_integrations` (the installation's scanner integrations — name, type, address; never credentials; any session), `request_scanner_credentials` (ONE scanner's credentials, with `operator_agreed: true`, after the agent asked the operator; the operator must be able to write to the project; every request is recorded) — see §6 |
 | Query and report | the `assist_*` reads — the next section lists each against the question it answers |
-| Scope reads and uploads | `assist_get_scope` (the project's one scope: the first 100 CIDRs and domains with their totals; no arguments), then `scope_list_subnets` / `scope_list_domains` for the whole lists when it says one is truncated — no tool takes a scope id; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload; `keep_truncated_upload` (with `operator_agreed: true`, after the agent asked the operator) imports what this session's cut-short upload holds, as a partial import — see §6 |
+| Scope reads and uploads | `assist_get_scope` (the project's one scope: the first 100 CIDRs and domains with their totals; no arguments), then `scope_list_subnets` / `scope_list_domains` for the whole lists when it says one is truncated — no tool takes a scope id; the target files and the upload itself are curl (see "Bulk data" below); `record_observations` records scanner observations as JSON without a file (the BlueStick observation format — a tool with no parser, or the agent's own findings; the same parser and job as an upload); `get_upload_job` polls an upload; `keep_truncated_upload` (with `operator_agreed: true`, after the agent asked the operator) imports what this session's cut-short upload holds, as a partial import — see §6 |
 | Host tests | `host_tests_list` (read first — do not duplicate), `host_tests_propose` (up to 200 individual tests, each with its own `request_key`; they appear on each host's page at once), `host_tests_get`, `host_tests_update` (409 when `expected_revision` is stale) |
 | Running a test | `host_tests_update` → `in_progress`, run it, `record_evidence` naming the `host_test_id` (with a `request_key`), then `host_tests_update` → `done`. Evidence with outcome `finding`, `no_finding` or `inconclusive` is what marks the host tested |
 | Evidence and proposals | `record_evidence`, `list_evidence`, `get_evidence`, `read_evidence_raw`; `propose_finding_text`, `propose_finding`, `propose_observation`, `propose_endpoint_status`, `propose_subnet_details` (a scope subnet's description or site), `list_proposals`, `get_proposal` |
@@ -322,7 +322,7 @@ is missing, and never to set an environment variable or restart it.
 | `GET /assist/hosts.ndjson` | the host list, uncapped, one JSON object per line | auditor |
 | `GET /scope/hosts.ndjson` · `/scope/live-hosts.txt` · `/scope/web-targets.txt` | the scope's hosts, addresses and web URLs (subnet scope); empty files when the project declares nothing | auditor |
 | `GET /scope/named-targets.ndjson` | one row per in-scope name, with its current addresses and whether each is in subnet scope | auditor |
-| `POST /uploads` (multipart) | scanner output; poll with `get_upload_job` | analyst |
+| `POST /uploads` (multipart) | scanner output in any parsed format, or the BlueStick observation format (one JSON object per observation, for a tool with no parser or the agent's own findings — the guide's "Uploading" section); poll with `get_upload_job` | analyst |
 | `GET /evidence/{id}/raw` | an evidence record's whole raw output | any member |
 | `GET /assist/client-reports/{id}/files/{fmt}` · `/scope.csv` | a report's rendered file and its scope file | auditor |
 | `GET /assist/attachments/{id}` · `/assist/web-interfaces/{id}/screenshot` | an image's bytes | any member |
@@ -659,7 +659,8 @@ dismissed — is how a person checks it afterwards.
 | `POST /api/v1/agent/session/renew` | agent key (an expired one too) | the same key, a later deadline |
 | `POST /api/v1/agent/session/end` | agent key | end the session and revoke the key |
 | `POST /api/v1/agent/feedback` | agent key | file feedback; answers an acknowledgement |
-| `POST /api/v1/agent/uploads` · `GET /api/v1/agent/uploads/{job_id}` | agent key | upload scanner output (curl, multipart) · poll its parse (`get_upload_job`) |
+| `POST /api/v1/agent/uploads` · `GET /api/v1/agent/uploads/{job_id}` | agent key | upload scanner output (curl, multipart) — any parsed format, or the BlueStick observation format for a tool with no parser or the agent's own findings · poll its parse (`get_upload_job`) |
+| `POST /api/v1/agent/observations` | agent key | scanner observations as JSON — the BlueStick observation format without a file, through the upload path (`record_observations`); poll the job with `get_upload_job` |
 | `POST /api/v1/agent/uploads/{job_id}/keep-truncated` | agent key | import what this session's cut-short upload holds, after the operator agreed (`keep_truncated_upload`) |
 | `POST /api/v1/agent/tool-suggestions` | agent key | propose a tool for the catalogue |
 | `GET /api/v1/agent/assist/scanner-integrations` | agent key | the configured scanners, without credentials |

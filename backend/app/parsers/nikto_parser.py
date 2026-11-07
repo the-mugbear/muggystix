@@ -236,7 +236,9 @@ class NiktoParser:
             title=title,
             description=description,
             plugin_id=str(entry.get("id") or entry.get("osvdb") or "") or None,
-            cve_id=entry.get("cve"),
+            # An empty string is no CVE id (revision e5a8c3d1f7b4 cleared the
+            # stored ones).
+            cve_id=entry.get("cve") or None,
             # Nikto rates nothing: a severity is stored only when the file
             # (a wrapper format) states one; otherwise UNKNOWN, never an
             # invented LOW (2.536.0 — a statement a tool did not make is
@@ -269,7 +271,7 @@ class NiktoParser:
                     title=str(row.get("msg") or row.get("id") or "Nikto finding"),
                     description=row.get("description") or row.get("msg"),
                     plugin_id=row.get("id") or row.get("osvdb"),
-                    cve_id=row.get("cve"),
+                    cve_id=row.get("cve") or None,
                     severity=map_text_severity(row.get("severity")) if row.get("severity") else VulnerabilitySeverity.UNKNOWN,
                 )
 

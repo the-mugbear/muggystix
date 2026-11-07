@@ -132,7 +132,7 @@ def test_the_corpus_reached_every_format():
 DISPATCH_BEFORE = sorted([
     "AmassParser", "BloodHoundParser", "DNSParser", "DirBusterParser", "DnsxParser",
     "EyewitnessParser", "GnmapParser", "HttpxParser", "MasscanParser", "NaabuParser",
-    "NetexecParser", "NiktoParser", "NmapXMLParser", "NucleiParser", "OpenVASParser",
+    "NetexecParser", "NiktoParser", "NmapXMLParser", "NucleiParser", "ObservationsParser", "OpenVASParser",
     "RdapParser", "RustScanParser", "SMBMapParser", "TestsslParser", "WhatwebParser",
 ])
 

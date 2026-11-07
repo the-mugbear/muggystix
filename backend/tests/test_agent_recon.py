@@ -222,3 +222,66 @@ def test_upload_is_audited_to_the_session(client, db_session, recon_key, agent_s
         .first()
     )
     assert row is not None and row.agent_session_id == agent_session.id
+
+
+# --- observations as JSON (2.537.0) -----------------------------------------
+
+_OBSERVATIONS = {
+    "tool": "homebrew-scanner",
+    "observations": [
+        {"host": "10.93.0.1", "hostname": "web01.example.test", "port": 443, "service": "https",
+         "title": "Outdated TLS library", "severity": "high", "cves": ["CVE-2024-0001", "CVE-2024-0002"],
+         "cvss": {"score": 9.8, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}, "exploitable": True},
+        {"host": "10.93.0.2", "title": "Default community string", "port": 161, "protocol": "udp"},
+        {"host": "10.93.0.2", "check_id": "smb_signing_not_required", "port": 445, "evidence": "signing: False"},
+        {"hostname": "name-only.example.test", "title": "Cannot be placed"},
+    ],
+}
+
+
+def _observe(client, key, body):
+    return client.post("/api/v1/agent/observations", headers={"X-API-Key": key}, json=body)
+
+
+def test_observations_as_json_go_through_the_upload_path_to_the_same_parser(
+    client, db_session, test_project, recon_key, agent_session,
+):
+    """The route is the observation format without a file: the SAME parser,
+    job, attribution and skipping as an uploaded .jsonl."""
+    from app.db import models
+    from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+    from tests.ingestion_job_harness import job_row, run_next
+
+    up = _observe(client, recon_key, _OBSERVATIONS)
+    assert up.status_code == 201, up.text
+    body = up.json()
+    assert body["message"] == "4 observations queued for import"
+    job = db_session.get(models.IngestionJob, body["job_id"])
+    assert job.agent_session_id == agent_session.id
+    assert (job.options or {}).get("format_override") == "observations_jsonl"
+    assert job.original_filename.endswith(".jsonl")
+
+    assert run_next(db_session)
+    job = job_row(db_session, body["job_id"])
+    assert job.status in ("completed", "partial"), (job.status, job.error_message)
+    assert "no host address" in (job.parser_warnings or ""), job.parser_warnings
+
+    rows = {v.title: v for v in db_session.query(Vulnerability).join(models.Host).filter(
+        models.Host.project_id == test_project.id)}
+    assert set(rows) == {"Outdated TLS library", "Default community string", "SMB signing not required"}
+    tls = rows["Outdated TLS library"]
+    assert (tls.source.value, tls.severity, tls.exploitable, tls.cvss_version) == ("external", VulnerabilitySeverity.HIGH, True, "3.1")
+    assert rows["Default community string"].severity == VulnerabilitySeverity.UNKNOWN
+    assert rows["Default community string"].exploitable is None
+    scan = db_session.get(models.Scan, tls.scan_id)
+    assert scan.tool_name == "homebrew-scanner"
+
+    # The same body again is the same file: the upload's duplicate guard answers.
+    again = _observe(client, recon_key, _OBSERVATIONS)
+    assert again.status_code == 409 and again.json()["detail"]["code"] == "duplicate_scan"
+
+
+def test_observations_as_json_refuse_an_empty_or_oversized_list(client, recon_key):
+    assert _observe(client, recon_key, {"observations": []}).status_code == 422
+    assert _observe(client, recon_key, {"observations": [{"host": "10.93.1.1", "title": "x"}] * 501}).status_code == 422
+    assert _observe(client, recon_key, {"observations": ["not an object"]}).status_code == 422

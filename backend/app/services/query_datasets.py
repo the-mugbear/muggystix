@@ -324,7 +324,9 @@ DATASETS: Dict[str, Dataset] = {
         examples=[
             'observations | where judged=false AND severity="critical" | stats count by ip, hostname | sort -count',
             "observations | stats dc(host) as hosts, count by severity",
-            'observations | where severity IN ("critical", "high") | stats dc(host) as hosts by title | sort -hosts | head 20',
+            # By ISSUE and counting HOSTS — the Scanner observations page's grouping and unit.
+            'observations | where severity IN ("critical", "high") | stats dc(host) as hosts, values(title) as title by issue | sort -hosts | head 20',
+            "observations | where isnull(exploitable) | stats dc(host) as hosts by source",
             "observations has:web | where exploitable=true | table ip, port, title, cve",
         ],
     ),

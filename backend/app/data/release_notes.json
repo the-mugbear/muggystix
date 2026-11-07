@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.537.0",
+      "frontend": "5.428.1",
+      "date": "2026-11-06",
+      "entries": [
+        {"kind": "new", "text": "A tool-agnostic upload format: one JSON object per observation with \"schema\": \"bluestick-observation/1\", for a tool BlueStick has no parser for, a script, or an agent's own output. Upload it like any file; the rows are scanner observations with source \"external\" and the tool named on the scan."},
+        {"kind": "new", "text": "In that format every field is the uploader's statement: an omitted severity is recorded as unknown and an omitted exploit flag as not stated, never a default. A line that cannot be read is skipped and named in the import's warning; the rest imports. Reference → Tool coverage lists the fields."},
+        {"kind": "new", "text": "Agents can record such observations without a file: the MCP tool record_observations (POST /agent/observations) takes the same objects as JSON and imports them through the upload path, so they appear as an upload of the session with the same warnings and the same duplicate check."},
+        {"kind": "before_upgrading", "text": "Existing Nikto observations rated Low (Nikto never rated them) become severity unknown; re-upload a wrapper-format Nikto file to record a severity it stated. OpenVAS observations left as \"no exploit reported\" by the previous upgrade though nothing was stated become not stated. Nothing is deleted."}
+      ]
+    },
+    {
       "backend": "2.536.0",
       "frontend": "5.428.0",
       "date": "2026-11-06",
