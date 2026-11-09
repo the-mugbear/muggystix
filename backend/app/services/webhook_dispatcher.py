@@ -400,7 +400,15 @@ def _record_attempt(
     SessionLocal = _session_module.SessionLocal
     try:
         with SessionLocal() as db:
-            row = db.get(WebhookDelivery, delivery_id)
+            # Locked for the read–check–write below (review 2026-11-09 H2):
+            # without the lock, a reclaim (``_claim_for_send``'s UPDATE) could
+            # land between this read and the commit, and this sender's write —
+            # by primary key — would clear the new owner's token and overwrite
+            # its outcome.  Under the lock the reclaim waits, then re-evaluates
+            # its WHERE against what was committed here (a retry's future
+            # ``next_attempt_at``, or ``delivered``) and stands down.  The
+            # HTTP call happened before this session was opened.
+            row = db.get(WebhookDelivery, delivery_id, with_for_update=True)
             if row is None:
                 return
             # Only the claim holder may record. Without this a sender whose

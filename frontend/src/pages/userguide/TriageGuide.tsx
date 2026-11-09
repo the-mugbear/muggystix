@@ -202,7 +202,9 @@ const sections: GuideSection[] = [
           never a default. A <strong>finding</strong> is an issue the team has taken up: made by
           promoting a scanner observation or a test result that showed the issue, or written by
           hand — <em>Add finding</em> in a host&rsquo;s Findings section, for an issue no scanner row
-          or test result on that host stands for. The <strong>Findings</strong> page (Findings hub) lists findings.{' '}
+          or test result on that host stands for; for a web target reached by name, pick the name
+          there (or on the name&rsquo;s own sheet under <strong>Inventory → Names</strong>) and the
+          finding is on that name at that address. The <strong>Findings</strong> page (Findings hub) lists findings.{' '}
           <strong>Inventory → Scanner observations</strong> lists every scanner observation, grouped
           by issue across hosts, 50 to a page, and promotes several at once. Each row says how far
           it is judged (none, all, or how many of its hosts a finding covers) and, under its title,

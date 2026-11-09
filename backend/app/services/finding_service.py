@@ -819,11 +819,14 @@ class FindingService:
         source: str = FindingSource.MANUAL.value,
         owner_id: Optional[int] = None,
         host_ids: Optional[Sequence[int]] = None,
+        names_by_host: Optional[Dict[int, int]] = None,
         vuln_id: Optional[int] = None,
         summary: Optional[str] = None,
     ) -> Finding:
         """``summary`` goes on the creation history row (v2.439.1: an
-        accepted agent proposal names itself there)."""
+        accepted agent proposal names itself there).  ``names_by_host``
+        (host id → ``dns_names.id``, 2.538.0) makes the endpoint on that host
+        a NAMED one — the route has checked the name is observed there."""
         validate_severity(severity)
         _validate_status(status)
         finding = Finding(
@@ -837,7 +840,7 @@ class FindingService:
         # inherited the entry's named endpoint here; evidence records link to
         # their finding through ``EvidenceRecord.finding_id`` instead.)
         if host_ids:
-            self._attach_hosts(finding, host_ids)
+            self._attach_hosts(finding, host_ids, names_by_host=names_by_host)
         self._status_line(finding, from_status=None, to_status=status, actor_id=actor_id, summary=summary)
         self.db.flush()
         return finding

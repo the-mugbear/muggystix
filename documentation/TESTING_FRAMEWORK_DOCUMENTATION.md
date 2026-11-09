@@ -1,12 +1,13 @@
 # BlueStick Testing Guide
 
-> **Last verified against:** backend 2.533.0 / frontend 5.427.0 (2026-10-25)
+> **Last verified against:** backend 2.538.1 / frontend 5.429.0 (2026-11-09)
 
 ## Current Test Stack
 
 - Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage measurement configured in [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini) (a `--cov-fail-under` floor that no routine run enforces — every recipe and `check.sh` pass `--no-cov`; see "The gates"). For the size of the suite, `pytest --collect-only -q | tail -1` is the source.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 - Frontend browser suites: Playwright (`@playwright/test`, a dev dependency) from [`frontend/e2e`](/home/charles/Projects/Tools/NetworkMapper/frontend/e2e) — `npm run e2e`; Chromium once from `cd frontend && npx playwright install chromium`. Vitest excludes `e2e/`.
+- Races and row locks: `backend/tests/two_connections.py` (the `two_sessions` fixture) gives a test two INDEPENDENT connections to the per-run database that really commit — `conftest.db_session` binds every session of a test to one connection in a rolled-back transaction, so a lock, a unique-index race or a commit ordering is invisible to it. `two_sessions.race(a, b)` releases two callables together; for a deterministic interleaving use `two_sessions.a` / `.b` directly, or pause the code under test with a `Session` subclass (as `test_webhook_outbox.py`'s reclaim test does). Postgres only: the fixture skips on SQLite. Its rows are made under a project it deletes at teardown.
 
 ## The gates (run locally — there is no hosted CI)
 

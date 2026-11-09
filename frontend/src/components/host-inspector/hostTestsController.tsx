@@ -42,6 +42,7 @@ import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { hostEvidenceKey } from './HostEvidenceSection';
+import { HostNameSelect, useHostNameChoice } from '../names/HostNameSelect';
 import { openHostTest, type AddTestTarget, type HostTestsController } from './hostTestsContext';
 import {
   SideSheet,
@@ -254,9 +255,10 @@ const asPriority = (value: string | null | undefined): HostTestPriority =>
     ? ((value as string).toLowerCase() as HostTestPriority)
     : 'medium';
 
-interface AddPanelProps {
-  /** Null = closed; `{}` = a test about nothing scanned. */
-  target: { confirms?: AddTestTarget } | null;
+export interface AddPanelProps {
+  /** Null = closed; `{}` = a test about nothing scanned; `aimedAt` opens the
+   *  panel on one of the host's names (the Names page), preselected. */
+  target: { confirms?: AddTestTarget; aimedAt?: { nameId: number } } | null;
   hostId: number;
   userId?: number;
   onClose: () => void;
@@ -264,9 +266,13 @@ interface AddPanelProps {
   onDraft: (dirty: boolean) => void;
 }
 
-/** A person writes a test for this host — the same row an agent proposes. */
-const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose, onSaved, onDraft }) => {
+/** A person writes a test for this host — the same row an agent proposes.
+ *  Exported for the Names page, which opens it on a name's address. */
+export const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose, onSaved, onDraft }) => {
   const confirms = target?.confirms;
+  // 5.429.0 — aimed at one of the host's names (Host header / SNI): the
+  // server's `target_fqdn`, offered from the host's current names.
+  const aim = useHostNameChoice(hostId, target?.aimedAt?.nameId);
   const [description, setDescription] = useState('');
   const [tool, setTool] = useState('');
   const [command, setCommand] = useState('');
@@ -290,7 +296,9 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
   // The weakness is the reason when the test confirms one; otherwise the
   // analyst says why.
   const why = rationale.trim() || (confirms ? `To confirm the scanner observation “${confirms.title}”.` : '');
-  const ready = description.trim().length > 0 && tool.trim().length > 0 && why.length > 0;
+  // A name aimed at and not yet confirmed (pending, failed, or gone from the
+  // host) holds the panel: the bare address is never sent in its place.
+  const ready = description.trim().length > 0 && tool.trim().length > 0 && why.length > 0 && aim.ready;
 
   const save = () => {
     if (!ready) return;
@@ -305,6 +313,7 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
       ...(expected.trim() ? { expected_result: expected.trim() } : {}),
       ...(mine && userId != null ? { assigned_to_id: userId } : {}),
       ...(confirms ? { vulnerability_id: confirms.vulnerabilityId } : {}),
+      ...(aim.chosen ? { target_fqdn: aim.chosen.fqdn } : {}),
     }, {
       // Answered only while the panel is on screen: if the analyst stepped to
       // another host meanwhile, the test belongs to no list on screen, and
@@ -359,6 +368,7 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
               </Select>
             </div>
           </div>
+          <HostNameSelect id="host-test-add-target" choice={aim} label="Aimed at" />
           <div>
             <Label htmlFor="host-test-add-command">Command (optional)</Label>
             <Textarea

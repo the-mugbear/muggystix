@@ -13,7 +13,7 @@ from app.db.models_auth import User
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 from app.db.session import persisted_ids
-from app.services.dns_name_service import InvalidName, normalize_fqdn
+from app.services.dns_name_service import NAME_NOT_AT_HOST, InvalidName, name_observed_at_host
 from app.services.paging import page_envelope
 from app.services.project_assignee import load_project_assignee
 
@@ -42,20 +42,17 @@ def validate_assignee(db, project_id, user_id):
 
 
 def resolve_target_name(db, project_id, host, fqdn):
+    """The name a test is aimed at, as ``(name_id, fqdn)`` — by the ONE rule
+    for an endpoint on a name, ``dns_name_service.name_observed_at_host``
+    (a finding's ``name_id`` asks the same)."""
     if not fqdn:
         return None, None
     try:
-        fqdn, kind = normalize_fqdn(fqdn)
+        name = name_observed_at_host(db, project_id, host, fqdn=fqdn)
     except InvalidName as exc:
         raise HTTPException(422, str(exc)) from exc
-    name = db.query(models.DNSName).filter(
-        models.DNSName.project_id == project_id, models.DNSName.fqdn == fqdn,
-    ).first()
-    if kind != "fqdn" or name is None or not db.query(models.DNSRecord.id).filter(
-        models.DNSRecord.name_id == name.id, models.DNSRecord.value == host.ip_address,
-        models.DNSRecord.record_type.in_(models.DNS_ADDRESS_VALUED_TYPES),
-    ).first():
-        raise HTTPException(422, "Target name must be observed at this host in this project")
+    if name is None:
+        raise HTTPException(422, NAME_NOT_AT_HOST)
     return name.id, name.fqdn
 
 

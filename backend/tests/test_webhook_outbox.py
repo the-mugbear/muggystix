@@ -19,6 +19,7 @@ from app.db.models_project import (
     WebhookDeliveryStatus,
 )
 from app.services import webhook_dispatcher as wd
+from tests.two_connections import two_sessions  # noqa: F401  (fixture: two real connections)
 
 # The autouse fixture below replaces it; the A-R4 test needs the real one.
 _REAL_ATTEMPT = wd._attempt_delivery
@@ -297,6 +298,101 @@ def test_the_dead_senders_result_cannot_overwrite_the_new_owner(
     assert row.status != "delivered", (
         "a sender that lost its claim marked the delivery done"
     )
+
+
+def test_a_reclaim_during_the_outcome_write_waits_and_stands_down(two_sessions, test_engine, monkeypatch):
+    """Review 2026-11-09 H2.  The test above reclaims BEFORE the stale sender
+    reads, so the token check catches it.  The gap was the sender's own
+    read–check–write: a reclaim landing between ``_record_attempt``'s read and
+    its commit passed the check, and the commit — an UPDATE by primary key —
+    then cleared the new owner's token and overwrote its outcome.  The read is
+    locked now: the reclaim waits, re-evaluates its WHERE against what was
+    committed (a retry's future ``next_attempt_at``) and stands down.
+
+    Two real connections (Postgres only).  A's session pauses inside the
+    function, after its read; B reclaims meanwhile and must block.
+    """
+    import threading
+
+    from sqlalchemy.orm import Session, sessionmaker
+
+    from app.db import session as _session_module
+
+    project, user = two_sessions.project()
+
+    def staged(db):
+        cfg = WebhookConfig(
+            project_id=project.id, name="race", url="https://receiver.invalid/hook",
+            events=[], is_active=True, created_by_id=user.id,
+        )
+        db.add(cfg)
+        db.flush()
+        wd.WebhookDispatcher(db).stage(project_id=project.id, event="host_assigned", title="race")
+        return db.query(WebhookDelivery).filter(WebhookDelivery.project_id == project.id).one()
+
+    delivery_id = two_sessions.commit(staged).id
+
+    read_done, proceed = threading.Event(), threading.Event()
+
+    class PausingSession(Session):
+        """The dispatcher's session, paused once it has read the row — the
+        moment between A's check and A's commit."""
+
+        def get(self, *args, **kwargs):
+            row = super().get(*args, **kwargs)
+            read_done.set()
+            proceed.wait(timeout=10)
+            return row
+
+    monkeypatch.setattr(
+        _session_module, "SessionLocal",
+        sessionmaker(bind=test_engine, autoflush=False, autocommit=False, class_=PausingSession),
+    )
+
+    token = wd._claim_for_send(delivery_id)
+    assert token is not None
+
+    # The POST was slow: the lease ran out before the outcome is recorded.
+    def expire(db):
+        db.get(WebhookDelivery, delivery_id).next_attempt_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    two_sessions.commit(expire)
+
+    # A: back from the POST with a failure; it reads the row and pauses.
+    a = threading.Thread(
+        target=wd._record_attempt, args=(delivery_id, False, 503, "receiver returned HTTP 503"),
+        kwargs={"token": token}, daemon=True,
+    )
+    a.start()
+    assert read_done.wait(timeout=10), "the outcome write never read the row"
+
+    # B: a second sender sees the expired lease and reclaims — it must wait.
+    reclaimed = {}
+    b = threading.Thread(target=lambda: reclaimed.update(token=wd._claim_for_send(delivery_id)), daemon=True)
+    b.start()
+    b.join(timeout=1.0)
+    assert b.is_alive(), (
+        "the reclaim went through while the outcome was being written: the row is not "
+        "locked, and A's commit would clear the new owner's token and overwrite its outcome"
+    )
+
+    proceed.set()
+    a.join(timeout=10)
+    b.join(timeout=10)
+    assert not a.is_alive() and not b.is_alive(), "a held lock or a deadlock"
+
+    # B re-evaluated against A's committed retry (next attempt in the future) and stood down.
+    assert reclaimed.get("token") is None
+    db = two_sessions.fresh()
+    try:
+        row = db.get(WebhookDelivery, delivery_id)
+        assert row.status == WebhookDeliveryStatus.PENDING.value
+        assert row.claim_token is None
+        assert row.attempts == 1
+        assert row.last_error == "receiver returned HTTP 503"
+        assert row.next_attempt_at > datetime.now(timezone.utc), "A's backoff is what the row holds"
+    finally:
+        db.close()
 
 
 def test_queue_full_hands_the_row_straight_back_to_the_sweeper(

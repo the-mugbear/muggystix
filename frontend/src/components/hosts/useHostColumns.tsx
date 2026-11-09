@@ -302,7 +302,7 @@ export const computeAttention = (
     });
   }
   // v5.270.0 — no "Stale" reason: a project is one assessment window, and a
-  // scan's age is provenance, never an attention signal (CLAUDE.md /posture).
+  // scan's age is provenance, never an attention signal (AGENTS.md, "Two installation modes").
   return { primary: reasons[0] ?? null, others: reasons.slice(1) };
 };
 

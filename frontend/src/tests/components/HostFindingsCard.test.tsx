@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   setFindingStatus: vi.fn(),
   setFindingEndpointStatus: vi.fn(),
   createFinding: vi.fn(),
+  getHostNames: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ hasPermission: () => true }) }));
@@ -49,12 +50,36 @@ const renderCard = () => render(
   <MemoryRouter><ReadsOnScreen /><HostFindingsCard hostId={HOST} /></MemoryRouter>,
 );
 
+/** The host's names, as `GET /names/by-host/{id}` answers: none by default. */
+const NO_NAMES = { host_id: HOST, current: [], previous: [], other: [], in_scope_via_names: false };
+const binding = (name_id: number, fqdn: string) => ({
+  name_id, fqdn, kind: 'fqdn', in_scope: true, record_types: ['A'], last_observed: '2026-11-01T00:00:00Z',
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   projectRole.value = 'analyst';
+  api.getHostNames.mockResolvedValue(NO_NAMES);
 });
 
 describe('HostFindingsCard', () => {
+  it('offers the host’s current names as the endpoint; the bare address stays the default (5.429.0)', async () => {
+    const user = userEvent.setup();
+    api.listFindings.mockResolvedValue({ items: [] });
+    api.getHostNames.mockResolvedValue({ ...NO_NAMES, current: [binding(3, 'portal.acme.com')] });
+    api.createFinding.mockResolvedValue(finding({ id: 42, title: 'Weak TLS', status: 'open', source: 'manual' }));
+    renderCard();
+    await user.click(await screen.findByRole('button', { name: 'Add finding' }));
+    // The picker shows once the names are read, on the address.
+    expect(await screen.findByRole('combobox', { name: 'On' })).toHaveTextContent('The address only');
+    await user.type(screen.getByLabelText('Finding title'), 'Weak TLS');
+    await user.click(screen.getByRole('button', { name: 'Add finding' }));
+    await waitFor(() => expect(api.createFinding).toHaveBeenCalledWith(1, {
+      title: 'Weak TLS', severity: 'medium', status: 'open', host_ids: [HOST],
+    }));
+    expect(api.getHostNames).toHaveBeenCalledWith(1, HOST, expect.anything());
+  });
+
   it('a writer adds a finding on a host that has none, and is offered the write-up', async () => {
     const user = userEvent.setup();
     const made = finding({ id: 41, title: 'Shared local admin password', severity: 'medium', status: 'open', source: 'manual' });

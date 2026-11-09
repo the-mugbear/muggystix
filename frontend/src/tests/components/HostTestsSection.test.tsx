@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   getEvidenceRawOutput: vi.fn(),
   listProposals: vi.fn(),
   getToolRegistry: vi.fn(),
+  getHostNames: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 
@@ -88,6 +89,8 @@ const panel = () => screen.getByRole('dialog');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The host's names (the Add test panel's "Aimed at" picker): none here.
+  api.getHostNames.mockResolvedValue({ host_id: 5, current: [], previous: [], other: [], in_scope_via_names: false });
   agent.allowed = true;
   window.location.hash = '';
   api.listHostTests.mockResolvedValue(page([test()]));

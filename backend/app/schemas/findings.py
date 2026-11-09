@@ -306,6 +306,11 @@ class FindingCreateRequest(BaseModel):
     status: Optional[str] = None
     owner_id: Optional[int] = None
     host_ids: List[int] = []
+    #: 2.538.0 — the NAME the finding is on (a web target by host name): the
+    #: endpoint becomes (host, name) instead of the bare host.  Sent with
+    #: exactly one ``host_ids`` entry; the name must be observed at that host
+    #: (the same rule as a host test's ``target_fqdn``), else a 422.
+    name_id: Optional[int] = Field(None, gt=0)
 
 
 class FindingUpdateRequest(BaseModel):

@@ -2,6 +2,24 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.538.1",
+      "frontend": "5.429.0",
+      "date": "2026-11-09",
+      "entries": [
+        {"kind": "fixed", "text": "A webhook delivery's outcome is now recorded under a lock on its row. A slow receiver whose lease ran out at the very moment the result was being written could let a second sender take the delivery and then have that result overwritten, so the receiver might be sent the same notification again."}
+      ]
+    },
+    {
+      "backend": "2.538.0",
+      "frontend": "5.429.0",
+      "date": "2026-11-09",
+      "entries": [
+        {"kind": "new", "text": "A finding or a test can be written on a NAME. Add finding and Add test on a host offer the host's current names; the finding or test is then on that name at that address — the endpoint a report prints for a web target reached by host name."},
+        {"kind": "new", "text": "A name's sheet (Inventory → Names) offers Add finding and Add test on each address the name resolves to, with the name chosen. The name must be one observed resolving to that host; if it cannot be confirmed, the form waits for a retry or an explicit choice of the address alone."},
+        {"kind": "fixed", "text": "Operations told a project scoped by domain names alone that it had no scope and showed the welcome block. A domain entry now counts as a registered scope, as a network range does."}
+      ]
+    },
+    {
       "backend": "2.537.0",
       "frontend": "5.428.1",
       "date": "2026-11-06",

@@ -478,10 +478,11 @@ def test_operations_says_whether_the_project_has_hosts_and_scope_entries(client,
     db_session.commit()
     assert setup() == {"has_hosts": False, "has_scopes": False}
 
-    # A domain alone is not a subnet entry.
+    # A domain entry counts (2.538.0): an engagement against web targets by
+    # name is scoped by domains alone, and used to be told it had no scope.
     db_session.add(models.ScopeDomain(scope_id=scope.id, domain="setup.example", include_subdomains=False))
     db_session.commit()
-    assert setup() == {"has_hosts": False, "has_scopes": False}
+    assert setup() == {"has_hosts": False, "has_scopes": True}
 
     db_session.add(models.Subnet(scope_id=scope.id, cidr="10.9.9.0/24"))
     db_session.commit()

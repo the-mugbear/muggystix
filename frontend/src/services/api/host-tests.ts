@@ -57,6 +57,9 @@ export interface HostTestCreateBody {
   assigned_to_id?: number;
   /** The scanner observation on this host that the test is meant to confirm. */
   vulnerability_id?: number;
+  /** The NAME the test is aimed at (Host header / SNI): one observed at this
+   *  host, else the server refuses it (422). */
+  target_fqdn?: string;
 }
 /** Add tests to hosts by hand — the same route an agent proposes through. */
 export const createHostTests = async (projectId: number, tests: HostTestCreateBody[]): Promise<{ items: HostTest[] }> =>

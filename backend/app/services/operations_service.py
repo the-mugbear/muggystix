@@ -130,9 +130,11 @@ class ProjectSetup(BaseModel):
     whole scope-coverage answer for these.)  One statement of two ``EXISTS``."""
     #: The project has at least one host.
     has_hosts: bool = False
-    #: The project's scope has at least one subnet ENTRY.  The scope row
-    #: itself says nothing, and a domain alone does not count (owner,
-    #: 2026-10-10: a domain-only project is still set up).
+    #: The project's scope has at least one ENTRY — a subnet or a domain.  The
+    #: scope row itself says nothing.  (Until 2.538.0 a domain alone did not
+    #: count and a domain-only project was told it had no scope; engagements
+    #: against web targets by name are scoped by domains alone — owner,
+    #: 2026-11-09.)
     has_scopes: bool = False
 
 
@@ -183,17 +185,23 @@ class OperationsResponse(BaseModel):
 
 
 def compute_project_setup(db: Session, project: Project) -> ProjectSetup:
-    """``ProjectSetup`` in ONE statement: two ``EXISTS`` (each stops at its
-    first row)."""
+    """``ProjectSetup`` in ONE statement: three ``EXISTS`` (each stops at its
+    first row) — a host, a subnet entry, a domain entry."""
     has_hosts = select(models.Host.id).where(models.Host.project_id == project.id).exists()
-    has_scopes = (
+    has_subnet = (
         select(models.Subnet.id)
         .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
         .where(models.Scope.project_id == project.id)
         .exists()
     )
-    row = db.execute(select(has_hosts, has_scopes)).one()
-    return ProjectSetup(has_hosts=bool(row[0]), has_scopes=bool(row[1]))
+    has_domain = (
+        select(models.ScopeDomain.id)
+        .join(models.Scope, models.ScopeDomain.scope_id == models.Scope.id)
+        .where(models.Scope.project_id == project.id)
+        .exists()
+    )
+    row = db.execute(select(has_hosts, has_subnet, has_domain)).one()
+    return ProjectSetup(has_hosts=bool(row[0]), has_scopes=bool(row[1]) or bool(row[2]))
 
 
 def get_cursor(db: Session, user_id: int, project_id: int) -> Optional[OperationsCursor]:

@@ -1,7 +1,7 @@
 /**
  * Audit log viewer (v2.243.0) — admin only, deployment-wide.
  *
- * CLAUDE.md documents audit logging as a feature and the backend has recorded
+ * The architecture guide documents audit logging as a feature and the backend has recorded
  * events all along; there was simply no way to read them without hitting the
  * API by hand. That undercuts the point of an audit trail, and especially the
  * auditor role.

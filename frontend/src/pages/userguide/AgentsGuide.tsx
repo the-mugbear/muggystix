@@ -230,8 +230,12 @@ const sections: GuideSection[] = [
           Write one yourself: <strong><em>Add test</em></strong> in a host's Tests section, or{' '}
           <strong><em>Add a test</em></strong> on an open weakness (the test is then tied to that
           weakness). Say what to check and with which tool; the command, what counts as a finding
-          and the reason are optional when a weakness is named. It is the same test an agent
-          proposes, and you record its result the same way.
+          and the reason are optional when a weakness is named. For a web target reached by host
+          name, <em>Aimed at</em> picks one of the host&rsquo;s names — the test is then on that name
+          at that address, and <Mono>{'{fqdn}'}</Mono> in the command stands for it (a name&rsquo;s
+          own sheet under <strong>Inventory → Names</strong> offers <em>Add test</em> on each address
+          it resolves to). It is the same test an agent proposes, and you record its result the
+          same way.
         </Para>
         <Para>
           Or ask your agent: <strong><em>Ask agent</em></strong> in a host's Tests section, or{' '}

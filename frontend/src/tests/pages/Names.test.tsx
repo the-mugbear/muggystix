@@ -10,6 +10,10 @@ vi.mock('../../services/api', () => ({
   importNames: vi.fn(),
   deleteName: vi.fn(),
   exportNames: vi.fn(),
+  // 5.429.0 — the sheet's "Add finding" / "Add test" on a name's address.
+  getHostNames: vi.fn(),
+  createFinding: vi.fn(),
+  createHostTests: vi.fn(),
 }));
 const confirmMock = vi.fn();
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
@@ -44,6 +48,128 @@ const renderAt = (url: string) =>
       <Names />
     </MemoryRouter>,
   );
+
+// 5.429.0 — a finding or a test ON A NAME, from its sheet: a web target reached
+// by host name has its work on the name at the address it resolves to.
+describe('Names — Add finding / Add test on a name’s address', () => {
+  const address = {
+    ip_address: '10.0.0.5', host_id: 5, record_type: 'A', first_observed: null, last_observed: null,
+    observations: 1, shared_with: 0,
+  };
+  const detail = {
+    ...row, resolved: true, current_addresses: [address], previous_addresses: [],
+    observations: [], observations_total: 1, sibling_names: [],
+  };
+  const hostNames = {
+    host_id: 5, in_scope_via_names: true, previous: [], other: [],
+    current: [{ name_id: 1, fqdn: 'portal.acme.com', kind: 'fqdn', in_scope: true, record_types: ['A'], last_observed: null }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    role = 'analyst';
+    mocked.listNames.mockResolvedValue({ items: [{ ...row, resolved: true, current_addresses: [address] }], total: 1, skip: 0, limit: 50 });
+    mocked.getNamesSummary.mockResolvedValue({ total: 1, unresolved: 0, resolved: 1, in_scope: 1, out_of_scope: 0, wildcards: 0, shared_names: 0 });
+    mocked.getName.mockResolvedValue(detail);
+    mocked.getHostNames.mockResolvedValue(hostNames);
+  });
+
+  it('Add finding sends the address’s host AND the name, preselected', async () => {
+    mocked.createFinding.mockResolvedValue({ id: 41, title: 'Weak TLS on the portal', hosts: [] });
+    renderAt('/names');
+    fireEvent.click(await screen.findByText('portal.acme.com'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add finding' }));
+
+    fireEvent.change(await screen.findByLabelText('Finding title'), { target: { value: 'Weak TLS on the portal' } });
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'On' })).toHaveTextContent('portal.acme.com'));
+    const submit = screen.getAllByRole('button', { name: 'Add finding' })
+      .find((b) => (b as HTMLButtonElement).type === 'submit') as HTMLButtonElement;
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(mocked.createFinding).toHaveBeenCalledWith(1, {
+      title: 'Weak TLS on the portal', severity: 'medium', status: 'open', host_ids: [5], name_id: 1,
+    }));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Finding added: Weak TLS on the portal', expect.anything()));
+  });
+
+  it('Add test opens the test panel aimed at the name and sends target_fqdn', async () => {
+    mocked.createHostTests.mockResolvedValue({ items: [{ id: 9, host_ip: '10.0.0.5', target_fqdn: 'portal.acme.com' }] });
+    renderAt('/names');
+    fireEvent.click(await screen.findByText('portal.acme.com'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add test' }));
+
+    fireEvent.change(await screen.findByLabelText('What to check'), { target: { value: 'TLS configuration of the portal' } });
+    fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'testssl' } });
+    fireEvent.change(screen.getByLabelText('Why'), { target: { value: 'The target is reached by name.' } });
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Aimed at' })).toHaveTextContent('portal.acme.com'));
+    const submit = screen.getAllByRole('button', { name: 'Add test' }).find((b) => b.closest('li') == null) as HTMLButtonElement;
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(mocked.createHostTests).toHaveBeenCalledWith(1, [expect.objectContaining({
+      host_id: 5, tool: 'testssl', description: 'TLS configuration of the portal', target_fqdn: 'portal.acme.com', assigned_to_id: 1,
+    })]));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Test added, aimed at portal.acme.com'));
+  });
+
+  // Review 2026-11-09 H1: a form opened ON a name never falls back to the bare
+  // address by itself — not when the names read fails, not when the answer
+  // lacks the name.  The address is the reader's explicit choice only.
+  it('a failed names read holds Add finding; Retry confirms the name; the address only by choice', async () => {
+    mocked.getHostNames.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(hostNames);
+    mocked.createFinding.mockResolvedValue({ id: 41, title: 'Weak TLS on the portal', hosts: [] });
+    renderAt('/names');
+    fireEvent.click(await screen.findByText('portal.acme.com'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add finding' }));
+    fireEvent.change(await screen.findByLabelText('Finding title'), { target: { value: 'Weak TLS on the portal' } });
+
+    const problem = await screen.findByRole('alert');
+    expect(problem).toHaveTextContent(/cannot be confirmed at this address/);
+    const submit = () => screen.getAllByRole('button', { name: 'Add finding' })
+      .find((b) => (b as HTMLButtonElement).type === 'submit') as HTMLButtonElement;
+    expect(submit()).toBeDisabled();
+    fireEvent.click(submit());
+    expect(mocked.createFinding).not.toHaveBeenCalled();
+
+    fireEvent.click(within(problem).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'On' })).toHaveTextContent('portal.acme.com'));
+    await waitFor(() => expect(submit()).toBeEnabled());
+    fireEvent.click(submit());
+    await waitFor(() => expect(mocked.createFinding).toHaveBeenCalledWith(1, expect.objectContaining({ host_ids: [5], name_id: 1 })));
+  });
+
+  it('a names answer without the name holds Add test until the reader chooses the address only', async () => {
+    mocked.getHostNames.mockResolvedValue({ ...hostNames, current: [] });
+    mocked.createHostTests.mockResolvedValue({ items: [{ id: 9, host_ip: '10.0.0.5', target_fqdn: null }] });
+    renderAt('/names');
+    fireEvent.click(await screen.findByText('portal.acme.com'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add test' }));
+    fireEvent.change(await screen.findByLabelText('What to check'), { target: { value: 'TLS configuration of the portal' } });
+    fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'testssl' } });
+    fireEvent.change(screen.getByLabelText('Why'), { target: { value: 'The target is reached by name.' } });
+
+    const problem = await screen.findByRole('alert');
+    expect(problem).toHaveTextContent(/no longer resolves to this address/);
+    const submit = () => screen.getAllByRole('button', { name: 'Add test' }).find((b) => b.closest('li') == null) as HTMLButtonElement;
+    expect(submit()).toBeDisabled();
+
+    fireEvent.click(within(problem).getByRole('button', { name: 'Use the address only' }));
+    await waitFor(() => expect(submit()).toBeEnabled());
+    fireEvent.click(submit());
+    await waitFor(() => expect(mocked.createHostTests).toHaveBeenCalledTimes(1));
+    const sent = mocked.createHostTests.mock.calls[0][1][0];
+    expect(sent.host_id).toBe(5);
+    expect(sent).not.toHaveProperty('target_fqdn');
+  });
+
+  it('a viewer sees the addresses but no action on them', async () => {
+    role = 'viewer';
+    renderAt('/names');
+    fireEvent.click(await screen.findByText('portal.acme.com'));
+    expect(await screen.findByText('open host')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add finding' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add test' })).toBeNull();
+  });
+});
 
 describe('Names page export', () => {
   beforeEach(() => {

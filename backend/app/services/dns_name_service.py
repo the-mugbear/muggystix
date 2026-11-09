@@ -1095,6 +1095,46 @@ def hosts_for_addresses(db: Session, project_id: int, ips: Iterable[str]) -> Dic
     }
 
 
+#: Why a name cannot be the endpoint on a host — the one sentence both doors
+#: answer with (a host test's ``target_fqdn``, a finding's ``name_id``).
+NAME_NOT_AT_HOST = "Target name must be observed at this host in this project"
+
+
+def name_observed_at_host(
+    db: Session, project_id: int, host, *, name_id: Optional[int] = None, fqdn: Optional[str] = None,
+):
+    """The project's ``DNSName`` that is observed AT ``host`` — an
+    address-valued record (A / AAAA / PTR, or a scanner / HTTP / certificate /
+    tested observation) whose value is the host's address — or ``None``.
+
+    THE rule for every hand-made endpoint on a name (2.538.0): a host test's
+    ``target_fqdn`` (``host_test_service.resolve_target_name``) and a
+    finding's ``name_id`` (``POST /findings``) both ask it, so a name a test
+    may aim at is exactly a name a finding may be on.  By ``fqdn`` (normalised;
+    an invalid one raises ``InvalidName``) or by ``name_id``; a wildcard is
+    never an endpoint.
+    """
+    n = models.DNSName
+    q = db.query(n).filter(n.project_id == project_id, n.kind == "fqdn")
+    if fqdn is not None:
+        fqdn, kind = normalize_fqdn(fqdn)
+        if kind != "fqdn":
+            return None
+        q = q.filter(n.fqdn == fqdn)
+    elif name_id is not None:
+        q = q.filter(n.id == name_id)
+    else:
+        return None
+    name = q.first()
+    if name is None:
+        return None
+    bound = db.query(models.DNSRecord.id).filter(
+        models.DNSRecord.name_id == name.id, models.DNSRecord.value == host.ip_address,
+        models.DNSRecord.record_type.in_(models.DNS_ADDRESS_VALUED_TYPES),
+    ).first()
+    return name if bound else None
+
+
 def names_per_address(db: Session, project_id: int, ips: Iterable[str]) -> Dict[str, int]:
     """How many distinct names CURRENTLY resolve to each address — the
     shared-address (load balancer / vhost) signal."""

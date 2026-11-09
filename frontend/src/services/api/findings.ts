@@ -306,6 +306,9 @@ export interface FindingCreatePayload {
   status?: FindingStatus;
   owner_id?: number | null;
   host_ids?: number[];
+  /** 5.429.0 — the name the finding is on (with exactly one host): the
+   *  endpoint is (host, name). The name must be observed at that host. */
+  name_id?: number;
 }
 /** v5.346.0 — write a finding directly (the host page's "Add finding"). */
 export const createFinding = async (projectId: number, payload: FindingCreatePayload): Promise<Finding> => {

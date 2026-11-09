@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Loader2, Trash2, Upload } from 'lucide-react';
 
 import {
@@ -20,7 +20,10 @@ import {
 } from '../services/api';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import { AddFindingForm } from '../components/findings/AddFindingForm';
+import { AddTestPanel } from '../components/host-inspector/hostTestsController';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
@@ -204,13 +207,19 @@ const EvidenceLegend: React.FC = () => (
   </span>
 );
 
-const AddressLine: React.FC<{ a: NameAddress }> = ({ a }) => (
+/** One address of a name.  `actions` (5.429.0): what a writer may do ON THE
+ *  NAME at this address — add a finding or a test, the endpoint being
+ *  (host, name) — offered only where the address has a host row. */
+const AddressLine: React.FC<{ a: NameAddress; actions?: React.ReactNode }> = ({ a, actions }) => (
   <li className="flex flex-wrap items-center gap-xs py-2xs">
     <span className="font-mono text-metadata">{a.ip_address}</span>
     {a.host_id != null ? (
-      <Link to={`/hosts/${a.host_id}`} className="text-metadata text-primary hover:underline">
-        open host
-      </Link>
+      <>
+        <Link to={`/hosts/${a.host_id}`} className="text-metadata text-primary hover:underline">
+          open host
+        </Link>
+        {actions}
+      </>
     ) : (
       <span className="text-caption text-muted-foreground" title="No scan has observed this address; no host row is invented.">
         not in host inventory
@@ -431,9 +440,12 @@ interface DetailSheetProps {
   onClose: () => void;
   onNavigate: (nameId: number) => void;
   canEdit: boolean;
+  /** Add a finding / a test on this name at one of its current addresses. */
+  onAddFinding: (hostId: number, name: NameDetail) => void;
+  onAddTest: (hostId: number, name: NameDetail) => void;
 }
 
-const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, canEdit }) => {
+const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, canEdit, onAddFinding, onAddTest }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
@@ -522,7 +534,20 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
                 ) : (
                   <ul className="divide-y divide-border">
                     {detail.current_addresses.map((a) => (
-                      <AddressLine key={a.ip_address} a={a} />
+                      <AddressLine
+                        key={a.ip_address}
+                        a={a}
+                        actions={canEdit && a.host_id != null ? (
+                          <span className="flex flex-wrap gap-2xs">
+                            <Button size="sm" variant="outline" className="h-7" onClick={() => onAddFinding(a.host_id as number, detail)}>
+                              Add finding
+                            </Button>
+                            <Button size="sm" variant="outline" className="h-7" onClick={() => onAddTest(a.host_id as number, detail)}>
+                              Add test
+                            </Button>
+                          </span>
+                        ) : undefined}
+                      />
                     ))}
                   </ul>
                 )}
@@ -647,6 +672,15 @@ const Names: React.FC = () => {
   const { canWrite: canEdit, canExport } = useProjectRole();
   const projectId = useProjectId();
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  // 5.429.0 — a finding or a test ON A NAME, from its sheet: the endpoint is
+  // (host, name), so the action names the address's host and the name.
+  type OnName = { hostId: number; nameId: number; fqdn: string };
+  const [addFinding, setAddFinding] = useState<OnName | null>(null);
+  const [addTest, setAddTest] = useState<OnName | null>(null);
+  const onName = (hostId: number, name: NameDetail): OnName => ({ hostId, nameId: name.id, fqdn: name.fqdn });
 
   // The filters are the address's (UI_STYLE_GUIDE §39): read from it on every
   // render, so a link to this page with other filters, and Back, are what the
@@ -1007,7 +1041,49 @@ const Names: React.FC = () => {
         onClose={() => setSelectedId(null)}
         onNavigate={(id) => setSelectedId(id)}
         canEdit={canEdit}
+        onAddFinding={(hostId, name) => setAddFinding(onName(hostId, name))}
+        onAddTest={(hostId, name) => setAddTest(onName(hostId, name))}
       />
+      <Dialog open={addFinding != null} onOpenChange={(o) => { if (!o) setAddFinding(null); }}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Add finding on <span className="font-mono">{addFinding?.fqdn}</span></DialogTitle>
+            <DialogDescription>
+              The finding is on this name at the chosen address; its report text is written on the finding&rsquo;s page.
+            </DialogDescription>
+          </DialogHeader>
+          {addFinding && (
+            <AddFindingForm
+              key={`${addFinding.hostId}-${addFinding.nameId}`}
+              hostId={addFinding.hostId}
+              initialNameId={addFinding.nameId}
+              onAdded={(made) => {
+                setAddFinding(null);
+                toast.success(`Finding added: ${made.title}`, {
+                  autoHideMs: 8000,
+                  action: { label: 'Write it up', onClick: () => navigate(`/findings/${made.id}?edit=report-text`) },
+                });
+              }}
+              onCancel={() => setAddFinding(null)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      {addTest && (
+        <AddTestPanel
+          key={`${addTest.hostId}-${addTest.nameId}`}
+          target={{ aimedAt: { nameId: addTest.nameId } }}
+          hostId={addTest.hostId}
+          userId={user?.id}
+          onClose={() => setAddTest(null)}
+          onDraft={() => undefined}
+          onSaved={(created) => {
+            setAddTest(null);
+            void invalidateReads(queryClient, 'listHostTests');
+            toast.success(`Test added, aimed at ${created.target_fqdn ?? created.host_ip}`);
+          }}
+        />
+      )}
     </div>
   );
 };

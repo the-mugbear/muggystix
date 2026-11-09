@@ -1149,11 +1149,12 @@ describe('Operations page', () => {
       expect(listCalls()).toEqual({ findings: 0, hosts: 0, tests: 0, changed: 0, pickup: 0 });
     });
 
-    // 5.332.2 — a scope with no subnet in it is not "registered" yet.
-    // The page keeps its chrome on every such project (an agent session can
-    // still be started from here — a project with only domains declared is
-    // in this state too).  Until `setup.scope_rows` went, a project with no
-    // scope ROW hid it; the row's existence is no longer told or asked.
+    // 5.332.2 — a scope with no ENTRY in it is not "registered" yet.  The
+    // page keeps its chrome on every such project (an agent session can
+    // still be started from here).  Until `setup.scope_rows` went, a project
+    // with no scope ROW hid it; the row's existence is no longer told or
+    // asked.  (5.429.0: a domain entry counts as registered — the server's
+    // `has_scopes` says so; the page only reads the flag.)
     it('a project whose scope has no entries gets the welcome block, not "Scope is registered"', async () => {
       projectWith({ ...noHosts, has_scopes: false });
       renderPage();

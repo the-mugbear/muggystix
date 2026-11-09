@@ -507,15 +507,17 @@ const Operations: React.FC = () => {
         </div>
       )}
 
-      {/* 5.332.2 — "declared" is a subnet entry, not the scope row: every
+      {/* 5.332.2 — "declared" is a scope ENTRY, not the scope row: every
           project has its one (empty) scope from creation, and a new project
           was told "Scope is registered — scan your registered scope".
-          (`setup.has_scopes` is exactly that: a scope with an entry.) */}
+          (`setup.has_scopes` is exactly that: a scope with an entry — a subnet
+          or, since 5.429.0, a domain: an engagement against web targets by
+          name is scoped by domains alone.) */}
       {brandNew && (
         <SetupBlock title="Welcome — let's set up this project">
           This project has no scope entries or scans yet. Start by registering the network ranges
-          you're authorized to assess — everything else (coverage, triage, tests, agent
-          scanning) lights up once a scope exists.
+          or domain names you're authorized to assess — everything else (coverage, triage, tests,
+          agent scanning) lights up once a scope exists.
           <div className="mt-sm flex flex-wrap gap-sm">
             <Button size="sm" onClick={() => navigate('/scopes')}>Register Your First Scope</Button>
             <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
@@ -528,8 +530,9 @@ const Operations: React.FC = () => {
       {setup && setup.has_scopes && !setup.has_hosts && (
         <SetupBlock title="Scope is registered — time to discover hosts">
           No hosts have been discovered yet. The fastest way to get started is to have your
-          agent <strong className="text-foreground">scan</strong> your registered scope and
-          upload the output, or to upload a scan you already have.
+          agent <strong className="text-foreground">scan</strong> your registered scope — the
+          ranges, or the addresses the in-scope names resolve to — and upload the output, or to
+          upload a scan you already have.
           <div className="mt-sm flex flex-wrap gap-sm">
             {canStartScan && (
               <AgentTaskButton

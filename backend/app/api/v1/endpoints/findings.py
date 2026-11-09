@@ -30,7 +30,7 @@ from app.services.finding_actions import (
     FindingActor, apply_report_text, edit_values, finding_actor, promote_or_dismiss_vulnerability, record_edit,
     assign_findings, require_delete, require_modify, severity_label,
 )
-from app.services import finding_needs, remediation_service, report_images
+from app.services import dns_name_service, finding_needs, remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
@@ -309,11 +309,28 @@ def create_finding(
     if not title:
         raise HTTPException(status_code=422, detail="A finding needs a title.")
     resolve_project_assignee(db, project.id, body.owner_id)
+    # 2.538.0 — a finding on a NAME (a web target by host name): the endpoint
+    # is (host, name).  One host, and the name observed at it — the host
+    # test's rule for ``target_fqdn``, one implementation.
+    names_by_host = None
+    if body.name_id is not None:
+        if len(body.host_ids) != 1:
+            raise HTTPException(
+                status_code=422,
+                detail="name_id names the endpoint on ONE host: send exactly one host_id with it.",
+            )
+        host = db.query(Host).filter(Host.id == body.host_ids[0], Host.project_id == project.id).first()
+        if host is None:
+            raise HTTPException(status_code=422, detail=f"Hosts {body.host_ids} are not in this project.")
+        name = dns_name_service.name_observed_at_host(db, project.id, host, name_id=body.name_id)
+        if name is None:
+            raise HTTPException(status_code=422, detail=dns_name_service.NAME_NOT_AT_HOST)
+        names_by_host = {host.id: name.id}
     svc = FindingService(db)
     finding = svc.create_finding(
         project_id=project.id, title=title, severity=body.severity,
         status=body.status or FindingStatus.OPEN.value, owner_id=body.owner_id,
-        host_ids=body.host_ids, actor_id=current_user.id,
+        host_ids=body.host_ids, names_by_host=names_by_host, actor_id=current_user.id,
     )
     db.commit()
     return _serialize(_load(db, project, finding.id), viewer)

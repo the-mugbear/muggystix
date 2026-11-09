@@ -2,7 +2,7 @@
 Hosts page's own service.
 
 ``agent_common.batch_host_enrichment`` had its own GROUP BY over
-``vulnerabilities`` (the "second rollup" CLAUDE.md forbids) beside three
+``vulnerabilities`` (the "second rollup" AGENTS.md forbids) beside three
 results no caller read.  It now calls
 ``VulnerabilityService.get_bulk_host_vulnerability_summaries``; these tests pin
 that the agent's rows and the page's rows state the same per-host counts, and

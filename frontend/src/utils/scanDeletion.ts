@@ -32,7 +32,7 @@ const WORK_KINDS: ReadonlyArray<readonly [string, string, string]> = [
 /**
  * Remediation entries said without the word while the installation does not
  * track remediation: with the switch off nothing about remediation is shown
- * (CLAUDE.md, the two installation modes), yet a record kept from when it was
+ * (AGENTS.md, the two installation modes), yet a record kept from when it was
  * on still goes with the host, so it is still counted.
  */
 const UNTRACKED_REMEDIATION: readonly [string, string] = ['other record', 'other records'];

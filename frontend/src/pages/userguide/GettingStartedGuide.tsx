@@ -31,7 +31,7 @@ const sections: GuideSection[] = [
           <li>No project exists on a new deployment. A global administrator creates one from <strong>Administration → All projects</strong> and adds its members under <strong>Settings → Project</strong>. Switch between your projects with the <strong>project selector</strong> in the sidebar.</li>
           <li>Go to <strong>Inventory → Scans</strong> and upload your first scan file (drag-and-drop, multiple at once). Review the format BlueStick detected for each file, then import.</li>
           <li>Watch it land on <strong>Inventory → Hosts</strong> — the primary triage surface.</li>
-          <li>Define your engagement boundaries in <strong>Inventory → Scope</strong> so hosts are classified in-scope vs. out-of-scope.</li>
+          <li>Define your engagement boundaries in <strong>Inventory → Scope</strong> — network ranges, domain names, or both — so hosts are classified in-scope vs. out-of-scope. A scope of domain names alone is a complete scope: an engagement against web targets by name.</li>
         </OrderedList>
         <Para>
           From there, the rest of this guide follows the work: <strong>Working with Data</strong>{' '}

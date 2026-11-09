@@ -40,7 +40,7 @@ class TestDetection:
         assert looks_like_nuclei(line, "out.jsonl")
 
     def test_structure_not_filename(self):
-        # The filename alone is not evidence (CLAUDE.md "Detection").
+        # The filename alone is not evidence (documentation/rules/ingestion.md: "structure first; a filename is a hint").
         assert not looks_like_nuclei(b'{"url":"https://x/","tech":["Nginx"],"status_code":200}', "nuclei.json")
 
     def test_rejects_httpx_and_naabu(self):
