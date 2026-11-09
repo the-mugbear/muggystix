@@ -460,7 +460,7 @@ def propose_finding(
     host_ids: List[int], status: str = FindingStatus.OPEN.value,
     report_text: Optional[Dict[str, str]] = None, rationale: Optional[str] = None,
     evidence_ids: Optional[Iterable[int]] = None, replaces: Optional[Iterable[int]] = None,
-    name_id: Optional[int] = None,
+    name_id: Optional[int] = None, name: Optional[str] = None,
 ) -> AgentProposal:
     title = (title or "").strip()
     if not title:
@@ -480,7 +480,9 @@ def propose_finding(
         raise HTTPException(status_code=404, detail=f"Hosts not in this project: {sorted(set(ids) - found)}")
     # A finding ON A NAME (2.539.0): the people's rule, checked now so the
     # agent hears the refusal, and again on accept (the binding may have gone).
-    named_endpoint(db, project_id, ids, name_id)
+    # By id or by FQDN (2.539.1); the payload keeps the id it resolved to.
+    named = named_endpoint(db, project_id, ids, name_id=name_id, name=name)
+    name_id = next(iter(named.values())) if named else None
     # Stored in the one placement grammar (see ``propose_finding_text``).
     text = {
         k: report_images.normalise_references(v.strip())
@@ -882,7 +884,7 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         text = payload.get("report_text") or {}
         # The NAME the finding is on (2.539.0), re-checked at accept: a name
         # that no longer resolves to the host is the same 422 the agent got.
-        names_by_host = named_endpoint(db, project_id, host_ids, payload.get("name_id"))
+        names_by_host = named_endpoint(db, project_id, host_ids, name_id=payload.get("name_id"))
         cited = _promotable_evidence(db, project_id, proposal.evidence_ids, host_ids)
         if cited:
             # The proposal cites a result that showed the issue: accepting is

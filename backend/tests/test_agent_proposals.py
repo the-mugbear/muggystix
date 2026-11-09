@@ -427,6 +427,19 @@ def test_a_proposed_finding_can_be_on_a_name_observed_at_the_host(client, db_ses
     assert two.status_code == 422, two.text
     people = client.post(f"{_base(test_project)}/findings", json={**body, "host_ids": [other.id]})
     assert people.status_code == 422 and people.json()["detail"] == wrong.json()["detail"]
+    # The refusal says what to do: the agent reads it at the moment of friction.
+    assert "upload" in wrong.json()["detail"].lower()
+
+    # By FQDN (2.539.1): an agent knows the name before it knows the id.  The
+    # payload keeps the id it resolved to.
+    by_name = {k: v for k, v in body.items() if k != "name_id"}
+    r2 = client.post("/api/v1/agent/proposals/finding", headers=key, json={**by_name, "name": "Portal.Example.org."})
+    assert r2.status_code == 201, r2.text
+    assert r2.json()["payload"]["name_id"] == name.id
+    unknown = client.post("/api/v1/agent/proposals/finding", headers=key, json={**by_name, "name": "nobody.example.org"})
+    assert unknown.status_code == 422 and unknown.json()["detail"] == NAME_NOT_AT_HOST
+    bad = client.post("/api/v1/agent/proposals/finding", headers=key, json={**by_name, "name": "not a name!"})
+    assert bad.status_code == 422, bad.text
 
     acc = client.post(f"{_base(test_project)}/proposals/{r.json()['id']}/accept", json={})
     assert acc.status_code == 200, acc.text

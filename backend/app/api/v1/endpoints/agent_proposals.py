@@ -214,9 +214,17 @@ class FindingProposal(_ProposalBase):
     name_id: Optional[int] = Field(
         None, gt=0,
         description=(
-            "The NAME the finding is on (a web target reached by host name): the endpoint becomes "
+            "The NAME the finding is on (a web target reached by host name), by id: the endpoint becomes "
             "(host, name). Send it with exactly one host_id; the name must be one observed resolving "
-            "to that host — `names` on the host's detail, or GET /agent/assist/names — else 422."
+            "to that host — `name_id` in named-targets.ndjson, or `id` from GET /agent/assist/names — "
+            "else 422. A name with no id yet has not been observed: upload what resolved it first."
+        ),
+    )
+    name: Optional[str] = Field(
+        None, max_length=253,
+        description=(
+            "The same, as the FQDN (portal.example.com) when you know the name and not its id; "
+            "the same rule applies. Send name_id or name, not both."
         ),
     )
     status: Literal["open", "confirmed"] = Field("open", description="open (under investigation) or confirmed.")
@@ -288,7 +296,7 @@ def propose_finding(
 ):
     row = proposals.propose_finding(
         db, agent.project_id, _who(db, request, body.agent_model), title=body.title,
-        severity=body.severity, host_ids=body.host_ids, name_id=body.name_id, status=body.status,
+        severity=body.severity, host_ids=body.host_ids, name_id=body.name_id, name=body.name, status=body.status,
         report_text=body.report_text, rationale=body.rationale, evidence_ids=body.evidence_ids,
         replaces=body.replaces,
     )

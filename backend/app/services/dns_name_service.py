@@ -1097,7 +1097,12 @@ def hosts_for_addresses(db: Session, project_id: int, ips: Iterable[str]) -> Dic
 
 #: Why a name cannot be the endpoint on a host — the one sentence both doors
 #: answer with (a host test's ``target_fqdn``, a finding's ``name_id``).
-NAME_NOT_AT_HOST = "Target name must be observed at this host in this project"
+NAME_NOT_AT_HOST = (
+    "Target name must be observed at this host in this project: BlueStick never resolves a name itself. "
+    "Upload the output of a tool run against the name (a resolver such as dnsx or amass, or a web scanner "
+    "whose output carries the name and the address), or record an observation with host and hostname, "
+    "then try again."
+)
 
 
 def name_observed_at_host(

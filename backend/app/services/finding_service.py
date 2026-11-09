@@ -33,7 +33,8 @@ NAMED_ENDPOINT_ONE_HOST = "name_id names the endpoint on ONE host: send exactly 
 
 
 def named_endpoint(
-    db: Session, project_id: int, host_ids: Sequence[int], name_id: Optional[int],
+    db: Session, project_id: int, host_ids: Sequence[int], name_id: Optional[int] = None,
+    name: Optional[str] = None,
 ) -> Optional[Dict[int, int]]:
     """A finding ON A NAME (2.538.0): ``name_id`` with exactly one host makes
     the endpoint ``(host, name)`` — what ``FindingService.create_finding``'s
@@ -41,9 +42,11 @@ def named_endpoint(
     by hand: ``POST /findings``, and an agent's ``finding_create`` proposal
     both when proposed and when accepted (2.539.0).  The name must be
     observed at that host — ``dns_name_service.name_observed_at_host``, the
-    rule a host test's ``target_fqdn`` shares.  ``None`` when no name was
-    asked for; a 422 otherwise when the request cannot be honoured."""
-    if name_id is None:
+    rule a host test's ``target_fqdn`` shares.  The name comes as ``name_id``
+    or as ``name`` (the FQDN, as an agent knows it — 2.539.1).  ``None`` when
+    no name was asked for; a 422 otherwise when the request cannot be
+    honoured."""
+    if name_id is None and not (name or "").strip():
         return None
     from app.services import dns_name_service
 
@@ -53,10 +56,16 @@ def named_endpoint(
     host = db.query(Host).filter(Host.id == ids[0], Host.project_id == project_id).first()
     if host is None:
         raise HTTPException(status_code=422, detail=f"Hosts {ids} are not in this project.")
-    name = dns_name_service.name_observed_at_host(db, project_id, host, name_id=name_id)
-    if name is None:
+    try:
+        if name_id is not None:
+            found = dns_name_service.name_observed_at_host(db, project_id, host, name_id=name_id)
+        else:
+            found = dns_name_service.name_observed_at_host(db, project_id, host, fqdn=name)
+    except dns_name_service.InvalidName as exc:
+        raise HTTPException(status_code=422, detail=f"name: {exc}") from exc
+    if found is None:
         raise HTTPException(status_code=422, detail=dns_name_service.NAME_NOT_AT_HOST)
-    return {host.id: name.id}
+    return {host.id: found.id}
 
 
 _VALID_SEVERITIES = {s.value for s in FindingSeverity}

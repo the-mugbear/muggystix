@@ -2,6 +2,14 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.539.1",
+      "frontend": "5.429.0",
+      "date": "2026-11-09",
+      "entries": [
+        {"kind": "changed", "text": "An agent may propose a finding on a name by its FQDN as well as by id. When a name has not yet been observed resolving to a host, the scope file and the refusal now say so and what to do: upload the resolver's or web tool's output, or record an observation with host and hostname."}
+      ]
+    },
+    {
       "backend": "2.539.0",
       "frontend": "5.429.0",
       "date": "2026-11-09",

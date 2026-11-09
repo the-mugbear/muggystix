@@ -312,7 +312,7 @@ def create_finding(
     # 2.538.0 — a finding on a NAME (a web target by host name): the endpoint
     # is (host, name).  ``named_endpoint`` is the one rule, shared with an
     # agent's finding proposal and (through the service) a test's target name.
-    names_by_host = named_endpoint(db, project.id, body.host_ids, body.name_id)
+    names_by_host = named_endpoint(db, project.id, body.host_ids, name_id=body.name_id)
     svc = FindingService(db)
     finding = svc.create_finding(
         project_id=project.id, title=title, severity=body.severity,

@@ -516,7 +516,12 @@ def iter_scope_named_targets(
                     k: v for k, v in (state.evidence if state else {}).items()
                     if k not in models.DNS_RESOLVING_TYPES
                 }
-                reason = "no A/AAAA observation for this name"
+                reason = (
+                    "no A/AAAA observation for this name — resolve it yourself and upload the "
+                    "resolver's output (dnsx, amass / subfinder), or upload a web tool's output run "
+                    "against the name, or record an observation with host and hostname: a finding or "
+                    "a test on the name needs it observed at a host"
+                )
                 if other:
                     reason += " (other evidence, not a resolution: " + ", ".join(
                         f"{k}×{v}" for k, v in sorted(other.items())
@@ -546,7 +551,12 @@ def iter_scope_named_targets(
         if domain in seen_fqdns:
             continue
         seen_fqdns.add(domain)
-        reason = "declared in scope; no observation of this name in the inventory"
+        reason = (
+            "declared in scope; no observation of this name in the inventory, so it has no name_id "
+            "and no address yet — resolve it yourself and upload the resolver's output (dnsx, amass / "
+            "subfinder), or upload a web tool's output run against it, or record an observation with "
+            "host and hostname; then it is listed with its name_id and a finding or a test can be on it"
+        )
         if include_sub:
             reason += " (the rule also covers its subdomains; any observed are their own records)"
         yield NamedTarget(
