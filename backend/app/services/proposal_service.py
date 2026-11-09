@@ -48,7 +48,7 @@ from app.services.finding_actions import (
 from app.services import report_images
 from app.services.agent_evidence_service import promote_evidence
 from app.services.default_scope import project_scope
-from app.services.finding_service import FindingService, validate_severity
+from app.services.finding_service import FindingService, named_endpoint, validate_severity
 from app.services.subnet_details import set_subnet_details
 from app.services.report_text import (
     REPORT_TEXT_FIELDS, REPORT_TEXT_MAX, internal_reference_message, internal_references,
@@ -460,6 +460,7 @@ def propose_finding(
     host_ids: List[int], status: str = FindingStatus.OPEN.value,
     report_text: Optional[Dict[str, str]] = None, rationale: Optional[str] = None,
     evidence_ids: Optional[Iterable[int]] = None, replaces: Optional[Iterable[int]] = None,
+    name_id: Optional[int] = None,
 ) -> AgentProposal:
     title = (title or "").strip()
     if not title:
@@ -477,6 +478,9 @@ def propose_finding(
     }
     if len(found) != len(ids):
         raise HTTPException(status_code=404, detail=f"Hosts not in this project: {sorted(set(ids) - found)}")
+    # A finding ON A NAME (2.539.0): the people's rule, checked now so the
+    # agent hears the refusal, and again on accept (the binding may have gone).
+    named_endpoint(db, project_id, ids, name_id)
     # Stored in the one placement grammar (see ``propose_finding_text``).
     text = {
         k: report_images.normalise_references(v.strip())
@@ -498,7 +502,8 @@ def propose_finding(
     proposal = _add(
         db, project_id, ProposalKind.FINDING_CREATE.value, who,
         payload={"title": title[:500], "severity": severity, "status": status,
-                 "host_ids": ids, "report_text": text},
+                 "host_ids": ids, "report_text": text,
+                 **({"name_id": name_id} if name_id is not None else {})},
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
     mark_replaced(db, claimed, [proposal])
@@ -875,6 +880,9 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         host_ids = payload.get("host_ids") or []
         status = payload.get("status") or FindingStatus.OPEN.value
         text = payload.get("report_text") or {}
+        # The NAME the finding is on (2.539.0), re-checked at accept: a name
+        # that no longer resolves to the host is the same 422 the agent got.
+        names_by_host = named_endpoint(db, project_id, host_ids, payload.get("name_id"))
         cited = _promotable_evidence(db, project_id, proposal.evidence_ids, host_ids)
         if cited:
             # The proposal cites a result that showed the issue: accepting is
@@ -884,7 +892,7 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
             made = promote_evidence(
                 db, project_id, cited[0], title=payload["title"], severity=payload["severity"],
                 status=status, actor_id=user.id, more_host_ids=host_ids, more_evidence_ids=cited[1:],
-                provenance=_provenance(proposal),
+                more_names=names_by_host, provenance=_provenance(proposal),
             )
             finding = made.finding
             if text and not made.created:
@@ -898,7 +906,7 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         else:
             finding = FindingService(db).create_finding(
                 project_id=project_id, title=payload["title"], severity=payload["severity"],
-                status=status, host_ids=host_ids, actor_id=user.id,
+                status=status, host_ids=host_ids, names_by_host=names_by_host, actor_id=user.id,
                 summary=f"Created {_provenance(proposal)}",
             )
         if text:

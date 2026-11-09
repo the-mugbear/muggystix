@@ -28,6 +28,36 @@ from app.services.host_query_common import escape_like
 from app.services.report_text import seed_report_text_from_vuln
 from app.services.vuln_identity import issue_key_for
 
+#: ``name_id`` needs the one host the name is on — the route's documented 422.
+NAMED_ENDPOINT_ONE_HOST = "name_id names the endpoint on ONE host: send exactly one host_id with it."
+
+
+def named_endpoint(
+    db: Session, project_id: int, host_ids: Sequence[int], name_id: Optional[int],
+) -> Optional[Dict[int, int]]:
+    """A finding ON A NAME (2.538.0): ``name_id`` with exactly one host makes
+    the endpoint ``(host, name)`` — what ``FindingService.create_finding``'s
+    ``names_by_host`` takes.  ONE rule for every door that writes a finding
+    by hand: ``POST /findings``, and an agent's ``finding_create`` proposal
+    both when proposed and when accepted (2.539.0).  The name must be
+    observed at that host — ``dns_name_service.name_observed_at_host``, the
+    rule a host test's ``target_fqdn`` shares.  ``None`` when no name was
+    asked for; a 422 otherwise when the request cannot be honoured."""
+    if name_id is None:
+        return None
+    from app.services import dns_name_service
+
+    ids = [hid for hid in dict.fromkeys(host_ids or []) if hid is not None]
+    if len(ids) != 1:
+        raise HTTPException(status_code=422, detail=NAMED_ENDPOINT_ONE_HOST)
+    host = db.query(Host).filter(Host.id == ids[0], Host.project_id == project_id).first()
+    if host is None:
+        raise HTTPException(status_code=422, detail=f"Hosts {ids} are not in this project.")
+    name = dns_name_service.name_observed_at_host(db, project_id, host, name_id=name_id)
+    if name is None:
+        raise HTTPException(status_code=422, detail=dns_name_service.NAME_NOT_AT_HOST)
+    return {host.id: name.id}
+
 
 _VALID_SEVERITIES = {s.value for s in FindingSeverity}
 _VALID_STATUSES = {s.value for s in FindingStatus}

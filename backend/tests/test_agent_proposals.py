@@ -392,6 +392,73 @@ def test_a_proposal_cannot_cite_evidence_from_another_project(client, db_session
     assert r.status_code in (404, 422), r.text
 
 
+def _name_at(db, project, fqdn, host):
+    """A name observed resolving to ``host`` (an A record), as an import writes it."""
+    from app.services.dns_name_service import record_observation
+
+    record_observation(db, project_id=project.id, name=fqdn, record_type="A", value=host.ip_address)
+    db.commit()
+    return db.query(models.DNSName).filter(models.DNSName.project_id == project.id, models.DNSName.fqdn == fqdn).one()
+
+
+def test_a_proposed_finding_can_be_on_a_name_observed_at_the_host(client, db_session, test_project):
+    """2.539.0 — an agent in a domain-scoped engagement proposes a finding ON A
+    NAME: ``name_id`` with one host, the people's ``POST /findings`` rule
+    (``finding_service.named_endpoint``), checked when proposed — so the agent
+    hears the refusal — and again when accepted; the finding's endpoint is
+    (host, name)."""
+    from app.services.dns_name_service import NAME_NOT_AT_HOST
+
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    other = _host(db_session, test_project, ip="10.40.0.2")
+    name = _name_at(db_session, test_project, "portal.example.org", host)
+
+    body = {"title": "Weak TLS on the portal", "severity": "medium", "host_ids": [host.id], "name_id": name.id}
+    r = client.post("/api/v1/agent/proposals/finding", headers=key, json=body)
+    assert r.status_code == 201, r.text
+    assert r.json()["payload"]["name_id"] == name.id
+
+    # The same rule as the people's door, with its words: not at that host; several hosts.
+    wrong = client.post("/api/v1/agent/proposals/finding", headers=key, json={**body, "host_ids": [other.id]})
+    assert wrong.status_code == 422, wrong.text
+    assert wrong.json()["detail"] == NAME_NOT_AT_HOST
+    two = client.post("/api/v1/agent/proposals/finding", headers=key, json={**body, "host_ids": [host.id, other.id]})
+    assert two.status_code == 422, two.text
+    people = client.post(f"{_base(test_project)}/findings", json={**body, "host_ids": [other.id]})
+    assert people.status_code == 422 and people.json()["detail"] == wrong.json()["detail"]
+
+    acc = client.post(f"{_base(test_project)}/proposals/{r.json()['id']}/accept", json={})
+    assert acc.status_code == 200, acc.text
+    rows = db_session.query(FindingHost).filter(FindingHost.finding_id == acc.json()["result_finding_id"]).all()
+    assert [(fh.host_id, fh.name_id) for fh in rows] == [(host.id, name.id)]
+
+
+def test_a_proposed_finding_on_a_name_citing_evidence_keeps_the_name(client, db_session, test_project):
+    """The accept that is a result's "Create finding" (``promote_evidence``)
+    attaches the proposal's name too — the record's own test, when aimed at a
+    name, still wins for its host."""
+    from app.db.models_proposals import EvidenceRecord
+
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    name = _name_at(db_session, test_project, "shop.example.org", host)
+    ev = client.post("/api/v1/agent/evidence", headers=key, json={
+        "host_id": host.id, "tool": "testssl", "outcome": "finding", "summary": "TLS 1.0 offered"}).json()
+    r = client.post("/api/v1/agent/proposals/finding", headers=key, json={
+        "title": "TLS 1.0 offered on the shop", "severity": "low", "host_ids": [host.id],
+        "name_id": name.id, "evidence_ids": [ev["id"]]})
+    assert r.status_code == 201, r.text
+
+    acc = client.post(f"{_base(test_project)}/proposals/{r.json()['id']}/accept", json={})
+    assert acc.status_code == 200, acc.text
+    fid = acc.json()["result_finding_id"]
+    rows = db_session.query(FindingHost).filter(FindingHost.finding_id == fid).all()
+    assert [(fh.host_id, fh.name_id) for fh in rows] == [(host.id, name.id)]
+    db_session.expire_all()
+    assert db_session.get(EvidenceRecord, ev["id"]).finding_id == fid
+
+
 def test_dismissing_an_observation_is_a_proposal_about_this_host(client, db_session, test_project):
     key, _ = _start(client, test_project)
     host = _host(db_session, test_project)

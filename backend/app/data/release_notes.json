@@ -2,6 +2,14 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.539.0",
+      "frontend": "5.429.0",
+      "date": "2026-11-09",
+      "entries": [
+        {"kind": "new", "text": "An agent can propose a finding on a NAME: the proposal names the host and one of the names observed resolving to it, and the accepted finding is on that name at that address — what a report prints for a web target reached by host name. A name not observed at that host is refused."}
+      ]
+    },
+    {
       "backend": "2.538.1",
       "frontend": "5.429.0",
       "date": "2026-11-09",

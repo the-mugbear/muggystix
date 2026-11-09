@@ -211,6 +211,14 @@ class FindingProposal(_ProposalBase):
     title: str = Field(..., min_length=1, max_length=500)
     severity: Literal["critical", "high", "medium", "low", "info"]
     host_ids: List[int] = Field(..., min_length=1, max_length=1000)
+    name_id: Optional[int] = Field(
+        None, gt=0,
+        description=(
+            "The NAME the finding is on (a web target reached by host name): the endpoint becomes "
+            "(host, name). Send it with exactly one host_id; the name must be one observed resolving "
+            "to that host — `names` on the host's detail, or GET /agent/assist/names — else 422."
+        ),
+    )
     status: Literal["open", "confirmed"] = Field("open", description="open (under investigation) or confirmed.")
     report_text: Optional[Dict[str, str]] = Field(
         None, description="Optional report fields: description, impact, recommendation, references, steps_to_reproduce, evidence_text.",
@@ -280,7 +288,7 @@ def propose_finding(
 ):
     row = proposals.propose_finding(
         db, agent.project_id, _who(db, request, body.agent_model), title=body.title,
-        severity=body.severity, host_ids=body.host_ids, status=body.status,
+        severity=body.severity, host_ids=body.host_ids, name_id=body.name_id, status=body.status,
         report_text=body.report_text, rationale=body.rationale, evidence_ids=body.evidence_ids,
         replaces=body.replaces,
     )

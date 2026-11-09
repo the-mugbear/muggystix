@@ -12,7 +12,7 @@ from datetime import datetime
 import hashlib
 import ipaddress
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -414,7 +414,7 @@ def promote_evidence(
     db: Session, project_id: int, evidence_id: int, *,
     title: Optional[str], severity: Optional[str], status: str, actor_id: int,
     more_host_ids: Sequence[int] = (), more_evidence_ids: Sequence[int] = (),
-    provenance: Optional[str] = None,
+    more_names: Optional[Dict[int, int]] = None, provenance: Optional[str] = None,
 ) -> EvidencePromotion:
     """Promote an evidence record that showed an issue (v2.443.0) — the ONE
     implementation behind a person's "Create finding" on a result and an
@@ -509,8 +509,13 @@ def promote_evidence(
             # from a test result was on nobody's Operations list.
             owner_id=actor_id,
         )
-        names = {record.host_id: test.name_id} if test is not None and test.name_id else None
-        svc._attach_hosts(finding, [record.host_id, *extra_hosts], names_by_host=names)
+        # The endpoint's name: the test's own for its host, else what the
+        # proposal named (``more_names``, 2.539.0 — a finding proposed ON A
+        # NAME, already checked by ``finding_service.named_endpoint``).
+        names = {**(more_names or {})}
+        if test is not None and test.name_id:
+            names[record.host_id] = test.name_id
+        svc._attach_hosts(finding, [record.host_id, *extra_hosts], names_by_host=names or None)
     record.finding_id = finding.id
     db.flush()
     if others:
