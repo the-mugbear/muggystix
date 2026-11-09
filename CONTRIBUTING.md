@@ -1,13 +1,16 @@
 # Contributing / Maintaining BlueStick
 
-> **Verified against:** backend 2.533.0 / frontend 5.427.0 (2026-10-25).
+> **Verified against:** backend 2.538.1 / frontend 5.429.0 (2026-11-09).
 
 This is the orientation a developer needs to maintain BlueStick safely. It captures the
 project's **conventions and invariants** — the things that aren't obvious from reading the
 code and that, if violated, cause subtle breakage. For system topology see
 [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md); for the API see
 [documentation/API_GUIDE.md](documentation/API_GUIDE.md); for the agent contract see
-[the agent guide](documentation/AGENT_GUIDE.md).
+[the agent guide](documentation/AGENT_GUIDE.md). The short rule sheet a coding agent loads before
+touching the tree is the root [AGENTS.md](AGENTS.md) — the invariants and the process in one page — and
+the detailed rules of each area are [documentation/rules/](documentation/rules/); this file is the longer
+how-to behind them. Security problems are reported through [SECURITY.md](SECURITY.md), never a public issue.
 
 ---
 
@@ -149,6 +152,10 @@ test that greps the source.
 ## Versioning (keep four files in sync)
 
 After any change that ships, bump the version so a rebuilt container visibly reflects it.
+**Bump with `./scripts/bump-version.py --backend|--frontend patch|minor|major`, never by hand**: it
+writes the four files below, refuses a tree that already disagrees, and starts the release's entry in
+`backend/app/data/release_notes.json` — every change a user would notice gets a line there (Reference →
+Release notes in the app; `tests/test_release_notes.py` fails the gate until the running version has one).
 **All four must agree** — `frontend/src/tests/versionConsistency.test.ts` fails on drift:
 
 1. `platform_version.json` — source of truth (`backend`, `frontend`)

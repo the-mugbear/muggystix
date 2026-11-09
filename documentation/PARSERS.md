@@ -1144,7 +1144,7 @@ reads the column.
 ### Schema discipline (read before adding columns)
 
 When your tool produces a value, decide deliberately where it lands (see the
-**Column-vs-blob policy** in `CLAUDE.md`):
+**Column-vs-blob policy** in the root `AGENTS.md`):
 - Give it a **typed column** if any view, filter, DSL predicate, dashboard, or
   insight needs to query/sort/aggregate on it across hosts (e.g. a new cert
   attribute, a TLS version, a signing flag). Promote it at ingest like
@@ -1166,4 +1166,5 @@ pytest tests/test_mytool_parser.py`). Cover at minimum:
   `skipped` / `parser_warnings`.
 
 Then add a row to [`UPLOAD_FORMATS.md`](./UPLOAD_FORMATS.md) and the field
-tables in this file, and bump the backend version per `CLAUDE.md`.
+tables in this file, and bump the backend version per the root `AGENTS.md`
+(`./scripts/bump-version.py --backend minor`).

@@ -315,6 +315,10 @@ Whatever an agent session is doing (assist, scanning, proposing or running tests
 
 ## Documentation
 
+- [AGENTS.md](AGENTS.md) — the rules for changing this repository, for people and for coding agents (Codex, Cursor, Copilot, Gemini; Claude Code via a local `CLAUDE.md` containing `@AGENTS.md`): the gate, the invariants, versions and release notes, which document changes with what
+- [Rules by area](documentation/rules/) — the detailed rules behind AGENTS.md, one file per area (ingestion, inventory reads, triage, remediation, client reports, agents and MCP, backend and tests, frontend, operations): each count's one definition, lock orders, the guard test that pins each rule, what was decided and what was removed on purpose
+- [Security policy](SECURITY.md) — how to report a vulnerability in private, what counts, supported versions
+- [License](LICENSE) — MIT
 - [Contributing](CONTRIBUTING.md) — **start here to maintain the project**: versioning, schema/migration ownership, the refactoring and file-size rule, host-dedup model, agent workflows, build/test/CI
 - [Agent Guide](documentation/AGENT_GUIDE.md) — the contract every BlueStick agent reads at startup (not instructions for working on this repository; it was `AGENTS.md` at the root until 2.427.1)
 - [Architecture](documentation/ARCHITECTURE.md) — system topology, package map, security model
