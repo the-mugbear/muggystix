@@ -179,6 +179,28 @@ probe, the suite — touches no schema. The test schema is built by the migratio
 - Vocabulary: *scanner observations* (not yet judged), *under investigation*, *confirmed*, *closed*.
   Scanner rows are not "findings". Severity has its own colour tokens.
 
+## Adding a feature — where each piece goes
+
+The step-by-step recipes are `documentation/ARCHITECTURE.md` §9 "Extending the system" (a parser, an agent
+workflow, a UI feature, a service module); §3 and §7 there are the backend and frontend package maps. This
+table names the entry point of each piece and the recipe that owns it; read the area's rule file first.
+
+| Piece | Where it goes | Recipe / what pins it |
+|---|---|---|
+| Table or column | the model in `backend/app/db/models*.py` (a new module is registered in `app/db/model_registry.py`) AND a revision in `backend/alembic/versions/` with a real `downgrade()` | `CONTRIBUTING.md` → "Database schema & migrations" (authoring a revision); `test_schema_fk_ondelete_contract.py`; the gate's round trip |
+| Business rule, query | a module in `backend/app/services/`, saying in its docstring whether it commits or leaves the commit to the caller | `ARCHITECTURE.md` §9; the invariants above |
+| API route | `backend/app/api/v1/endpoints/<area>.py`, request / response shapes in `backend/app/schemas/`, mounted in `backend/app/api/v1/api.py` — under `project_router` (`/projects/{project_id}/…`) unless it is truly cross-project; the role is a `require_project_role(...)` dependency from `app/api/deps.py` | `documentation/API_GUIDE.md` in the same change; the route-membership guard test |
+| The same read or write for agents | a route under `/agent` wrapping the SAME service, its floor declared with `agent_read_floor`; an MCP tool in `mcp_tools.py` | `ARCHITECTURE.md` §9 "Adding a new agent workflow"; `CONTRIBUTING.md` → "Agent workflows & the agent contract"; `test_agent_role_route_matrix.py` |
+| Parser or import format | `backend/app/parsers/<tool>_parser.py`, one row in `format_registry.py` | `documentation/PARSERS.md` Part 2; `documentation/NORMALIZATION.md` |
+| Frontend API call | a named function in `frontend/src/services/api/<domain>.ts` (project id first), re-exported from the barrel `frontend/src/services/api.ts` | the barrel's header comment; `frontend/eslint-rules/` |
+| Page | `frontend/src/pages/`, its route in `frontend/src/App.tsx` (lazy, role-gated), its entry in the one navigation manifest `frontend/src/config/navigation.tsx` | `ARCHITECTURE.md` §9 "Adding a new UI feature"; `documentation/UI_STYLE_GUIDE.md` (§25 for a new data surface) |
+| Report template or capability | `report-templates/<name>/` | `report-templates/README.md` → "Adding a template" |
+| Tests | backend `backend/tests/test_*.py` (fixtures in `backend/tests/fixtures/`); frontend `frontend/src/tests/`; browser suites `frontend/e2e/` | `documentation/TESTING_FRAMEWORK_DOCUMENTATION.md`; `documentation/rules/backend-db-and-tests.md` |
+
+To see a feature working: `./scripts/deploy.sh`, then `docker compose exec backend python
+scripts/seed_demo_data.py` for a project with data on every page (`scripts/README.md` lists the other seeds).
+Then close out as "Process" below says: version, release notes, documents, gate.
+
 ## Process
 
 ### Versions and release notes
