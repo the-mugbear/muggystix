@@ -873,7 +873,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "template prints (evidence_records_not_printed counts the rest). "
             "summary.images_printed + images_trailing + images_not_printed = "
             "summary.images; null when printing could not be measured. Files "
-            "carry a download_path. Needs an auditor operator."
+            "carry a download_path. Needs an auditor operator. To CHANGE a part of "
+            "a report — which tool for each part, and which parts only a person "
+            "sets — read_agent_guide with section=evidence-and-proposals (\"Every "
+            "part of a client report, and how you change it\")."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports/{report_id}",

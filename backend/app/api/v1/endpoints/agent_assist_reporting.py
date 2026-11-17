@@ -416,7 +416,10 @@ def get_assist_client_report(
 ):
     report = load_report(db, request.state.agent_project_id, report_id)
     dataset, summary = ClientReportService(db).content(report)
-    base = serialize_report(db, report, _operator_role(request) or "", with_summary=False)
+    # With the details as the report prints them (`effective`, `followed`,
+    # `followed_from`, the summary text): a draft that follows the project's
+    # defaults says what it would print (agent acceptance run, 2026-11-17).
+    base = serialize_report(db, report, _operator_role(request) or "", with_summary=False, with_details=True)
     dataset = dataset or {}
     # The findings are paged: a report's whole text in one answer was about
     # 9,000 tokens for 23 nearly empty findings (native MCP run 2026-10-10).

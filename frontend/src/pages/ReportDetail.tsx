@@ -62,7 +62,9 @@ import { REPORT_FORMAT_LABEL, isClientTemplate } from '../utils/reportTemplates'
 import { safeFallback, stickyFlushBelowChrome } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
-import DetailSections, { DETAIL_NAME, focusDetailField } from '../components/reports/workspace/DetailSections';
+import DetailSections, {
+  DETAIL_NAME, focusDetailField, FollowsDefaultsLine,
+} from '../components/reports/workspace/DetailSections';
 import ProjectImagesPanel from '../components/reports/workspace/ProjectImagesPanel';
 import UpdateDefaultsDialog from '../components/reports/workspace/UpdateDefaultsDialog';
 import {
@@ -676,6 +678,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         )}
       </section>
 
+      {isDraft && <FollowsDefaultsLine canEdit={editable} />}
       <DetailSections edits={edits} canEdit={editable} idPrefix="report" busy={saving}
         summaryLabel={summaryLabel}
         summaryAction={editable ? (

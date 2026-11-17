@@ -104,11 +104,31 @@ export interface DetailSectionsProps {
   scopeAction?: React.ReactNode;
   /** Said under a field (the defaults page: "Empty: the installation's …"). */
   notes?: Partial<Record<DetailKey, React.ReactNode>>;
+  /** Details whose note already shows their current value — drafts under
+   *  review, compared with it (`DetailProposalNotes`).  The read view then
+   *  prints the name and the note only: the current value is shown once
+   *  (style guide §43; browser pass 2026-11-17 — it was printed twice, and an
+   *  empty one said both "Not written" and "Nothing yet"). */
+  valueInNote?: ReadonlyArray<DetailKey>;
   members: ProjectMember[];
   membersStatus?: ProjectMembersStatus;
   onRetryMembers?: () => void;
   currentUser?: { id: number; name: string } | null;
 }
+
+/** Above a DRAFT's details, once: where the values it does not customise are
+ *  written, as a link (5.431.1).  User feedback, 2026-11-17: evaluating a
+ *  draft, people "weren't sure where certain fields were populated".  It was
+ *  a link on each section's status line in 5.431.0 — five times the same
+ *  words on a draft that follows everything (browser pass, §44). */
+export const FollowsDefaultsLine: React.FC<{ canEdit: boolean }> = ({ canEdit }) => (
+  <p className="max-w-3xl text-metadata text-muted-foreground" data-testid="report-follows-defaults">
+    Every detail this report does not customise is printed from the project’s report defaults.{' '}
+    <Link to={REPORT_DEFAULTS_PATH} className="font-medium text-info hover:underline">
+      {canEdit ? 'Edit the project’s defaults' : 'See the project’s defaults'}
+    </Link>
+  </p>
+);
 
 const DetailSections: React.FC<DetailSectionsProps> = (props) => (
   <div className="space-y-lg">
@@ -117,7 +137,7 @@ const DetailSections: React.FC<DetailSectionsProps> = (props) => (
 );
 
 const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> = ({
-  section, edits, canEdit, idPrefix, busy = false, summaryLabel, summaryAction, images, scopeAction, notes,
+  section, edits, canEdit, idPrefix, busy = false, summaryLabel, summaryAction, images, scopeAction, notes, valueInNote,
   members, membersStatus, onRetryMembers, currentUser,
 }) => {
   const { ctx } = edits;
@@ -179,7 +199,7 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
       return (
         <div key={key} className="min-w-0 space-y-xxs" id={id} data-testid={`${id}-read`}>
           <span className={DETAIL_NAME}>{label(key)}</span>
-          {body}
+          {!valueInNote?.includes(key) && body}
           {mark}
           {note}
         </div>
@@ -251,18 +271,10 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
         <div className="min-w-0">
           <h3 id={`${idPrefix}-section-${section.id}`} className="text-subheading font-medium">{title}</h3>
           {status && (
-            // 5.431.0 — the status names where a followed value is written,
-            // as a link: readers of a draft "weren't sure where certain
-            // fields were populated" (user feedback, 2026-11-17).  Once per
-            // section, not per field.
-            <p className="text-caption text-muted-foreground" data-testid={`${idPrefix}-section-${section.id}-status`}>
-              {status}
-              {' · '}
-              <Link to={REPORT_DEFAULTS_PATH} className="text-info hover:underline"
-                aria-label={`Open the project’s report defaults (${title})`}>
-                {canEdit ? 'Edit the project’s defaults' : 'See the project’s defaults'}
-              </Link>
-            </p>
+            // Where a followed value is written is said ONCE, above the
+            // sections (`FollowsDefaultsLine`, 5.431.1): a link on every
+            // status line repeated itself five times on one page.
+            <p className="text-caption text-muted-foreground" data-testid={`${idPrefix}-section-${section.id}-status`}>{status}</p>
           )}
         </div>
         {canEdit && (

@@ -267,6 +267,10 @@ wrapping an existing service.
 The template lives on the operator's machine and the agent fills it there
 ([MCP.md](MCP.md) §2). What it needs from BlueStick is the material.
 
+For BlueStick's own client report, every part and the tool that changes it is
+ONE table in the agent guide ("Every part of a client report, and how you
+change it", [AGENT_GUIDE.md](AGENT_GUIDE.md)) — this section does not repeat it.
+
 | Need | Tool |
 |---|---|
 | Every host's full dossier, at scale | `report-context.ndjson` (curl to disk) |

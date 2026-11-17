@@ -330,6 +330,24 @@ describe('The draft’s checklist', () => {
     expect(screen.getByTestId('report-readiness')).toHaveTextContent('Nothing to fix · 3 warnings');
   });
 
+  // 5.431.1 — where a draft's followed values are written is said once, on
+  // Details, with a link; an issued report follows nothing and says nothing.
+  it('a draft’s Details say once where the values it does not customise come from', async () => {
+    renderDetail();
+    const line = await screen.findByTestId('report-follows-defaults');
+    expect(within(line).getByRole('link', { name: 'Edit the project’s defaults' })).toHaveAttribute('href', '/reports/defaults');
+    expect(screen.getAllByTestId('report-follows-defaults')).toHaveLength(1);
+  });
+
+  it('an issued report does not say it follows the defaults', async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      status: 'issued', number: 3, can_edit: false, can_issue: false, can_discard: false, issued_at: '2026-10-01T00:00:00Z',
+    }));
+    renderDetail();
+    await screen.findAllByText('Example report');
+    expect(screen.queryByTestId('report-follows-defaults')).toBeNull();
+  });
+
   it('a draft with nothing left has no checklist, and says so', async () => {
     mocked.getClientReport.mockResolvedValue(report({ summary: { counts: fullSummary.counts, missing_text: [] } }));
     renderDetail(REVIEW);

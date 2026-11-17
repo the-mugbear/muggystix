@@ -51,6 +51,11 @@ const ALL_KEYS: DetailKey[] = DETAIL_SECTIONS.flatMap((s) => s.keys);
 const WRITTEN_DETAILS: DetailKey[] = [
   'executive_summary', 'system_description', 'applications', 'thick_clients', 'other_targets', 'disclaimer',
 ];
+/** Room above a detail's drafts when a link lands on them (`#review-<detail>`):
+ *  this page's sticky save bar (about 3rem under the layout's chrome), and the
+ *  detail's name printed above the drafts.  With the finding page's 2.25rem
+ *  the heading landed under the bar (browser pass 2026-11-17). */
+const DRAFTS_SCROLL_EXTRA = '6.5rem';
 
 /** The stored defaults as the sections' "saved" map. */
 const savedOf = (p: ReportProfile): EngagementOverrides =>
@@ -154,15 +159,26 @@ const ReportDefaults: React.FC = () => {
   }
   // 5.431.0 — under each written detail: the accepted proposal its text came
   // from, and the drafts waiting for it, reviewed where the text is.
+  // A detail with drafts shows its current text ONCE — in the comparison,
+  // beside the draft — so its read view leaves the text out (§43).
+  const underReview: DetailKey[] = [];
   for (const key of WRITTEN_DETAILS) {
-    const source = profile.from_proposals?.[key];
+    // An UNSAVED edit of the detail is what the page shows for it, and it is
+    // not the stored text (browser pass 2026-11-17): it stays visible above
+    // the drafts — which compare with the stored default — and the page does
+    // not say of it that it "was accepted from" a proposal.
+    const editing = key in edits.ctx.pending;
+    const source = editing ? undefined : profile.from_proposals?.[key];
     const drafts = proposals.byDetail.get(key) ?? [];
     if (!source && !drafts.length) continue;
+    if (drafts.length && !editing) underReview.push(key);
     notes[key] = (
       <>
+        {/* "Empty: reports use the installation's…" stays above the drafts. */}
         {notes[key]}
         <DetailProposalNotes field={key} label={DETAIL_LABELS[key]} current={profile[key] as string | null}
-          source={source} drafts={drafts} canDecide={canWrite} evidence={images.markdown.resolver} />
+          source={source} drafts={drafts} canDecide={canWrite} evidence={images.markdown.resolver}
+          scrollExtra={DRAFTS_SCROLL_EXTRA} />
       </>
     );
   }
@@ -213,37 +229,45 @@ const ReportDefaults: React.FC = () => {
         </div>
       )}
 
-      <div className="max-w-sm space-y-xxs">
-        {canWrite ? (
-          <>
-            <Label htmlFor="defaults-template" className={DETAIL_NAME}>Default template</Label>
-            <Select value={templateValue} onValueChange={setTemplate} disabled={busy}>
-              <SelectTrigger id="defaults-template"><SelectValue placeholder="Choose a template" /></SelectTrigger>
-              <SelectContent>
-                {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </>
-        ) : (
-          <>
-            <span className={DETAIL_NAME}>Default template</span>
-            <p className="text-body">{templates.find((t) => t.name === profile.template)?.title ?? profile.template ?? '—'}</p>
-          </>
-        )}
-        <p className="text-caption text-muted-foreground">
-          A new report starts with it. The installation’s templates and their files are on{' '}
-          <Link to="/reports/templates" className="text-info hover:underline">Templates</Link>.
-        </p>
-      </div>
-
       {/* The project's summary is a full report's executive summary (an
           addendum never follows it): named as on the draft. */}
-      <DetailSections edits={edits} canEdit={canWrite} idPrefix="defaults" busy={busy} notes={notes}
+      <DetailSections edits={edits} canEdit={canWrite} idPrefix="defaults" busy={busy} notes={notes} valueInNote={underReview}
         summaryLabel="Executive summary"
         images={images.markdown}
         scopeAction={canWrite ? <ProjectImagesPanel state={images} idPrefix="defaults" /> : undefined}
         members={roster.members} membersStatus={roster.status} onRetryMembers={roster.retry}
         currentUser={currentUser} />
+
+      {/* LAST on the page (owner, 2026-11-17: "99% of users will use the
+          Penetration test report") — it was the first thing under the title,
+          above the text people come here to write.  A section like the ones
+          above it; the one save still carries it. */}
+      <section className="min-w-0 space-y-sm border-t border-border pt-md" aria-labelledby="defaults-section-template"
+        data-testid="defaults-section-template">
+        <h3 id="defaults-section-template" className="text-subheading font-medium">Template</h3>
+        <div className="max-w-sm space-y-xxs">
+          {canWrite ? (
+            <>
+              <Label htmlFor="defaults-template" className={DETAIL_NAME}>Default template</Label>
+              <Select value={templateValue} onValueChange={setTemplate} disabled={busy}>
+                <SelectTrigger id="defaults-template"><SelectValue placeholder="Choose a template" /></SelectTrigger>
+                <SelectContent>
+                  {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </>
+          ) : (
+            <>
+              <span className={DETAIL_NAME}>Default template</span>
+              <p className="text-body">{templates.find((t) => t.name === profile.template)?.title ?? profile.template ?? '—'}</p>
+            </>
+          )}
+          <p className="text-caption text-muted-foreground">
+            A new report starts with it. The installation’s templates and their files are on{' '}
+            <Link to="/reports/templates" className="text-info hover:underline">Templates</Link>.
+          </p>
+        </div>
+      </section>
       {confirmEl}
       {discardDialog}
     </div>

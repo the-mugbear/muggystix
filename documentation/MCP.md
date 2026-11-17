@@ -130,6 +130,16 @@ has no tool: a key is bound to one project.
 
 The assist surface is meant to answer whatever an analyst asks about a project.
 
+**Filling in a client report** is done part by part, and the agent guide owns the
+list: "Every part of a client report, and how you change it" (in its *Evidence
+and proposals* section — `read_agent_guide` with `section=evidence-and-proposals`)
+names each part a report prints, where it lives and the one tool that changes
+it — the report's own text (`propose_report_details`), a finding's sections
+(`propose_finding_text`), new findings, endpoints, test results, figures and
+the scope's subnets — and the parts an agent cannot propose (the engagement's
+facts, a draft's own overrides, an issued report), which it reports to the
+operator instead.
+
 | Question | Tool |
 |---|---|
 | "What is in this project?" | `assist_get_context` — engagement dates, members and roles, totals (the scope's subnet and domain counts among them), the latest scans |

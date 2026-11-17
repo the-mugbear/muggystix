@@ -390,7 +390,18 @@ describe('ProposalItem — report defaults', () => {
     });
     const note = screen.getByTestId('dropped-images');
     expect(note).toHaveTextContent('The current text places image 24; this draft does not.');
-    expect(note).toHaveTextContent(/takes them out of every report that follows this default/);
+    // One image is "it" (5.431.1: it said "image 24 … takes them out").
+    expect(note).toHaveTextContent(/Accepting takes it out of every report that follows this default — use “Accept and edit” to keep it\./);
+  });
+
+  it('several dropped images are "them"', () => {
+    renderItem({
+      ...detail, field: 'system_description',
+      current_value: '![Diagram](evidence:24)\n\n![Rack](evidence:29)', payload: { value: 'No pictures.' },
+    });
+    const note = screen.getByTestId('dropped-images');
+    expect(note).toHaveTextContent('The current text places images 24, 29; this draft does not.');
+    expect(note).toHaveTextContent(/Accepting takes them out .* to keep them\./);
   });
 
   it('says nothing of images when the draft keeps every one, or once decided', () => {
@@ -407,7 +418,7 @@ describe('ProposalItem — report defaults', () => {
     renderItem({
       ...base, current_value: 'Shown here.\n\n![Session](evidence:57)', payload: { value: 'Shown, reworded.' },
     });
-    expect(screen.getByTestId('dropped-images')).toHaveTextContent(/moves them to the finding’s Evidence block/);
+    expect(screen.getByTestId('dropped-images')).toHaveTextContent(/moves it to the finding’s Evidence block/);
   });
 
   it('on a list, a row that is one of several drafts says so and where to compare them', () => {

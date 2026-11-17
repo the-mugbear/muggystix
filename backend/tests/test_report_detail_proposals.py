@@ -330,6 +330,52 @@ def test_the_agent_reads_the_defaults_the_page_shows(client, db_session, test_pr
     assert answer["proposable"] == list(report_defaults.WRITTEN_KEYS)
 
 
+def test_the_defaults_own_text_sent_back_is_refused(client, db_session, test_project):
+    """Agent acceptance run, 2026-11-17: proposing the disclaimer's current
+    text verbatim made a pending proposal that changed nothing.  Compared as
+    stored (trimmed), with the whole request refused — and a real change to
+    the same detail still goes through."""
+    _patch_defaults(client, test_project, disclaimer="As it stands.", system_description="Described.")
+    key, _ = _start(client, test_project)
+    for fields in (
+        {"disclaimer": "As it stands."},
+        {"disclaimer": "  As it stands.\n"},
+        {"executive_summary": "New.", "system_description": "Described."},   # all or nothing
+    ):
+        r = _propose(client, key, fields)
+        assert r.status_code == 422, (fields, r.text)
+        assert "current text" in r.json()["detail"]
+    assert db_session.query(AgentProposal).filter(AgentProposal.project_id == test_project.id).count() == 0
+    (row,) = _proposed(client, key, {"disclaimer": "As it stands, reworded."})
+    assert row["base_value_chars"] == len("As it stands.")
+
+
+def test_the_agents_read_of_a_draft_says_what_it_would_print(client, db_session, test_project):
+    """Agent acceptance run, 2026-11-17: a draft that follows the project's
+    defaults read ``executive_summary: null`` and ``effective: null`` — the
+    agent had to read the defaults to know the draft's text.  The agents'
+    read carries the page's details: what the draft prints, what it follows,
+    and from where."""
+    _patch_defaults(client, test_project, executive_summary="The project's summary.", client_name="Acme")
+    follower = _create(client, test_project, kind="full", title="Follows")
+    own = _create(client, test_project, kind="full", title="Own")
+    r = client.patch(f"{_base(test_project)}/{own['id']}", json={"settings": {"executive_summary": "Its own."}})
+    assert r.status_code == 200, r.text
+    key, _ = _start(client, test_project)
+    for report, summary, overridden in ((follower, "The project's summary.", False), (own, "Its own.", True)):
+        agent = client.get(f"/api/v1/agent/assist/client-reports/{report['id']}", headers=key).json()
+        page = client.get(f"{_base(test_project)}/{report['id']}").json()
+        assert agent["executive_summary"] == summary
+        assert agent["effective"]["executive_summary"] == summary and agent["effective"]["client_name"] == "Acme"
+        # Field for field what the page shows.
+        for part in ("effective", "followed", "followed_from", "settings", "executive_summary"):
+            assert agent[part] == page[part], part
+        assert ("executive_summary" in agent["settings"]) is overridden
+    # The LIST stays lean: no details on its rows.
+    rows = client.get("/api/v1/agent/assist/client-reports", headers=key).json()["items"]
+    assert all(row["effective"] is None for row in rows)
+
+
 def test_a_row_says_how_many_other_drafts_wait_for_the_same_detail(client, db_session, test_project):
     """2.541.0 — on a flat list two drafts of one detail were two
     unrelated-looking rows (browser pass 2026-11-17).  Each pending row says

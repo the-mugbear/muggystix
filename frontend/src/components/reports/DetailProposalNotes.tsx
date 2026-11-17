@@ -45,16 +45,20 @@ interface Props {
   drafts: Proposal[];
   canDecide: boolean;
   evidence?: EvidenceResolver;
+  /** Room above the drafts when a link lands on them (the page's own sticky bar). */
+  scrollExtra?: string;
 }
 
-const DetailProposalNotes: React.FC<Props> = ({ field, label, current, source, drafts, canDecide, evidence }) => {
+const DetailProposalNotes: React.FC<Props> = ({
+  field, label, current, source, drafts, canDecide, evidence, scrollExtra,
+}) => {
   if (!source && drafts.length === 0) return null;
   return (
     <div className="min-w-0 space-y-xs">
       {source && <AcceptedProposalLine source={source} testId={`defaults-${field}-source`} />}
       {drafts.length > 0 && (
         <FieldDraftsReview field={field} label={label} current={current} drafts={drafts}
-          canDecide={canDecide} evidence={evidence} />
+          canDecide={canDecide} evidence={evidence} scrollExtra={scrollExtra} />
       )}
     </div>
   );

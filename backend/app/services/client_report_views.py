@@ -103,7 +103,17 @@ def may_discard(report: Report, role: str, user_id: Optional[int]) -> bool:
 
 def serialize_report(
     db: Session, report: Report, role: str, *, with_summary: bool, user_id: Optional[int] = None,
+    with_details: Optional[bool] = None,
 ) -> ReportOut:
+    """``with_details`` (the summary's by default): the details as the report
+    prints them — ``effective``, ``followed``, ``followed_from`` and the
+    summary text.  The agents' read of one report builds its own summary
+    (from the content it pages), so it asks for the details apart: without
+    them a draft that follows the project's defaults read ``executive_summary:
+    null`` and ``effective: null`` — nothing of what it would print (agent
+    acceptance run, 2026-11-17)."""
+    if with_details is None:
+        with_details = with_summary
     superseded_by = None
     if report.status == ReportStatus.SUPERSEDED:
         superseded_by = (
@@ -121,7 +131,7 @@ def serialize_report(
     is_draft = report.status == ReportStatus.DRAFT
     # Only where the page shows the details (one report): a list row does not
     # pay for the reads.
-    effective, followed, followed_from = _details(service, report, is_draft) if with_summary else (None, None, None)
+    effective, followed, followed_from = _details(service, report, is_draft) if with_details else (None, None, None)
     return ReportOut(
         id=report.id, project_id=report.project_id, kind=report.kind, status=report.status,
         title=report.title, number=report.number, template=report.template,

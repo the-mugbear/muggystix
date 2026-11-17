@@ -756,10 +756,24 @@ def propose_report_details(
     values = _checked_report_details(db, project_id, fields)
     _refuse_internal_references(values, written=report_defaults.WRITTEN_KEYS)
     ev = _check_evidence(db, project_id, evidence_ids)
+    profile = db.query(ReportProfile).filter(ReportProfile.project_id == project_id).first()
+    # A proposal that changes nothing is refused: the default's own text sent
+    # back made a pending proposal a reviewer had to open to find it said the
+    # same (agent acceptance run, 2026-11-17 — 71 characters against a
+    # 71-character base).  Compared as stored, like `changed_since_proposed`.
+    same = sorted(
+        field for field, value in values.items()
+        if value.strip() == (getattr(profile, field, None) or "").strip()
+    )
+    if same:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{', '.join(same)}: this is the report default's current text — there is nothing to "
+                   "propose. Leave out a detail you would not change.",
+        )
     claimed = claim_replaced(db, project_id, who, replaces, [
         AgentProposal(kind=ProposalKind.REPORT_DETAIL.value, field=field) for field in values
     ])
-    profile = db.query(ReportProfile).filter(ReportProfile.project_id == project_id).first()
     out = [
         _add(
             db, project_id, ProposalKind.REPORT_DETAIL.value, who, field=field,

@@ -49,6 +49,9 @@ interface Props {
   canDecide: boolean;
   onDecided?: OnProposalDecided;
   evidence?: EvidenceResolver;
+  /** Room above the drafts when a jump lands on them, beyond the layout's
+   *  chrome: the section's label (the default), plus a page's own sticky bar. */
+  scrollExtra?: string;
 }
 
 const Draft: React.FC<{
@@ -80,7 +83,9 @@ const Draft: React.FC<{
   );
 };
 
-const FieldDraftsReview: React.FC<Props> = ({ field, label, current, drafts, canDecide, onDecided, evidence }) => {
+const FieldDraftsReview: React.FC<Props> = ({
+  field, label, current, drafts, canDecide, onDecided, evidence, scrollExtra = '2.25rem',
+}) => {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = drafts.find((d) => d.id === selectedId) ?? drafts[0];
   if (!selected) return null;
@@ -91,7 +96,7 @@ const FieldDraftsReview: React.FC<Props> = ({ field, label, current, drafts, can
       id={`review-${field}`}
       className="min-w-0 space-y-xs border-l-2 border-info pl-sm"
       // Room for the section's label printed above the drafts.
-      style={scrollBelowChrome('2.25rem')}
+      style={scrollBelowChrome(scrollExtra)}
       data-testid={`drafts-${field}`}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-xs">

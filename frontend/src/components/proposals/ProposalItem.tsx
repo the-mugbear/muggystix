@@ -93,11 +93,12 @@ export const droppedImages = (pr: Proposal): { ids: number[]; consequence: strin
   const kept = new Set(referencedImageIds(String(pr.payload?.value ?? '')));
   const ids = referencedImageIds(pr.current_value).filter((id) => !kept.has(id));
   if (!ids.length) return null;
+  const it = ids.length === 1 ? 'it' : 'them';
   return {
     ids,
     consequence: pr.kind === 'report_detail'
-      ? 'Accepting takes them out of every report that follows this default — use “Accept and edit” to keep them.'
-      : 'Accepting moves them to the finding’s Evidence block — use “Accept and edit” to keep them in this section.',
+      ? `Accepting takes ${it} out of every report that follows this default — use “Accept and edit” to keep ${it}.`
+      : `Accepting moves ${it} to the finding’s Evidence block — use “Accept and edit” to keep ${it} in this section.`,
   };
 };
 

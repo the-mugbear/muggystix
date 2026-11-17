@@ -2,6 +2,21 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.541.1",
+      "frontend": "5.431.1",
+      "date": "2026-11-17",
+      "entries": [
+        {"kind": "changed", "text": "A draft's Details say once, above the sections, that details it does not customise come from the project's report defaults, with a link there. The link no longer repeats on every section."},
+        {"kind": "changed", "text": "On Report defaults, a detail with proposals waiting shows its current text once, beside the proposal."},
+        {"kind": "changed", "text": "The agent guide lists every part of a client report, the tool an agent uses to change it, and the parts only a person sets."},
+        {"kind": "changed", "text": "On Report defaults, the default template is now the last section of the page, after the disclaimer."},
+        {"kind": "fixed", "text": "A link to a detail's waiting proposals on Report defaults landed with their heading hidden under the save bar."},
+        {"kind": "fixed", "text": "The warning about a proposal that drops one image said \"them\"."},
+        {"kind": "fixed", "text": "An agent reading a draft report now sees the details the draft would print, including those it takes from the project's report defaults. They were empty."},
+        {"kind": "fixed", "text": "An agent's proposal that repeats a report default's current text is refused instead of waiting for a decision that would change nothing."}
+      ]
+    },
+    {
       "backend": "2.541.0",
       "frontend": "5.431.0",
       "date": "2026-11-17",

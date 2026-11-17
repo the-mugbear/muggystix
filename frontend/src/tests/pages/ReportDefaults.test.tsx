@@ -69,6 +69,20 @@ beforeEach(() => {
 const show = () => render(<MemoryRouter><ReportDefaults /></MemoryRouter>);
 
 describe('Report defaults page', () => {
+  // Owner, 2026-11-17: "99% of users will use the Penetration test report" —
+  // the template choice is the LAST section, after the text people write.
+  it('puts the default template last, after the disclaimer', async () => {
+    show();
+    const template = await screen.findByTestId('defaults-section-template');
+    expect(within(template).getByRole('heading', { name: 'Template' })).toBeInTheDocument();
+    expect(within(template).getByText('Default template')).toBeInTheDocument();
+    const disclaimer = screen.getByTestId('defaults-section-disclaimer');
+    const summary = screen.getByTestId('defaults-section-summary');
+    // DOCUMENT_POSITION_FOLLOWING: the second node comes after the first.
+    expect(disclaimer.compareDocumentPosition(template) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(summary.compareDocumentPosition(template) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   // 5.430.0 — text an agent proposed for a default is not in the defaults
   // until accepted: the page whose text it would replace says it is waiting.
   it('says how many proposals for these defaults wait, and opens exactly those', async () => {
@@ -105,6 +119,13 @@ describe('Report defaults page', () => {
     expect(screen.getByTestId('drafts-disclaimer')).toHaveTextContent('1 draft to review');
     // A detail nobody proposed for has none.
     expect(screen.queryByTestId('drafts-system_description')).toBeNull();
+    // 5.431.1 — the current value is shown ONCE (§43): a detail under review
+    // says it in the comparison only, never "Not written" above "Nothing yet".
+    const read = screen.getByTestId('defaults-summary-read');
+    expect(within(read).queryByText('Not written')).toBeNull();
+    expect(within(read).getAllByText('Nothing yet — accepting fills this default.')).toHaveLength(1);
+    // One with no draft still reads as before.
+    expect(within(screen.getByTestId('defaults-system-read')).getByText('Not written')).toBeInTheDocument();
 
     fireEvent.click(within(summary).getByRole('tab', { name: /Draft B/ }));
     expect(within(summary).getByTestId('compare-proposed')).toHaveTextContent('A shorter summary.');
@@ -113,6 +134,49 @@ describe('Report defaults page', () => {
     // The defaults and the drafts are read again.
     await waitFor(() => expect(getReportProfile.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(listProposals.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('a written default under review prints its text once, beside the draft, with room above it for the save bar', async () => {
+    getReportProfile.mockResolvedValue({ ...profile, system_description: 'The network as it stands.' });
+    listProposals.mockResolvedValue({ total: 1, has_more: false, items: [
+      { ...draft(4, 'system_description', 'The network, reworded.', 'model-a'), current_value: 'The network as it stands.' },
+    ] });
+    show();
+    const drafts = await screen.findByTestId('drafts-system_description');
+    expect(screen.getAllByText('The network as it stands.')).toHaveLength(1);
+    expect(within(drafts).getByTestId('compare-current')).toHaveTextContent('The network as it stands.');
+    // A link to these drafts lands below the page's sticky save bar.
+    expect(drafts.style.scrollMarginTop).toContain('6.5rem');
+  });
+
+  // Browser pass 2026-11-17: with drafts waiting, a person's UNSAVED edit of
+  // the detail vanished from the read view (only the comparison showed), and
+  // once a draft was accepted under it the page said the unsaved text "was
+  // accepted from" the proposal.
+  it('an unsaved edit of a detail stays visible above its drafts, and is never said to come from a proposal', async () => {
+    getReportProfile.mockResolvedValue({
+      ...profile, executive_summary: 'By the agent.',
+      from_proposals: { executive_summary: {
+        proposal_id: 77, agent_session_id: 165, agent_model: 'model-a', accepted_by: 'Ana',
+        accepted_at: '2026-11-17T10:00:00Z', edited_on_accept: false, changed_since: false,
+      } },
+    });
+    listProposals.mockResolvedValue({ total: 1, has_more: false, items: [
+      { ...draft(5, 'executive_summary', 'Another draft.', 'model-b'), current_value: 'By the agent.' },
+    ] });
+    show();
+    await screen.findByTestId('drafts-executive_summary');
+    expect(screen.getByTestId('defaults-executive_summary-source')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Executive summary' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Executive summary' }), { target: { value: 'A person’s own words.' } });
+    fireEvent.click(within(screen.getByTestId('defaults-section-summary')).getByRole('button', { name: 'Done' }));
+
+    const read = screen.getByTestId('defaults-summary-read');
+    expect(within(read).getByText('A person’s own words.')).toBeInTheDocument();      // the unsaved edit, shown
+    expect(within(read).getByTestId('compare-current')).toHaveTextContent('By the agent.');   // the drafts' base
+    expect(screen.queryByTestId('defaults-executive_summary-source')).toBeNull();
+    expect(screen.getByTestId('defaults-action-bar')).toHaveTextContent('Unsaved changes');
   });
 
   // 5.431.0 — the defaults keep no history: the page says which text came

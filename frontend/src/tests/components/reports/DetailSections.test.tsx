@@ -15,7 +15,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../services/api', () => ({ getProjectReportTeam: vi.fn() }));
 
-import DetailSections from '../../../components/reports/workspace/DetailSections';
+import DetailSections, { FollowsDefaultsLine } from '../../../components/reports/workspace/DetailSections';
 import { toSave } from '../../../components/reports/workspace/detailModel';
 import { useDetailEdits, type DetailEdits } from '../../../components/reports/workspace/useDetailEdits';
 import type { EngagementOverrides, EngagementSettings } from '../../../services/api';
@@ -65,15 +65,24 @@ describe('Report details — sections', () => {
     expect(screen.queryByRole('textbox')).toBeNull();                        // nothing is a field until Edit
   });
 
-  // 5.431.0 — user feedback, 2026-11-17: evaluating a draft, people "weren't
-  // sure where certain fields were populated".  The status line links there.
-  it('each section’s status line opens the project’s report defaults, where a followed value is written', () => {
+  // 5.431.1 — user feedback, 2026-11-17: evaluating a draft, people "weren't
+  // sure where certain fields were populated".  Said ONCE above the sections
+  // (a link on every status line said it five times on one page).
+  it('where a followed value is written is one line with a link, not a link on every section', () => {
+    render(<MemoryRouter><FollowsDefaultsLine canEdit /></MemoryRouter>);
     render(<Harness saved={{ classification: 'Restricted' }} />);
+    const line = screen.getByTestId('report-follows-defaults');
+    expect(line).toHaveTextContent('Every detail this report does not customise is printed from the project’s report defaults.');
+    expect(within(line).getByRole('link', { name: 'Edit the project’s defaults' })).toHaveAttribute('href', '/reports/defaults');
     for (const id of ['summary', 'engagement']) {
-      const link = within(section(id).getByTestId(`report-section-${id}-status`)).getByRole('link');
-      expect(link).toHaveTextContent('Edit the project’s defaults');
-      expect(link).toHaveAttribute('href', '/reports/defaults');
+      expect(within(section(id).getByTestId(`report-section-${id}-status`)).queryByRole('link')).toBeNull();
     }
+    expect(screen.getAllByRole('link', { name: /the project’s defaults/ })).toHaveLength(1);
+  });
+
+  it('a reader who cannot edit is offered the defaults to see, not to edit', () => {
+    render(<MemoryRouter><FollowsDefaultsLine canEdit={false} /></MemoryRouter>);
+    expect(screen.getByRole('link', { name: 'See the project’s defaults' })).toHaveAttribute('href', '/reports/defaults');
   });
 
   // Walkthrough 2026-10-14: the Executive summary said it twice.

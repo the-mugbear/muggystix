@@ -1009,10 +1009,18 @@ and the page was "confusing". The rules:
 - **A value that comes from somewhere else links there** (5.431.0; user
   feedback 2026-11-17: evaluating a draft, people "weren't sure where certain
   fields were populated", and the Report defaults link "wasn't quite
-  obvious"). Each section of a draft's Details ends its one status line with
-  "Edit the project's defaults" (`See…` for a reader), and the Reports page
-  offers Report defaults as a button beside its actions, for every reader —
-  never as a caption link under the lead.
+  obvious"). A draft's Details say ONCE, above the sections, that every detail
+  it does not customise is printed from the project's report defaults, with
+  the link ("Edit the project's defaults", `See…` for a reader —
+  `DetailSections.FollowsDefaultsLine`; 5.431.0 put the link on each section's
+  status line, five times the same words on one page, §44), and the Reports
+  page offers Report defaults as a button beside its actions, for every
+  reader — never as a caption link under the lead.
+- **A detail under review prints its text once** (5.431.1): on the Report
+  defaults page a detail with drafts leaves its text out of the read view
+  (`DetailSections` `valueInNote`) — the comparison shows it — and a page with
+  a sticky bar of its own gives the drafts that much more room when a link
+  lands on them (`FieldDraftsReview` `scrollExtra`).
 
 ### 44. A page explains itself once (2026-10-08)
 
