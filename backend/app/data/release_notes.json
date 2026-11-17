@@ -2,6 +2,30 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.541.0",
+      "frontend": "5.431.0",
+      "date": "2026-11-17",
+      "entries": [
+        {"kind": "new", "text": "Proposed text for a report default is reviewed on the Report defaults page, under the detail it would replace; several drafts of one detail are lettered and compared side by side."},
+        {"kind": "new", "text": "A draft's \"Before issuing\" list names the undecided proposals for the report defaults that draft follows: issued now, it prints the defaults as they stand."},
+        {"kind": "new", "text": "A report default whose text came from an accepted agent proposal says so, with who accepted it, and says when it has been edited since."},
+        {"kind": "new", "text": "A proposal that drops an image the current text places now warns before you accept it. On the Proposals page, a row that is one of several drafts for the same text says so."},
+        {"kind": "changed", "text": "Report defaults is a button on the Reports page, and each section of a draft's Details links to the project's defaults, where a value the draft follows is written."},
+        {"kind": "fixed", "text": "The Release notes page failed to open in 2.540.0."}
+      ]
+    },
+    {
+      "backend": "2.540.0",
+      "frontend": "5.430.0",
+      "date": "2026-11-17",
+      "entries": [
+        {"kind": "new", "text": "An agent can propose the report's own text for the project's report defaults: the executive summary, the system description, the other target lists and the disclaimer. Once accepted, every draft that follows the defaults prints it; a draft that overrides the detail keeps its own."},
+        {"kind": "new", "text": "These proposals are on the Proposals page under \"Report defaults\", each beside the current text: accept, accept with your edit, or reject. The Report defaults page says when some are waiting, and project admins are told once per agent session."},
+        {"kind": "new", "text": "An agent can read the project's report defaults — the text as it stands and the report's own images — so what it proposes is written against the current text."},
+        {"kind": "changed", "text": "The client, classification, engagement type, author, team and distribution list remain yours to set: an agent cannot propose them."}
+      ]
+    },
+    {
       "backend": "2.539.1",
       "frontend": "5.429.0",
       "date": "2026-11-09",

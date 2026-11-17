@@ -32,10 +32,13 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from fastapi import HTTPException
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models_reports import ReportDefault, ReportProfile
+from app.services import report_images
+from app.services import report_template_service as templates
 
 #: Every engagement detail — the keys of a report's ``settings`` and columns
 #: of ``report_profiles``.
@@ -53,6 +56,14 @@ DETAIL_KEYS: Tuple[str, ...] = (
 OWN_IN_ADDENDUM: Tuple[str, ...] = ("executive_summary",)
 #: The details that are lists: overridden as a whole, and possibly to empty.
 LIST_KEYS: Tuple[str, ...] = ("testers", "distribution")
+#: The details that are WRITTEN text (Markdown) — what an agent may propose for
+#: the project's defaults (``proposal_service.propose_report_details``).  The
+#: rest are facts about the engagement (who, for whom, how it is marked): a
+#: person's to state.
+WRITTEN_KEYS: Tuple[str, ...] = (
+    "executive_summary", "system_description", "applications", "thick_clients", "other_targets",
+    "disclaimer",
+)
 #: The details the installation also holds (level 3).
 INSTALLATION_KEYS: Tuple[str, ...] = ("author_name", "disclaimer")
 LABELS: Dict[str, str] = {"author_name": "Author", "disclaimer": "Disclaimer"}
@@ -197,6 +208,56 @@ def apply_overrides(follows: Mapping[str, Any], settings: Optional[Mapping[str, 
     first answer of :func:`followed_with_sources`).  :func:`resolve` and the
     page's read (which shows both) call it; nothing else merges the two."""
     return {**follows, **overrides(settings)}
+
+
+def lock_profile(db: Session, project_id: int) -> ReportProfile:
+    """The project's report defaults, locked ``FOR UPDATE`` — the row is made
+    first when there is none.  ``FOR UPDATE`` on a row that does not exist
+    locks nothing, so two first writes both inserted and the second failed on
+    the unique project (review 2026-10-14, H3); a concurrent insert makes this
+    one wait for it, then do nothing.  An empty row says what no row says.
+
+    The first lock of :func:`write_profile`, and of a decision on a proposal
+    for one of these details (``proposal_service.lock_for_decision``)."""
+    db.execute(
+        pg_insert(ReportProfile).values(project_id=project_id)
+        .on_conflict_do_nothing(index_elements=[ReportProfile.project_id])
+    )
+    return (
+        db.query(ReportProfile).filter(ReportProfile.project_id == project_id)
+        .with_for_update().populate_existing().one()
+    )
+
+
+def write_profile(
+    db: Session, project_id: int, data: dict, user_id: Optional[int],
+    check: Optional[Callable[[ReportProfile], None]] = None,
+) -> ReportProfile:
+    """Write ``data``'s keys (already validated by ``ReportProfilePatch``)
+    into the project's report defaults, creating the row — the ONE writer of
+    ``report_profiles``: the defaults page's PATCH, a draft's promote, and an
+    accepted agent proposal (``proposal_service``).  A list sent null is
+    empty; the image references of a text that may place images are
+    normalised; a template is checked to be a client template (422).
+    ``check`` runs on the LOCKED row before anything is written (and may
+    refuse)."""
+    if data.get("template"):
+        try:
+            templates.client_template(data["template"])
+        except templates.TemplateError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    profile = lock_profile(db, project_id)
+    if check is not None:
+        check(profile)
+    for key, value in data.items():
+        if key in LIST_KEYS:
+            value = list(value or [])
+        elif key in report_images.ENGAGEMENT_IMAGE_FIELDS:
+            value = report_images.normalise_references(value)
+        setattr(profile, key, value)
+    profile.updated_by_id = user_id
+    db.flush()
+    return profile
 
 
 def as_dict(db: Session) -> dict:

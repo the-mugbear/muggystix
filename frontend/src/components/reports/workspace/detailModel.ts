@@ -35,6 +35,18 @@ export const DETAIL_LABELS: Record<DetailKey, string> = {
   other_targets: 'Other targets', disclaimer: 'Disclaimer',
 };
 
+/** Where the project's report defaults are read and edited — what a draft's
+ *  detail follows unless the draft overrides it. */
+export const REPORT_DEFAULTS_PATH = '/reports/defaults';
+
+/** The longest text a detail takes where it is not the usual (32,768 for a
+ *  written detail, 255 for a one-line one) — the server's
+ *  `EngagementSettings`.  The detail's own field and an agent's proposal for
+ *  it accepted with an edit (`ProposalItem`) read it. */
+export const DETAIL_MAX: Partial<Record<DetailKey, number>> = {
+  executive_summary: 65536, client_name: 255, author_name: 255, classification: 100, engagement_type: 100,
+};
+
 /** The Details tab's sections, in the order the report reads. */
 export interface DetailSection {
   id: 'summary' | 'engagement' | 'people' | 'scope' | 'disclaimer';

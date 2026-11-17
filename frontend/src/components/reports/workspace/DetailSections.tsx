@@ -16,6 +16,7 @@
  * (`/reports/defaults`): no follow status there (`ctx.followed` is null).
  */
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { MoreHorizontal } from 'lucide-react';
 
 import type {
@@ -34,7 +35,7 @@ import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Textarea } from '../../ui/textarea';
 import {
-  DETAIL_LABELS, DETAIL_SECTIONS, type DetailKey, type DetailSection, current, customised, edited, isListKey,
+  DETAIL_LABELS, DETAIL_MAX, DETAIL_SECTIONS, REPORT_DEFAULTS_PATH, type DetailKey, type DetailSection, current, customised, edited, isListKey,
   sectionStatus, shown, sourceCaption,
 } from './detailModel';
 import { DetailRows, DistributionEditor, TeamEditor } from './DetailEditors';
@@ -72,9 +73,7 @@ const MARKDOWN: ReadonlyArray<DetailKey> = [
  *  `report_images.ENGAGEMENT_IMAGE_FIELDS` (the executive summary since
  *  5.402.0; owner, 2026-10-15).  Change both together. */
 export const IMAGE_DETAILS: ReadonlyArray<DetailKey> = ['executive_summary', 'system_description'];
-const MAX: Partial<Record<DetailKey, number>> = {
-  executive_summary: 65536, client_name: 255, author_name: 255, classification: 100, engagement_type: 100,
-};
+const MAX = DETAIL_MAX;
 const EXAMPLE: Partial<Record<DetailKey, string>> = {
   author_name: 'e.g. Example Security Ltd', classification: 'e.g. Confidential',
   engagement_type: 'e.g. Internal network penetration test',
@@ -252,7 +251,18 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
         <div className="min-w-0">
           <h3 id={`${idPrefix}-section-${section.id}`} className="text-subheading font-medium">{title}</h3>
           {status && (
-            <p className="text-caption text-muted-foreground" data-testid={`${idPrefix}-section-${section.id}-status`}>{status}</p>
+            // 5.431.0 — the status names where a followed value is written,
+            // as a link: readers of a draft "weren't sure where certain
+            // fields were populated" (user feedback, 2026-11-17).  Once per
+            // section, not per field.
+            <p className="text-caption text-muted-foreground" data-testid={`${idPrefix}-section-${section.id}-status`}>
+              {status}
+              {' · '}
+              <Link to={REPORT_DEFAULTS_PATH} className="text-info hover:underline"
+                aria-label={`Open the project’s report defaults (${title})`}>
+                {canEdit ? 'Edit the project’s defaults' : 'See the project’s defaults'}
+              </Link>
+            </p>
           )}
         </div>
         {canEdit && (

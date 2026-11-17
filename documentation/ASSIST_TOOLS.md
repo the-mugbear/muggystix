@@ -30,7 +30,7 @@ Every tool is text in the model's context on every session. One session does
 every kind of work, so `tools/list` returns the whole catalogue: a tool added
 for assist is context spent by a session that only uploads scans too.
 
-The catalogue is 82 tools, 45 of them `assist_*` (42 reads and 3 writes);
+The catalogue is 86 tools, 46 of them `assist_*` (43 reads and 3 writes);
 `GET /api/v1/references/mcp-tools` is the live list. Their descriptions come to
 about 5,500 words, and that number is watched: a description says what the tool
 returns and the one or two things an agent gets wrong without being told, and
@@ -280,6 +280,7 @@ The template lives on the operator's machine and the agent fills it there
 | Write or improve a finding's report text | `propose_finding_text` — a proposal per field, accepted or rejected by a person in the app |
 | Name the scope's subnets — their sites and descriptions, which the report's scope table and per-site summary print | `propose_subnet_details` — one proposal per subnet (by CIDR, from `scope_list_subnets`); a person accepts them one by one or all at once under "Scope details" |
 | Record what was run and what it showed | `record_evidence` / `list_evidence`; one record and its raw output in pieces: `get_evidence` / `read_evidence_raw` |
+| Write or improve the report's own text — the executive summary, the system description, the other target lists, the disclaimer | `assist_get_report_defaults` (each as it stands, and the report's own images), then `propose_report_details` — one proposal per detail for the PROJECT'S report defaults, which every draft follows unless it overrides the detail; a person accepts (and may edit) or rejects each under "Report defaults" |
 | What we told the client | `assist_list_client_reports` → `assist_get_client_report` |
 
 **`assist_get_finding`** is the tool the report stage turns on. It carries the

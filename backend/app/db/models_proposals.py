@@ -92,6 +92,10 @@ class ProposalKind(str, enum.Enum):
     ENDPOINT_STATUS = "endpoint_status"
     # A scope subnet's description and / or site (2.522.0; owner, 2026-10-22).
     SUBNET_DETAILS = "subnet_details"
+    # One written detail of the PROJECT'S report defaults (2.540.0; owner,
+    # 2026-11-17) — the executive summary, the system description…  ``field``
+    # names it; the target is the project's one ``report_profiles`` row.
+    REPORT_DETAIL = "report_detail"
 
 
 class ProposalStatus(str, enum.Enum):

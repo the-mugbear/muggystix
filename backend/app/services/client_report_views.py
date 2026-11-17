@@ -15,9 +15,12 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from app.core.security import check_permissions
 from app.db.models_project import ProjectRole
-from app.db.models_reports import Report, ReportStatus
-from app.schemas.client_reports import EngagementSettings, ReportFileOut, ReportOut, ReportRef
-from app.services import report_defaults
+from app.db.models_reports import Report, ReportProfile, ReportStatus
+from app.schemas.client_reports import (
+    EngagementSettings, ReportFileOut, ReportOut, ReportProfileOut, ReportRef,
+)
+from app.services import proposal_service, report_defaults
+from app.services import report_template_service as templates
 from app.services.client_report_service import ClientReportService
 
 
@@ -55,6 +58,38 @@ def _details(
     followed, sources = service.followed_details_with_sources(report.project_id, report.kind)
     effective = report_defaults.apply_overrides(followed, report.settings)
     return EngagementSettings.model_validate(effective), EngagementSettings.model_validate(followed), sources
+
+
+def profile_out(db: Session, project_id: int, profile: Optional[ReportProfile]) -> ReportProfileOut:
+    """The project's report defaults — what a draft follows — with the
+    project's analysts and admins as the team when none is saved, flagged as
+    such.  The defaults page's read and the agents'
+    (``GET /agent/assist/client-reports/defaults``)."""
+    # The team as a draft follows it — the one merge decides the fallback to
+    # the project's analysts and admins (review 2026-10-14, R8).
+    # The installation's defaults read once, for the merge and the answer
+    # (third review 2026-10-15, R7).
+    inherited = report_defaults.installation(db)
+    followed, sources = report_defaults.followed_with_sources(
+        db, profile, lambda: ClientReportService(db).project_team(project_id), base=inherited)
+    team = followed["testers"]
+    from_project = sources["testers"] != report_defaults.FROM_PROJECT
+    if profile is None:
+        return ReportProfileOut(
+            template=templates.default_template_name(), testers=team, testers_from_project=True,
+            inherited=inherited,
+        )
+    return ReportProfileOut(
+        author_name=profile.author_name, disclaimer=profile.disclaimer, inherited=inherited,
+        client_name=profile.client_name, classification=profile.classification,
+        engagement_type=profile.engagement_type, testers=team,
+        distribution=profile.distribution or [], system_description=profile.system_description,
+        applications=profile.applications, thick_clients=profile.thick_clients,
+        other_targets=profile.other_targets, executive_summary=profile.executive_summary,
+        template=profile.template or templates.default_template_name(),
+        updated_at=profile.updated_at, testers_from_project=from_project,
+        from_proposals=proposal_service.accepted_report_details(db, project_id, profile),
+    )
 
 
 def may_discard(report: Report, role: str, user_id: Optional[int]) -> bool:

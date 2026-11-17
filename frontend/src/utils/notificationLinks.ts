@@ -34,6 +34,11 @@ export const notificationHref = (n: Linkable): string | null => {
     if (n.source_type === 'agent_session_scope' && n.source_id) {
       return `/proposals?agent_session_id=${n.source_id}&kind=subnet_details&scope=all`;
     }
+    // 5.430.0 — a session's proposals for the project's report defaults (the
+    // executive summary, the system description…), told to project admins.
+    if (n.source_type === 'agent_session_report' && n.source_id) {
+      return `/proposals?agent_session_id=${n.source_id}&kind=report_detail&scope=all`;
+    }
     if (n.source_type === 'agent_session' && n.source_id) {
       return `/proposals?agent_session_id=${n.source_id}&scope=mine`;
     }

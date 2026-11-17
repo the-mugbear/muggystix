@@ -879,6 +879,20 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/client-reports/{report_id}",
         "params": {"report_id": "A report's id (from assist_list_client_reports)."},
     },
+    "assist_get_report_defaults": {
+        "description": (
+            "The project's report defaults (the Report defaults page): the executive "
+            "summary, system description, other target lists and disclaimer as they stand, "
+            "the engagement facts (client, classification, team, distribution, author, "
+            "template), `inherited` (the installation's author and disclaimer, used where "
+            "the project's is empty) and `images` — the report's own images, the only ones "
+            "its text may place. A draft prints these for every detail it does not override. "
+            "`proposable` names the details propose_report_details takes. Needs an auditor "
+            "operator."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/client-reports/defaults",
+    },
     "assist_get_image": {
         "description": (
             "Look at one image: a note/finding attachment (attachment_id, from "
@@ -1134,6 +1148,38 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "additive": True,
         "idempotent": False,
         "params": {"agent_model": AGENT_MODEL},
+    },
+    # 2.540.0 — owner, 2026-11-17: the report's own text took no agent input.
+    "propose_report_details": {
+        "description": (
+            "Propose text for the PROJECT'S report defaults — what every draft report prints "
+            "for a detail it does not override; a person accepts (then may edit) or rejects "
+            "it, and nothing changes until then. Details: executive_summary, "
+            "system_description, applications, thick_clients, other_targets, disclaimer "
+            "(Markdown); one proposal per detail. EACH VALUE IS THE COMPLETE REPLACEMENT for "
+            "that detail, as it will read in the client report — never a critique, "
+            "suggestions or a diff (why goes in `rationale`). Read assist_get_report_defaults "
+            "first and write against the text it holds; propose only what you would change. "
+            "THE READER HAS NEVER SEEN BLUESTICK: no record numbers or ids and no mention of "
+            "BlueStick (a text naming a record is refused, 422). NOT ENOUGH TO GO ON IS A "
+            "VALID ANSWER: write only what the project's data supports, and say what is "
+            "missing in `rationale` and to your operator. executive_summary and "
+            "system_description may place the report's own images with "
+            "`![caption](evidence:<id>)` — keep the references the text already holds, and "
+            "use only ids under `images` on assist_get_report_defaults (any other is a 422). "
+            "It never changes one draft's own override or an issued report. Answers ids and "
+            "text lengths, not the text."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/proposals/report-details",
+        "additive": True,
+        "idempotent": False,
+        "params": {
+            "rationale": (
+                "Why — what you changed and why, what the reviewer should check. Your critique goes here."
+            ),
+            "agent_model": AGENT_MODEL,
+        },
     },
     "list_proposals": {
         "description": (

@@ -18,6 +18,7 @@ import { NEED_SECTION } from '../../utils/findingNeeds';
 import { REPORT_FIELD_LABELS } from '../../utils/reportImages';
 import { findingFromReportPath, REPORT_CHECKLIST_ANCHOR } from '../findings/ReportDraftBar';
 import PostureSection, { SectionCount } from '../posture/PostureSection';
+import { DETAIL_LABELS, type DetailKey, REPORT_DEFAULTS_PATH } from './workspace/detailModel';
 import { Button } from '../ui/button';
 
 /** A group lists this many lines, then "Show all". */
@@ -113,6 +114,8 @@ export interface ChecklistCounts {
   missingText: number;
   unresolvedImages: number;
   proposals: number;
+  /** Proposed text for report defaults this draft follows (5.431.0). */
+  detailProposals: number;
   uncaptionedImages: number;
   references: number;
   notes: number;
@@ -124,13 +127,14 @@ export const checklistCounts = (s: ReportSummary): ChecklistCounts => {
   const missingText = s.missing_text?.length ?? 0;
   const unresolvedImages = (s.unresolved_images ?? []).reduce((n, u) => n + u.ids.length, 0);
   const proposals = s.pending_proposals?.length ?? 0;
+  const detailProposals = (s.pending_detail_proposals ?? []).reduce((n, m) => n + m.count, 0);
   const uncaptionedImages = (s.uncaptioned_images ?? []).reduce((n, m) => n + m.count, 0);
   const references = s.internal_references?.length ?? 0;
   const notes = (s.evidence_note_findings ?? []).reduce((n, m) => n + m.notes.length, 0);
   return {
-    details, missingText, unresolvedImages, proposals, uncaptionedImages, references, notes,
+    details, missingText, unresolvedImages, proposals, detailProposals, uncaptionedImages, references, notes,
     toFix: details + missingText,
-    warnings: unresolvedImages + proposals + uncaptionedImages + references + notes,
+    warnings: unresolvedImages + proposals + detailProposals + uncaptionedImages + references + notes,
   };
 };
 
@@ -150,6 +154,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
   const details = missingDetailEntries(s);
   const missingText = s.missing_text ?? [];
   const proposals = s.pending_proposals ?? [];
+  const detailProposals = s.pending_detail_proposals ?? [];
   const uncaptioned = s.uncaptioned_images ?? [];
   const references = s.internal_references ?? [];
   const notes = s.evidence_note_findings ?? [];
@@ -250,6 +255,20 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
                 <li key={m.id} className={ROW}>
                   <span className="tabular-nums text-muted-foreground">{m.ref}</span>
                   <Link to={`/findings/${m.id}#proposals`} className={LINK} title={m.title}>{m.title}</Link>
+                  <span className="text-caption text-muted-foreground">{m.count} proposal{m.count === 1 ? '' : 's'}</span>
+                </li>
+              ))} />
+          )}
+          {detailProposals.length > 0 && (
+            // 5.431.0 — proposed text for a report default this draft
+            // follows: issued now, the report prints the default as it stands.
+            <Group id="detail-proposals" title="Proposed report text to decide" count={counts.detailProposals}
+              note="Text an agent proposed for a project default this report follows. The report prints the default as it stands; each line opens the drafts on Report defaults."
+              items={detailProposals.map((m) => (
+                <li key={m.field} className={ROW}>
+                  <Link to={`${REPORT_DEFAULTS_PATH}#review-${m.field}`} className={LINK}>
+                    {DETAIL_LABELS[m.field as DetailKey] ?? m.field}
+                  </Link>
                   <span className="text-caption text-muted-foreground">{m.count} proposal{m.count === 1 ? '' : 's'}</span>
                 </li>
               ))} />

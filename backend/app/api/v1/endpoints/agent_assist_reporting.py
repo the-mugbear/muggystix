@@ -10,7 +10,8 @@ that answer "what did the scanners find that nobody has judged yet?" and
   and how many of those a finding already covers, and what its inspector says
   about one.  Read-only; promotion stays a person's call.
 * ``GET /assist/client-reports`` (+ ``/{id}``, ``/{id}/files/{fmt}``) — the
-  Reports page: drafts and issued reports, what each one says, and its files.
+  Reports page: drafts and issued reports, what each one says, and its files;
+  ``/assist/client-reports/defaults`` — its Report defaults page (2.540.0).
 
 Every read wraps the service the page itself uses (``scanner_observation_service``,
 ``ClientReportService`` and the page's own serializer), so an agent and the
@@ -44,15 +45,15 @@ from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
 from app.db.session import get_db
-from app.schemas.client_reports import ReportFileOut, ReportOut
+from app.schemas.client_reports import ReportFileOut, ReportOut, ReportProfileOut
 from app.services.paging import rows_remain
-from app.services import query_history_service, query_service
+from app.services import query_history_service, query_service, report_defaults, report_images
 from app.services import saved_query_service as saved_queries
 from app.services import scanner_observation_service as observations
 from app.services.client_report_service import ClientReportService
 # The Reports page's own serializer and loader: the agent sees the report the
 # page shows, field for field.
-from app.services.client_report_views import load_report, serialize_report
+from app.services.client_report_views import load_report, profile_out, serialize_report
 
 router = APIRouter()
 
@@ -345,6 +346,57 @@ def list_assist_client_reports(
     return AssistClientReportList(
         items=[serialize_report(db, r, role, with_summary=False) for r in rows],
         latest_issued_id=latest.id if latest else None,
+    )
+
+
+class AssistReportTextImage(BaseModel):
+    id: int = Field(..., description="What a text places it by: `![caption](evidence:<id>)`.")
+    filename: str
+    caption: Optional[str] = None
+    printable: bool = Field(..., description="A PNG, JPEG or GIF: the only images a report prints.")
+    placed_in: List[str] = Field(default_factory=list, description=(
+        "Where the project's CURRENT text places it: `defaults` and / or `report <id>` for a draft "
+        "that overrides the text."))
+
+
+class AssistReportDefaults(ReportProfileOut):
+    """The Report defaults page (`/reports/defaults`), field for field."""
+    images: List[AssistReportTextImage] = Field(default_factory=list, description=(
+        "The report's own images — the only ones `executive_summary` and `system_description` may place."))
+    proposable: List[str] = Field(default_factory=list, description=(
+        "The details propose_report_details takes; the rest are a person's to state."))
+
+
+# Declared BEFORE `/{report_id}`: that route would read "defaults" as an id.
+@router.get(
+    "/assist/client-reports/defaults",
+    dependencies=_REPORTS_READ,
+    response_model=AssistReportDefaults,
+    summary="The project's report defaults — what every draft prints for a detail it does not override",
+)
+def get_assist_report_defaults(
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """2.540.0 — the defaults page's own answer (`client_report_views.profile_out`):
+    the written details as they stand (the text a `report_detail` proposal
+    would replace), the engagement facts, `inherited` (the installation's
+    author and disclaimer, used where the project's is empty), and the
+    report's own images with where the current text places them."""
+    project_id = request.state.agent_project_id
+    base = profile_out(db, project_id, ClientReportService(db).get_profile(project_id))
+    placed = report_images.report_text_placements(db, project_id)
+    return AssistReportDefaults(
+        **base.model_dump(),
+        images=[
+            AssistReportTextImage(
+                id=att.id, filename=att.filename, caption=att.caption,
+                printable=report_images.printable(att), placed_in=placed.get(att.id, []),
+            )
+            for att in report_images.project_report_images(db, project_id)
+        ],
+        proposable=list(report_defaults.WRITTEN_KEYS),
     )
 
 

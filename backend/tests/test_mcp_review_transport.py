@@ -124,6 +124,7 @@ _CREATES_A_ROW = {
     # v2.436.0: each call records a new evidence row / proposal.
     "record_evidence", "propose_finding_text", "propose_finding",
     "propose_observation", "propose_endpoint_status", "propose_subnet_details",
+    "propose_report_details",
     # v2.457.0: a note without a request_key is a second entry on retry; the
     # field changes of remediation_apply converge, its notes need not.
     "remediation_add_note", "remediation_apply",

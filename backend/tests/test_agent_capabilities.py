@@ -78,6 +78,7 @@ GATED_PROJECT_WRITES = {
     ("POST", "/api/v1/agent/hosts/{host_id}/notes"),
     ("POST", "/api/v1/agent/proposals/endpoint-status"),
     ("POST", "/api/v1/agent/proposals/subnet-details"),
+    ("POST", "/api/v1/agent/proposals/report-details"),
     ("POST", "/api/v1/agent/proposals/finding"),
     ("POST", "/api/v1/agent/proposals/finding-text"),
     ("POST", "/api/v1/agent/proposals/observation"),

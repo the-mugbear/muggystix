@@ -3,7 +3,8 @@
  *
  * An agent's change to what the team concluded — a finding's report text, a
  * new finding, promoting or dismissing a scanner observation, an endpoint's
- * status, a scope subnet's description or site (5.417.0) — is a PROPOSAL a
+ * status, a scope subnet's description or site (5.417.0), a written detail
+ * of the project's report defaults (5.430.0) — is a PROPOSAL a
  * person accepts (then may edit) or rejects.  The
  * in-app "Draft empty sections" produces the same thing (`source: llm_draft`).
  * Evidence records are what an agent ran against a host and what came back.
@@ -17,7 +18,8 @@ export type ProposalKind =
   | 'observation_promote'
   | 'observation_dismiss'
   | 'endpoint_status'
-  | 'subnet_details';
+  | 'subnet_details'
+  | 'report_detail';
 export type ProposalStatus = 'pending' | 'accepted' | 'rejected' | 'superseded';
 
 export interface Proposal {
@@ -30,25 +32,31 @@ export interface Proposal {
   finding_host_id: number | null;
   /** subnet_details (backend 2.522.0): the scope subnet it is about. */
   subnet_id?: number | null;
-  /** finding_text: the report field. */
+  /** finding_text: the report field.  report_detail (backend 2.540.0): the
+   *  detail of the project's report defaults (executive_summary,
+   *  system_description…). */
   field: string | null;
-  /** finding_text: {value, accepted_value?}; finding_create: {title, severity,
+  /** finding_text, report_detail: {value, accepted_value?}; finding_create: {title, severity,
    *  status, host_ids, report_text}; observation_*: {scope, severity, summary};
    *  endpoint_status: {host_status}; subnet_details: {description?, site?,
    *  base_description, base_site} — the base_ values are what the subnet
    *  held when proposed. */
   payload: Record<string, unknown> | null;
-  /** finding_text: the finding's text in that field now. */
+  /** finding_text: the finding's text in that field now.  report_detail: the
+   *  project's default for that detail now. */
   current_value: string | null;
-  /** finding_text (backend 2.454.0): the field's text when the proposal was
+  /** finding_text, report_detail (backend 2.454.0): the field's text when the proposal was
    *  made — null when it was empty, or when `base_recorded` is false. */
   base_value?: string | null;
   /** False for proposals made before the base text was kept. */
   base_recorded?: boolean;
-  /** Pending finding_text: the field changed after the draft was written;
+  /** Pending finding_text or report_detail: the field changed after the draft was written;
    *  null when that cannot be known (no base recorded).  Pending
    *  subnet_details: a field it sets was edited since it was proposed. */
   changed_since_proposed?: boolean | null;
+  /** Pending (backend 2.541.0): how many OTHER pending proposals change the
+   *  same section, subnet or report detail — accepting one supersedes them. */
+  other_pending?: number;
   target: {
     finding_title: string | null;
     observation_title: string | null;

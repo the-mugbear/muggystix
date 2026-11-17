@@ -986,6 +986,33 @@ and the page was "confusing". The rules:
 - **One decision path** (`hooks/useProposalDecision`): every place a proposal is
   decided uses it, and "Accept and edit" can start from the draft or from the
   current text.
+- **The report's own text follows the same rules** (5.431.0): a draft of a
+  report default is reviewed under its detail on the Report defaults page
+  (`components/reports/DetailProposalNotes` → `FieldDraftsReview`), its left
+  pane is named "Now in the report defaults" (`ProposalItem.comparisonLabels`
+  — a draft may override the default, so it is not "the report"), and a
+  draft's "Before issuing" lists the undecided proposals for the defaults it
+  follows.
+- **Say what a draft takes away, not only what it words differently.** A draft
+  that no longer places an image the current text places says so before its
+  controls, with what accepting does (`ProposalItem.droppedImages`): a
+  finding's image goes back to its Evidence block, a report default's leaves
+  the report.
+- **On a flat list, a row that is one of several says so** (`other_pending`,
+  the server's count): "One of 2 proposals waiting for this report default —
+  accepting one retires the other", with a link to where they are compared.
+- **Text an agent wrote says so where it is read, when nothing else records
+  it.** A finding's section has its history line; a report default has none,
+  so the detail carries "Text accepted from agent session #N's proposal #M …",
+  or "Edited since it was accepted from …" (`ReportProfile.from_proposals`,
+  derived by the server).
+- **A value that comes from somewhere else links there** (5.431.0; user
+  feedback 2026-11-17: evaluating a draft, people "weren't sure where certain
+  fields were populated", and the Report defaults link "wasn't quite
+  obvious"). Each section of a draft's Details ends its one status line with
+  "Edit the project's defaults" (`See…` for a reader), and the Reports page
+  offers Report defaults as a button beside its actions, for every reader —
+  never as a caption link under the lead.
 
 ### 44. A page explains itself once (2026-10-08)
 

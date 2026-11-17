@@ -70,6 +70,22 @@ export interface ReportProfile extends EngagementSettings {
   testers_from_project?: boolean;
   /** The installation's values: what a detail this profile leaves empty uses. */
   inherited?: InheritedReportDetails;
+  /** Backend 2.541.0 — for each written detail last set by accepting an
+   *  agent's proposal: that proposal, and whether the text was edited since. */
+  from_proposals?: Partial<Record<keyof EngagementSettings, AcceptedDetailProposal>>;
+}
+
+/** The accepted proposal a report default's text came from. */
+export interface AcceptedDetailProposal {
+  proposal_id: number;
+  agent_session_id: number | null;
+  agent_model: string | null;
+  accepted_by: string | null;
+  accepted_at: string | null;
+  /** The reviewer accepted it with their own edit. */
+  edited_on_accept: boolean;
+  /** The default no longer reads as it was accepted: a person edited it. */
+  changed_since: boolean;
 }
 
 /** An image the template itself expects (logo, cover art) — declared in its
@@ -204,6 +220,10 @@ export interface ReportSummary {
   agent_images?: number;
   /** v5.316.0 — reported findings with proposals nobody has decided yet. A warning, never a block. */
   pending_proposals?: Array<{ id: number; ref: string; title: string; count: number }>;
+  /** Backend 2.541.0 — proposed text nobody has decided for a report default
+   *  THIS draft follows: issued now, it prints the default as it stands. A
+   *  warning, never a block; empty for an issued report. */
+  pending_detail_proposals?: Array<{ field: string; count: number }>;
   /** Reported findings with images this report prints under the file's name,
    *  because nobody wrote a caption. A warning, never a block; absent from a
    *  report issued before it was counted. */

@@ -3,7 +3,7 @@
 * ``POST /agent/evidence`` records what the agent ran against a host and what
   came back — directly, immutably; ``GET /agent/evidence`` and
   ``…/{id}/raw`` read them back.
-* ``POST /agent/proposals/{finding-text|finding|observation|endpoint-status|subnet-details}``
+* ``POST /agent/proposals/{finding-text|finding|observation|endpoint-status|subnet-details|report-details}``
   propose a change to what the team concluded; a person accepts or rejects
   it.  ``GET /agent/proposals`` shows what happened to them.
 
@@ -190,7 +190,7 @@ class _ProposalBase(BaseModel):
         description=(
             "Your own PENDING proposals this one replaces (ids from list_proposals): each becomes "
             "superseded, pointing at the new one. Each must be about what this request proposes "
-            "(the same finding and section, new finding, observation, endpoint or subnet)."
+            "(the same finding and section, new finding, observation, endpoint, subnet or report detail)."
         ),
     )
 
@@ -267,6 +267,19 @@ class SubnetDetailsProposal(_ProposalBase):
     subnets: List[SubnetDetailsItem] = Field(
         ..., min_length=1, max_length=proposals.SUBNET_DETAILS_MAX,
         description="One entry per subnet: its cidr and a description, a site, or both (never empty text).",
+    )
+
+
+class ReportDetailsProposal(_ProposalBase):
+    fields: Dict[str, str] = Field(
+        ..., description=(
+            "Written details of the PROJECT'S report defaults to propose — what every draft report "
+            "prints for a detail it does not override: executive_summary, system_description, "
+            "applications, thick_clients, other_targets, disclaimer. Markdown. One proposal per "
+            "detail. Each value is the detail's COMPLETE new text as it will read in the client "
+            "report — accepting replaces the default with it — never a critique or suggestions "
+            "(those go in rationale)."
+        ),
     )
 
 
@@ -354,13 +367,36 @@ def propose_subnet_details(
     return data
 
 
+@router.post(
+    "/proposals/report-details", status_code=201,
+    summary="Propose text for the project's report defaults (executive summary, system description…)",
+)
+def propose_report_details(
+    body: ReportDetailsProposal, request: Request,
+    agent: Agent = Depends(check_agent_rate_limit), db: Session = Depends(get_db),
+):
+    """One proposal per written detail (2.540.0; owner, 2026-11-17): a person
+    accepts (then may edit) or rejects each on the Proposals page.  The
+    target is the project's report defaults — never one draft, never an
+    issued report.  All or nothing: an unknown detail, empty text, a text
+    that names a BlueStick record or an image that is not the report's own
+    is a 422.  The current text: ``GET /agent/assist/client-reports/defaults``."""
+    rows = proposals.propose_report_details(
+        db, agent.project_id, _who(db, request, body.agent_model), fields=body.fields,
+        rationale=body.rationale, evidence_ids=body.evidence_ids, replaces=body.replaces,
+    )
+    data = {"proposals": proposals.serialize_created(db, rows)}  # before the commit expires them (N8)
+    db.commit()
+    return data
+
+
 @router.get("/proposals", response_model=AgentRowsPage, summary="Proposals in this project and what happened to them")
 def list_proposals(
     request: Request,
     status: Optional[Literal["pending", "accepted", "rejected", "superseded"]] = Query(None),
     kind: Optional[Literal[
         "finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status",
-        "subnet_details",
+        "subnet_details", "report_detail",
     ]] = Query(None),
     finding_id: Optional[int] = Query(None, gt=0),
     mine: bool = Query(False, description="Only this session's proposals."),

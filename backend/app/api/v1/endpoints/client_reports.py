@@ -13,12 +13,11 @@ it (``app/api/report_jobs.py``).
 from __future__ import annotations
 
 import logging
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.api.deps import get_current_project, require_project_role
@@ -43,6 +42,7 @@ from app.services.client_report_service import (
 from app.services.client_report_views import (
     load_report,
     may_discard,
+    profile_out,
     role_allows as _is,
     serialize_report as _serialize,
 )
@@ -339,42 +339,12 @@ def preview_report_template_asset(name: str, asset_id: str):
     )
 
 
-def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile]) -> ReportProfileOut:
-    """The project's report defaults — what a draft follows — with the
-    project's analysts and admins as the team when none is saved, flagged as
-    such."""
-    # The team as a draft follows it — the one merge decides the fallback to
-    # the project's analysts and admins (review 2026-10-14, R8).
-    # The installation's defaults read once, for the merge and the answer
-    # (third review 2026-10-15, R7).
-    inherited = report_defaults.installation(db)
-    followed, sources = report_defaults.followed_with_sources(
-        db, profile, lambda: ClientReportService(db).project_team(project_id), base=inherited)
-    team = followed["testers"]
-    from_project = sources["testers"] != report_defaults.FROM_PROJECT
-    if profile is None:
-        return ReportProfileOut(
-            template=templates.default_template_name(), testers=team, testers_from_project=True,
-            inherited=inherited,
-        )
-    return ReportProfileOut(
-        author_name=profile.author_name, disclaimer=profile.disclaimer, inherited=inherited,
-        client_name=profile.client_name, classification=profile.classification,
-        engagement_type=profile.engagement_type, testers=team,
-        distribution=profile.distribution or [], system_description=profile.system_description,
-        applications=profile.applications, thick_clients=profile.thick_clients,
-        other_targets=profile.other_targets, executive_summary=profile.executive_summary,
-        template=profile.template or templates.default_template_name(),
-        updated_at=profile.updated_at, testers_from_project=from_project,
-    )
-
-
 @router.get("/profile", response_model=ReportProfileOut)
 def get_report_profile(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    return _profile_out(db, project.id, ClientReportService(db).get_profile(project.id))
+    return profile_out(db, project.id, ClientReportService(db).get_profile(project.id))
 
 
 @router.get("/team", response_model=List[Tester])
@@ -406,47 +376,12 @@ def patch_report_profile(
     data = body.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=422, detail="Send at least one report default to change.")
-    profile = _write_profile(db, project.id, data, current_user.id)
+    # The one writer of the project's defaults (an accepted agent proposal
+    # for a written detail runs it too).
+    profile = report_defaults.write_profile(db, project.id, data, current_user.id)
     db.commit()
     db.refresh(profile)
-    return _profile_out(db, project.id, profile)
-
-
-def _write_profile(
-    db: Session, project_id: int, data: dict, user_id: int,
-    check: Optional[Callable[[ReportProfile], None]] = None,
-) -> ReportProfile:
-    """Write ``data``'s keys (already validated by the body's schema) into the
-    project's report defaults, creating the row — the ONE writer of
-    ``report_profiles`` for PATCH and a draft's promote.  A list sent
-    null is empty; the system description's image references are
-    normalised; a template is checked to be a client template.  ``check``
-    runs on the LOCKED row before anything is written (and may refuse)."""
-    if data.get("template"):
-        _template_or_422(data["template"], client=True)
-    # Create the row if there is none, THEN lock it: `FOR UPDATE` on a row
-    # that does not exist locks nothing, so two first writes both inserted and
-    # the second failed on the unique project (review 2026-10-14, H3).  A
-    # concurrent insert makes this one wait for it, then do nothing.
-    db.execute(
-        pg_insert(ReportProfile).values(project_id=project_id)
-        .on_conflict_do_nothing(index_elements=[ReportProfile.project_id])
-    )
-    profile = (
-        db.query(ReportProfile).filter(ReportProfile.project_id == project_id)
-        .with_for_update().populate_existing().one()
-    )
-    if check is not None:
-        check(profile)
-    for key, value in data.items():
-        if key in report_defaults.LIST_KEYS:
-            value = list(value or [])
-        elif key in report_images.ENGAGEMENT_IMAGE_FIELDS:
-            value = report_images.normalise_references(value)
-        setattr(profile, key, value)
-    profile.updated_by_id = user_id
-    db.flush()
-    return profile
+    return profile_out(db, project.id, profile)
 
 
 # ---------------------------------------------------------------------------
@@ -725,7 +660,7 @@ def promote_report_details(
                 detail=f"The project's defaults changed since you opened this ({labels}): reload, then update them.",
             )
 
-    _write_profile(db, project.id, data, current_user.id, check=project_unchanged)
+    report_defaults.write_profile(db, project.id, data, current_user.id, check=project_unchanged)
     report.settings = {
         key: value for key, value in report_defaults.overrides(report.settings).items() if key not in data
     }

@@ -23,6 +23,9 @@ export const PROPOSAL_DECISION_READS = [
   // An accepted draft fills a section a draft report counts as missing (the
   // report draft bar on the finding page reads it).
   'getClientReport',
+  // An accepted report-detail proposal writes the project's report defaults,
+  // which every draft that follows them prints (`getClientReport`, above).
+  'getReportProfile',
 ] as const;
 
 export interface ProposalDecision {

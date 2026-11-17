@@ -2,7 +2,8 @@
  * Proposals (v5.316.0) — every change an agent (or an AI draft) proposed on
  * this project, for a person to accept or reject: report text, new findings,
  * promoting or dismissing scanner observations, endpoint status, a scope
- * subnet's description or site (5.417.0).  Accepting
+ * subnet's description or site (5.417.0), text for the project's report
+ * defaults (5.430.0).  Accepting
  * applies the change as you; the server decides whether you may (report text
  * needs project analyst or admin) and says so if not.
  *
@@ -30,7 +31,9 @@ import { formatApiError } from '../utils/apiErrors';
 import { isPageShortcutEvent } from '../utils/keyboard';
 import { FilterChips } from '../components/operations/QueueParts';
 import PostureSection from '../components/posture/PostureSection';
-import ProposalItem, { describeProposal, REJECT_NOTE_PLACEHOLDER } from '../components/proposals/ProposalItem';
+import ProposalItem, {
+  describeProposal, REJECT_NOTE_PLACEHOLDER, REPORT_DEFAULTS_PATH,
+} from '../components/proposals/ProposalItem';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
@@ -51,6 +54,7 @@ const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
   { kind: 'observation_dismiss', label: 'Dismiss observations', info: 'A scanner observation an agent judged a false positive (on one host, or every host).' },
   { kind: 'endpoint_status', label: 'Endpoint status', info: 'One affected endpoint marked still present, awaiting a retest, remediated or false positive. Remediated, from a pending retest, needs the retest’s result recorded on that host.' },
   { kind: 'subnet_details', label: 'Scope details', info: 'A scope subnet’s description or site. Pick this to see only these, then “Accept all shown” to apply them together.' },
+  { kind: 'report_detail', label: 'Report defaults', info: 'Text for the project’s report defaults — the executive summary, the system description, the other target lists, the disclaimer. Every draft that follows the defaults prints the accepted text.' },
 ];
 
 const STATUSES: ProposalStatus[] = ['pending', 'accepted', 'rejected', 'superseded'];
@@ -69,6 +73,7 @@ export const proposalDestination = (pr: Proposal): string | null => {
   if (pr.kind === 'subnet_details' && pr.target.subnet_cidr) {
     return `/scopes?subnet_q=${encodeURIComponent(pr.target.subnet_cidr)}`;
   }
+  if (pr.kind === 'report_detail') return REPORT_DEFAULTS_PATH;
   return pr.target.host_id != null ? `/hosts/${pr.target.host_id}` : null;
 };
 
@@ -259,7 +264,7 @@ const Proposals: React.FC = () => {
       body: action === 'accept'
         ? (
           <div className="space-y-xs">
-            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown. A draft of a section that was rewritten after the draft was made is left pending too, and so is a draft made before drafts recorded the text they replace: decide those one at a time. Scope details likewise: several for one subnet, or a subnet edited after its proposal.</p>
+            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown. A draft of a section that was rewritten after the draft was made is left pending too, and so is a draft made before drafts recorded the text they replace: decide those one at a time. Scope details likewise: several for one subnet, or a subnet edited after its proposal. Report defaults are report text: the same two rules.</p>
             {limitNote && <p>{limitNote}</p>}
           </div>
         )
@@ -296,10 +301,10 @@ const Proposals: React.FC = () => {
         <h1 className="text-page-title">Proposals</h1>
         <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
           {pending === 0
-            ? 'Nothing waiting. When an agent (or an AI draft) proposes a change to what the team has concluded, it lands here for a person to accept or reject.'
+            ? 'Nothing waiting. When an agent (or an AI draft) proposes a change to what the team has concluded or to what the report says, it lands here for a person to accept or reject.'
             : <>
                 <strong className="text-foreground">{pending}</strong> proposed change{pending === 1 ? '' : 's'}
-                {scope === 'mine' ? ' to your findings or by your agents' : ' to what the team has concluded'} {pending === 1 ? 'is' : 'are'} waiting.
+                {scope === 'mine' ? ' to your findings or by your agents' : ' to what the team has concluded or the report says'} {pending === 1 ? 'is' : 'are'} waiting.
                 Nothing has changed yet: accepting one applies it as you.
               </>}
         </p>
@@ -318,7 +323,8 @@ const Proposals: React.FC = () => {
         ) : undefined}
       >
         <div className="mb-sm flex flex-wrap items-center gap-sm">
-          <Label htmlFor="proposal-scope" className="shrink-0">Findings</Label>
+          {/* Not "Findings": scope details and report defaults are on no finding. */}
+          <Label htmlFor="proposal-scope" className="shrink-0">Whose</Label>
           <Select value={scope ?? 'mine'} onValueChange={(v) => setParam('scope', v)}>
             <SelectTrigger id="proposal-scope" className="h-8 w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -406,7 +412,7 @@ const Proposals: React.FC = () => {
         ) : (
           <>
             <p className="mb-xs text-caption text-muted-foreground">
-              <kbd className="font-mono">j</kbd> / <kbd className="font-mono">k</kbd> move, <kbd className="font-mono">Enter</kbd> opens the finding
+              <kbd className="font-mono">j</kbd> / <kbd className="font-mono">k</kbd> move, <kbd className="font-mono">Enter</kbd> opens what it is about
               {canDecide && status === 'pending' && <>, <kbd className="font-mono">a</kbd> accepts, <kbd className="font-mono">r</kbd> rejects</>}.
             </p>
             {items.map((pr, i) => (

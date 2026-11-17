@@ -312,6 +312,24 @@ describe('The draft’s checklist', () => {
     expect(screen.getByTestId('report-readiness')).toHaveTextContent('Nothing to fix · 3 warnings');
   });
 
+  // 5.431.0 — proposed text for a report default this draft follows: issued
+  // now, it prints the default as it stands.  A warning, counted like the rest.
+  it('a draft whose followed defaults have undecided proposals lists them, each opening its drafts', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ summary: {
+      counts: fullSummary.counts, missing_text: [],
+      pending_detail_proposals: [{ field: 'executive_summary', count: 2 }, { field: 'disclaimer', count: 1 }],
+    } }));
+    renderDetail(REVIEW);
+    const group = await screen.findByTestId('checklist-detail-proposals');
+    expect(heading(group)).toHaveTextContent(/^Proposed report text to decide3$/);
+    expect(within(group).getByRole('link', { name: 'Executive summary' }))
+      .toHaveAttribute('href', '/reports/defaults#review-executive_summary');
+    expect(within(group).getByRole('link', { name: 'Disclaimer' }))
+      .toHaveAttribute('href', '/reports/defaults#review-disclaimer');
+    expect(screen.queryByTestId('review-clear')).toBeNull();
+    expect(screen.getByTestId('report-readiness')).toHaveTextContent('Nothing to fix · 3 warnings');
+  });
+
   it('a draft with nothing left has no checklist, and says so', async () => {
     mocked.getClientReport.mockResolvedValue(report({ summary: { counts: fullSummary.counts, missing_text: [] } }));
     renderDetail(REVIEW);

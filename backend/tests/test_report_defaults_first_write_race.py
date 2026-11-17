@@ -3,7 +3,7 @@
 `FOR UPDATE` on a row that does not exist locks nothing: two saves that both
 found no row both inserted, and the second failed on the unique key / project
 — a valid save answered with a 500.  The installation's defaults
-(`report_defaults.save`) and a project's (`client_reports._write_profile`)
+(`report_defaults.save`) and a project's (`report_defaults.write_profile`)
 now create the row with `INSERT … ON CONFLICT DO NOTHING` and lock it after.
 
 Deterministic: A writes and does not commit; B's write must WAIT for A (not
@@ -17,9 +17,9 @@ import time
 
 from sqlalchemy import text
 
-from app.api.v1.endpoints.client_reports import _write_profile
 from app.db.models_reports import ReportDefault, ReportProfile
 from app.services import report_defaults
+from app.services.report_defaults import write_profile as _write_profile
 from tests.two_connections import two_sessions  # noqa: F401  (fixture)
 
 

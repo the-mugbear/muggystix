@@ -9,25 +9,15 @@
  * figure), and the link opens exactly those.
  */
 import React from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
-import { getProposalSummary } from '../../services/api';
-import { useProjectId } from '../../hooks/useProjectId';
-import { pollEvery } from '../../lib/query';
+import { usePendingProposalCount } from '../../hooks/usePendingProposalCount';
 
 export const PROPOSED_FINDINGS_PATH = '/proposals?kind=finding_create&scope=all';
 
 const ProposedFindingsLine: React.FC = () => {
-  const projectId = useProjectId();
-  const summary = useQuery({
-    queryKey: ['getProposalSummary', projectId],
-    queryFn: ({ signal }) => getProposalSummary(projectId, signal),
-    ...pollEvery(60_000),
-  });
-  // Nothing waiting, or not known: the page says nothing (the Proposals page
-  // reports its own failure).
-  const waiting = summary.data?.by_kind.finding_create ?? 0;
+  // Nothing waiting, or not known: the page says nothing.
+  const waiting = usePendingProposalCount('finding_create');
   if (waiting <= 0) return null;
   return (
     <p className="mt-xs text-metadata text-muted-foreground" data-testid="proposed-findings-line">

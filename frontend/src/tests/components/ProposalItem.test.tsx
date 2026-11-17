@@ -336,3 +336,98 @@ describe('ProposalItem — scope details', () => {
     expect(body).toHaveTextContent('Set by a person → London DC (was Old site when proposed)');
   });
 });
+
+// 2.540.0 / 5.430.0 — owner, 2026-11-17: the executive summary and the system
+// description took no agent input.  A written detail of the project's report
+// defaults is report text: compared with the current text, editable on accept.
+describe('ProposalItem — report defaults', () => {
+  const detail: Proposal = {
+    ...base, kind: 'report_detail', finding_id: null, field: 'executive_summary',
+    payload: { value: 'The assessment found two critical issues.' },
+    current_value: 'To be written.', base_value: 'To be written.', base_recorded: true,
+    changed_since_proposed: false, evidence_ids: [],
+    target: { finding_title: null, observation_title: null, host_id: null, host_ip: null },
+  };
+
+  it('names the detail as its page does, and shows the default beside the draft', () => {
+    expect(describeProposal(detail)).toBe('Executive summary in the report defaults');
+    expect(describeProposal({ ...detail, field: 'system_description' })).toBe('System description in the report defaults');
+    renderItem(detail);
+    expect(screen.getByTestId('compare-current')).toHaveTextContent('To be written.');
+    expect(screen.getByTestId('compare-proposed')).toHaveTextContent('The assessment found two critical issues.');
+    expect(screen.getByRole('link', { name: 'Open the report defaults' })).toHaveAttribute('href', '/reports/defaults');
+  });
+
+  it('is accepted with the reviewer’s edit, within the detail’s own length', async () => {
+    acceptProposal.mockResolvedValue({ ...detail, status: 'accepted' });
+    renderItem(detail);
+    fireEvent.click(screen.getByRole('button', { name: /Accept and edit/ }));
+    const box = screen.getByLabelText('Executive summary') as HTMLTextAreaElement;
+    // The executive summary takes twice a finding section's length.
+    expect(box).toHaveAttribute('maxlength', '65536');
+    fireEvent.change(box, { target: { value: 'Two critical issues were found.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Accept with my edit' }));
+    await waitFor(() => expect(acceptProposal).toHaveBeenCalledWith(
+      expect.anything(), 7, expect.objectContaining({ editedValue: 'Two critical issues were found.' }),
+    ));
+  });
+
+  // 5.431.0 — the browser pass of 2026-11-17.
+  it('names the left pane for what it is: the report DEFAULTS, which a draft may override', () => {
+    renderItem(detail);
+    expect(screen.getByTestId('compare-current')).toHaveTextContent('Now in the report defaults');
+    // A finding's section is still "the report".
+    renderItem({ ...base, id: 8, current_value: 'Relay to the file share.' });
+    expect(screen.getAllByTestId('compare-current')[1]).toHaveTextContent('Now in the report');
+    expect(screen.getAllByTestId('compare-current')[1]).not.toHaveTextContent('defaults');
+  });
+
+  it('says when the draft drops an image the current text places, and what accepting does', () => {
+    renderItem({
+      ...detail, field: 'system_description',
+      current_value: 'The network.\n\n![Diagram](evidence:24)\n\n![Rack](evidence:29)',
+      payload: { value: 'The network, reworded.\n\n![Rack](evidence:29)' },
+    });
+    const note = screen.getByTestId('dropped-images');
+    expect(note).toHaveTextContent('The current text places image 24; this draft does not.');
+    expect(note).toHaveTextContent(/takes them out of every report that follows this default/);
+  });
+
+  it('says nothing of images when the draft keeps every one, or once decided', () => {
+    const kept = {
+      ...detail, current_value: 'A.\n\n![Diagram](evidence:24)', payload: { value: 'B.\n\n![Diagram](evidence:24)' },
+    };
+    renderItem(kept);
+    expect(screen.queryByTestId('dropped-images')).toBeNull();
+    renderItem({ ...kept, id: 9, status: 'accepted', payload: { value: 'B.' } });
+    expect(screen.queryByTestId('dropped-images')).toBeNull();
+  });
+
+  it('a finding’s dropped image goes back to its Evidence block — said in those words', () => {
+    renderItem({
+      ...base, current_value: 'Shown here.\n\n![Session](evidence:57)', payload: { value: 'Shown, reworded.' },
+    });
+    expect(screen.getByTestId('dropped-images')).toHaveTextContent(/moves them to the finding’s Evidence block/);
+  });
+
+  it('on a list, a row that is one of several drafts says so and where to compare them', () => {
+    render(<MemoryRouter><ProposalItem proposal={{ ...detail, other_pending: 1 }} canDecide showTarget /></MemoryRouter>);
+    const note = screen.getByTestId('proposal-competing');
+    expect(note).toHaveTextContent('One of 2 proposals waiting for this report default — accepting one retires the other.');
+    expect(screen.getByRole('link', { name: 'Compare them on the report defaults' }))
+      .toHaveAttribute('href', '/reports/defaults#review-executive_summary');
+  });
+
+  it('says nothing of other drafts when it is the only one, or where the page already groups them', () => {
+    render(<MemoryRouter><ProposalItem proposal={{ ...detail, other_pending: 0 }} canDecide showTarget /></MemoryRouter>);
+    expect(screen.queryByTestId('proposal-competing')).toBeNull();
+    renderItem({ ...detail, id: 9, other_pending: 3 });        // no target line: not a flat list
+    expect(screen.queryByTestId('proposal-competing')).toBeNull();
+  });
+
+  it('warns when the default was rewritten after the draft was made', () => {
+    renderItem({ ...detail, current_value: 'A person rewrote it.', changed_since_proposed: true });
+    expect(screen.getByTestId('compare-current')).toHaveTextContent('A person rewrote it.');
+    expect(screen.getByText(/changed after/i)).toBeInTheDocument();
+  });
+});

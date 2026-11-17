@@ -13,10 +13,16 @@ it does directly.  Four kinds:
 * ``endpoint_status`` — one finding endpoint's open / remediated / retest /
   false_positive;
 * ``subnet_details`` — a scope subnet's description and / or site (2.522.0;
-  prod agent feedback #76, owner 2026-10-22).
+  prod agent feedback #76, owner 2026-10-22);
+* ``report_detail`` — one WRITTEN detail of the project's report defaults
+  (``field``: the executive summary, the system description, the other target
+  lists, the disclaimer — ``report_defaults.WRITTEN_KEYS``; 2.540.0, owner
+  2026-11-17).  Report text like ``finding_text``: several drafts per detail,
+  the text it was written against kept, accepting one supersedes the rest.
 
 Accepting runs the SAME service call a person's click makes
-(``finding_actions``, ``FindingService``, ``subnet_details``), as the person who accepts it — their
+(``finding_actions``, ``FindingService``, ``subnet_details``,
+``report_defaults.write_profile``), as the person who accepts it — their
 permissions, their name on the change.  If the target changed underneath and
 that call refuses, the proposal stays pending with ``error`` set.
 """
@@ -26,6 +32,7 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -39,13 +46,15 @@ from app.db.models_findings import (
 from app.db.models_proposals import (
     AgentProposal, EvidenceRecord, ProposalKind, ProposalSource, ProposalStatus,
 )
+from app.db.models_reports import ReportProfile
 from app.db.models_vulnerability import Vulnerability
 from app.db.session import has_expired, persisted_ids
 from app.services.cvss_service import CvssError, normalize_cvss
 from app.services.finding_actions import (
     apply_report_text, finding_actor, promote_or_dismiss_vulnerability,
 )
-from app.services import report_images
+from app.schemas.client_reports import ReportProfilePatch
+from app.services import report_defaults, report_images
 from app.services.agent_evidence_service import promote_evidence
 from app.services.default_scope import project_scope
 from app.services.finding_service import FindingService, named_endpoint, validate_severity
@@ -67,6 +76,13 @@ NEW_FINDING_STATUSES = (FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value)
 SUBNET_DETAIL_LIMITS = {"description": 1024, "site": 255}
 #: Subnets one ``propose_subnet_details`` request may name (the page's bulk cap).
 SUBNET_DETAILS_MAX = 200
+#: The kinds that are one piece of report TEXT (``field`` names it, ``payload``
+#: is ``{value, base_value}``): reviewed beside the current text, acceptable
+#: with an edit, superseded by the accepted draft of the same text.
+_TEXT_KINDS = (ProposalKind.FINDING_TEXT.value, ProposalKind.REPORT_DETAIL.value)
+#: The kinds whose reviewers are the project's admins, told by a notice of
+#: their own (``_notify_admins_of``) — never counted as "on no finding yet".
+_ADMIN_NOTICE_KINDS = (ProposalKind.SUBNET_DETAILS.value, ProposalKind.REPORT_DETAIL.value)
 
 
 class Attribution:
@@ -319,8 +335,9 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
         AgentProposal.status == ProposalStatus.PENDING.value,
         AgentProposal.finding_id.is_(None),
         ~on_a_finding_by_observation,
-        # A scope proposal is told about on its own (``_notify_scope_admins``).
-        AgentProposal.kind != ProposalKind.SUBNET_DETAILS.value,
+        # A scope or report-defaults proposal is told about on its own
+        # (``_notify_admins_of``).
+        AgentProposal.kind.notin_(_ADMIN_NOTICE_KINDS),
     ).scalar() or 0
     proposer = db.get(User, who.user_id) if who.user_id else None
     name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
@@ -346,35 +363,55 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
 #: Proposals page (``/proposals?kind=subnet_details&…``), where "Accept all
 #: shown" decides them together.
 SCOPE_PROPOSAL_SOURCE = "agent_session_scope"
+#: The same for a session's report-defaults proposals
+#: (``/proposals?kind=report_detail&…``).
+REPORT_PROPOSAL_SOURCE = "agent_session_report"
+
+#: kind → (the notification's ``source_type``, its title for one pending
+#: proposal, its title for ``{count}``, what was proposed and what to do).
+_ADMIN_NOTICES = {
+    ProposalKind.SUBNET_DETAILS.value: (
+        SCOPE_PROPOSAL_SOURCE,
+        "AI proposed a subnet's description or site",
+        "AI proposed descriptions or sites for {count} subnets",
+        "scope details for review — accept or reject them, together if you wish.",
+    ),
+    ProposalKind.REPORT_DETAIL.value: (
+        REPORT_PROPOSAL_SOURCE,
+        "AI proposed text for the project's report defaults",
+        "AI proposed {count} texts for the project's report defaults",
+        "text for the report defaults (what every draft that follows them prints) — "
+        "accept, edit or reject each beside the current text.",
+    ),
+}
 
 
-def _notify_scope_admins(db: Session, project_id: int, who: Attribution) -> None:
-    """Tell the project's admins that an agent proposed subnet details — the
-    scope is the project's, so no finding's author or owner is the reviewer.
-    ONE unread notification per admin per agent session, kept current as the
-    run proposes more (``_notify_project_admins``' shape); the operator is not
-    told about their own run.  An analyst may decide them too."""
+def _notify_admins_of(db: Session, project_id: int, who: Attribution, kind: str) -> None:
+    """Tell the project's admins that an agent proposed something that is the
+    PROJECT's — subnet details, or text for the report defaults — so no
+    finding's author or owner is the reviewer.  ONE unread notification per
+    admin per agent session and kind, kept current as the run proposes more
+    (``_notify_project_admins``' shape); the operator is not told about their
+    own run.  An analyst may decide them too."""
     if who.session is None:
         return
     recipients = _active_project_admins(db, project_id, who.user_id)
     if not recipients:
         return
+    source_type, one, several, what = _ADMIN_NOTICES[kind]
     count = db.query(func.count(AgentProposal.id)).filter(
         AgentProposal.project_id == project_id,
         AgentProposal.agent_session_id == who.session.id,
         AgentProposal.status == ProposalStatus.PENDING.value,
-        AgentProposal.kind == ProposalKind.SUBNET_DETAILS.value,
+        AgentProposal.kind == kind,
     ).scalar() or 0
     proposer = db.get(User, who.user_id) if who.user_id else None
     name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
     model = f" ({who.model})" if who.model else ""
-    title = (
-        "AI proposed a subnet's description or site" if count <= 1
-        else f"AI proposed descriptions or sites for {count} subnets"
-    )
-    body = f"{name}'s agent{model} proposed scope details for review — accept or reject them, together if you wish."
+    title = one if count <= 1 else several.format(count=count)
+    body = f"{name}'s agent{model} proposed {what}"
     for existing in _unread_proposal_notices(
-        db, recipients, project_id, SCOPE_PROPOSAL_SOURCE, who.session.id, who.user_id,
+        db, recipients, project_id, source_type, who.session.id, who.user_id,
     ).values():
         existing.title = title
         existing.body = body
@@ -385,12 +422,13 @@ def _notify_scope_admins(db: Session, project_id: int, who: Attribution) -> None
 # Proposing
 # ---------------------------------------------------------------------------
 
-def _refuse_internal_references(fields: Dict[str, str]) -> None:
+def _refuse_internal_references(fields: Dict[str, str], *, written: Iterable[str] = REPORT_TEXT_FIELDS) -> None:
     """A proposed section goes into the client report word for word, so one
     that names a BlueStick record ("Finding #277") is refused here: the
-    proposer rewrites it, and the ids go in ``rationale``."""
+    proposer rewrites it, and the ids go in ``rationale``.  ``written``: the
+    fields that are report text (a finding's sections by default)."""
     for field, value in fields.items():
-        if field not in REPORT_TEXT_FIELDS:
+        if field not in written:
             continue
         phrases = internal_references(value)
         if phrases:
@@ -658,7 +696,80 @@ def propose_subnet_details(
         for subnet, values in planned
     ]
     mark_replaced(db, claimed, out)
-    _notify_scope_admins(db, project_id, who)
+    _notify_admins_of(db, project_id, who, ProposalKind.SUBNET_DETAILS.value)
+    return out
+
+
+def _checked_report_details(db: Session, project_id: int, fields: Dict[str, Optional[str]]) -> Dict[str, str]:
+    """``fields`` as the report defaults would store them, or a 422 — run when
+    proposing and again when accepting (the reviewer may have edited the
+    text, and an image may be gone).
+
+    Only the written details (``report_defaults.WRITTEN_KEYS``); each with
+    text, within the limits the defaults page's own body sets
+    (``ReportProfilePatch`` — never a second list of them); image references
+    in the one placement grammar and only the project's own report images."""
+    unknown = sorted(set(fields) - set(report_defaults.WRITTEN_KEYS))
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown report details {unknown}; an agent may propose: {list(report_defaults.WRITTEN_KEYS)}",
+        )
+    try:
+        checked = ReportProfilePatch(**fields).model_dump(exclude_unset=True)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()
+        )
+        raise HTTPException(status_code=422, detail=problems)
+    out: Dict[str, str] = {}
+    for field, value in checked.items():
+        if not value:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field}: a proposal needs text (to clear a report default, a person edits it).",
+            )
+        out[field] = (
+            report_images.normalise_references(value)
+            if field in report_images.ENGAGEMENT_IMAGE_FIELDS else value
+        )
+    report_images.check_report_detail_references(db, project_id, out)
+    return out
+
+
+def propose_report_details(
+    db: Session, project_id: int, who: Attribution, *, fields: Dict[str, str],
+    rationale: Optional[str] = None, evidence_ids: Optional[Iterable[int]] = None,
+    replaces: Optional[Iterable[int]] = None,
+) -> List[AgentProposal]:
+    """One proposal per written detail of the PROJECT'S report defaults —
+    what every draft prints for a detail it does not override (owner,
+    2026-11-17: "the intent is to modify the project defaults").  Never one
+    draft's override, and never an issued report.
+
+    Report text, so ``propose_finding_text``'s rules: each value is the
+    detail's complete new text, a text that names a BlueStick record is
+    refused, and the text the proposal was written against is kept
+    (``base_value``) for the reviewer's comparison and the bulk accept."""
+    if not fields:
+        raise HTTPException(status_code=422, detail="Propose at least one report detail.")
+    values = _checked_report_details(db, project_id, fields)
+    _refuse_internal_references(values, written=report_defaults.WRITTEN_KEYS)
+    ev = _check_evidence(db, project_id, evidence_ids)
+    claimed = claim_replaced(db, project_id, who, replaces, [
+        AgentProposal(kind=ProposalKind.REPORT_DETAIL.value, field=field) for field in values
+    ])
+    profile = db.query(ReportProfile).filter(ReportProfile.project_id == project_id).first()
+    out = [
+        _add(
+            db, project_id, ProposalKind.REPORT_DETAIL.value, who, field=field,
+            payload={"value": value, "base_value": getattr(profile, field, None)},
+            rationale=rationale, evidence_ids=ev,
+        )
+        for field, value in values.items()
+    ]
+    mark_replaced(db, claimed, out)
+    _notify_admins_of(db, project_id, who, ProposalKind.REPORT_DETAIL.value)
     return out
 
 
@@ -675,6 +786,8 @@ def _same_target(old: AgentProposal, new: AgentProposal) -> bool:
         return new.kind in _OBSERVATION_KINDS and new.vulnerability_id == old.vulnerability_id
     if old.kind == ProposalKind.SUBNET_DETAILS.value:
         return new.kind == old.kind and new.subnet_id == old.subnet_id
+    if old.kind == ProposalKind.REPORT_DETAIL.value:
+        return new.kind == old.kind and new.field == old.field
     return new.kind == old.kind and new.finding_host_id == old.finding_host_id
 
 
@@ -728,7 +841,8 @@ def claim_replaced(
             raise HTTPException(
                 status_code=422,
                 detail=f"Proposal #{pid} is about something this request proposes nothing for "
-                       "(a replacement is about the same finding and section, observation, endpoint or subnet).",
+                       "(a replacement is about the same finding and section, observation, endpoint, "
+                       "subnet or report detail).",
             )
         claimed.append((old, index))
     return claimed
@@ -797,6 +911,11 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
     supersedes the subnet's other pending proposals, so two reviewers deciding
     two proposals for one subnet wait on the subnet, not on each other.
 
+    A report-detail proposal locks the project's REPORT DEFAULTS row first
+    (``report_defaults.lock_profile``, which makes the row when there is
+    none), then itself — report text's shape again: accepting writes that row
+    and supersedes the detail's other pending drafts.
+
     Other kinds lock only the proposal, as before — a promote / dismiss takes
     its own locks in its own order (evidence first, then the finding), and
     nothing they write is superseded by another proposal's accept."""
@@ -809,6 +928,8 @@ def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentPr
     )
     if head is not None and head.kind == ProposalKind.SUBNET_DETAILS.value and head.subnet_id:
         db.query(models.Subnet.id).filter(models.Subnet.id == head.subnet_id).with_for_update().first()
+    if head is not None and head.kind == ProposalKind.REPORT_DETAIL.value:
+        report_defaults.lock_profile(db, project_id)
     if head is not None and head.kind == ProposalKind.FINDING_TEXT.value and head.finding_id:
         FindingService(db).lock_finding_ids([head.finding_id], project_id=project_id)
     if head is not None and head.kind == ProposalKind.ENDPOINT_STATUS.value and head.finding_host_id:
@@ -947,6 +1068,15 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         )
         db.flush()
         return None
+    if kind == ProposalKind.REPORT_DETAIL.value:
+        # The defaults page's own write, as the accepter — checked again now:
+        # the reviewer may have edited the text, and an image it places may
+        # have been deleted since it was proposed.
+        value = edited_value if edited_value is not None else payload.get("value")
+        report_defaults.write_profile(
+            db, project_id, _checked_report_details(db, project_id, {proposal.field: value}), user.id,
+        )
+        return None
     raise HTTPException(status_code=422, detail=f"Unknown proposal kind {kind!r}")
 
 
@@ -959,8 +1089,15 @@ def accept_proposal(
     recorded on the proposal, which stays pending, and re-raised.  The caller
     commits."""
     _require_pending(proposal)
-    if edited_value is not None and proposal.kind != ProposalKind.FINDING_TEXT.value:
+    if edited_value is not None and proposal.kind not in _TEXT_KINDS:
         raise HTTPException(status_code=422, detail="Only a report-text proposal can be accepted with an edit.")
+    if (
+        edited_value is not None and proposal.kind == ProposalKind.FINDING_TEXT.value
+        and len(edited_value) > REPORT_TEXT_MAX
+    ):
+        # The route's body admits a report detail's length (the executive
+        # summary's is the longest); a finding's section keeps its own.
+        raise HTTPException(status_code=422, detail=f"{proposal.field}: longer than {REPORT_TEXT_MAX} characters.")
     savepoint = db.begin_nested()
     try:
         result_finding_id = _apply(db, proposal, user, edited_value)
@@ -979,24 +1116,14 @@ def accept_proposal(
     proposal.error = None
     if edited_value is not None:
         proposal.payload = {**(proposal.payload or {}), "accepted_value": edited_value}
-    if proposal.kind == ProposalKind.FINDING_TEXT.value:
-        # The field's other pending proposals were drafted against text that
-        # has now changed: kept for comparison, no longer "needs review".
+    same_target = _same_target_condition(proposal)
+    if same_target is not None:
+        # The target's other pending proposals were made against what it held,
+        # which has now changed: kept for comparison, no longer "needs review".
         db.query(AgentProposal).filter(
-            AgentProposal.finding_id == proposal.finding_id,
-            AgentProposal.field == proposal.field,
-            AgentProposal.kind == ProposalKind.FINDING_TEXT.value,
-            AgentProposal.status == ProposalStatus.PENDING.value,
-            AgentProposal.id != proposal.id,
-        ).update(
-            {"status": ProposalStatus.SUPERSEDED.value, "decided_at": now},
-            synchronize_session=False,
-        )
-    if proposal.kind == ProposalKind.SUBNET_DETAILS.value:
-        # The same for a subnet: the others were proposed against what it held.
-        db.query(AgentProposal).filter(
-            AgentProposal.subnet_id == proposal.subnet_id,
-            AgentProposal.kind == ProposalKind.SUBNET_DETAILS.value,
+            AgentProposal.project_id == proposal.project_id,
+            AgentProposal.kind == proposal.kind,
+            same_target,
             AgentProposal.status == ProposalStatus.PENDING.value,
             AgentProposal.id != proposal.id,
         ).update(
@@ -1006,38 +1133,164 @@ def accept_proposal(
     return proposal
 
 
+def _same_target_condition(proposal: AgentProposal):
+    """SQL: the proposals of this one's kind and project that change the SAME
+    thing — one section of a finding, one subnet, one detail of the report
+    defaults — or None for a kind whose accept supersedes nothing."""
+    if proposal.kind == ProposalKind.FINDING_TEXT.value:
+        return (AgentProposal.finding_id == proposal.finding_id) & (AgentProposal.field == proposal.field)
+    if proposal.kind == ProposalKind.SUBNET_DETAILS.value:
+        return AgentProposal.subnet_id == proposal.subnet_id
+    if proposal.kind == ProposalKind.REPORT_DETAIL.value:
+        return AgentProposal.field == proposal.field
+    return None
+
+
 COMPETING_DRAFTS_DETAIL = (
     "Several drafts of this field were selected — choose one on the finding."
 )
 COMPETING_SUBNET_DETAIL = (
     "Several proposals for this subnet were selected — accept one of them on its own."
 )
+COMPETING_REPORT_DETAIL = (
+    "Several drafts of this report detail were selected — accept one of them on its own."
+)
+_COMPETING_DETAIL = {
+    ProposalKind.FINDING_TEXT.value: COMPETING_DRAFTS_DETAIL,
+    ProposalKind.SUBNET_DETAILS.value: COMPETING_SUBNET_DETAIL,
+    ProposalKind.REPORT_DETAIL.value: COMPETING_REPORT_DETAIL,
+}
 
 
 def competing_drafts(db: Session, project_id: int, ids: Iterable[int]) -> Dict[int, str]:
     """The pending proposals among ``ids`` that compete with another one among
-    ``ids`` — report text for the same finding and field, or details for the
-    same subnet — each with why.  A bulk accept must not choose between them
-    (decision 7): whichever came first would win and supersede the others."""
+    ``ids`` — report text for the same finding and field, details for the
+    same subnet, or text for the same detail of the report defaults — each
+    with why.  A bulk accept must not choose between them (decision 7):
+    whichever came first would win and supersede the others."""
     rows = (
         db.query(AgentProposal.id, AgentProposal.kind, AgentProposal.finding_id,
                  AgentProposal.field, AgentProposal.subnet_id)
         .filter(
             AgentProposal.project_id == project_id,
             AgentProposal.id.in_(set(ids)),
-            AgentProposal.kind.in_((ProposalKind.FINDING_TEXT.value, ProposalKind.SUBNET_DETAILS.value)),
+            AgentProposal.kind.in_(tuple(_COMPETING_DETAIL)),
             AgentProposal.status == ProposalStatus.PENDING.value,
         )
         .all()
     )
     groups: Dict[tuple, List[int]] = {}
     for pid, kind, fid, field, subnet_id in rows:
-        key = (kind, subnet_id) if kind == ProposalKind.SUBNET_DETAILS.value else (kind, fid, field)
-        groups.setdefault(key, []).append(pid)
+        groups.setdefault(_target_key(kind, fid, field, subnet_id), []).append(pid)
     return {
-        pid: COMPETING_SUBNET_DETAIL if key[0] == ProposalKind.SUBNET_DETAILS.value else COMPETING_DRAFTS_DETAIL
+        pid: _COMPETING_DETAIL[key[0]]
         for key, group in groups.items() if len(group) > 1 for pid in group
     }
+
+
+def _target_key(kind: str, finding_id: Optional[int], field: Optional[str], subnet_id: Optional[int]) -> tuple:
+    """What a proposal of a competing kind changes, within its project — the
+    key two proposals share when accepting one supersedes the other
+    (``_same_target_condition`` is the same rule in SQL).  A report detail
+    has neither a finding nor a subnet: ``(kind, None, field)``."""
+    return (kind, subnet_id) if kind == ProposalKind.SUBNET_DETAILS.value else (kind, finding_id, field)
+
+
+def _other_pending(db: Session, proposals: Iterable[AgentProposal]) -> Dict[int, int]:
+    """Proposal id → how many OTHER pending proposals change the same thing,
+    for the pending proposals of a competing kind among ``proposals`` — what
+    tells a reviewer on a flat list that a row is one of several drafts
+    (browser pass 2026-11-17: two drafts of the executive summary were two
+    unrelated-looking rows until one was accepted).  One statement."""
+    mine = [
+        p for p in proposals
+        if p.status == ProposalStatus.PENDING.value and p.kind in _COMPETING_DETAIL
+    ]
+    if not mine:
+        return {}
+    counts: Dict[tuple, int] = {}
+    for project_id, kind, fid, field, subnet_id, n in (
+        db.query(
+            AgentProposal.project_id, AgentProposal.kind, AgentProposal.finding_id,
+            AgentProposal.field, AgentProposal.subnet_id, func.count(AgentProposal.id),
+        )
+        .filter(
+            AgentProposal.project_id.in_({p.project_id for p in mine}),
+            AgentProposal.status == ProposalStatus.PENDING.value,
+            AgentProposal.kind.in_({p.kind for p in mine}),
+        )
+        .group_by(
+            AgentProposal.project_id, AgentProposal.kind, AgentProposal.finding_id,
+            AgentProposal.field, AgentProposal.subnet_id,
+        )
+    ):
+        counts[(project_id, *_target_key(kind, fid, field, subnet_id))] = n
+    return {
+        p.id: counts.get((p.project_id, *_target_key(p.kind, p.finding_id, p.field, p.subnet_id)), 1) - 1
+        for p in mine
+    }
+
+
+def pending_report_details(db: Session, project_id: int) -> Dict[str, int]:
+    """Detail → its pending ``report_detail`` proposals in this project: what
+    a draft report that FOLLOWS the detail says before issuing (the report
+    would be issued with the default as it stands)."""
+    return {
+        field: n for field, n in
+        db.query(AgentProposal.field, func.count(AgentProposal.id))
+        .filter(
+            AgentProposal.project_id == project_id,
+            AgentProposal.kind == ProposalKind.REPORT_DETAIL.value,
+            AgentProposal.status == ProposalStatus.PENDING.value,
+        )
+        .group_by(AgentProposal.field)
+    }
+
+
+def accepted_report_details(db: Session, project_id: int, profile: Optional[ReportProfile]) -> Dict[str, dict]:
+    """Detail → the LAST accepted proposal for it, for each written detail of
+    the project's report defaults that holds text — where the text came from.
+
+    The report defaults keep no edit history (a finding's section does), so
+    without this nothing on the defaults page said an agent wrote a text
+    (browser pass 2026-11-17).  Derived, never stamped on the profile:
+    ``changed_since`` says the default no longer reads as it was accepted (a
+    person edited it afterwards), compared as it was stored."""
+    if profile is None:
+        return {}
+    rows = (
+        db.query(AgentProposal)
+        .options(selectinload(AgentProposal.decided_by))
+        .filter(
+            AgentProposal.project_id == project_id,
+            AgentProposal.kind == ProposalKind.REPORT_DETAIL.value,
+            AgentProposal.status == ProposalStatus.ACCEPTED.value,
+        )
+        .distinct(AgentProposal.field)
+        .order_by(AgentProposal.field, AgentProposal.decided_at.desc(), AgentProposal.id.desc())
+    )
+    out: Dict[str, dict] = {}
+    for proposal in rows:
+        field = proposal.field
+        current = (getattr(profile, field, None) or "").strip() if field in report_defaults.WRITTEN_KEYS else ""
+        if not current:
+            continue
+        payload = proposal.payload or {}
+        edited = "accepted_value" in payload
+        accepted = (payload.get("accepted_value") if edited else payload.get("value")) or ""
+        if field in report_images.ENGAGEMENT_IMAGE_FIELDS:
+            accepted = report_images.normalise_references(accepted)
+        who = proposal.decided_by
+        out[field] = {
+            "proposal_id": proposal.id,
+            "agent_session_id": proposal.agent_session_id,
+            "agent_model": proposal.agent_model,
+            "accepted_by": (who.full_name or who.username) if who is not None else None,
+            "accepted_at": proposal.decided_at,
+            "edited_on_accept": edited,
+            "changed_since": accepted.strip() != current,
+        }
+    return out
 
 
 REWRITTEN_SINCE_PROPOSED = "text_changed_since_proposed"
@@ -1059,9 +1312,15 @@ def text_changed_since_proposed(proposal: AgentProposal, current_value: Optional
     pending with its own reason (:data:`BASE_NOT_RECORDED`; owner,
     2026-10-22)."""
     payload = proposal.payload or {}
-    if proposal.kind != ProposalKind.FINDING_TEXT.value or "base_value" not in payload:
+    if proposal.kind not in _TEXT_KINDS or "base_value" not in payload:
         return None
     return (payload.get("base_value") or "").strip() != (current_value or "").strip()
+
+
+REPORT_DETAIL_CHANGED_SINCE_PROPOSED_DETAIL = (
+    "This report default was rewritten after the draft was made — accepting would replace that text. "
+    "Decide it on its own, with the current text beside the draft."
+)
 
 
 SUBNET_CHANGED_SINCE_PROPOSED_DETAIL = (
@@ -1119,6 +1378,18 @@ def left_for_one_at_a_time(db: Session, proposal: AgentProposal) -> Optional[Tup
         )
         if row is not None and subnet_changed_since_proposed(proposal, row.description, row.site) is True:
             return REWRITTEN_SINCE_PROPOSED, SUBNET_CHANGED_SINCE_PROPOSED_DETAIL
+        return None
+    if proposal.kind == ProposalKind.REPORT_DETAIL.value:
+        if proposal.field not in report_defaults.WRITTEN_KEYS:
+            return None
+        # The column, as below; no row is no text.
+        current = (
+            db.query(getattr(ReportProfile, proposal.field))
+            .filter(ReportProfile.project_id == proposal.project_id)
+            .scalar()
+        )
+        if text_changed_since_proposed(proposal, current):
+            return REWRITTEN_SINCE_PROPOSED, REPORT_DETAIL_CHANGED_SINCE_PROPOSED_DETAIL
         return None
     if (
         proposal.kind != ProposalKind.FINDING_TEXT.value
@@ -1287,9 +1558,13 @@ def pending_counts(db: Session, project_id: int, *, mine_user_id: Optional[int] 
 def serialize_proposal(
     proposal: AgentProposal, current: Optional[Dict[int, Finding]] = None,
     replaces: Optional[Dict[int, List[int]]] = None,
+    details: Optional[Dict[int, ReportProfile]] = None,
+    other_pending: Optional[Dict[int, int]] = None,
 ) -> dict:
     """The row, plus for report text the finding's current value so a reviewer
-    sees the difference without a second request.
+    sees the difference without a second request — and for a report detail
+    the project's current default (``details``: project id → its report
+    defaults; a project with none has no text).
 
     ``base_value`` is the field's text when the proposal was made (2.454.0);
     ``base_recorded`` is false for proposals made before it was kept, and then
@@ -1297,11 +1572,16 @@ def serialize_proposal(
     current_value = None
     if proposal.kind == ProposalKind.FINDING_TEXT.value and current and proposal.finding_id in current:
         current_value = getattr(current[proposal.finding_id], proposal.field, None)
+    is_detail = proposal.kind == ProposalKind.REPORT_DETAIL.value and details is not None
+    if is_detail and proposal.field in report_defaults.WRITTEN_KEYS:
+        current_value = getattr(details.get(proposal.project_id), proposal.field, None)
     payload = proposal.payload or {}
-    base_recorded = proposal.kind == ProposalKind.FINDING_TEXT.value and "base_value" in payload
+    base_recorded = proposal.kind in _TEXT_KINDS and "base_value" in payload
     base_value = payload.get("base_value") if base_recorded else None
     changed_since_proposed = None
     if proposal.status == ProposalStatus.PENDING.value and current and proposal.finding_id in current:
+        changed_since_proposed = text_changed_since_proposed(proposal, current_value)
+    if proposal.status == ProposalStatus.PENDING.value and is_detail:
         changed_since_proposed = text_changed_since_proposed(proposal, current_value)
     if proposal.status == ProposalStatus.PENDING.value and proposal.subnet is not None:
         changed_since_proposed = subnet_changed_since_proposed(
@@ -1323,6 +1603,9 @@ def serialize_proposal(
         "base_value": base_value,
         "base_recorded": base_recorded,
         "changed_since_proposed": changed_since_proposed,
+        # While pending: how many OTHER pending proposals change the same
+        # section, subnet or report detail — accepting one supersedes them.
+        "other_pending": (other_pending or {}).get(proposal.id, 0),
         "target": _target(proposal),
         "rationale": proposal.rationale,
         "evidence_ids": proposal.evidence_ids or [],
@@ -1369,6 +1652,18 @@ def _current_findings(db: Session, proposals: Iterable[AgentProposal]) -> Dict[i
     return {f.id: f for f in db.query(Finding).filter(Finding.id.in_(ids)).all()}
 
 
+def _current_details(db: Session, proposals: Iterable[AgentProposal]) -> Dict[int, ReportProfile]:
+    """Project id → its report defaults, for the report-detail proposals
+    among ``proposals`` — one statement, none when there are none."""
+    ids = {p.project_id for p in proposals if p.kind == ProposalKind.REPORT_DETAIL.value}
+    if not ids:
+        return {}
+    return {
+        profile.project_id: profile
+        for profile in db.query(ReportProfile).filter(ReportProfile.project_id.in_(ids))
+    }
+
+
 def _serialized_loads():
     """What a serialized proposal reads beside its own columns — the ONE list,
     for the list's query and for ``serialize_many``'s read by id."""
@@ -1405,7 +1700,9 @@ def serialize_many(db: Session, proposals: List[AgentProposal]) -> List[dict]:
             .filter(AgentProposal.replaced_by_id.in_(ids)).order_by(AgentProposal.id)
         ):
             replaces.setdefault(new_id, []).append(old_id)
-    return [serialize_proposal(p, current, replaces) for p in proposals]
+    details = _current_details(db, proposals)
+    others = _other_pending(db, proposals)
+    return [serialize_proposal(p, current, replaces, details, others) for p in proposals]
 
 
 def without_texts(rows: List[dict]) -> List[dict]:
@@ -1420,7 +1717,7 @@ def without_texts(rows: List[dict]) -> List[dict]:
     2026-10-20).  Changed in place and returned."""
     for row in rows:
         payload = dict(row.get("payload") or {})
-        if row["kind"] == ProposalKind.FINDING_TEXT.value:
+        if row["kind"] in _TEXT_KINDS:
             row["value_chars"] = len(payload.get("value") or "")
             row["base_value_chars"] = len(row.get("base_value") or "")
             for key in ("payload", "current_value", "base_value"):

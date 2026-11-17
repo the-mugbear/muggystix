@@ -1280,6 +1280,21 @@ class ClientReportService:
         observations — the proposal service's one definition."""
         return proposal_service.pending_per_finding(self.db, finding_ids)
 
+    def _pending_detail_proposals(self, report: Report) -> List[dict]:
+        """``[{field, count}]`` — the pending agent proposals for the
+        project's report defaults that would change what THIS draft prints:
+        those for a detail it follows (``report_defaults.follows`` — a detail
+        it overrides, and an addendum's own summary, are untouched by them).
+        Empty for an issued report: it no longer changes."""
+        if report.status != ReportStatus.DRAFT:
+            return []
+        follows = report_defaults.follows(report.kind, report.settings)
+        pending = proposal_service.pending_report_details(self.db, report.project_id)
+        return [
+            {"field": field, "count": pending[field]}
+            for field in report_defaults.WRITTEN_KEYS if field in follows and pending.get(field)
+        ]
+
     def _endpoint(self, fh: FindingHost, ports: Dict[int, str]) -> dict:
         host = fh.host
         return {
@@ -1668,6 +1683,10 @@ class ClientReportService:
                 {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
                 for item in items if pending.get(item["id"])
             ],
+            # 2.541.0 — proposed text for a report default THIS draft follows:
+            # issued now, it prints the default as it stands.  A warning,
+            # never a block, like a finding's proposals.
+            "pending_detail_proposals": self._pending_detail_proposals(report),
             # Written text that names a BlueStick record ("Finding #277"),
             # which the reader cannot look up — a warning, never a block.
             "internal_references": internal_reference_warnings(items),

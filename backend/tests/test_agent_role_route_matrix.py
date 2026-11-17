@@ -176,6 +176,7 @@ READ_FLOORS = {
     f"{_A}/assist/uninterpreted-lines": "analyst",
     # The Reports page (client_reports router).
     f"{_A}/assist/client-reports": "auditor",
+    f"{_A}/assist/client-reports/defaults": "auditor",
     f"{_A}/assist/client-reports/{{report_id}}": "auditor",
     f"{_A}/assist/client-reports/{{report_id}}/files/{{fmt}}": "auditor",
     f"{_A}/assist/client-reports/{{report_id}}/scope.csv": "auditor",

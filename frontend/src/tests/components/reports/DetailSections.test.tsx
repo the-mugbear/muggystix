@@ -65,6 +65,17 @@ describe('Report details — sections', () => {
     expect(screen.queryByRole('textbox')).toBeNull();                        // nothing is a field until Edit
   });
 
+  // 5.431.0 — user feedback, 2026-11-17: evaluating a draft, people "weren't
+  // sure where certain fields were populated".  The status line links there.
+  it('each section’s status line opens the project’s report defaults, where a followed value is written', () => {
+    render(<Harness saved={{ classification: 'Restricted' }} />);
+    for (const id of ['summary', 'engagement']) {
+      const link = within(section(id).getByTestId(`report-section-${id}-status`)).getByRole('link');
+      expect(link).toHaveTextContent('Edit the project’s defaults');
+      expect(link).toHaveAttribute('href', '/reports/defaults');
+    }
+  });
+
   // Walkthrough 2026-10-14: the Executive summary said it twice.
   it('a section of one field says "Customised" once, in its status line; the field keeps "Use the project’s"', () => {
     render(<Harness saved={{ executive_summary: 'Ours.' }} />);
@@ -142,7 +153,7 @@ describe('Report details — sections', () => {
     const WithImages: React.FC = () => {
       const base = useMemo(() => ({ saved: {}, followed, sources: null, ownOnly: [] }), []);
       const edits = useDetailEdits(base);
-      return <DetailSections edits={edits} canEdit idPrefix="report" members={[]} images={images} />;
+      return <MemoryRouter><DetailSections edits={edits} canEdit idPrefix="report" members={[]} images={images} /></MemoryRouter>;
     };
     render(<WithImages />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit Scope & targets' }));
@@ -161,7 +172,7 @@ describe('Report details — sections', () => {
     const WithUpload: React.FC = () => {
       const base = useMemo(() => ({ saved: {}, followed, sources: null, ownOnly: [] }), []);
       const edits = useDetailEdits(base);
-      return <DetailSections edits={edits} canEdit idPrefix="report" members={[]} images={images} />;
+      return <MemoryRouter><DetailSections edits={edits} canEdit idPrefix="report" members={[]} images={images} /></MemoryRouter>;
     };
     render(<WithUpload />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit Scope & targets' }));

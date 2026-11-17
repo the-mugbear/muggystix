@@ -29,6 +29,16 @@ describe('scope proposals', () => {
   });
 });
 
+// 5.430.0 — a session's proposals for the project's report defaults, told to
+// project admins: just those, each beside the default's current text.
+describe('report-defaults proposals', () => {
+  it('open the session’s report-defaults proposals on the Proposals page', () => {
+    expect(notificationHref({
+      type: 'proposal', source_type: 'agent_session_report', source_id: 41, host_id: null, finding_id: null,
+    })).toBe('/proposals?agent_session_id=41&kind=report_detail&scope=all');
+  });
+});
+
 // Review 2026-10-10, R1c: a finding assignment opens the finding; several
 // open the reader's findings.
 describe('finding assignments', () => {

@@ -499,6 +499,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {!!s?.pending_proposals?.length && (
             <p className="mt-xs">{s.pending_proposals.length} finding{s.pending_proposals.length === 1 ? ' has' : 's have'} proposed changes nobody has decided — it is issued as the findings stand now.</p>
           )}
+          {!!s?.pending_detail_proposals?.length && (
+            <p className="mt-xs">Proposed text for {s.pending_detail_proposals.length} report default{s.pending_detail_proposals.length === 1 ? '' : 's'} this report follows is undecided — it is issued with the defaults as they stand now.</p>
+          )}
           {!!s?.internal_references?.length && (
             <p className="mt-xs">{s.internal_references.length} finding{s.internal_references.length === 1 ? ' names' : 's name'} a BlueStick record in its text, which the reader cannot look up.</p>
           )}

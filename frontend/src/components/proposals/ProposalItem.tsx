@@ -7,6 +7,10 @@
  *
  * Shared by the finding page and the Proposals page.
  *
+ * 5.430.0 — a written detail of the project's report defaults
+ * (`report_detail`: the executive summary, the system description…) is
+ * report text too: the same comparison, the same "Accept and edit".
+ *
  * 5.334.0 — report text is shown against the field's current text
  * (`TextComparison`, always visible), and the pieces — source line, rationale,
  * decision controls — are exported for the finding page, which reviews
@@ -27,7 +31,11 @@ import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import MarkdownField from '../MarkdownField';
 import SafeMarkdown from '../SafeMarkdown';
-import TextComparison from './TextComparison';
+import TextComparison, { PROPOSAL_LABELS } from './TextComparison';
+import { referencedImageIds } from '../../utils/reportImages';
+import {
+  DETAIL_LABELS, DETAIL_MAX, type DetailKey, REPORT_DEFAULTS_PATH,
+} from '../reports/workspace/detailModel';
 
 export const FIELD_LABELS: Record<string, string> = {
   description: 'Description',
@@ -53,16 +61,63 @@ const SUBNET_FIELD_LABELS: Record<(typeof SUBNET_FIELDS)[number], string> = {
   site: 'Site',
 };
 
-/** A short line naming the change — the Proposals page's row title. */
+/** A proposal for one piece of report TEXT — a finding's section, or a
+ *  written detail of the project's report defaults (5.430.0): shown beside
+ *  the current text, and acceptable with the reviewer's edit. */
+export const isTextProposal = (pr: Proposal): boolean =>
+  pr.kind === 'finding_text' || pr.kind === 'report_detail';
+
+/** The name of the text it proposes, as its own page names it. */
+export const textLabel = (pr: Proposal): string => (pr.kind === 'report_detail'
+  ? DETAIL_LABELS[pr.field as DetailKey] ?? pr.field ?? 'Text'
+  : FIELD_LABELS[pr.field ?? ''] ?? pr.field ?? 'Text');
+
+/** The longest text an "Accept and edit" may send: the field's own limit. */
+const textMax = (pr: Proposal): number =>
+  (pr.kind === 'report_detail' ? DETAIL_MAX[pr.field as DetailKey] ?? 32768 : 32768);
+
+export { REPORT_DEFAULTS_PATH };
+
+/** The comparison's pane names: a report detail's current text is the
+ *  project's DEFAULT, which a draft may override — not "the report". */
+export const comparisonLabels = (pr: Proposal) => (pr.kind === 'report_detail'
+  ? { ...PROPOSAL_LABELS, current: 'Now in the report defaults', empty: 'Nothing yet — accepting fills this default.' }
+  : PROPOSAL_LABELS);
+
+/** The images a pending text proposal would stop placing: those the current
+ *  text places and the draft does not, with what accepting does to them.
+ *  A finding's image goes back to its Evidence block; a report detail's
+ *  leaves the report. */
+export const droppedImages = (pr: Proposal): { ids: number[]; consequence: string } | null => {
+  if (!isTextProposal(pr) || pr.status !== 'pending' || pr.field === 'cvss_vector') return null;
+  const kept = new Set(referencedImageIds(String(pr.payload?.value ?? '')));
+  const ids = referencedImageIds(pr.current_value).filter((id) => !kept.has(id));
+  if (!ids.length) return null;
+  return {
+    ids,
+    consequence: pr.kind === 'report_detail'
+      ? 'Accepting takes them out of every report that follows this default — use “Accept and edit” to keep them.'
+      : 'Accepting moves them to the finding’s Evidence block — use “Accept and edit” to keep them in this section.',
+  };
+};
+
+/** What several pending proposals for one target are called, by kind. */
+const COMPETING_NOUN: Partial<Record<Proposal['kind'], string>> = {
+  finding_text: 'this section', report_detail: 'this report default', subnet_details: 'this subnet',
+};
+
 /** What the reject reason is for, in the field itself (the wording of the
  *  endpoints' "Note for the history (optional), e.g. …").  The single reject
  *  and the page's "Reject all shown" share it. */
 export const REJECT_NOTE_PLACEHOLDER =
   'Note for the agent (optional), e.g. cite the evidence record, keep the scanner’s severity';
 
+/** A short line naming the change — the Proposals page's row title. */
 export const describeProposal =(pr: Proposal): string => {
   const payload = pr.payload ?? {};
   switch (pr.kind) {
+    case 'report_detail':
+      return `${textLabel(pr)} in the report defaults`;
     case 'finding_text':
       return `${FIELD_LABELS[pr.field ?? ''] ?? pr.field} for “${pr.target.finding_title ?? `finding #${pr.finding_id}`}”`;
     case 'finding_create':
@@ -111,11 +166,11 @@ export const staleBase = (pr: Proposal): { value: string | null } | null =>
 /** A pending report-text draft made before drafts recorded the text they
  *  replace: cautioned, as a bulk accept leaves it (`base_not_recorded`). */
 export const baseUnknown = (pr: Proposal): boolean =>
-  pr.kind === 'finding_text' && pr.status === 'pending' && pr.base_recorded === false;
+  isTextProposal(pr) && pr.status === 'pending' && pr.base_recorded === false;
 
 const Body: React.FC<{ pr: Proposal }> = ({ pr }) => {
   const payload = pr.payload ?? {};
-  if (pr.kind === 'finding_text') {
+  if (isTextProposal(pr)) {
     const value = String(payload.accepted_value ?? payload.value ?? '');
     if (pr.status === 'pending') {
       return (
@@ -125,6 +180,8 @@ const Body: React.FC<{ pr: Proposal }> = ({ pr }) => {
           mono={pr.field === 'cvss_vector'}
           staleBase={staleBase(pr)}
           baseUnknown={baseUnknown(pr)}
+          labels={comparisonLabels(pr)}
+          droppedImages={droppedImages(pr)}
         />
       );
     }
@@ -235,6 +292,9 @@ export const proposalOutcomeLink = (pr: Proposal): { to: string; label: string }
       label: `Show ${pr.target.subnet_cidr} in the scope`,
     };
   }
+  if (pr.kind === 'report_detail') {
+    return { to: REPORT_DEFAULTS_PATH, label: 'Open the report defaults' };
+  }
   return null;
 };
 
@@ -272,7 +332,7 @@ export const ProposalDecisionControls: React.FC<ControlsProps> = ({
 }) => {
   const { busy, error, editing, setEditing, rejecting, setRejecting, accept, reject } = decision;
   const pending = pr.status === 'pending';
-  const label = fieldLabel ?? FIELD_LABELS[pr.field ?? ''] ?? 'Text';
+  const label = fieldLabel ?? textLabel(pr);
   const draftText = String(pr.payload?.value ?? '');
   const hasCurrent = !!(current ?? '').trim();
   return (
@@ -295,7 +355,7 @@ export const ProposalDecisionControls: React.FC<ControlsProps> = ({
             )}
           </div>
           <MarkdownField id={`proposal-${pr.id}`} label={label} rows={5}
-            maxLength={32768} value={editing} onChange={setEditing} disabled={busy !== null} />
+            maxLength={textMax(pr)} value={editing} onChange={setEditing} disabled={busy !== null} />
           <div className="flex flex-wrap gap-xs">
             <Button size="sm" onClick={() => void accept(editing)} disabled={busy !== null || !editing.trim()}>
               {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
@@ -330,7 +390,7 @@ export const ProposalDecisionControls: React.FC<ControlsProps> = ({
             {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
             Accept
           </Button>
-          {pr.kind === 'finding_text' && (
+          {isTextProposal(pr) && (
             <Button size="sm" variant="ghost" onClick={() => setEditing(draftText)} disabled={busy !== null}>
               <Pencil className="size-4" aria-hidden /> Accept and edit
             </Button>
@@ -372,6 +432,22 @@ const ProposalItem: React.FC<Props> = ({
         )}
         <span className="min-w-0 text-caption text-muted-foreground"><ProposalSource pr={pr} /></span>
       </div>
+      {/* 5.431.0 — on a flat list, a row that is one of several drafts for
+          one target says so: accepting it retires the others, so they are
+          compared first (the finding page and the Report defaults page show
+          them together). */}
+      {showTarget && pending && (pr.other_pending ?? 0) > 0 && (
+        <p className="break-words text-caption text-info" data-testid="proposal-competing">
+          One of {(pr.other_pending ?? 0) + 1} proposals waiting for {COMPETING_NOUN[pr.kind] ?? 'the same thing'} —
+          accepting one retires the {pr.other_pending === 1 ? 'other' : 'others'}.
+          {pr.kind === 'report_detail' && (
+            <> <Link to={`${REPORT_DEFAULTS_PATH}#review-${pr.field}`} className="hover:underline">Compare them on the report defaults</Link></>
+          )}
+          {pr.kind === 'finding_text' && pr.finding_id != null && linkTarget && (
+            <> <Link to={`/findings/${pr.finding_id}#proposals`} className="hover:underline">Compare them on the finding</Link></>
+          )}
+        </p>
+      )}
       {/* Kept while editing, so both texts stay in view (5.334.1). */}
       <Body pr={pr} />
       <ProposalReasons pr={pr} />

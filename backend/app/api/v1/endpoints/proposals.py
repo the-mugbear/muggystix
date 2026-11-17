@@ -30,7 +30,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 _Status = Literal["pending", "accepted", "rejected", "superseded"]
 _Kind = Literal[
     "finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status",
-    "subnet_details",
+    "subnet_details", "report_detail",
 ]
 
 
@@ -80,8 +80,11 @@ def proposals_summary(
 
 class DecideBody(BaseModel):
     note: Optional[str] = Field(None, max_length=2000)
-    # Report text only: accept with this text instead of the proposed text.
-    edited_value: Optional[str] = Field(None, max_length=32768)
+    # Report text only (a finding's section, a report detail): accept with
+    # this text instead of the proposed text.  The cap is the longest any of
+    # them takes (the executive summary's); the service applies each one's
+    # own — a finding's section 32,768, a report detail its page's.
+    edited_value: Optional[str] = Field(None, max_length=65536)
 
 
 class _LeftForOneAtATime(Exception):
@@ -202,6 +205,7 @@ def bulk_decide(
     those are left pending for a person to choose on the finding.  The same
     for several proposals for one subnet (``subnet_details``, 2.522.0), and a
     subnet edited after its proposal is left pending like rewritten text.
+    A report detail (``report_detail``, 2.540.0) is report text: both rules.
 
     Accepting also never replaces report text a person rewrote after the
     draft was made (owner decision 2026-10-11): such a proposal is left

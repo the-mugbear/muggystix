@@ -134,9 +134,11 @@ Routes and fields: `documentation/API_GUIDE.md`; model, vocabulary (`utils/findi
 
 ## Proposals
 
-- Kinds: report text, new finding, promote / dismiss, endpoint status, subnet description + site (`subnet_details`: one per subnet, `agent_proposals.subnet_id` CASCADE, accept = `subnet_details.set_subnet_details`, SUBNET locked first, `subnet_changed_since_proposed`, text only, admins told (`agent_session_scope`); `test_subnet_detail_proposals.py`).
+- Kinds: report text, new finding, promote / dismiss, endpoint status, subnet description + site (`subnet_details`: one per subnet, `agent_proposals.subnet_id` CASCADE, accept = `subnet_details.set_subnet_details`, SUBNET locked first, `subnet_changed_since_proposed`, text only, admins told (`agent_session_scope`); `test_subnet_detail_proposals.py`), a written detail of the PROJECT'S report defaults (`report_detail`, 2.540.0: one per `field` in `report_defaults.WRITTEN_KEYS`, no column — the project's one `report_profiles` row is the target; never a draft's override, an addendum's summary or an engagement fact; accept = `report_defaults.write_profile`; value checked by the page's own body, `proposal_service._checked_report_details`, at propose AND accept; PROFILE locked first (`report_defaults.lock_profile`); report text's rules — `base_value`, `text_changed_since_proposed`, `edited_value`, `_refuse_internal_references`; images only the report's own, `report_images.check_report_detail_references`; admins told (`agent_session_report`); `test_report_detail_proposals.py`).
+- A row's `other_pending` = `proposal_service._other_pending` over `_target_key` (the key `competing_drafts` groups by; one statement a page). A report default's provenance is DERIVED, never stamped: `proposal_service.accepted_report_details` → `ReportProfile.from_proposals` (last accepted per detail, `changed_since` compared as stored); a draft's `summary.pending_detail_proposals` = `pending_report_details` ∩ `report_defaults.follows` (`test_report_detail_proposals.py`).
+- The two project-owned kinds tell admins through ONE function, `proposal_service._notify_admins_of` (`_ADMIN_NOTICES`); the kinds that are one piece of text are `proposal_service._TEXT_KINDS`; what an accept supersedes is `_same_target_condition`.
 - Accept runs as the accepter, savepointed (`finding_actions.apply_report_text`, `promote_or_dismiss_vulnerability`, `create_finding`, `set_endpoint_status`).
-- **`proposal_service.lock_for_decision` inside `_decide`** only: report text FINDING → proposal (`get_proposal(for_update=True)` + `populate_existing`); endpoint FINDING → ENDPOINT → proposal; else proposal, a deadlock = 409 (`session.is_deadlock`). `test_proposal_decide_locking.py`.
+- **`proposal_service.lock_for_decision` inside `_decide`** only: report text FINDING → proposal (`get_proposal(for_update=True)` + `populate_existing`); endpoint FINDING → ENDPOINT → proposal; subnet SUBNET → proposal; report detail PROFILE → proposal; else proposal, a deadlock = 409 (`session.is_deadlock`). `test_proposal_decide_locking.py`.
 - "Needs review" is derived (`proposal_service._about_findings`, `pending_per_finding`, via `finding_vulnerabilities`).
 - **Bulk accept** skips text changed since `base_value` (`proposal_service.text_changed_since_proposed`) or without one (`base_recorded` false → `base_not_recorded`; `TextComparison` `baseUnknown`), left pending in `skipped` — `proposal_service.left_for_one_at_a_time` (`test_agent_proposals.py`); never picks between drafts (`competing_drafts`); ≤ `PROPOSAL_BULK_MAX` 200 = `BulkBody`, unchunked (`tests/proposalBulkLimit.test.ts`).
 - `replaces`: `proposal_service.claim_replaced` (own, same source, pending, `_same_target`) locks via `lock_for_decision` before writing, by target key then id; `mark_replaced` → `superseded`, `replaced_by_id`, `decided_by` empty (`test_agent_feedback_gaps.py`, `test_review_2026_10_23_agents.py`).
@@ -158,7 +160,7 @@ Routes and fields: `documentation/API_GUIDE.md`; model, vocabulary (`utils/findi
 
 ### On the frontend
 
-- `components/proposals/ProposalItem.tsx` + `hooks/useProposalDecision` everywhere; reviewed where it applies (§43, `FieldDraftsReview` / `TextComparison`). Proposals and Agent Sessions reads are every member's.
+- `components/proposals/ProposalItem.tsx` + `hooks/useProposalDecision` everywhere; reviewed where it applies (§43, `FieldDraftsReview` / `TextComparison`) — a report default's drafts under its detail on `/reports/defaults` (`components/reports/DetailProposalNotes`, `hooks/useReportDetailProposals`; `#review-<detail>`). One helper each: `ProposalItem.isTextProposal`, `comparisonLabels`, `droppedImages`; a pending count for another page is `hooks/usePendingProposalCount`. Proposals and Agent Sessions reads are every member's.
 
 ## Decided — do not ask again
 
@@ -168,6 +170,7 @@ Routes and fields: `documentation/API_GUIDE.md`; model, vocabulary (`utils/findi
 - Mention highlighting stays in the browser.
 - Observations promotes as confirmed, dismisses one at a time (no multi unasked).
 - Subnet site / description by proposal, bulk-acceptable; bulk skips rewritten or base-less text.
+- The report's own text by proposal, on the PROJECT'S report defaults (2026-11-17) — not one draft.
 
 ## Removed on purpose
 

@@ -12,7 +12,7 @@
 import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { FilePlus2, Loader2, Pencil, RefreshCw } from 'lucide-react';
+import { FilePlus2, Loader2, Pencil, RefreshCw, SlidersHorizontal } from 'lucide-react';
 
 import {
   ClientReport,
@@ -204,31 +204,41 @@ const Reports: React.FC = () => {
         <div className="min-w-0">
           <h1 className="text-page-title">Reports</h1>
           <PostureLead tone="info" className="mt-xs max-w-3xl">{lead}</PostureLead>
-          <p className="mt-xs text-caption text-muted-foreground" data-testid="reports-config-links">
-            <Link to="/reports/defaults" className="text-info hover:underline">Report defaults</Link>
-            {' — what every draft follows · '}
-            <Link to="/reports/templates" className="text-info hover:underline">Templates</Link>
+          <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
+            A draft takes its client, team, summary, system description and disclaimer from the project’s report
+            defaults unless it overrides one.
           </p>
         </div>
-        {data?.can_create && (
-          <div className="flex shrink-0 flex-col items-end gap-xxs">
-            <div className="flex flex-wrap gap-xs">
-              <Button onClick={() => setCreatingKind('full')} disabled={starting.isPending}>
-                <FilePlus2 className="size-4" aria-hidden /> New report
-              </Button>
-              <Button variant="outline" onClick={() => setCreatingKind('addendum')} disabled={starting.isPending || !latest}
-                aria-describedby={latest ? undefined : 'addendum-why'}
-                title={latest ? `Report what changed since #${latest.number}` : undefined}>
-                New addendum{latest ? ` to #${latest.number}` : ''}
-              </Button>
-            </div>
-            {!latest && (
-              <p id="addendum-why" className="text-caption text-muted-foreground">
-                Issue a report first — an addendum reports what changed since one.
-              </p>
+        <div className="flex shrink-0 flex-col items-end gap-xxs">
+          {/* 5.431.0 — buttons beside the page's actions, for every reader: as
+              caption links under the lead, "Report defaults" "wasn't quite
+              obvious" (user feedback, 2026-11-17). */}
+          <div className="flex flex-wrap justify-end gap-xs" data-testid="reports-config-links">
+            <Button variant="outline" asChild>
+              <Link to="/reports/defaults"><SlidersHorizontal className="size-4" aria-hidden /> Report defaults</Link>
+            </Button>
+            <Button variant="ghost" asChild>
+              <Link to="/reports/templates">Templates</Link>
+            </Button>
+            {data?.can_create && (
+              <>
+                <Button onClick={() => setCreatingKind('full')} disabled={starting.isPending}>
+                  <FilePlus2 className="size-4" aria-hidden /> New report
+                </Button>
+                <Button variant="outline" onClick={() => setCreatingKind('addendum')} disabled={starting.isPending || !latest}
+                  aria-describedby={latest ? undefined : 'addendum-why'}
+                  title={latest ? `Report what changed since #${latest.number}` : undefined}>
+                  New addendum{latest ? ` to #${latest.number}` : ''}
+                </Button>
+              </>
             )}
           </div>
-        )}
+          {data?.can_create && !latest && (
+            <p id="addendum-why" className="text-caption text-muted-foreground">
+              Issue a report first — an addendum reports what changed since one.
+            </p>
+          )}
+        </div>
       </header>
 
       {error && (

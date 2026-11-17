@@ -41,9 +41,13 @@ interface Props {
   /** The panes' names, and what the left one says when empty — a history
    *  edit's "Before" / "After" (5.413.0); a proposal's by default. */
   labels?: { current: string; proposed: string; empty: string };
+  /** Images the current text places and the proposed text does not, with
+   *  what accepting does to them (5.431.0) — a draft that silently dropped a
+   *  placed diagram read as a plain rewording (browser pass 2026-11-17). */
+  droppedImages?: { ids: number[]; consequence: string } | null;
 }
 
-const PROPOSAL_LABELS = {
+export const PROPOSAL_LABELS = {
   current: 'Now in the report', proposed: 'Proposed', empty: 'Nothing yet — accepting fills this section.',
 };
 
@@ -84,6 +88,7 @@ const BaseUnknownNote: React.FC = () => (
 
 const TextComparison: React.FC<Props> = ({
   current, proposed, mono = false, staleBase = null, baseUnknown = false, evidence, labels = PROPOSAL_LABELS,
+  droppedImages = null,
 }) => {
   const now = (current ?? '').trim();
   const [view, setView] = useState<View>('side');
@@ -133,6 +138,16 @@ const TextComparison: React.FC<Props> = ({
               </div>
             </details>
           </div>
+        </div>
+      )}
+      {droppedImages && droppedImages.ids.length > 0 && (
+        <div role="note" data-testid="dropped-images"
+          className="flex min-w-0 items-start gap-xs rounded-md border border-warning/40 bg-warning/10 p-xs text-caption">
+          <AlertTriangle className="mt-[2px] size-4 shrink-0 text-warning" aria-hidden />
+          <p className="min-w-0 break-words text-foreground">
+            The current text places {droppedImages.ids.length === 1 ? 'image' : 'images'}{' '}
+            {droppedImages.ids.join(', ')}; this draft does not. {droppedImages.consequence}
+          </p>
         </div>
       )}
       <div className="flex min-w-0 flex-wrap items-center gap-xs" role="group" aria-label="How to compare">

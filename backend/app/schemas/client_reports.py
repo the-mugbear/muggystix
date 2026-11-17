@@ -113,6 +113,13 @@ class ReportProfileOut(EngagementSettings):
     # What a report of this project uses for an inherited detail the profile
     # leaves empty: the installation's (`author_name`, `disclaimer`).
     inherited: Dict[str, Optional[str]] = Field(default_factory=dict)
+    # v2.541.0 — for each written detail that holds text and was last set by
+    # accepting an agent's proposal: that proposal (`proposal_id`,
+    # `agent_session_id`, `agent_model`, `accepted_by`, `accepted_at`,
+    # `edited_on_accept`) and `changed_since` — a person edited the text
+    # afterwards.  Derived (`proposal_service.accepted_report_details`): the
+    # defaults keep no edit history.
+    from_proposals: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class ReportTextImageOut(BaseModel):

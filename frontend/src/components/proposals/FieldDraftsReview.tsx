@@ -14,7 +14,9 @@ import { type OnProposalDecided, useProposalDecision } from '../../hooks/useProp
 import type { EvidenceResolver } from '../../utils/reportImages';
 import { cn } from '../../utils/cn';
 import { scrollBelowChrome } from '../../utils/uiStyles';
-import { baseUnknown, ProposalDecisionControls, ProposalReasons, ProposalSource, staleBase } from './ProposalItem';
+import {
+  baseUnknown, comparisonLabels, droppedImages, ProposalDecisionControls, ProposalReasons, ProposalSource, staleBase,
+} from './ProposalItem';
 import TextComparison from './TextComparison';
 
 export const draftLetter = (index: number): string =>
@@ -41,7 +43,8 @@ interface Props {
   label: string;
   /** The field's text now (the finding as the page has it). */
   current: string | null | undefined;
-  /** This field's pending finding_text proposals, oldest first. */
+  /** This field's pending text proposals (a finding's section, or a report
+   *  default's — 5.431.0), oldest first. */
   drafts: Proposal[];
   canDecide: boolean;
   onDecided?: OnProposalDecided;
@@ -65,6 +68,8 @@ const Draft: React.FC<{
         staleBase={staleBase(pr)}
         baseUnknown={baseUnknown(pr)}
         evidence={evidence}
+        labels={comparisonLabels(pr)}
+        droppedImages={droppedImages(pr)}
       />
       <div className="space-y-xxs">
         <p className="min-w-0 text-caption text-muted-foreground"><ProposalSource pr={pr} /></p>

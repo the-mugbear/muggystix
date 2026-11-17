@@ -7,9 +7,9 @@
  * template is here too — the installation's template files are
  * /reports/templates.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 
 import {
@@ -30,7 +30,10 @@ import { formatApiError } from '../utils/apiErrors';
 import { isClientTemplate } from '../utils/reportTemplates';
 import DetailSections, { DETAIL_NAME } from '../components/reports/workspace/DetailSections';
 import ProjectImagesPanel from '../components/reports/workspace/ProjectImagesPanel';
-import { DETAIL_SECTIONS, type DetailKey, toSave } from '../components/reports/workspace/detailModel';
+import ProposedReportTextLine from '../components/reports/ProposedReportTextLine';
+import { DETAIL_LABELS, DETAIL_SECTIONS, type DetailKey, toSave } from '../components/reports/workspace/detailModel';
+import DetailProposalNotes from '../components/reports/DetailProposalNotes';
+import { useReportDetailProposals } from '../hooks/useReportDetailProposals';
 import { useDetailEdits } from '../components/reports/workspace/useDetailEdits';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import SafeMarkdown from '../components/SafeMarkdown';
@@ -43,6 +46,11 @@ import {
 
 const NO_TEMPLATES: ReportTemplate[] = [];
 const ALL_KEYS: DetailKey[] = DETAIL_SECTIONS.flatMap((s) => s.keys);
+/** The details an agent may propose text for — the server's
+ *  `report_defaults.WRITTEN_KEYS`. */
+const WRITTEN_DETAILS: DetailKey[] = [
+  'executive_summary', 'system_description', 'applications', 'thick_clients', 'other_targets', 'disclaimer',
+];
 
 /** The stored defaults as the sections' "saved" map. */
 const savedOf = (p: ReportProfile): EngagementOverrides =>
@@ -78,6 +86,20 @@ const ReportDefaults: React.FC = () => {
   // Read for every reader: one who may not edit sees the diagram, not a text
   // marker (third review 2026-10-15, N4).
   const images = useReportTextImages();
+  const proposals = useReportDetailProposals();
+  // A link to one detail's drafts (`#review-<detail>`, from the Proposals
+  // page or a draft's checklist) lands on them once they are on the page —
+  // they arrive after the defaults do.  Once per address.
+  const { hash } = useLocation();
+  const landedOn = useRef<string | null>(null);
+  const draftsShown = proposals.byDetail.size;
+  useEffect(() => {
+    if (!hash.startsWith('#review-') || landedOn.current === hash || !profileQuery.data || !draftsShown) return;
+    const target = document.getElementById(hash.slice(1));
+    if (!target) return;
+    landedOn.current = hash;
+    target.scrollIntoView({ block: 'start' });
+  }, [hash, draftsShown, profileQuery.data]);
 
   const { confirmLeave, confirmEl } = useDiscardGuard(() => dirty, 'The report defaults have unsaved changes. Leave anyway?');
   const guardLinks = useLinkGuard(confirmLeave);
@@ -130,6 +152,20 @@ const ReportDefaults: React.FC = () => {
       </details>
     );
   }
+  // 5.431.0 — under each written detail: the accepted proposal its text came
+  // from, and the drafts waiting for it, reviewed where the text is.
+  for (const key of WRITTEN_DETAILS) {
+    const source = profile.from_proposals?.[key];
+    const drafts = proposals.byDetail.get(key) ?? [];
+    if (!source && !drafts.length) continue;
+    notes[key] = (
+      <>
+        {notes[key]}
+        <DetailProposalNotes field={key} label={DETAIL_LABELS[key]} current={profile[key] as string | null}
+          source={source} drafts={drafts} canDecide={canWrite} evidence={images.markdown.resolver} />
+      </>
+    );
+  }
   if (profile.testers_from_project && profile.testers.length) {
     notes.testers = <p className="text-caption text-muted-foreground">The project’s analysts and admins, until a team is saved.</p>;
   }
@@ -147,6 +183,7 @@ const ReportDefaults: React.FC = () => {
           Every draft follows these unless it overrides a detail, so a change here reaches every such draft. Issued
           reports keep what they were issued with.
         </p>
+        <ProposedReportTextLine />
       </div>
 
       {canWrite && (

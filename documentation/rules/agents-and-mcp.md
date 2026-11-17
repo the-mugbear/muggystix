@@ -38,7 +38,7 @@ paths:
 - Writes carry `agent_session_id` (row: `host_test_count` / `evidence_count`). Ending never refuses or loses work; `POST /agent-sessions/{sid}/resume` rotates the key on the SAME session; `can_end` / `can_resume` mirror the routes. "Live" is `key_state` (`agent_session_service.session_key_state`; `utils/agentRuns.keyState` / `hasLiveKey` only word it).
 - A session has no kind. `agent_session_service.LISTED_WORKFLOWS` (`project`, `assist`) is the ONE list of stored `agent_sessions.workflow` values listed and counted; Resume (and `can_resume`) refuses a non-`project` row.
 - A dropped tool argument is `-32602` (`test_no_tool_keeps_an_argument_it_used_to_take`). Feedback has no `source` (`test_feedback_takes_no_source`).
-- Direct, never gated: notes, review status, host corrections, uploads, host tests, feedback, evidence, remediation writes. Proposals (`POST /agent/proposals/*`, `triage-tests-proposals.md`) include `propose_subnet_details`; never a direct route for a proposal kind.
+- Direct, never gated: notes, review status, host corrections, uploads, host tests, feedback, evidence, remediation writes. Proposals (`POST /agent/proposals/*`, `triage-tests-proposals.md`) include `propose_subnet_details` and `propose_report_details` (the project's report defaults; read `GET /agent/assist/client-reports/defaults`, MCP `assist_get_report_defaults`); never a direct route for a proposal kind.
 - Evidence (`POST /agent/evidence`) is immutable; raw output deferred with `raw_output_sha256`, read at `/raw` / `/raw-chunk` (MCP `read_evidence_raw`). No `host_id` only for an `info` record (`ck_evidence_host_or_info`).
 
 ## Parity with the pages
@@ -120,6 +120,7 @@ paths:
 - No idle key expiry (`AGENT_SESSION_IDLE_HOURS` declined): 24 h TTL, renewable within the 7-day session.
 - No old MCP clients: no retired or accepted-and-ignored arguments.
 - Subnet description / site is a proposal; a remediation "Reported fixed" moving its host to Retest pending is direct.
+- The report's own text (executive summary, system description, other target lists, disclaimer) is a proposal on the project's report defaults (2026-11-17); the engagement's facts are not proposable.
 - No agent read of release notes unless asked (then wrap `release_notes.releases()`, analyst-somewhere).
 - Also decided, as built above: `watching`, `?skip=`, no agent scope, kept calls, the catalogue, `part`, no purpose box, ask-first uploads.
 - The operator's agent makes scanner connections (the design); no server-side scanner proxy; a server-side external call is a rare per-case approval via `safe_request`, never toward targets.

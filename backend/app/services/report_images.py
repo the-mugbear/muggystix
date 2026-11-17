@@ -528,6 +528,40 @@ def engagement_text_key(field: str) -> str:
     return field if field in TOP_LEVEL_DETAILS else f"engagement.{field}"
 
 
+def check_report_detail_references(db: Session, project_id: int, texts: Mapping[str, Optional[str]]) -> None:
+    """An agent's proposed report details may place only the project's own
+    report images, and only where a report prints them
+    (``ENGAGEMENT_IMAGE_FIELDS``) — the twin of :func:`check_references` for
+    text that is no finding's.  A 422 names the detail or the ids.  Run when
+    proposing and again when accepting (an image may be gone by then)."""
+    wanted = {field: referenced_ids(text) for field, text in texts.items()}
+    wanted = {field: ids for field, ids in wanted.items() if ids}
+    if not wanted:
+        return
+    elsewhere = sorted(field for field in wanted if field not in ENGAGEMENT_IMAGE_FIELDS)
+    if elsewhere:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{', '.join(elsewhere)}: a report prints images only in "
+                f"{' and '.join(ENGAGEMENT_IMAGE_FIELDS)} — remove the image reference."
+            ),
+        )
+    own = {att.id for att in project_report_images(db, project_id) if printable(att)}
+    unknown = sorted({att_id for ids in wanted.values() for att_id in ids} - own)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"evidence:{', evidence:'.join(str(i) for i in unknown)} "
+                + ("is not an image" if len(unknown) == 1 else "are not images")
+                + " of this project's report text. The executive summary and the system description "
+                "may only place the report's own PNG, JPEG or GIF images (a finding's image belongs "
+                "in that finding's sections) — the report defaults' `images` list has their ids."
+            ),
+        )
+
+
 def engagement_placement(
     images: Sequence[NoteAttachment], settings: dict,
 ) -> Tuple[List[dict], Dict[str, Dict[str, dict]]]:
