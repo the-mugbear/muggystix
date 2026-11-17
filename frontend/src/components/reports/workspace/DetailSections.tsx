@@ -121,14 +121,30 @@ export interface DetailSectionsProps {
  *  draft, people "weren't sure where certain fields were populated".  It was
  *  a link on each section's status line in 5.431.0 — five times the same
  *  words on a draft that follows everything (browser pass, §44). */
-export const FollowsDefaultsLine: React.FC<{ canEdit: boolean }> = ({ canEdit }) => (
-  <p className="max-w-3xl text-metadata text-muted-foreground" data-testid="report-follows-defaults">
-    Every detail this report does not customise is printed from the project’s report defaults.{' '}
-    <Link to={REPORT_DEFAULTS_PATH} className="font-medium text-info hover:underline">
-      {canEdit ? 'Edit the project’s defaults' : 'See the project’s defaults'}
-    </Link>
-  </p>
-);
+export const FollowsDefaultsLine: React.FC<{
+  canEdit: boolean;
+  /** The followed details whose default text was accepted from an agent's
+   *  proposal and not edited since (`ReportOut.agent_written`, 5.432.0):
+   *  someone evaluating the draft is told here — the line was on the
+   *  defaults page only. */
+  agentWritten?: DetailKey[] | null;
+}> = ({ canEdit, agentWritten }) => {
+  const names = (agentWritten ?? []).map((key) => DETAIL_LABELS[key] ?? key);
+  return (
+    <p className="max-w-3xl text-metadata text-muted-foreground" data-testid="report-follows-defaults">
+      Every detail this report does not customise is printed from the project’s report defaults.{' '}
+      {names.length > 0 && (
+        <span data-testid="report-agent-written">
+          Of those, {names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]}{' '}
+          {names.length > 1 ? 'were' : 'was'} written by an agent and accepted there.{' '}
+        </span>
+      )}
+      <Link to={REPORT_DEFAULTS_PATH} className="font-medium text-info hover:underline">
+        {canEdit ? 'Edit the project’s defaults' : 'See the project’s defaults'}
+      </Link>
+    </p>
+  );
+};
 
 const DetailSections: React.FC<DetailSectionsProps> = (props) => (
   <div className="space-y-lg">
@@ -193,7 +209,10 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
         body = !text
           ? <p className="text-body italic text-muted-foreground">{key === 'disclaimer' ? 'None written: the template’s own disclaimer is printed' : 'Not written'}</p>
           : MARKDOWN.includes(key)
-            ? <div className="max-w-4xl text-body"><SafeMarkdown text={text} evidence={IMAGE_DETAILS.includes(key) ? resolver : undefined} /></div>
+            // A placed image is capped lower than in a comparison or an editor
+            // (5.432.0): at SafeMarkdown's 24rem a network diagram filled the
+            // first screen of Report defaults and pushed the text below it.
+            ? <div className="max-w-4xl text-body [&_img]:max-h-56"><SafeMarkdown text={text} evidence={IMAGE_DETAILS.includes(key) ? resolver : undefined} /></div>
             : <p className="whitespace-pre-wrap text-body font-medium [overflow-wrap:anywhere]">{text}</p>;
       }
       return (

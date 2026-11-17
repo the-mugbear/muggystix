@@ -307,6 +307,10 @@ export interface ClientReport {
   /** A single DRAFT read: where each `followed` value comes from (null: set
    *  nowhere).  Null for an issued report and for list rows. */
   followed_from?: Partial<Record<keyof EngagementSettings, FollowedSource | null>> | null;
+  /** A single DRAFT read (backend 2.542.0): the written details this draft
+   *  follows whose default text was accepted from an agent's proposal and
+   *  not edited since. */
+  agent_written?: Array<keyof EngagementSettings> | null;
   can_edit: boolean;
   can_issue: boolean;
   /** Discard this draft: its creator or a project admin (on list rows too). */

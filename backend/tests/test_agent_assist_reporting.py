@@ -173,6 +173,35 @@ def test_client_reports_take_the_reports_pages_floor(client, db_session, test_pr
     assert _mcp(client, headers, "assist_list_client_reports")["isError"] is (not allowed)
 
 
+def test_a_findings_affected_systems_are_capped_and_the_count_stays_whole(client, db_session, test_project):
+    """Agent acceptance run, 2026-11-17: one finding with thousands of
+    endpoints was 53,144 characters, and paging by finding could not shrink
+    it.  The list is cut per finding (100 by default, `affected_limit` for
+    more or fewer); the count is the report's own, and the cut is said.
+    More endpoints than the cap, so the test fails on an uncapped answer."""
+    hosts = [_host(db_session, test_project, f"10.61.{i // 250}.{i % 250 + 1}") for i in range(130)]
+    _finding(db_session, test_project, "Weak TLS", "high", hosts=hosts,
+             description="D", impact="I", recommendation="R")
+    small = _finding(db_session, test_project, "One host", "low", hosts=hosts[:1],
+                     description="D", impact="I", recommendation="R")
+    headers = _assist_headers(client, test_project.id)
+    url = f"/api/v1/agent/assist/client-reports/{_create(client, test_project)['id']}"
+
+    by_title = {f["title"]: f for f in client.get(url, headers=headers).json()["findings"]}
+    big = by_title["Weak TLS"]
+    assert (len(big["affected"]), big["affected_count"], big["affected_truncated"]) == (100, 130, True)
+    one = by_title["One host"]
+    assert (len(one["affected"]), one["affected_count"], one["affected_truncated"]) == (1, 1, False)
+    assert small.id == one["id"]
+
+    whole = {f["title"]: f for f in client.get(url, headers=headers, params={"affected_limit": 500}).json()["findings"]}
+    assert (len(whole["Weak TLS"]["affected"]), whole["Weak TLS"]["affected_truncated"]) == (130, False)
+    none = {f["title"]: f for f in client.get(url, headers=headers, params={"affected_limit": 0}).json()["findings"]}
+    assert (none["Weak TLS"]["affected"], none["Weak TLS"]["affected_count"], none["Weak TLS"]["affected_truncated"]) == (
+        [], 130, True)
+    assert client.get(url, headers=headers, params={"affected_limit": 5001}).status_code == 422
+
+
 def test_a_draft_reads_live_and_an_issued_report_reads_as_issued(client, db_session, test_project):
     host = _host(db_session, test_project, "10.60.0.1")
     f = _finding(db_session, test_project, "SQL injection", "critical", hosts=[host],

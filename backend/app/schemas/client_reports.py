@@ -272,6 +272,12 @@ class ReportOut(BaseModel):
     # project's analysts and admins), or null (set nowhere).  None for an
     # issued report and for list rows.
     followed_from: Optional[Dict[str, Optional[str]]] = None
+    # A single DRAFT read (2.542.0): the written details this draft FOLLOWS
+    # whose text in the project's defaults was accepted from an agent's
+    # proposal and not edited since — what someone evaluating the draft is
+    # told (`proposal_service.accepted_report_details`).  None for an issued
+    # report and for list rows.
+    agent_written: Optional[List[str]] = None
     # What the CALLER may do.
     can_edit: bool = False
     can_issue: bool = False

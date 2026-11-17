@@ -373,7 +373,36 @@ def test_the_agents_read_of_a_draft_says_what_it_would_print(client, db_session,
         assert ("executive_summary" in agent["settings"]) is overridden
     # The LIST stays lean: no details on its rows.
     rows = client.get("/api/v1/agent/assist/client-reports", headers=key).json()["items"]
-    assert all(row["effective"] is None for row in rows)
+    assert all(row["effective"] is None and row["agent_written"] is None for row in rows)
+
+
+def test_a_draft_says_which_followed_defaults_an_agent_wrote(client, db_session, test_project):
+    """2.542.0 — someone evaluating a draft could not see that a default it
+    follows was written by an agent (the line was on the defaults page only).
+    Only details the draft FOLLOWS, accepted from a proposal and not edited
+    since; nothing for an issued report."""
+    follower = _create(client, test_project, kind="full", title="Follows")
+    own = _create(client, test_project, kind="full", title="Own")
+    r = client.patch(f"{_base(test_project)}/{own['id']}", json={"settings": {"executive_summary": "Its own."}})
+    assert r.status_code == 200, r.text
+
+    def written(report):
+        return client.get(f"{_base(test_project)}/{report['id']}").json()["agent_written"]
+
+    assert written(follower) == [] and written(own) == []
+    key, _ = _start(client, test_project)
+    (summary,) = _proposed(client, key, {"executive_summary": "By the agent."})
+    (system,) = _proposed(client, key, {"system_description": "Described by the agent."})
+    for row in (summary, system):
+        assert _accept(client, test_project, row["id"]).status_code == 200
+    assert written(follower) == ["executive_summary", "system_description"]
+    assert written(own) == ["system_description"]            # it overrides the summary
+    # The agents' read says the same.
+    agent = client.get(f"/api/v1/agent/assist/client-reports/{follower['id']}", headers=key).json()
+    assert agent["agent_written"] == ["executive_summary", "system_description"]
+    # A person's edit of the default makes it theirs.
+    _patch_defaults(client, test_project, system_description="A person rewrote it.")
+    assert written(follower) == ["executive_summary"]
 
 
 def test_a_row_says_how_many_other_drafts_wait_for_the_same_detail(client, db_session, test_project):

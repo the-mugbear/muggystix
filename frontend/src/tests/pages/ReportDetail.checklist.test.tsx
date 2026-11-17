@@ -339,6 +339,21 @@ describe('The draft’s checklist', () => {
     expect(screen.getAllByTestId('report-follows-defaults')).toHaveLength(1);
   });
 
+  // 5.432.0 — someone evaluating a draft is told which followed defaults an
+  // agent wrote (the line was on the defaults page only).
+  it('a draft says which of the defaults it follows were written by an agent', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ agent_written: ['executive_summary', 'system_description'] }));
+    renderDetail();
+    expect(await screen.findByTestId('report-agent-written'))
+      .toHaveTextContent('Of those, Executive summary and System description were written by an agent and accepted there.');
+  });
+
+  it('says nothing of agents when none of the followed defaults is agent-written', async () => {
+    renderDetail();
+    await screen.findByTestId('report-follows-defaults');
+    expect(screen.queryByTestId('report-agent-written')).toBeNull();
+  });
+
   it('an issued report does not say it follows the defaults', async () => {
     mocked.getClientReport.mockResolvedValue(report({
       status: 'issued', number: 3, can_edit: false, can_issue: false, can_discard: false, issued_at: '2026-10-01T00:00:00Z',

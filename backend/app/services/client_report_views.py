@@ -132,6 +132,23 @@ def serialize_report(
     # Only where the page shows the details (one report): a list row does not
     # pay for the reads.
     effective, followed, followed_from = _details(service, report, is_draft) if with_details else (None, None, None)
+    agent_written = None
+    if with_details and is_draft:
+        # Which followed defaults an agent wrote (accepted, not edited since):
+        # derived where the defaults page derives its own line — from the
+        # project's texts this read has ALREADY worked out (`followed`, those
+        # that come from the project), never a second read of the profile.
+        follows = report_defaults.follows(report.kind, report.settings)
+        project_texts = {
+            key: getattr(followed, key, None)
+            for key in report_defaults.WRITTEN_KEYS
+            if key in follows and (followed_from or {}).get(key) == report_defaults.FROM_PROJECT
+        }
+        sources = proposal_service.accepted_report_details(db, report.project_id, None, current=project_texts)
+        agent_written = [
+            key for key in report_defaults.WRITTEN_KEYS
+            if key in sources and not sources[key]["changed_since"]
+        ]
     return ReportOut(
         id=report.id, project_id=report.project_id, kind=report.kind, status=report.status,
         title=report.title, number=report.number, template=report.template,
@@ -151,6 +168,7 @@ def serialize_report(
         created_by_name=_name(report.created_by), issued_by_name=_name(report.issued_by),
         created_at=report.created_at, updated_at=report.updated_at, issued_at=report.issued_at,
         summary=summary, effective=effective, followed=followed, followed_from=followed_from,
+        agent_written=agent_written,
         can_edit=is_draft and role_allows(role, ProjectRole.ANALYST),
         can_issue=is_draft and role_allows(role, ProjectRole.ADMIN),
         # Only a person's read names the person (an agent has no discard).

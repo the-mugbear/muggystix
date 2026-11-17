@@ -179,6 +179,52 @@ describe('Report defaults page', () => {
     expect(screen.getByTestId('defaults-action-bar')).toHaveTextContent('Unsaved changes');
   });
 
+  // 5.432.0 — browser pass 2026-11-17: with all six written defaults
+  // accepted from one session, the same sentence sat under every detail.
+  it('says once which details one agent session wrote; a detail of its own source keeps its line', async () => {
+    const from = (proposal_id: number, agent_session_id: number, changed_since = false) => ({
+      proposal_id, agent_session_id, agent_model: 'model-a', accepted_by: 'Ana',
+      accepted_at: '2026-11-17T10:00:00Z', edited_on_accept: false, changed_since,
+    });
+    getReportProfile.mockResolvedValue({
+      ...profile, executive_summary: 'A.', system_description: 'B.', disclaimer: 'C.', applications: 'D.',
+      from_proposals: {
+        executive_summary: from(88, 168), system_description: from(89, 168),
+        disclaimer: from(93, 168, true),          // edited since: its own line
+        applications: from(70, 150),              // another session, alone: its own line
+      },
+    });
+    show();
+    const shared = await screen.findByTestId('defaults-sources-168');
+    expect(shared).toHaveTextContent('Executive summary and System description hold text accepted from agent session #168’s proposals (model-a), not edited since.');
+    expect(screen.queryByTestId('defaults-executive_summary-source')).toBeNull();
+    expect(screen.queryByTestId('defaults-system_description-source')).toBeNull();
+    expect(screen.getByTestId('defaults-disclaimer-source')).toHaveTextContent(/^Edited since it was accepted/);
+    expect(screen.getByTestId('defaults-applications-source')).toHaveTextContent(/agent session #150’s proposal #70/);
+    expect(screen.queryByTestId('defaults-sources-150')).toBeNull();
+  });
+
+  // 5.432.0 — a draft accepted a moment ago on this very page was replaced
+  // by the Save that followed, with no word of it.
+  it('says, while an edit is unsaved, that saving replaces text accepted from a proposal', async () => {
+    getReportProfile.mockResolvedValue({
+      ...profile, executive_summary: 'By the agent.',
+      from_proposals: { executive_summary: {
+        proposal_id: 77, agent_session_id: 165, agent_model: 'model-a', accepted_by: 'Ana',
+        accepted_at: '2026-11-17T10:00:00Z', edited_on_accept: false, changed_since: false,
+      } },
+    });
+    show();
+    await screen.findByTestId('defaults-executive_summary-source');
+    expect(screen.queryByTestId('defaults-executive_summary-replaces')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Executive summary' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Executive summary' }), { target: { value: 'My own words.' } });
+    expect(screen.getByTestId('defaults-executive_summary-replaces'))
+      .toHaveTextContent('Unsaved: saving replaces the text accepted from an agent’s proposal #77 (accepted by Ana).');
+    fireEvent.click(within(screen.getByTestId('defaults-section-summary')).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('defaults-executive_summary-replaces')).toBeNull();
+  });
+
   // 5.431.0 — the defaults keep no history: the page says which text came
   // from an accepted proposal, and when a person has edited it since.
   it('says which default’s text came from an accepted agent proposal, and when it was edited since', async () => {

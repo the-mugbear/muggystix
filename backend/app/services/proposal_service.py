@@ -1261,7 +1261,10 @@ def pending_report_details(db: Session, project_id: int) -> Dict[str, int]:
     }
 
 
-def accepted_report_details(db: Session, project_id: int, profile: Optional[ReportProfile]) -> Dict[str, dict]:
+def accepted_report_details(
+    db: Session, project_id: int, profile: Optional[ReportProfile],
+    current: Optional[Dict[str, Optional[str]]] = None,
+) -> Dict[str, dict]:
     """Detail → the LAST accepted proposal for it, for each written detail of
     the project's report defaults that holds text — where the text came from.
 
@@ -1269,8 +1272,17 @@ def accepted_report_details(db: Session, project_id: int, profile: Optional[Repo
     without this nothing on the defaults page said an agent wrote a text
     (browser pass 2026-11-17).  Derived, never stamped on the profile:
     ``changed_since`` says the default no longer reads as it was accepted (a
-    person edited it afterwards), compared as it was stored."""
-    if profile is None:
+    person edited it afterwards), compared as it was stored.
+
+    ``current``: the project's text per detail when the caller has it already
+    (a draft's read has worked the defaults out once and must not read the
+    profile again — ``test_one_draft_read_works_the_defaults_out_once``);
+    else it is read from ``profile``."""
+    if current is None:
+        if profile is None:
+            return {}
+        current = {key: getattr(profile, key, None) for key in report_defaults.WRITTEN_KEYS}
+    if not any((text or "").strip() for text in current.values()):
         return {}
     rows = (
         db.query(AgentProposal)
@@ -1286,8 +1298,8 @@ def accepted_report_details(db: Session, project_id: int, profile: Optional[Repo
     out: Dict[str, dict] = {}
     for proposal in rows:
         field = proposal.field
-        current = (getattr(profile, field, None) or "").strip() if field in report_defaults.WRITTEN_KEYS else ""
-        if not current:
+        now = (current.get(field) or "").strip() if field in report_defaults.WRITTEN_KEYS else ""
+        if not now:
             continue
         payload = proposal.payload or {}
         edited = "accepted_value" in payload
@@ -1302,7 +1314,7 @@ def accepted_report_details(db: Session, project_id: int, profile: Optional[Repo
             "accepted_by": (who.full_name or who.username) if who is not None else None,
             "accepted_at": proposal.decided_at,
             "edited_on_accept": edited,
-            "changed_since": accepted.strip() != current,
+            "changed_since": accepted.strip() != now,
         }
     return out
 

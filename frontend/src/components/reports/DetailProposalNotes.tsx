@@ -36,6 +36,46 @@ export const AcceptedProposalLine: React.FC<{ source: AcceptedDetailProposal; te
   );
 };
 
+/** Which accepted-proposal sources are said ONCE, above the details, and
+ *  which under their own detail (5.432.0).  With every written default
+ *  accepted from one agent session the same sentence sat under all six
+ *  (browser pass 2026-11-17).  Sources that share a session and were not
+ *  edited since are one line naming the details; one alone, or one edited
+ *  since, keeps its own line. */
+export const groupSources = <K extends string>(
+  sources: Array<[K, AcceptedDetailProposal]>,
+): { shared: Array<{ sessionId: number; keys: K[]; first: AcceptedDetailProposal }>; own: K[] } => {
+  const bySession = new Map<number, K[]>();
+  for (const [key, source] of sources) {
+    if (source.changed_since || source.agent_session_id == null) continue;
+    bySession.set(source.agent_session_id, [...(bySession.get(source.agent_session_id) ?? []), key]);
+  }
+  const shared = [...bySession.entries()]
+    .filter(([, keys]) => keys.length > 1)
+    .map(([sessionId, keys]) => ({
+      sessionId, keys, first: (sources.find(([k]) => k === keys[0]) as [K, AcceptedDetailProposal])[1],
+    }));
+  const said = new Set(shared.flatMap((g) => g.keys));
+  return { shared, own: sources.map(([key]) => key).filter((key) => !said.has(key)) };
+};
+
+/** "Executive summary, System description and Disclaimer were accepted from
+ *  agent session #168 (model)" — one line for the details one session wrote. */
+export const SharedSourceLine: React.FC<{
+  sessionId: number; labels: string[]; first: AcceptedDetailProposal;
+}> = ({ sessionId, labels, first }) => {
+  const names = labels.length > 1
+    ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
+    : labels[0];
+  return (
+    <p className="mt-xs max-w-3xl break-words text-metadata text-muted-foreground" data-testid={`defaults-sources-${sessionId}`}>
+      {names} hold text accepted from{' '}
+      <Link to={`/agent-sessions/${sessionId}`} className="text-info hover:underline">agent session #{sessionId}</Link>
+      ’s proposals{first.agent_model && <> ({first.agent_model})</>}, not edited since.
+    </p>
+  );
+};
+
 interface Props {
   field: string;
   label: string;

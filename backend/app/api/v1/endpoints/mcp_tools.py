@@ -880,7 +880,13 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports/{report_id}",
-        "params": {"report_id": "A report's id (from assist_list_client_reports)."},
+        "params": {
+            "report_id": "A report's id (from assist_list_client_reports).",
+            "affected_limit": (
+                "Affected systems listed per finding (default 100). `affected_count` is whole and "
+                "`affected_truncated` says a list was cut — count from the count, not the list."
+            ),
+        },
     },
     "assist_get_report_defaults": {
         "description": (

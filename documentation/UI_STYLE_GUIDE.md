@@ -1016,6 +1016,16 @@ and the page was "confusing". The rules:
   status line, five times the same words on one page, §44), and the Reports
   page offers Report defaults as a button beside its actions, for every
   reader — never as a caption link under the lead.
+- **The same source is said once** (5.432.0): details one agent session
+  wrote are one line under the page's lead naming them
+  (`DetailProposalNotes.groupSources` / `SharedSourceLine`); a detail with a
+  source of its own, or edited since, keeps its line. A DRAFT says which of
+  the defaults it follows an agent wrote, in its one "follows the defaults"
+  line (`ReportOut.agent_written`). While an edit of agent-accepted text is
+  unsaved, the detail says that saving replaces it.
+- **A placed image is smaller where the text is read than where it is
+  compared or edited** (`DetailSections`' read view caps it at 14rem; a
+  diagram at SafeMarkdown's 24rem filled the first screen).
 - **A detail under review prints its text once** (5.431.1): on the Report
   defaults page a detail with drafts leaves its text out of the read view
   (`DetailSections` `valueInNote`) — the comparison shows it — and a page with

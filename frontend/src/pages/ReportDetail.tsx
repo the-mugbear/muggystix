@@ -678,7 +678,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         )}
       </section>
 
-      {isDraft && <FollowsDefaultsLine canEdit={editable} />}
+      {isDraft && (
+        <FollowsDefaultsLine canEdit={editable}
+          // A detail being customised on this page no longer follows the default.
+          agentWritten={(report.agent_written ?? []).filter((key) => !(key in edits.ctx.pending))} />
+      )}
       <DetailSections edits={edits} canEdit={editable} idPrefix="report" busy={saving}
         summaryLabel={summaryLabel}
         summaryAction={editable ? (

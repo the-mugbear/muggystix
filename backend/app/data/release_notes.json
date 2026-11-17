@@ -2,6 +2,18 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.542.0",
+      "frontend": "5.432.0",
+      "date": "2026-11-17",
+      "entries": [
+        {"kind": "new", "text": "A draft's Details say which of the report defaults it follows were written by an agent and accepted."},
+        {"kind": "new", "text": "On Report defaults, editing text that was accepted from an agent's proposal says, while the edit is unsaved, that saving replaces it."},
+        {"kind": "changed", "text": "On Report defaults, details written in one agent session are named once under the page's introduction instead of repeating the same line under each."},
+        {"kind": "changed", "text": "Images placed in a report detail are shown smaller where the detail is read, so the text stays in view."},
+        {"kind": "changed", "text": "An agent reading a report gets at most 100 affected systems per finding unless it asks for more; the count is always the whole number."}
+      ]
+    },
+    {
       "backend": "2.541.1",
       "frontend": "5.431.1",
       "date": "2026-11-17",

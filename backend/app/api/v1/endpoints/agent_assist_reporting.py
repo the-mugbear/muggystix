@@ -252,6 +252,12 @@ class AssistReportFile(ReportFileOut):
     download_path: str = Field(..., description="GET with the session's API key; saves the file")
 
 
+#: Affected systems one finding lists in the agents' report read, and the most
+#: a caller may ask for.  The single-finding read's cap (100 endpoint rows).
+AFFECTED_DEFAULT = 100
+AFFECTED_MAX = 5000
+
+
 class AssistReportFinding(BaseModel):
     """One finding as the report states it (its report text, reference and
     the endpoints it lists) — not the finding's current state."""
@@ -269,8 +275,12 @@ class AssistReportFinding(BaseModel):
     references: Optional[Any] = None
     steps_to_reproduce: Optional[str] = None
     evidence_text: Optional[str] = None
+    # At most `affected_limit` of them (100 by default); `affected_count` is
+    # whole, and `affected_truncated` says a list here was cut.
     affected: List[Dict[str, Any]] = Field(default_factory=list)
     affected_count: int = 0
+    affected_truncated: bool = False
+    new_affected_count: int = 0
     # Addendum only: why it is in this document ("new" / "new_hosts" /
     # "severity_changed") and, for "new_hosts", the endpoints added since the
     # baseline; for a re-rated finding, the severity the baseline reported.
@@ -411,6 +421,13 @@ def get_assist_client_report(
     report_id: int = Path(..., ge=1),
     limit: int = Query(25, ge=1, le=200, description="Findings per answer (the rest of the report is always whole)."),
     offset: int = Query(0, ge=0, description="Findings to skip, in the report's order."),
+    affected_limit: int = Query(
+        AFFECTED_DEFAULT, ge=0, le=AFFECTED_MAX,
+        description=(
+            "Affected systems listed per finding (`affected`, and an addendum's `new_affected`). "
+            "`affected_count` / `new_affected_count` are whole; `affected_truncated` says the list was cut."
+        ),
+    ),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -428,6 +445,17 @@ def get_assist_client_report(
     findings = []
     for item in stated[offset:offset + limit]:
         row = {k: v for k, v in item.items() if not k.startswith("_")}
+        # A finding's affected systems are capped per finding: one finding
+        # with a few thousand endpoints was 53,144 characters, and two such
+        # findings 117,660 — more than a client's result takes, and paging by
+        # FINDING cannot shrink one (agent acceptance run, 2026-11-17).  The
+        # counts stay whole; `affected_limit` asks for more.
+        listed, added = item.get("affected") or [], item.get("new_affected") or []
+        row["affected"] = listed[:affected_limit]
+        row["affected_count"] = item.get("affected_count", len(listed))
+        row["new_affected"] = added[:affected_limit]
+        row["new_affected_count"] = len(added)
+        row["affected_truncated"] = len(listed) > affected_limit or len(added) > affected_limit
         # The render's file names mean nothing outside the render; keep the
         # attachment id (fetchable) and the caption.
         row["evidence"] = [

@@ -13,7 +13,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 
 import {
-  patchReportProfile, type EngagementOverrides, type ReportProfile,
+  patchReportProfile, type AcceptedDetailProposal, type EngagementOverrides, type ReportProfile,
   type ReportTemplate,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -32,7 +32,7 @@ import DetailSections, { DETAIL_NAME } from '../components/reports/workspace/Det
 import ProjectImagesPanel from '../components/reports/workspace/ProjectImagesPanel';
 import ProposedReportTextLine from '../components/reports/ProposedReportTextLine';
 import { DETAIL_LABELS, DETAIL_SECTIONS, type DetailKey, toSave } from '../components/reports/workspace/detailModel';
-import DetailProposalNotes from '../components/reports/DetailProposalNotes';
+import DetailProposalNotes, { groupSources, SharedSourceLine } from '../components/reports/DetailProposalNotes';
 import { useReportDetailProposals } from '../hooks/useReportDetailProposals';
 import { useDetailEdits } from '../components/reports/workspace/useDetailEdits';
 import { DetailSkeleton } from '../components/PageSkeleton';
@@ -162,20 +162,37 @@ const ReportDefaults: React.FC = () => {
   // A detail with drafts shows its current text ONCE — in the comparison,
   // beside the draft — so its read view leaves the text out (§43).
   const underReview: DetailKey[] = [];
+  // An UNSAVED edit of a detail is what the page shows for it, and it is
+  // not the stored text (browser pass 2026-11-17): it stays visible above
+  // the drafts — which compare with the stored default — and the page does
+  // not say of it that it "was accepted from" a proposal.
+  const isEditing = (key: DetailKey) => key in edits.ctx.pending;
+  // Details one agent session wrote are said once, under the lead (5.432.0).
+  const sources = groupSources(WRITTEN_DETAILS.flatMap((key) => {
+    const source = isEditing(key) ? undefined : profile.from_proposals?.[key];
+    return source ? [[key, source] as [DetailKey, AcceptedDetailProposal]] : [];
+  }));
   for (const key of WRITTEN_DETAILS) {
-    // An UNSAVED edit of the detail is what the page shows for it, and it is
-    // not the stored text (browser pass 2026-11-17): it stays visible above
-    // the drafts — which compare with the stored default — and the page does
-    // not say of it that it "was accepted from" a proposal.
-    const editing = key in edits.ctx.pending;
-    const source = editing ? undefined : profile.from_proposals?.[key];
+    const editing = isEditing(key);
+    const accepted = profile.from_proposals?.[key];
+    const source = sources.own.includes(key) ? accepted : undefined;
     const drafts = proposals.byDetail.get(key) ?? [];
-    if (!source && !drafts.length) continue;
+    // Saving an edit replaces text accepted from a proposal: said while the
+    // edit is unsaved (5.432.0 — a draft accepted a moment ago on this very
+    // page was overwritten by the Save that followed, with no word of it).
+    const replaces = editing && accepted && !accepted.changed_since ? accepted : undefined;
+    if (!source && !drafts.length && !replaces) continue;
     if (drafts.length && !editing) underReview.push(key);
     notes[key] = (
       <>
         {/* "Empty: reports use the installation's…" stays above the drafts. */}
         {notes[key]}
+        {replaces && (
+          <p className="text-caption text-warning" data-testid={`defaults-${key}-replaces`}>
+            Unsaved: saving replaces the text accepted from an agent’s proposal #{replaces.proposal_id}
+            {replaces.accepted_by ? ` (accepted by ${replaces.accepted_by})` : ''}.
+          </p>
+        )}
         <DetailProposalNotes field={key} label={DETAIL_LABELS[key]} current={profile[key] as string | null}
           source={source} drafts={drafts} canDecide={canWrite} evidence={images.markdown.resolver}
           scrollExtra={DRAFTS_SCROLL_EXTRA} />
@@ -200,6 +217,10 @@ const ReportDefaults: React.FC = () => {
           reports keep what they were issued with.
         </p>
         <ProposedReportTextLine />
+        {sources.shared.map((group) => (
+          <SharedSourceLine key={group.sessionId} sessionId={group.sessionId} first={group.first}
+            labels={group.keys.map((key) => DETAIL_LABELS[key])} />
+        ))}
       </div>
 
       {canWrite && (
