@@ -150,6 +150,16 @@ export const AGENT_SESSION_READS = [
  *  or its flags: which tool and parameters is the agent's judgment and the
  *  operator's call. */
 export const agentInstruction = {
+  /** Write the report's own text for the project's report defaults (5.433.0):
+   *  the two details an agent can write from what BlueStick holds.  Proposals
+   *  only — a person accepts each on Report defaults. */
+  writeReportDefaults: (): string =>
+    'Write the executive summary and the system description for this project’s client report in BlueStick. '
+    + 'Read the report defaults as they stand (assist_get_report_defaults), then the project’s findings, scope '
+    + 'and a draft report if there is one (assist_get_client_report), and propose each with '
+    + 'propose_report_details: the complete text as the client will read it, keeping any image the current '
+    + 'text places. Write only what the project’s data supports: if one cannot be written from it, do not '
+    + 'propose it or fill it with a guess; tell me what is missing. Do not change anything directly.',
   /** Names no scope: a project has one, and no agent read takes an id (the
    *  session's project is the key's).  `covers` says what the scope holds
    *  ("8 subnets, 3 domains"), so the operator sees what they are handing over. */

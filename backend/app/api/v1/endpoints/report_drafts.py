@@ -193,11 +193,103 @@ def draft_finding_text(
     # The service ended the read transaction before the provider call
     # (REP-2): the finding is read again by id, and one deleted meanwhile is
     # propose_finding_text's 404.
+    # A section drafted word for word as it already reads is no proposal
+    # (`propose_finding_text` refuses it): said, like a declined one.
+    current = (
+        db.query(Finding).filter(Finding.id == body.finding_id, Finding.project_id == project.id).first()
+    )
+    for field in list(result["suggestions"]):
+        if current is not None and result["suggestions"][field].strip() == (getattr(current, field, None) or "").strip():
+            del result["suggestions"][field]
+            declined[field] = "The draft repeats the section's current text."
     if result["suggestions"]:
         rows = proposals.propose_finding_text(
             db, project.id, who, finding_id=body.finding_id, fields=result["suggestions"], rationale=rationale,
         )
         db.commit()
+    return FindingTextDraftResponse(
+        proposals=proposals.serialize_many(db, rows),
+        declined=declined,
+        provider_id=result["provider_id"], provider_type=result["provider_type"],
+        model_id=result.get("model_id"), usage=result.get("usage"),
+    )
+
+
+class ReportDetailsDraftRequest(BaseModel):
+    provider_id: Optional[int] = Field(None, description="LLM provider; omit for your default.")
+    audience: Optional[str] = Field(
+        None, max_length=200, description="Who the summary is for (e.g. 'executives').",
+    )
+    instructions: Optional[str] = Field(
+        None, max_length=2000, description="Extra drafting guidance (tone, what to emphasise).",
+    )
+
+
+@router.post(
+    "/draft/report-details",
+    response_model=FindingTextDraftResponse,
+    summary="Draft the executive summary for the project's report defaults via the LLM, as a proposal",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def draft_report_details(
+    body: ReportDetailsDraftRequest = ReportDetailsDraftRequest(),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """2.543.0 — "Draft with AI" on the Report defaults page.  The executive
+    summary is drafted from what a NEW full report of the project would
+    contain today (its reportable findings, as they stand), with the caller's
+    own LLM provider, and lands as ONE ``report_detail`` proposal (source
+    ``llm_draft``) — reviewed under the detail like an agent's; nothing
+    changes until someone accepts it.  The other written details are not
+    drafted: BlueStick holds too little to write them from.
+
+    ``declined`` carries the reason when no proposal was made: the draft
+    named a BlueStick record, or said what the default already says."""
+    try:
+        result = ReportDraftService(db, current_user).draft_executive_summary(
+            project.id, provider_id=body.provider_id, audience=body.audience, instructions=body.instructions,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError:
+        logger.exception("Executive summary draft failed", extra={"project_id": project.id})
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The LLM provider failed or returned nothing. "
+                "Check the provider on the LLM Providers page and try again."
+            ),
+        )
+    declined: Dict[str, str] = {}
+    rows = []
+    if result["text"] is None:
+        declined["executive_summary"] = result["declined"]
+    else:
+        who = proposals.Attribution(
+            user_id=current_user.id, source=ProposalSource.LLM_DRAFT.value,
+            model=result.get("model_id") or result.get("provider_type"),
+        )
+        try:
+            rows = proposals.propose_report_details(
+                db, project.id, who, fields={"executive_summary": result["text"]},
+                rationale=(
+                    "Drafted in BlueStick with your LLM provider, from the "
+                    f"{result['finding_total']} finding{'' if result['finding_total'] == 1 else 's'} "
+                    "a new report of this project would list."
+                ),
+            )
+        except HTTPException as exc:
+            # What the proposal door refuses of a model's text (it repeats the
+            # default, it is over the limit) is a draft not made, with why —
+            # never a 422 about a request the person did not write.
+            if exc.status_code != 422:
+                raise
+            db.rollback()
+            declined["executive_summary"] = str(exc.detail)[:500]
+        else:
+            db.commit()
     return FindingTextDraftResponse(
         proposals=proposals.serialize_many(db, rows),
         declined=declined,

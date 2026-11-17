@@ -13,7 +13,15 @@ const patchReportProfile = vi.fn();
 const getProposalSummary = vi.fn();
 const listProposals = vi.fn();
 const acceptProposal = vi.fn();
+const draftReportDetails = vi.fn();
+// The agent task button has its own tests; here it is its label and its task.
+vi.mock('../../components/agent-sessions/AgentTaskButton', () => ({
+  default: ({ instruction, label = 'Ask your agent' }: { instruction: string; label?: string }) => (
+    <button type="button" data-instruction={instruction}>{label}</button>
+  ),
+}));
 vi.mock('../../services/api', () => ({
+  draftReportDetails: (...a: unknown[]) => draftReportDetails(...a),
   getProposalSummary: (...a: unknown[]) => getProposalSummary(...a),
   listProposals: (...a: unknown[]) => listProposals(...a),
   acceptProposal: (...a: unknown[]) => acceptProposal(...a),
@@ -177,6 +185,68 @@ describe('Report defaults page', () => {
     expect(within(read).getByTestId('compare-current')).toHaveTextContent('By the agent.');   // the drafts' base
     expect(screen.queryByTestId('defaults-executive_summary-source')).toBeNull();
     expect(screen.getByTestId('defaults-action-bar')).toHaveTextContent('Unsaved changes');
+  });
+
+  // 5.433.0 — AI help where the summary is written: it was on a draft's own
+  // override only, and Report defaults is where the summary normally lives.
+  it('drafts the executive summary with AI as a proposal, and offers the task to an agent', async () => {
+    draftReportDetails.mockResolvedValue({
+      proposals: [draft(9, 'executive_summary', 'Drafted.', 'm-1')], declined: {},
+      provider_id: 1, provider_type: 'openai', model_id: 'm-1',
+    });
+    show();
+    const ai = await screen.findByTestId('defaults-summary-ai');
+    const agent = within(ai).getByRole('button', { name: 'Ask your agent' });
+    expect(agent.dataset.instruction).toMatch(/executive summary and the system description/);
+    expect(agent.dataset.instruction).toMatch(/propose_report_details/);
+
+    const reads = listProposals.mock.calls.length;
+    fireEvent.click(within(ai).getByRole('button', { name: 'Draft with AI' }));
+    await waitFor(() => expect(draftReportDetails).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(
+      'Drafted the executive summary as a proposal — review it under the summary.'));
+    // The page's drafts are read again, so the proposal appears under the summary.
+    await waitFor(() => expect(listProposals.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  it('says why nothing was drafted, in place, and does not call it an error', async () => {
+    draftReportDetails.mockResolvedValue({
+      proposals: [], declined: { executive_summary: 'The draft was left out: “Finding #277” means nothing to the report’s reader.' },
+      provider_id: 1, provider_type: 'openai', model_id: 'm-1',
+    });
+    show();
+    fireEvent.click(within(await screen.findByTestId('defaults-summary-ai')).getByRole('button', { name: 'Draft with AI' }));
+    expect(await screen.findByTestId('defaults-summary-ai-note'))
+      .toHaveTextContent('Nothing drafted. The draft was left out: “Finding #277” means nothing to the report’s reader.');
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('a refused draft (no provider, nothing reportable) is the server’s sentence', async () => {
+    draftReportDetails.mockRejectedValue({ response: { status: 400, data: { detail: 'No LLM provider is configured.' } } });
+    show();
+    fireEvent.click(within(await screen.findByTestId('defaults-summary-ai')).getByRole('button', { name: 'Draft with AI' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(String(toast.error.mock.calls[0][0])).toMatch(/No LLM provider is configured|Could not draft/);
+  });
+
+  it('offers no AI drafting while a draft of the summary waits, while it is edited, or to a reader', async () => {
+    listProposals.mockResolvedValue({ total: 1, has_more: false, items: [draft(1, 'executive_summary', 'Waiting.', 'model-a')] });
+    show();
+    await screen.findByTestId('drafts-executive_summary');
+    expect(screen.queryByTestId('defaults-summary-ai')).toBeNull();
+  });
+
+  it('an AI draft’s accepted text is said to come from an AI draft, not an agent session', async () => {
+    getReportProfile.mockResolvedValue({
+      ...profile, executive_summary: 'Drafted and accepted.',
+      from_proposals: { executive_summary: {
+        proposal_id: 91, source: 'llm_draft', proposed_by: 'Ana', agent_session_id: null, agent_model: 'm-1',
+        accepted_by: 'Ben', accepted_at: '2026-11-17T10:00:00Z', edited_on_accept: false, changed_since: false,
+      } },
+    });
+    show();
+    expect(await screen.findByTestId('defaults-executive_summary-source'))
+      .toHaveTextContent(/^Text accepted from an AI draft by Ana, proposal #91 \(m-1\) · accepted by Ben/);
   });
 
   // 5.432.0 — browser pass 2026-11-17: with all six written defaults

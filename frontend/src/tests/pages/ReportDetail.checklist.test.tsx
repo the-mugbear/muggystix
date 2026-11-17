@@ -345,7 +345,7 @@ describe('The draft’s checklist', () => {
     mocked.getClientReport.mockResolvedValue(report({ agent_written: ['executive_summary', 'system_description'] }));
     renderDetail();
     expect(await screen.findByTestId('report-agent-written'))
-      .toHaveTextContent('Of those, Executive summary and System description were written by an agent and accepted there.');
+      .toHaveTextContent('Of those, Executive summary and System description were written by AI (an agent or an AI draft) and accepted there.');
   });
 
   it('says nothing of agents when none of the followed defaults is agent-written', async () => {

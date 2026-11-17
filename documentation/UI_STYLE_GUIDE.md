@@ -1016,6 +1016,14 @@ and the page was "confusing". The rules:
   status line, five times the same words on one page, §44), and the Reports
   page offers Report defaults as a button beside its actions, for every
   reader — never as a caption link under the lead.
+- **AI help sits where the text is written, and produces a proposal**
+  (5.433.0): under the Executive summary on Report defaults, "Draft with AI"
+  (the reader's LLM provider) makes one proposal reviewed in place, and "Ask
+  your agent" (`AgentTaskButton`) hands a live session the task. Offered to
+  whoever may edit, never while the detail is being edited, and never again
+  while a draft of it waits. Why nothing was drafted is said under the
+  buttons, not as an error. A draft's own "Draft with AI…" stays as it is
+  (its override is that report's text, drafted from that report).
 - **The same source is said once** (5.432.0): details one agent session
   wrote are one line under the page's lead naming them
   (`DetailProposalNotes.groupSources` / `SharedSourceLine`); a detail with a

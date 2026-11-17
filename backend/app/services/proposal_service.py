@@ -464,6 +464,19 @@ def propose_finding_text(
         db, finding, {f: v for f, v in fields.items() if f in REPORT_TEXT_FIELDS}, require_marked=False,
     )
     _refuse_internal_references(fields)
+    # A section's own text sent back changes nothing: refused, as for a report
+    # detail (2.543.0; owner, 2026-11-17 — a reviewer opened a "Same text"
+    # proposal to find it said the same).  Compared as stored (trimmed).
+    same = sorted(
+        f for f, v in fields.items()
+        if (v or "").strip() and (v or "").strip() == (getattr(finding, f, None) or "").strip()
+    )
+    if same:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{', '.join(same)}: this is the section's current text — there is nothing to propose. "
+                   "Leave out a section you would not change.",
+        )
     claimed = claim_replaced(db, project_id, who, replaces, [
         AgentProposal(kind=ProposalKind.FINDING_TEXT.value, finding_id=finding_id, field=f) for f in fields
     ])
@@ -1286,7 +1299,7 @@ def accepted_report_details(
         return {}
     rows = (
         db.query(AgentProposal)
-        .options(selectinload(AgentProposal.decided_by))
+        .options(selectinload(AgentProposal.decided_by), selectinload(AgentProposal.proposed_by))
         .filter(
             AgentProposal.project_id == project_id,
             AgentProposal.kind == ProposalKind.REPORT_DETAIL.value,
@@ -1309,6 +1322,13 @@ def accepted_report_details(
         who = proposal.decided_by
         out[field] = {
             "proposal_id": proposal.id,
+            # `agent` (an agent session's) or `llm_draft` (drafted in
+            # BlueStick with a person's LLM provider — `proposed_by`).
+            "source": proposal.source,
+            "proposed_by": (
+                (proposal.proposed_by.full_name or proposal.proposed_by.username)
+                if proposal.proposed_by is not None else None
+            ),
             "agent_session_id": proposal.agent_session_id,
             "agent_model": proposal.agent_model,
             "accepted_by": (who.full_name or who.username) if who is not None else None,

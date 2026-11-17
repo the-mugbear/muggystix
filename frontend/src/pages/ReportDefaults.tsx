@@ -10,10 +10,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2, Sparkles } from 'lucide-react';
 
 import {
-  patchReportProfile, type AcceptedDetailProposal, type EngagementOverrides, type ReportProfile,
+  draftReportDetails, patchReportProfile, type AcceptedDetailProposal, type EngagementOverrides, type ReportProfile,
   type ReportTemplate,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -34,6 +34,8 @@ import ProposedReportTextLine from '../components/reports/ProposedReportTextLine
 import { DETAIL_LABELS, DETAIL_SECTIONS, type DetailKey, toSave } from '../components/reports/workspace/detailModel';
 import DetailProposalNotes, { groupSources, SharedSourceLine } from '../components/reports/DetailProposalNotes';
 import { useReportDetailProposals } from '../hooks/useReportDetailProposals';
+import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
+import { agentInstruction } from '../utils/agentRuns';
 import { useDetailEdits } from '../components/reports/workspace/useDetailEdits';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import SafeMarkdown from '../components/SafeMarkdown';
@@ -131,6 +133,25 @@ const ReportDefaults: React.FC = () => {
   });
   const busy = saving.isPending;
 
+  // "Draft with AI": the summary as a proposal.  Why none was made (the model
+  // named a record, or said what is already there) is said under the buttons.
+  const [draftNote, setDraftNote] = useState<string | null>(null);
+  const drafting = useMutation({
+    mutationFn: () => draftReportDetails(projectId),
+    onMutate: () => setDraftNote(null),
+    onSuccess: ({ proposals: made, declined = {} }) => {
+      if (made.length > 0) {
+        // A new proposal: the lists of them (this page's among them) and the
+        // top bar's count are out of date.
+        void invalidateReads(queryClient, 'listProposals', 'getProposalSummary');
+        toast.success('Drafted the executive summary as a proposal — review it under the summary.');
+      } else {
+        setDraftNote(`Nothing drafted. ${declined.executive_summary ?? 'The provider gave no usable text.'}`);
+      }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not draft the executive summary.')),
+  });
+
   if (!profile && !error) return <DetailSkeleton />;
   if (!profile) return <p className="p-md text-destructive md:p-lg">{error}</p>;
 
@@ -189,13 +210,37 @@ const ReportDefaults: React.FC = () => {
         {notes[key]}
         {replaces && (
           <p className="text-caption text-warning" data-testid={`defaults-${key}-replaces`}>
-            Unsaved: saving replaces the text accepted from an agent’s proposal #{replaces.proposal_id}
+            Unsaved: saving replaces the text accepted from {replaces.source === 'llm_draft' ? 'an AI draft' : 'an agent'}’s proposal #{replaces.proposal_id}
             {replaces.accepted_by ? ` (accepted by ${replaces.accepted_by})` : ''}.
           </p>
         )}
         <DetailProposalNotes field={key} label={DETAIL_LABELS[key]} current={profile[key] as string | null}
           source={source} drafts={drafts} canDecide={canWrite} evidence={images.markdown.resolver}
           scrollExtra={DRAFTS_SCROLL_EXTRA} />
+      </>
+    );
+  }
+  // 5.433.0 — AI help where the summary is written (it was on a draft's own
+  // override only): "Draft with AI" makes ONE proposal with the reader's LLM
+  // provider, reviewed here like an agent's; "Ask your agent" hands a live
+  // session the task for the summary and the system description.  Not while
+  // the summary is being edited, and not again while a draft of it waits (§43).
+  if (canWrite && !isEditing('executive_summary') && !(proposals.byDetail.get('executive_summary') ?? []).length) {
+    notes.executive_summary = (
+      <>
+        {notes.executive_summary}
+        <div className="flex flex-wrap items-center gap-xs" data-testid="defaults-summary-ai">
+          <Button type="button" variant="ghost" size="sm" disabled={drafting.isPending || busy}
+            title="Draft the executive summary with your LLM provider, from the findings a new report would list — as a proposal to review here; nothing changes until it is accepted"
+            onClick={() => drafting.mutate()}>
+            {drafting.isPending ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
+            Draft with AI
+          </Button>
+          <AgentTaskButton variant="ghost" instruction={agentInstruction.writeReportDefaults()} />
+        </div>
+        {draftNote && (
+          <p className="break-words text-caption text-muted-foreground" data-testid="defaults-summary-ai-note">{draftNote}</p>
+        )}
       </>
     );
   }

@@ -353,8 +353,15 @@ def list_assist_client_reports(
     # The Reports page's order.
     rows.sort(key=lambda r: (r.status != ReportStatus.DRAFT, -(r.number or 0), -(r.id)))
     latest = ClientReportService(db).latest_issued(request.state.agent_project_id)
+    items = [serialize_report(db, r, role, with_summary=False) for r in rows]
+    for item in items:
+        # A list row names the details a report overrides and withholds their
+        # values (each key present, its value null): one draft's overridden
+        # executive summary was several thousand characters on every listing
+        # (agent acceptance run, 2026-11-17).  The values are the single read's.
+        item.settings = {key: None for key in item.settings}
     return AssistClientReportList(
-        items=[serialize_report(db, r, role, with_summary=False) for r in rows],
+        items=items,
         latest_issued_id=latest.id if latest else None,
     )
 

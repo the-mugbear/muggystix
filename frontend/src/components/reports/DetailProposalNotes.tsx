@@ -23,12 +23,15 @@ export const AcceptedProposalLine: React.FC<{ source: AcceptedDetailProposal; te
   return (
     <p className="break-words text-caption text-muted-foreground" data-testid={testId}>
       {source.changed_since ? 'Edited since it was accepted from ' : 'Text accepted from '}
-      {source.agent_session_id != null ? (
+      {source.source === 'llm_draft' ? (
+        // Drafted in BlueStick with a person's LLM provider ("Draft with AI").
+        <>an AI draft{source.proposed_by ? ` by ${source.proposed_by}` : ''}</>
+      ) : source.agent_session_id != null ? (
         <Link to={`/agent-sessions/${source.agent_session_id}`} className="text-info hover:underline">
           agent session #{source.agent_session_id}
         </Link>
       ) : 'an agent'}
-      ’s proposal #{source.proposal_id}
+      {source.source === 'llm_draft' ? ', ' : '’s '}proposal #{source.proposal_id}
       {source.agent_model && <> ({source.agent_model})</>}
       {source.accepted_by && <> · accepted by {source.accepted_by}{source.edited_on_accept && !source.changed_since ? ', with an edit' : ''}</>}
       {when && <> · <time dateTime={source.accepted_at ?? undefined} title={formatTimestamp(source.accepted_at)}>{when}</time></>}

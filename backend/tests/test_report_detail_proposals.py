@@ -371,9 +371,41 @@ def test_the_agents_read_of_a_draft_says_what_it_would_print(client, db_session,
         for part in ("effective", "followed", "followed_from", "settings", "executive_summary"):
             assert agent[part] == page[part], part
         assert ("executive_summary" in agent["settings"]) is overridden
-    # The LIST stays lean: no details on its rows.
-    rows = client.get("/api/v1/agent/assist/client-reports", headers=key).json()["items"]
-    assert all(row["effective"] is None and row["agent_written"] is None for row in rows)
+    # The LIST stays lean: no details on its rows, and an overridden detail is
+    # NAMED with its value withheld (2.543.0 — a draft's overridden summary
+    # was several thousand characters on every listing).
+    rows = {row["id"]: row for row in client.get("/api/v1/agent/assist/client-reports", headers=key).json()["items"]}
+    assert all(row["effective"] is None and row["agent_written"] is None for row in rows.values())
+    assert rows[own["id"]]["settings"] == {"executive_summary": None}
+    assert rows[follower["id"]]["settings"] == {}
+    # The people's list is unchanged: the page's row line reads the values' keys.
+    people = {row["id"]: row for row in client.get(_base(test_project)).json()["items"]}
+    assert people[own["id"]]["settings"] == {"executive_summary": "Its own."}
+
+
+def test_a_findings_own_text_sent_back_is_refused_too(client, db_session, test_project):
+    """2.543.0 — the same rule for a finding's section as for a report
+    default: its current text sent back is no proposal."""
+    from app.db import models
+    from app.services.finding_service import FindingService
+
+    host = models.Host(project_id=test_project.id, ip_address="10.91.0.1")
+    db_session.add(host)
+    db_session.flush()
+    finding = FindingService(db_session).create_finding(
+        project_id=test_project.id, title="T", severity="low", host_ids=[host.id], actor_id=None,
+    )
+    finding.impact = "As written."
+    db_session.commit()
+    key, _ = _start(client, test_project)
+    url = "/api/v1/agent/proposals/finding-text"
+    for fields in ({"impact": "As written."}, {"impact": " As written.\n"},
+                   {"description": "New.", "impact": "As written."}):
+        r = client.post(url, headers=key, json={"finding_id": finding.id, "fields": fields})
+        assert r.status_code == 422 and "current text" in r.json()["detail"], (fields, r.text)
+    assert db_session.query(AgentProposal).filter(AgentProposal.project_id == test_project.id).count() == 0
+    r = client.post(url, headers=key, json={"finding_id": finding.id, "fields": {"impact": "As written, and more."}})
+    assert r.status_code == 201, r.text
 
 
 def test_a_draft_says_which_followed_defaults_an_agent_wrote(client, db_session, test_project):

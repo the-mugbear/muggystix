@@ -7,6 +7,7 @@
 import { api, projectPath } from './client';
 import { filenameFromContentDisposition, saveBlob } from '../../utils/download';
 import type { ReportJob } from '../api';
+import type { Proposal } from './proposals';
 
 export type ClientReportKind = 'full' | 'addendum';
 export type ClientReportStatus = 'draft' | 'issued' | 'superseded';
@@ -78,6 +79,10 @@ export interface ReportProfile extends EngagementSettings {
 /** The accepted proposal a report default's text came from. */
 export interface AcceptedDetailProposal {
   proposal_id: number;
+  /** `agent` (an agent session's) or `llm_draft` (drafted in BlueStick with
+   *  a person's LLM provider — `proposed_by`); backend 2.543.0. */
+  source?: 'agent' | 'llm_draft';
+  proposed_by?: string | null;
   agent_session_id: number | null;
   agent_model: string | null;
   accepted_by: string | null;
@@ -461,6 +466,26 @@ export const patchReportProfile = async (
   projectId: number, body: EngagementOverrides & { template?: string | null },
 ): Promise<ReportProfile> =>
   (await api.patch<ReportProfile>(`${base(projectId)}/profile`, body)).data;
+
+/** What "Draft with AI" on Report defaults answers (backend 2.543.0): the
+ *  executive summary as ONE `report_detail` proposal (source `llm_draft`), or
+ *  `declined.executive_summary` saying why none was made. */
+export interface ReportDetailsDraft {
+  proposals: Proposal[];
+  declined?: Record<string, string>;
+  provider_id: number;
+  provider_type: string;
+  model_id: string | null;
+}
+
+/** Draft the project's executive summary with your LLM provider, from what a
+ *  new full report of the project would list today — as a proposal reviewed
+ *  under the detail; nothing is written until someone accepts it.  Errors:
+ *  400 (no provider, nothing reportable), 403 (below analyst), 502 (provider). */
+export const draftReportDetails = async (
+  projectId: number, opts: { audience?: string; instructions?: string } = {},
+): Promise<ReportDetailsDraft> =>
+  (await api.post<ReportDetailsDraft>(`${projectPath(projectId)}/reports/draft/report-details`, opts)).data;
 
 /** "Make this the project's default": each detail sent becomes the project's
  *  report default and leaves the draft's overrides, in one transaction.

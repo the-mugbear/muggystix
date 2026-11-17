@@ -236,6 +236,98 @@ class ReportDraftService:
             "usage": usage,
         }
 
+    # -- the project's executive summary (2.543.0) ---------------------------
+
+    def draft_executive_summary(
+        self,
+        project_id: int,
+        *,
+        provider_id: Optional[int] = None,
+        audience: Optional[str] = None,
+        instructions: Optional[str] = None,
+        max_tokens: int = 2048,
+    ) -> Dict[str, Any]:
+        """Draft the executive summary for the PROJECT'S report defaults.
+
+        Report defaults is where the summary is written since it became the
+        project's (2026-10-14), and it had no AI help: "Draft with AI…" was on
+        a draft's own override only.  There is no report to draft from here,
+        so the basis is what a NEW full report of the project would contain
+        today — the same builder, on a report that is never saved
+        (``build_context`` of it: the reportable findings as they stand, the
+        endpoints listed for each, what is written about them).
+
+        Returns ``{"text" | None, "declined" | None, …}``: the text is report
+        text for a proposal, so one that names a BlueStick record is declined
+        with the reason (as a drafted finding section is) rather than
+        proposed.  ``ValueError`` for a user-fixable problem (no provider, no
+        reportable findings, no template), ``RuntimeError`` when the provider
+        fails."""
+        from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatus
+        from app.services import report_template_service as templates
+
+        provider = self._provider(provider_id)
+        profile = self.db.query(ReportProfile).filter(ReportProfile.project_id == project_id).first()
+        template = (profile.template if profile is not None else None) or templates.default_template_name()
+        if not template:
+            raise ValueError("No report templates are installed, so there is no report to summarise.")
+        # Never added to the session: it exists to ask the builder what a new
+        # full report would say now.
+        report = Report(
+            project_id=project_id, kind=ReportKind.FULL, status=ReportStatus.DRAFT,
+            title="Executive summary draft", template=template, settings={},
+        )
+        context = self.build_context(report)
+        if context["finding_total"] == 0:
+            raise ValueError(
+                "A report of this project would list no findings yet, so there is nothing to "
+                "summarise. A report prints confirmed, accepted-risk and remediated findings: "
+                "confirm one on the Findings page first."
+            )
+        audience_line = f"Intended audience: {audience.strip()}.\n" if audience and audience.strip() else ""
+        extra = (
+            f"Additional instructions from the author: {instructions.strip()}\n"
+            if instructions and instructions.strip() else ""
+        )
+        user_message = (
+            f"{audience_line}{extra}"
+            "Write the EXECUTIVE SUMMARY of this assessment's client report, and nothing else: "
+            "no title, no heading, no list of every finding.  Three to five short paragraphs "
+            "for management: what was assessed in a sentence, the overall result with the "
+            "report's own severity totals, the few issues that matter most and why (name each "
+            "by its title, never by a number or an id), and what to do first.  Markdown; a short "
+            "bulleted list is allowed for the priorities.  Use only the data below.\n\n"
+            f"```json\n{json.dumps(context, ensure_ascii=False)}\n```"
+        )
+        system = sanitize_for_llm(
+            _SYSTEM_PROMPT
+            + "- The text is printed in the client report word for word: never mention BlueStick, "
+            "a record number or how the text was produced.\n"
+        )
+        self._end_read(provider)
+        result = chat_completion(
+            provider,
+            system=system,
+            messages=[{"role": "user", "content": sanitize_for_llm(user_message)}],
+            max_tokens=max_tokens,
+            temperature=0.4,
+        )
+        text = (result.get("content") or "").strip()
+        if not text:
+            raise RuntimeError("The provider returned no text.")
+        phrases = internal_references(text)
+        raw = result.get("raw") or {}
+        return {
+            "text": None if phrases else text,
+            "declined": ("The draft was left out: " + internal_reference_message(phrases))[:DECLINED_REASON_MAX]
+            if phrases else None,
+            "provider_id": provider.id,
+            "provider_type": provider.provider_type,
+            "model_id": provider.model_id,
+            "finding_total": context["finding_total"],
+            "usage": raw.get("usage") if isinstance(raw.get("usage"), dict) else None,
+        }
+
     # -- one finding's report text (review 2026-09-23 B-Ops-5) ---------------
 
     def _end_read(self, provider) -> None:

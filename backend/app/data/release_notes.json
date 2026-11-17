@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.543.0",
+      "frontend": "5.433.0",
+      "date": "2026-11-17",
+      "entries": [
+        {"kind": "new", "text": "Report defaults has \"Draft with AI\" under the Executive summary: your LLM provider drafts it from the findings a new report would list, as a proposal you review there. Nothing changes until it is accepted."},
+        {"kind": "new", "text": "Report defaults has \"Ask your agent\" beside it, which hands a live agent session the task of writing the executive summary and the system description as proposals."},
+        {"kind": "changed", "text": "An agent's proposal that repeats a finding section's current text is refused, as it already was for a report default."},
+        {"kind": "changed", "text": "An agent listing the project's reports sees which details each draft overrides without their full text; the text is on the single report's read."}
+      ]
+    },
+    {
       "backend": "2.542.0",
       "frontend": "5.432.0",
       "date": "2026-11-17",

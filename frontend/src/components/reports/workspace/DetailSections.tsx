@@ -136,7 +136,7 @@ export const FollowsDefaultsLine: React.FC<{
       {names.length > 0 && (
         <span data-testid="report-agent-written">
           Of those, {names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]}{' '}
-          {names.length > 1 ? 'were' : 'was'} written by an agent and accepted there.{' '}
+          {names.length > 1 ? 'were' : 'was'} written by AI (an agent or an AI draft) and accepted there.{' '}
         </span>
       )}
       <Link to={REPORT_DEFAULTS_PATH} className="font-medium text-info hover:underline">
