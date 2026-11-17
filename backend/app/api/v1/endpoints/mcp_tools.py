@@ -856,7 +856,11 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_get_client_report": {
         "description": (
             "One client report as it states things: engagement details, executive "
-            "summary, `counts`, `scope`, and its findings a PAGE at a time (ref, "
+            "summary — `effective` is every detail as the report prints it, "
+            "`settings` what a draft overrides, `followed_from` where each "
+            "followed detail comes from, `agent_written` the followed details "
+            "whose default was accepted from an AI proposal and not edited since "
+            "— `counts`, `scope`, and its findings a PAGE at a time (ref, "
             "report text, affected endpoints, `confirmations` — the test results "
             "it prints, with confirmations_omitted for the rest — and `images[]` "
             "with placed_in, printed and printed_in): 25 per answer by default, "
@@ -1172,7 +1176,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "THE READER HAS NEVER SEEN BLUESTICK: no record numbers or ids and no mention of "
             "BlueStick (a text naming a record is refused, 422). NOT ENOUGH TO GO ON IS A "
             "VALID ANSWER: write only what the project's data supports, and say what is "
-            "missing in `rationale` and to your operator. executive_summary and "
+            "missing in `rationale` and to your operator — \"nothing of this kind was in "
+            "scope\" is itself a claim: propose it only when the scope or the operator "
+            "says so, never as a guess flagged in `rationale`. executive_summary and "
             "system_description may place the report's own images with "
             "`![caption](evidence:<id>)` — keep the references the text already holds, and "
             "use only ids under `images` on assist_get_report_defaults (any other is a 422). "

@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.543.1",
+      "frontend": "5.433.0",
+      "date": "2026-11-17",
+      "entries": [
+        {"kind": "changed", "text": "The agent guide tells agents to re-read the report defaults before each proposal, and that \"nothing of this kind was in scope\" is a claim to propose only when the scope or the operator says so."},
+        {"kind": "changed", "text": "The description of the agent's report read names the details it returns: what the report prints, what a draft overrides, and where each followed detail comes from."}
+      ]
+    },
+    {
       "backend": "2.543.0",
       "frontend": "5.433.0",
       "date": "2026-11-17",
