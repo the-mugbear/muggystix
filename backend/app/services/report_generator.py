@@ -516,26 +516,35 @@ class ReportGenerator:
         report's own dataset, ``report_draft_service.build_context``.)"""
         if not host_ids:
             return []
+        # Two steps, both in chunks of ids and both reading COLUMNS (review
+        # 2026-11-17, A4: this loaded each finding with its FindingHost and
+        # Host entities, chosen by one ``IN`` over every matching host id).
+        # First WHICH findings touch a downloaded host — by the indexed
+        # ``finding_hosts.host_id``, so a download of one host reads that
+        # host's rows and not the project's (review 2026-11-18: it read every
+        # endpoint of the project and chose in Python).  Then every endpoint
+        # of those findings, in endpoint order: ``affected_hosts`` is the
+        # finding's whole reach, the downloaded hosts or not.
         host_id_set = set(host_ids)
-        # The project's endpoints as COLUMNS, in endpoint order (review
-        # 2026-11-17, A4).  This loaded each finding with its FindingHost and
-        # Host entities, chosen by one ``IN`` over every matching host id —
-        # 70,000 literals for an unfiltered download; the client report's
-        # reader was moved to columns for the same shape (R2, 2026-10-22).
-        # Which findings touch a downloaded host is decided here, against the
-        # set, so no id list is sent to the database.
+        touched: set = set()
+        for chunk in _id_chunks(host_ids):
+            touched.update(
+                finding_id for (finding_id,) in
+                self.db.query(FindingHost.finding_id)
+                .join(Finding, Finding.id == FindingHost.finding_id)
+                .filter(Finding.project_id == self.project_id, FindingHost.host_id.in_(chunk))
+                .distinct()
+            )
+        finding_ids = sorted(touched)
         endpoints: Dict[int, List[Tuple[int, str]]] = {}
-        for finding_id, host_id, ip_address in (
-            self.db.query(FindingHost.finding_id, FindingHost.host_id, models.Host.ip_address)
-            .join(Finding, Finding.id == FindingHost.finding_id)
-            .join(models.Host, models.Host.id == FindingHost.host_id)
-            .filter(Finding.project_id == self.project_id)
-            .order_by(FindingHost.finding_id, FindingHost.id)
-        ):
-            endpoints.setdefault(finding_id, []).append((host_id, ip_address))
-        finding_ids = sorted(
-            fid for fid, rows in endpoints.items() if any(hid in host_id_set for hid, _ in rows)
-        )
+        for chunk in _id_chunks(finding_ids):
+            for finding_id, host_id, ip_address in (
+                self.db.query(FindingHost.finding_id, FindingHost.host_id, models.Host.ip_address)
+                .join(models.Host, models.Host.id == FindingHost.host_id)
+                .filter(FindingHost.finding_id.in_(chunk))
+                .order_by(FindingHost.finding_id, FindingHost.id)
+            ):
+                endpoints.setdefault(finding_id, []).append((host_id, ip_address))
         from app.db.models_auth import User
 
         findings = []

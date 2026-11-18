@@ -2,6 +2,21 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.1",
+      "frontend": "5.435.0",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "kind": "changed",
+          "text": "The JSON inventory download of a few hosts is quicker in a large project: it reads only the findings on those hosts."
+        },
+        {
+          "kind": "fixed",
+          "text": "A Masscan JSON file no longer adds a host for an address whose ports were all closed or unreadable. Such a host was shown as up with no open port."
+        }
+      ]
+    },
+    {
       "backend": "2.547.0",
       "frontend": "5.435.0",
       "date": "2026-11-18",

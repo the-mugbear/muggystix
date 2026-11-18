@@ -160,6 +160,7 @@ Contract: `test_quarto_render.py::test_hostile_text_stays_text_in_every_format` 
 
 - Hosts → Download inventory: streamed CSV (`GET /reports/hosts/csv`, `ReportGenerator.iter_inventory_csv`) and a JSON job (`POST /reports/jobs?format=json`, `write_json_report`; `report_type=inventory` omits roll-ups); `ReportGenerator` is only these. `components/InventoryDownloadDialog.tsx` + `utils/inventoryFilters.ts` name every active filter.
 - "Active Findings" / "Critical Findings" and `dossier_summary.active_findings` are `host_detail_service.active_finding_counts` (`severity="critical"`), never endpoint rows; the CSV only counts observations and notes (`_inventory_row_counts`), hosts in id order (`test_review_2026_10_23b_reports.py`).
+- The JSON's `findings` are chosen by the downloaded hosts (`finding_hosts.host_id`, in id chunks), then each chosen finding's whole reach is read — never the project's endpoints (`test_review_2026_11_18_masscan_export.py`).
 - No export is capped; `report_jobs.truncated` is unused (kept until someone asks for the migration); a retired format fails saying so.
 - A route that queries while streaming calls `disable_statement_timeout(db)` and is listed in `test_review_2026_10_01_integration.py`.
 - The Posture briefing (`/reports/posture.html`) is `posture_briefing.render_posture_briefing` over `compute_posture` (same keys, `posture_focus`), never a second roll-up; printable, no script or outbound reference, escaped (`test_posture_briefing.py`).

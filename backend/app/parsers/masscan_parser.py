@@ -124,13 +124,10 @@ class MasscanParser:
             # RAM stays bounded on huge scans (review A-4).  For a normal scan
             # the threshold is never hit, so this fires exactly once on the
             # full map — identical to the old collect-all-then-persist path.
-            counters = {"hosts": 0, "ips": 0}
-
             def _flush(buf: Dict[str, List[Dict[str, Any]]]) -> None:
                 if not buf:
                     return
-                counters["ips"] += len(buf)
-                counters["hosts"] += self._batch_persist(scan.id, buf)
+                self._batch_persist(scan.id, buf)
                 # The banners whose ports are now stored, written with them
                 # (review 2026-10-22, A-R6): they were held for the whole file
                 # and written in one loop at its end, with no heartbeat.
@@ -148,7 +145,19 @@ class MasscanParser:
             # What is left names no port this import stored or found.
             self._store_banners(scan.id, final=True)
 
-            if counters["hosts"] == 0:
+            # The hosts this scan recorded, as the database holds them — the
+            # ONE count (A2): an address whose records straddled a flush was
+            # upserted by each, so a tally of the flushes counted it more than
+            # once.  ``uq_host_scan`` makes it one row per host per scan.
+            self.db.flush()
+            processed_hosts = (
+                self.db.query(models.HostScanHistory.id)
+                .filter(models.HostScanHistory.scan_id == scan.id)
+                .count()
+            )
+            total_unique_ips = processed_hosts
+
+            if processed_hosts == 0:
                 # Fail closed — pre-v2.55.0 this path committed an
                 # empty scan and returned success, which let the
                 # dispatcher's unconditional masscan_list fallback (also
@@ -161,18 +170,6 @@ class MasscanParser:
                     f"Masscan parser found 0 hosts in {filename}; "
                     f"file is empty or not masscan output."
                 )
-
-            # The hosts this scan recorded, as the database holds them: an
-            # address whose records straddled a flush was upserted by each,
-            # so the flush tallies count it more than once (A2).
-            self.db.flush()
-            processed_hosts = (
-                self.db.query(models.HostScanHistory.host_id)
-                .filter(models.HostScanHistory.scan_id == scan.id)
-                .distinct()
-                .count()
-            )
-            total_unique_ips = processed_hosts
 
             self.db.commit()
 
@@ -366,7 +363,11 @@ class MasscanParser:
             if ip_address is None:
                 continue
             self._observe_epoch(entry.get("timestamp"))
-            buffered_before = len(host_ports[ip_address])
+            # ``.get``, never ``host_ports[…]``: reading a defaultdict by key
+            # ADDS the key, and an address in the map is a host to persist —
+            # an entry whose every port was rejected then made a host marked
+            # up (review 2026-11-18).  Only the append below adds an address.
+            buffered_before = len(host_ports.get(ip_address, ()))
             for port_info in entry.get("ports", []):
                 try:
                     port_number = int(port_info.get("port"))
@@ -389,7 +390,9 @@ class MasscanParser:
             # together in the same persist call.  Counted by the ports the
             # entry buffered — an entry may carry several, and none when every
             # port of it was skipped.
-            self._maybe_flush(host_ports, flush, added=len(host_ports[ip_address]) - buffered_before)
+            self._maybe_flush(
+                host_ports, flush, added=len(host_ports.get(ip_address, ())) - buffered_before,
+            )
 
         return dict(host_ports)
 
