@@ -2,6 +2,21 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.0",
+      "frontend": "5.435.0",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "kind": "changed",
+          "text": "BlueStick no longer connects to its database as the database's superuser. It has a role of its own that can read and change BlueStick's data and nothing on the database server itself. The database sets this up at its first start after the upgrade; there is nothing to run."
+        },
+        {
+          "kind": "before_upgrading",
+          "text": "The database superuser named in POSTGRES_USER loses its password and can be used only by the scripts, from inside the database container. A tool of your own that signed in to the database over the network as that user must sign in as POSTGRES_APP_USER (default bluestick_app), with the same password."
+        }
+      ]
+    },
+    {
       "backend": "2.546.1",
       "frontend": "5.435.0",
       "date": "2026-11-18",

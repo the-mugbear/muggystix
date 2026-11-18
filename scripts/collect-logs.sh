@@ -809,6 +809,9 @@ print_info "Recording ownership and permissions..."
     if $DB_UP; then
         echo "ssl: $(psql_q -tAc 'SHOW ssl' 2>/dev/null | tr -d '[:space:]' || echo unknown)"
         echo "connections over TLS / from the network: $(psql_q -tAc "SELECT count(*) FILTER (WHERE s.ssl) || ' / ' || count(*) FROM pg_stat_ssl s JOIN pg_stat_activity a USING (pid) WHERE a.client_addr IS NOT NULL" 2>/dev/null | tr -d '[:space:]' || echo unknown)"
+        # 0 since 2.547.0: the application has a role of its own, and the
+        # superuser signs in from inside the db container only.
+        echo "connections from the network as a superuser (expected 0): $(psql_q -tAc "SELECT count(*) FROM pg_stat_activity a JOIN pg_roles r ON r.rolname = a.usename WHERE a.client_addr IS NOT NULL AND r.rolsuper" 2>/dev/null | tr -d '[:space:]' || echo unknown)"
     else
         echo "database not running"
     fi
@@ -816,7 +819,7 @@ print_info "Recording ownership and permissions..."
     echo "--- What the containers said about it at their last start (the whole current log, whatever --since says) ---"
     if compose_available; then
         compose logs --no-color --timestamps db backend worker report-worker 2>&1 \
-            | grep -E '\[entrypoint\]|\[db-tls\]' | tail -n 40 \
+            | grep -E '\[entrypoint\]|\[db-tls\]|\[db-role\]' | tail -n 40 \
             || echo "(no such line — nothing needed changing, or the logs have rotated)"
     else
         echo "No docker compose binary on PATH."

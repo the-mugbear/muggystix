@@ -99,10 +99,24 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-networkMapper}
       POSTGRES_USER: ${POSTGRES_USER:-nmapuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nmappass}
+      # The role the application connects as — NOT a superuser (2.547.0).
+      # POSTGRES_USER above is the cluster's superuser (the image makes it so
+      # and PostgreSQL will not take that away); it is for the scripts, from
+      # inside this container, and has no password.  POSTGRES_PASSWORD is the
+      # application role's.
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-bluestick_app}
+    # "Healthy" = the server answers AND the application's role exists, is not
+    # a superuser, owns the application database and can sign in with
+    # POSTGRES_PASSWORD.  The probe puts that right when it is not (a new
+    # installation, the first start after upgrading from the superuser days, a
+    # restored older backup, a changed password) — scripts/postgres/app-role.sh
+    # says why it is here and not a step in a script.  The application
+    # services wait for it (depends_on: service_healthy).
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nmapuser} -d ${POSTGRES_DB:-networkMapper}"]
+      test: ["CMD", "bash", "/usr/local/bin/app-role.sh"]
       interval: 10s
-      timeout: 5s
+      # Moving the tables to the new role waits up to 20 s for a lock.
+      timeout: 45s
       retries: 5
     # Database port NOT exposed to host by default for security
     # Only accessible via Docker network from backend
@@ -115,6 +129,8 @@ services:
       # The entrypoint below: hands the TLS pair to the postgres user on every
       # start (it cannot read a 600 key that is the deploy account's).
       - ./scripts/postgres/start-with-tls.sh:/usr/local/bin/start-with-tls.sh:ro
+      # The health probe above.
+      - ./scripts/postgres/app-role.sh:/usr/local/bin/app-role.sh:ro
     networks:
       - app-network
 
@@ -176,7 +192,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
+      DATABASE_URL: postgresql://${POSTGRES_APP_USER:-bluestick_app}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
       # Both versions are read from this file (app/core/config.py), mounted
@@ -280,7 +296,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
+      DATABASE_URL: postgresql://${POSTGRES_APP_USER:-bluestick_app}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
@@ -346,7 +362,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
+      DATABASE_URL: postgresql://${POSTGRES_APP_USER:-bluestick_app}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
@@ -373,7 +389,7 @@ services:
         # in this file (the services above read the mounted file).  Kept equal
         # to platform_version.json by scripts/bump-version.py and
         # versionConsistency.test.ts.
-        BACKEND_VERSION: ${APP_VERSION:-2.546.1}
+        BACKEND_VERSION: ${APP_VERSION:-2.547.0}
         # Stamped by generate-build-info.js (shown under About BlueStick).
         FRONTEND_VERSION: ${FRONTEND_VERSION:-5.435.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.

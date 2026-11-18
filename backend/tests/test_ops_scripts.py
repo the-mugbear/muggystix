@@ -973,7 +973,7 @@ def test_the_bundle_reports_ownership_by_class_and_the_findings_by_kind():
     for forbidden in ("PERM_WHAT", "PERM_FIX", "perm_owner_name", "id -un", "whoami", "$PWD", "PROJECT_ROOT"):
         assert forbidden not in section, forbidden
     # The containers' own lines are taken whatever --since says, and the queries stay behind the lock timeout.
-    assert r"\[entrypoint\]|\[db-tls\]" in section and "psql_q" in section
+    assert r"\[entrypoint\]|\[db-tls\]|\[db-role\]" in section and "psql_q" in section
     # deploy.sh keeps no copy of the check.
     deploy = (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
     assert "audit_permissions() {" not in deploy and 'source "$SCRIPT_DIR/permissions-lib.sh"' in deploy
@@ -1458,6 +1458,51 @@ def test_restore_starts_staged_and_ends_with_a_summary(project):
                    "compose up -d worker report-worker", "compose up -d"]
     assert _index(calls, "pg_restore -U nmapuser") < _index(calls, "compose up -d db backend")
     assert "instance state: RUNNING" in out
+    # 2.547.0: pg_restore makes the tables as the superuser; they are handed to
+    # the role the application connects as BEFORE the application starts.
+    handed = _index(calls, "env APP_ROLE_AFTER_RESTORE=1 bash /usr/local/bin/app-role.sh")
+    assert _index(calls, "pg_restore -U nmapuser") < handed < _index(calls, "compose up -d db backend")
+
+
+def test_the_application_never_connects_as_the_database_superuser():
+    """2.547.0 (review 2026-11-17, A5): POSTGRES_USER is the cluster's
+    bootstrap superuser.  No service's DATABASE_URL names it; the db
+    container's health probe is the ONE script that makes the application's
+    role, takes SUPERUSER and the network sign-in away from the wrong places,
+    and nothing gives the role the right to create a database but the gate."""
+    # The gate mounts the repository at BLUESTICK_REPO_ROOT (scripts/ alone
+    # sits beside the tests); a targeted run has neither and skips.
+    root = pathlib.Path(os.environ.get("BLUESTICK_REPO_ROOT") or SCRIPTS.parent)
+    compose = root / "docker-compose.yml"
+    if not compose.is_file():
+        pytest.skip("docker-compose.yml is not mounted in this run (the repo root is; see check.sh)")
+    text = compose.read_text(encoding="utf-8")
+    urls = [line.strip() for line in text.splitlines() if line.strip().startswith("DATABASE_URL:")]
+    assert len(urls) == 3, urls
+    for url in urls:
+        assert "postgresql://${POSTGRES_APP_USER:-bluestick_app}:" in url and "POSTGRES_USER" not in url, url
+    assert 'test: ["CMD", "bash", "/usr/local/bin/app-role.sh"]' in text
+    assert "./scripts/postgres/app-role.sh:/usr/local/bin/app-role.sh:ro" in text
+    role = (SCRIPTS / "postgres" / "app-role.sh").read_text(encoding="utf-8")
+    assert "NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS" in role
+    assert "ALTER ROLE %I PASSWORD NULL" in role          # the superuser: the local socket only
+    assert "CREATEDB" not in role
+    # The password never reaches the server log or the statement statistics.
+    for setting in ("log_statement = 'none'", "log_min_error_statement = 'panic'",
+                    "pg_stat_statements.track_utility = off"):
+        assert setting in role, setting
+    # One maker: no other script creates or alters a role, bar the gate's CREATEDB.
+    for script in sorted(SCRIPTS.glob("*.sh")) + sorted(SCRIPTS.glob("*.py")):
+        body = script.read_text(encoding="utf-8")
+        if script.name == "check.sh":
+            assert body.count("ALTER ROLE") == 1 and 'ALTER ROLE \\"${app_role}\\" CREATEDB' in body
+            continue
+        if script.name == "diag_summaries.py":             # names the statement it scrubs
+            continue
+        assert "CREATE ROLE" not in body and "ALTER ROLE" not in body, script.name
+    # The migration round trip walks the chain as that role.
+    roundtrip = (SCRIPTS / "test-alembic-roundtrip.sh").read_text(encoding="utf-8")
+    assert 'DATABASE_URL="postgresql://${APP_USER}:' in roundtrip and "app-role.sh" in roundtrip
 
 
 def test_restore_names_the_safety_backup_when_pg_restore_fails(project):

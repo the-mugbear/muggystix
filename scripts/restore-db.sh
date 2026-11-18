@@ -665,6 +665,17 @@ SQL
     fi
     rm -f "$restore_log"
     print_success "Dump restored."
+    # pg_restore made every table as the database's superuser (--no-owner);
+    # the application connects as its own role and must own them BEFORE it
+    # starts, or its migration step is refused.  The db container's health
+    # probe does this too, a few seconds later — and stands aside while
+    # pg_restore runs, which is why it is run here (scripts/postgres/app-role.sh).
+    role_out="$($DC exec -T db env APP_ROLE_AFTER_RESTORE=1 bash /usr/local/bin/app-role.sh 2>&1)" || {
+        print_warning "The restored tables could not be handed to the application's database role yet:"
+        printf '%s\n' "$role_out" | sed 's/^/    /'
+        print_warning "The database container retries this every few seconds; if the backend then reports"
+        print_warning "'permission denied', look at:  $DC logs db | grep db-role"
+    }
     ;;
 
   *.tar.gz)

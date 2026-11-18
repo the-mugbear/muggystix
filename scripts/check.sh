@@ -503,6 +503,17 @@ backend_suite() {
         record "backend suite" FAIL "the db container is not running — start the stack first"
         return
     fi
+    # The suite builds its own databases, as the role the application has —
+    # which an installation does not let create one.  Here it may: this is
+    # the ONE place that right is given (tests/conftest.py names this command
+    # when it is missing).
+    local app_role
+    app_role="$(env_value POSTGRES_APP_USER)"; app_role="${app_role:-bluestick_app}"
+    if ! compose exec -T db psql -q -U "$(pg_user)" -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE \"${app_role}\" CREATEDB" >/dev/null 2>&1 </dev/null; then
+        record "backend suite" FAIL "the application's database role '${app_role}' does not exist yet — start the stack (docker compose up -d) and wait for the db container to be healthy"
+        return
+    fi
 
     local -a mounts=(
         -v "$SRC/backend:/app"

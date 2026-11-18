@@ -34,6 +34,7 @@ NETWORK="${ALEMBIC_TEST_NETWORK:-nm-alembic-roundtrip-net-$$}"
 DB_USER="${ALEMBIC_TEST_USER:-nmaptest}"
 DB_PASS="${ALEMBIC_TEST_PASS:-nmaptest}"
 DB_NAME="${ALEMBIC_TEST_DB:-nmaptest}"
+APP_USER="${ALEMBIC_TEST_APP_USER:-nmaptest_app}"
 # The Postgres the stack itself runs — docker-compose.yml's db image (pinned
 # there; POSTGRES_IMAGE overrides it), not a second hardcoded tag that drifts
 # from it.  If that tag is not on this host yet, the image the running db
@@ -84,6 +85,8 @@ docker run -d --rm \
     -e POSTGRES_USER="${DB_USER}" \
     -e POSTGRES_PASSWORD="${DB_PASS}" \
     -e POSTGRES_DB="${DB_NAME}" \
+    -e POSTGRES_APP_USER="${APP_USER}" \
+    -v "${REPO_ROOT}/scripts/postgres/app-role.sh:/usr/local/bin/app-role.sh:ro" \
     "${PG_IMAGE}" >/dev/null
 
 echo "[2/6] Waiting for Postgres to accept connections…"
@@ -96,12 +99,28 @@ done
 # pg_isready answers during the image's init restart; give it a moment.
 sleep 2
 
+# The chain is walked as the role the application has — not a superuser — so a
+# revision that needs more than the application may do fails HERE, not on an
+# installation.  The same script the db container's health probe runs.
+role_ready=0
+for i in {1..30}; do
+    if docker exec "${CONTAINER}" bash /usr/local/bin/app-role.sh >/dev/null 2>&1; then
+        role_ready=1; break
+    fi
+    sleep 1
+done
+if [ "${role_ready}" -ne 1 ]; then
+    echo "The application's database role could not be made in the throwaway Postgres:" >&2
+    docker exec "${CONTAINER}" bash /usr/local/bin/app-role.sh >&2 || true
+    exit 1
+fi
+
 # Steps 3–6 run in ONE backend container (a container per `alembic` call would
 # cost ~2 s × every revision).  set -e inside: the first failure stops it.
 docker run --rm \
     --network "${NETWORK}" \
     -v "${BACKEND_DIR}:/app" \
-    -e DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@${CONTAINER}:5432/${DB_NAME}" \
+    -e DATABASE_URL="postgresql://${APP_USER}:${DB_PASS}@${CONTAINER}:5432/${DB_NAME}" \
     -e JWT_SECRET_KEY=alembic-roundtrip-test-only \
     -e CREDENTIAL_ENCRYPTION_KEY=alembic-roundtrip-test-only \
     -e BASELINE_REVISION="${BASELINE_REVISION}" \

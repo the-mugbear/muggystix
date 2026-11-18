@@ -110,7 +110,21 @@ def _ensure_database(url) -> None:
                 {"n": url.database},
             ).scalar()
             if not exists:
-                conn.execute(text(f'CREATE DATABASE "{url.database}"'))
+                try:
+                    conn.execute(text(f'CREATE DATABASE "{url.database}"'))
+                except Exception as exc:
+                    # The application's role is not a superuser and, on an
+                    # installation, may not create a database.  The gate gives
+                    # it that right on a development database; a targeted run
+                    # on a database the gate never ran against needs it once.
+                    if "permission denied to create database" not in str(exc):
+                        raise
+                    raise RuntimeError(
+                        f"The database role '{url.username}' may not create the suite's database. "
+                        "On a development database, once:  docker compose exec db sh -c "
+                        f"'psql -U \"$POSTGRES_USER\" -d postgres -c \"ALTER ROLE \\\"{url.username}\\\" CREATEDB\"'"
+                        "  (./scripts/check.sh does this itself)."
+                    ) from exc
     finally:
         admin.dispose()
 
