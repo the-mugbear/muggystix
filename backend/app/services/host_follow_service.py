@@ -120,7 +120,9 @@ class HostFollowService:
             follow = HostFollow(host_id=host_id, user_id=user_id, status=status)
             self.db.add(follow)
         self.apply_review_status(follow, status, user_id)
-        self._host_line(host_id, "host_review_changed", getattr(status, "value", str(status)))
+        from app.services import project_events
+
+        self._host_line(host_id, "host_review_changed", project_events.words(status))
         self.db.commit()
         self.db.refresh(follow)
         return follow

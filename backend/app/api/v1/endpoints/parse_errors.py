@@ -256,7 +256,7 @@ def update_parse_error_status(
     if error.status != status:
         project_events.record(
             db, project.id, "parse_error_changed", subject_type="parse_error", subject_id=error.id,
-            label=error.filename, summary=f"{error.status} → {status}",
+            label=error.filename, summary=f"{project_events.words(error.status)} → {project_events.words(status)}",
         )
     error.status = status
     db.commit()

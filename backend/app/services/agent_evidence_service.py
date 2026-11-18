@@ -77,7 +77,7 @@ def record_evidence(
     if changelog and created:
         project_events.record(
             db, project_id, "evidence_recorded", subject_type="evidence", subject_id=record.id,
-            label=record.tool, summary=record.outcome,
+            label=record.tool, summary=project_events.words(record.outcome),
         )
     return record
 

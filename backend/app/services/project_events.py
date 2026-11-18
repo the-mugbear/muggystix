@@ -175,6 +175,14 @@ _SUBJECT_LABEL_MAX = 300
 _SUMMARY_MAX = 500
 
 
+def words(value: object) -> str:
+    """A stored state as a reader's words: ``in_review`` → "in review",
+    ``FollowStatus.REVIEWED`` → "reviewed".  For a STATE named in a summary
+    only — never over a whole summary, which may hold a host name or a file
+    name whose underscores are its own."""
+    return str(getattr(value, "value", value)).replace("_", " ")
+
+
 def record(
     db: Session,
     project_id: int,

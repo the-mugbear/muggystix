@@ -216,7 +216,8 @@ def update_test(db, project_id, test_id, body, user_id, *, changelog=True):
             db, project_id, "host_test_updated", subject_type="host_test", subject_id=row.id,
             label=_changelog_label(row, row.host),
             summary=(
-                f"{status_before} → {row.status}" if "status" in altered
+                f"{project_events.words(status_before)} → {project_events.words(row.status)}"
+                if "status" in altered
                 else ", ".join(_FIELD_WORDS.get(field, field) for field in altered)
             ),
         )
@@ -288,7 +289,7 @@ def record_result(db, project_id, test_id, body, user_id):
     # or the status move it is made of (a replay returned above and wrote none).
     project_events.record(
         db, project_id, "host_test_result_recorded", subject_type="host_test", subject_id=test.id,
-        label=_changelog_label(test, test.host), summary=body.outcome,
+        label=_changelog_label(test, test.host), summary=project_events.words(body.outcome),
     )
     return test, record
 

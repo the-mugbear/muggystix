@@ -243,6 +243,11 @@ def _finding_order(sort: Optional[str], sort_dir: Optional[str]):
     return (ordered, Finding.id.desc())
 
 
+def _words(state: object) -> str:
+    """A status as the changelog words it (``project_events.words``)."""
+    from app.services import project_events
+
+    return project_events.words(state)
 
 
 class FindingService:
@@ -938,13 +943,13 @@ class FindingService:
         # …and ONE changelog line: the finding by name when it is one, a
         # count when it is a bulk change.
         if len(moved) == 1:
-            self._changelog(moved[0], "finding_status_changed", summary=f"{was} → {status}")
+            self._changelog(moved[0], "finding_status_changed", summary=f"{_words(was)} → {_words(status)}")
         elif moved:
             from app.services import project_events
 
             project_events.record(
                 self.db, moved[0].project_id, "finding_status_changed", subject_type="finding",
-                summary=f"{len(moved)} findings → {status}", count=len(moved),
+                summary=f"{len(moved)} findings → {_words(status)}", count=len(moved),
             )
         return moved
 
@@ -994,7 +999,7 @@ class FindingService:
             self.db.flush()
             self._changelog(
                 finding, "finding_endpoint_status_changed",
-                summary=f"{self._endpoint_label(row)} → {host_status}",
+                summary=f"{self._endpoint_label(row)} → {_words(host_status)}",
             )
             self.announce_retests(actor_id)
         return finding
@@ -1037,7 +1042,7 @@ class FindingService:
         # ONE line for the lot.
         self._changelog(
             finding, "finding_endpoint_status_changed",
-            summary=f"{moved} affected system{'s' if moved != 1 else ''} → {host_status}", count=moved,
+            summary=f"{moved} affected system{'s' if moved != 1 else ''} → {_words(host_status)}", count=moved,
         )
         self.announce_retests(actor_id)
         return moved

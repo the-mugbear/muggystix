@@ -199,7 +199,7 @@ def test_a_tests_life_is_a_line_per_action_and_a_result_is_not_also_evidence(cli
     lines = _lines(db_session, test_project)
     assert [(line.action, line.summary) for line in lines] == [
         ("host_test_added", None),
-        ("host_test_updated", "proposed → in_progress"),
+        ("host_test_updated", "proposed → in progress"),
         ("host_test_updated", "tester summary"),
         ("host_test_result_recorded", "finding"),
     ]
@@ -254,7 +254,7 @@ def test_an_agents_test_and_evidence_are_the_agents_lines(client, db_session, te
     (added,) = _lines(db_session, test_project, "host_test_added")
     (evidence,) = _lines(db_session, test_project, "evidence_recorded")
     assert (evidence.subject_type, evidence.subject_id, evidence.subject_label, evidence.summary) == (
-        "evidence", recorded.json()["id"], "nmap", "no_finding",
+        "evidence", recorded.json()["id"], "nmap", "no finding",
     )
     for line in (added, evidence):
         assert line.by_agent is True and line.agent_session_id is not None

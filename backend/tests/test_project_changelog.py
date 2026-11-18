@@ -102,7 +102,7 @@ def test_a_review_mark_and_a_note_are_lines_about_the_host(client, db_session, t
 
     lines = _lines(db_session, test_project)
     assert [(line.action, line.summary) for line in lines] == [
-        ("host_review_changed", "in_review"), ("host_note_added", None), ("host_review_changed", "cleared"),
+        ("host_review_changed", "in review"), ("host_note_added", None), ("host_review_changed", "cleared"),
     ]
     assert {(line.subject_type, line.subject_id, line.subject_label) for line in lines} == {
         ("host", host.id, "10.60.1.1"),

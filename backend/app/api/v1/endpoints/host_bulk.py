@@ -349,7 +349,7 @@ def bulk_follow(
     # nothing; the single-host route's line is ``set_follow_status``'s).
     project_events.record(
         db, project.id, "host_review_changed", subject_type="host",
-        summary=f"{_hosts(len(host_ids))} → {status.value}", count=len(host_ids),
+        summary=f"{_hosts(len(host_ids))} → {project_events.words(status)}", count=len(host_ids),
     )
     db.commit()
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))
