@@ -95,6 +95,7 @@ const Hosts = lazy(() => import('./pages/Hosts'));
 const ScannerObservationsPage = lazy(() => import('./pages/ScannerObservationsPage'));
 const QueryPage = lazy(() => import('./pages/Query'));
 const Activity = lazy(() => import('./pages/Collaboration'));
+const Changelog = lazy(() => import('./pages/Changelog'));
 const Proposals = lazy(() => import('./pages/Proposals'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
@@ -449,6 +450,15 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <Activity />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* The project's changelog: auditors and above. */}
+                      <Route
+                        path="/changelog"
+                        element={
+                          <ProtectedRoute requiredRole="auditor">
+                            <Changelog />
                           </ProtectedRoute>
                         }
                       />

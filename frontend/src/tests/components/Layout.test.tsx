@@ -194,9 +194,17 @@ describe('Layout shell', () => {
   });
 
   it('a hub with one page shows no tab strip; one with several does', () => {
-    const { unmount } = renderAt('/activity');
+    // A project VIEWER has one Collaboration page; the Changelog beside it is
+    // the auditor's and above (5.435.0), so for them the hub has a strip.
+    project = { id: 1, name: 'Demo', status: 'active', my_role: 'viewer' };
+    const asViewer = renderAt('/activity');
     expect(screen.queryByRole('navigation', { name: 'Collaboration sections' })).toBeNull();
-    unmount();
+    asViewer.unmount();
+    project = { id: 1, name: 'Demo', status: 'active', my_role: 'auditor' };
+    const asAuditor = renderAt('/activity');
+    const collaboration = screen.getByRole('navigation', { name: 'Collaboration sections' });
+    expect(within(collaboration).getAllByRole('link').map((a) => a.textContent)).toEqual(['Collaboration', 'Changelog']);
+    asAuditor.unmount();
     renderAt('/hosts');
     const strip = screen.getByRole('navigation', { name: 'Inventory sections' });
     // Ingestion Results is part of the Scans page's import history (5.418.0),

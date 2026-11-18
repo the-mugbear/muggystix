@@ -179,6 +179,11 @@ class Settings:
     # them for ever, as every release before 2.544.0 did.  Such a job has no
     # ``expires_at`` — it has no artifact — so nothing ever removed it.
     REPORT_FAILED_JOB_RETENTION_DAYS: int = int(os.getenv("REPORT_FAILED_JOB_RETENTION_DAYS", "30"))
+    # The most lines one project's changelog keeps (``project_events``); the
+    # oldest beyond it are removed by the API's housekeeping pass and the page
+    # says so.  0 = no cap.  A bulk action is one line, so 500,000 is years of
+    # a busy project (decided 2026-11-18).
+    PROJECT_EVENTS_MAX_PER_PROJECT: int = max(0, int(os.getenv("PROJECT_EVENTS_MAX_PER_PROJECT", "500000")))
     # A report job stuck in 'processing' longer than this (no heartbeat) is
     # re-queued/failed by the reaper. Generous — must exceed the worst-case
     # render time for a capped report so a still-rendering job isn't re-queued.

@@ -298,3 +298,56 @@ class WebhookDelivery(Base):
         # The sweeper's only query: due pending rows, oldest first.
         Index("idx_webhook_delivery_due", "status", "next_attempt_at"),
     )
+
+
+class ProjectEvent(Base):
+    """One line of a project's changelog: something a member — or an agent
+    working for one — did to the project's record (2.546.0).
+
+    Written only by ``services/project_events.record``, in the transaction of
+    the change it describes: the line exists if and only if the change does.
+    Read only by ``project_events.list_events`` (project auditors and above;
+    never an agent).
+
+    ``audit_logs`` is not this: it is the installation's security log, with
+    addresses, no project column, an admin-only page and a purge.  The
+    per-subject history tables (a finding's status history, a host's scan
+    history) are not this either: each tells one subject's story, and a
+    deleted subject takes its story with it.
+
+    The subject is a type and an id with NO foreign key — the subject may be
+    deleted, which is one of the things recorded — and ``subject_label`` keeps
+    what it was called when the line was written.  ``by_agent`` is a column of
+    its own, not "``agent_session_id`` is set": the session row may be removed
+    and the line must still say an agent did it (owner, 2026-11-18: an agent's
+    action is always marked as an agent's).
+    """
+    __tablename__ = "project_events"
+
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    # Whose authority the action used: the person, or the operator of the
+    # agent session.  NULL once that account is deleted ("a former member").
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    agent_session_id = Column(
+        Integer, ForeignKey("agent_sessions.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    by_agent = Column(Boolean, nullable=False, default=False, server_default="false")
+    # One of ``project_events.ACTIONS`` (a test pins it; not a CHECK, so a new
+    # action is not a migration).
+    action = Column(String(48), nullable=False)
+    subject_type = Column(String(24), nullable=True)
+    subject_id = Column(Integer, nullable=True)
+    subject_label = Column(String(300), nullable=True)
+    # A short detail: "open → confirmed", "severity", "3 hosts".
+    summary = Column(String(500), nullable=True)
+    # How many things one action touched (a bulk review mark is ONE line).
+    count = Column(Integer, nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    actor = relationship("User", foreign_keys=[actor_user_id])
+
+    __table_args__ = (
+        # The list's one order, newest first, and the trim's cut.
+        Index("ix_project_events_project_created", "project_id", "created_at", "id"),
+    )

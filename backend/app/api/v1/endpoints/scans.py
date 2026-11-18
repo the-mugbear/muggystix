@@ -29,7 +29,7 @@ from app.services import scope_coverage
 from app.services.host_query_predicates import renamed_in_scan_condition
 from app.services.format_registry import format_label
 from app.services.import_attention_service import superseded_import_condition
-from app.services import dns_name_service, host_work, scan_sightings
+from app.services import dns_name_service, host_work, project_events, scan_sightings
 from app.services import ingestion_service as imports
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services import ingestion_results_service
@@ -1111,6 +1111,10 @@ def rename_scan_batch(
     label = body.label.strip()
     if not label:
         raise HTTPException(status_code=422, detail="The name cannot be blank")
+    if batch.label != label:
+        project_events.record(
+            db, project.id, "scan_batch_named", subject_type="scan_batch", subject_id=batch.id, label=label,
+        )
     batch.label = label
     db.commit()
     db.refresh(batch)
@@ -1857,6 +1861,7 @@ def delete_scan(
     ).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+    scan_filename = scan.filename  # for the changelog line, before the row goes
 
     try:
         # All steps run inside a single transaction — if any step fails,
@@ -1971,6 +1976,13 @@ def delete_scan(
         #    the commit below has landed.
         imports.delete_scan_row(db, scan_id)
 
+        project_events.record(
+            db, project.id, "scan_deleted", subject_type="scan", subject_id=scan_id, label=scan_filename,
+            summary=(
+                f"{len(orphan_host_ids)} host{'s' if len(orphan_host_ids) != 1 else ''} removed, "
+                f"{ports_on_kept_hosts} port{'s' if ports_on_kept_hosts != 1 else ''} removed on hosts that stay"
+            ),
+        )
         # Single commit — all or nothing
         db.commit()
 

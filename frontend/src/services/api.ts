@@ -47,6 +47,7 @@ export * from './api/agent-sessions';
 // server-side for scripts.
 export * from './api/assist';
 export * from './api/auth';
+export * from './api/changelog';
 export * from './api/client-reports';
 export * from './api/coverage';
 export * from './api/dashboard';

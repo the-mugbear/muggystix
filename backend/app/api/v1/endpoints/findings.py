@@ -30,7 +30,7 @@ from app.services.finding_actions import (
     FindingActor, apply_report_text, edit_values, finding_actor, promote_or_dismiss_vulnerability, record_edit,
     assign_findings, require_delete, require_modify, severity_label,
 )
-from app.services import finding_needs, remediation_service, report_images
+from app.services import finding_needs, project_events, remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
@@ -854,6 +854,10 @@ def update_finding_note(
     if not body:
         raise HTTPException(status_code=422, detail="A comment cannot be empty")
     note.body = body
+    project_events.record(
+        db, project.id, "finding_comment_edited", subject_type="finding", subject_id=finding_id,
+        label=_load(db, project, finding_id).title,
+    )
     db.commit()
     # An @mention added by the edit notifies that user; ones already there don't.
     extra = _notify_finding_comment(db, note, current_user, project, created=False)

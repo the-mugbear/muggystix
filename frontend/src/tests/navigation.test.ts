@@ -138,7 +138,10 @@ describe('navigation manifest', () => {
     expect(HUBS.find((h) => h.id === 'agents')!.label).toBe('Agents');
     expect(HUBS.find((h) => h.id === 'agents')!.path).toBe('/agents');
     expect(HUBS.map((h) => h.label)).not.toContain('Workflows');
-    expect(tabs('collaboration')).toEqual(['Collaboration']);
+    // 5.435.0 — the project's changelog sits beside the discussion feed
+    // (owner, 2026-11-17); it is the auditor's and above, as its route is.
+    expect(tabs('collaboration')).toEqual(['Collaboration', 'Changelog']);
+    expect(NAV_PAGES.find((p) => p.id === 'changelog')!.requiredRole).toBe('auditor');
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
     expect(tabs('administration')).toEqual(['All projects', 'System', 'Audit log', 'Agent Feedback']);
     expect(HUBS.find((h) => h.id === 'administration')!.requiredRole).toBe('admin');

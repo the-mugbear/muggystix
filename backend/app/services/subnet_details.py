@@ -8,7 +8,7 @@ becomes a ``Site`` row (the upload, the batch add and the edit use it too).
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -42,12 +42,30 @@ def get_or_create_site(
 def set_subnet_details(
     db: Session, project_id: int, subnet: Subnet, *,
     description: Optional[str] = None, site: Optional[str] = None, user_id: Optional[int] = None,
+    also_changed: Sequence[str] = (),
 ) -> None:
     """Set what is given: ``None`` leaves a field alone; an empty site clears
-    it (a value sets it, keeping ``site_id`` in step).  The caller commits."""
+    it (a value sets it, keeping ``site_id`` in step).  The caller commits.
+
+    Writes the change's ONE changelog line, in the caller's transaction: the
+    subnet's CIDR and the NAMES of the fields that changed — never their
+    text.  ``also_changed`` names what the caller changed on the subnet in
+    the same edit (the Scope page's CIDR).  Nothing changed → no line."""
+    changed = list(also_changed)
     if description is not None:
+        if (description or None) != (subnet.description or None):
+            changed.append("description")
         subnet.description = description
     if site is not None:
+        if (site or None) != (subnet.site or None):
+            changed.append("site")
         subnet.site = site or None
         site_obj = get_or_create_site(db, project_id, site, user_id) if site else None
         subnet.site_id = site_obj.id if site_obj else None
+    if changed:
+        from app.services import project_events
+
+        project_events.record(
+            db, project_id, "scope_subnet_changed", subject_type="subnet", subject_id=subnet.id,
+            label=subnet.cidr, summary=", ".join(changed),
+        )

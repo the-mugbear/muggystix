@@ -13,6 +13,7 @@ from app.db.models_auth import User
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 from app.db.session import persisted_ids
+from app.services import project_events
 from app.services.dns_name_service import NAME_NOT_AT_HOST, InvalidName, name_observed_at_host
 from app.services.paging import page_envelope
 from app.services.project_assignee import load_project_assignee
@@ -135,7 +136,30 @@ def create_tests(db, project_id, tests, who):
     # An agent's tests are one notification per assignee per SESSION: it may
     # send its batch as that many single-test calls.
     _notify_assigned(db, created, who.user_id, agent_session_id=who.session.id if who.session else None)
+    # ONE changelog line for the request, however many tests it added (a
+    # replayed test adds nothing and is not counted).
+    if created:
+        one = created[0] if len(created) == 1 else None
+        project_events.record(
+            db, project_id, "host_test_added", subject_type="host_test",
+            subject_id=one.id if one is not None else None,
+            label=_changelog_label(one, hosts[one.host_id]) if one is not None else None,
+            summary=None if one is not None else (
+                f"{len(created)} tests on {_counted(len({t.host_id for t in created}), 'host')}"
+            ),
+            count=len(created),
+        )
     return result
+
+
+def _counted(n, noun):
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _changelog_label(test, host):
+    """What the changelog calls a test: its tool and its host's address —
+    never its description, which is written text."""
+    return f"{test.tool or 'manual'} test on {host.ip_address}"
 
 
 def _notify_assigned(db, tests, actor_id, agent_session_id=None):
@@ -146,10 +170,16 @@ def _notify_assigned(db, tests, actor_id, agent_session_id=None):
         NotificationService(db).notify_host_tests_assigned(tests, actor_id, agent_session_id=agent_session_id)
 
 
-def update_test(db, project_id, test_id, body, user_id):
+def update_test(db, project_id, test_id, body, user_id, *, changelog=True):
+    """``changelog=False``: the caller writes the changelog line for the action
+    this update is a step of (``record_result``)."""
     row = get_test(db, project_id, test_id)
     assigned_before = row.assigned_to_id
     values = body.model_dump(exclude_unset=True, exclude={"expected_revision"})
+    # What the request changes, by name, read before the UPDATE (the changelog
+    # names fields and a status transition, never their text).
+    status_before = row.status
+    altered = sorted(field for field, value in values.items() if getattr(row, field) != value)
     if "status" in values and values["status"] is None:
         raise HTTPException(422, "status cannot be null")
     if "assigned_to_id" in values:
@@ -181,7 +211,21 @@ def update_test(db, project_id, test_id, body, user_id):
     # re-sending the assignee it already had, does not.
     if values.get("assigned_to_id") is not None and row.assigned_to_id != assigned_before:
         _notify_assigned(db, [row], user_id)
+    if changelog and altered:
+        project_events.record(
+            db, project_id, "host_test_updated", subject_type="host_test", subject_id=row.id,
+            label=_changelog_label(row, row.host),
+            summary=(
+                f"{status_before} → {row.status}" if "status" in altered
+                else ", ".join(_FIELD_WORDS.get(field, field) for field in altered)
+            ),
+        )
     return row
+
+
+_FIELD_WORDS = {
+    "assigned_to_id": "assignee", "tester_summary": "tester summary", "dismissed_reason": "dismissal reason",
+}
 
 
 # Outcomes that settle a test; the others leave it open for another attempt.
@@ -238,6 +282,13 @@ def record_result(db, project_id, test_id, body, user_id):
     test = update_test(
         db, project_id, test_id,
         HostTestUpdate(expected_revision=body.expected_revision, status=status), user_id,
+        changelog=False,
+    )
+    # The result IS the action: one line for it, none for the evidence record
+    # or the status move it is made of (a replay returned above and wrote none).
+    project_events.record(
+        db, project_id, "host_test_result_recorded", subject_type="host_test", subject_id=test.id,
+        label=_changelog_label(test, test.host), summary=body.outcome,
     )
     return test, record
 

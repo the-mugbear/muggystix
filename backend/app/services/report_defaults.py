@@ -37,7 +37,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models_reports import ReportDefault, ReportProfile
-from app.services import report_images
+from app.services import project_events, report_images
 from app.services import report_template_service as templates
 
 #: Every engagement detail — the keys of a report's ``settings`` and columns
@@ -249,13 +249,23 @@ def write_profile(
     profile = lock_profile(db, project_id)
     if check is not None:
         check(profile)
+    changed: List[str] = []
     for key, value in data.items():
         if key in LIST_KEYS:
             value = list(value or [])
         elif key in report_images.ENGAGEMENT_IMAGE_FIELDS:
             value = report_images.normalise_references(value)
+        before = getattr(profile, key, None)
+        if not (same(key, before, value) if key in DETAIL_KEYS else before == value):
+            changed.append(key)
         setattr(profile, key, value)
     profile.updated_by_id = user_id
+    if changed:
+        # The changelog names the details that changed — never their text.
+        project_events.record(
+            db, project_id, "report_defaults_changed", subject_type="report_defaults",
+            summary=", ".join(key.replace("_", " ") for key in changed),
+        )
     db.flush()
     return profile
 

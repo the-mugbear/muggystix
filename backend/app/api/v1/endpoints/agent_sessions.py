@@ -26,6 +26,7 @@ from app.db.models_agent import AgentSession, AgentSessionWorkflow
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
+from app.services import project_events
 from app.services.agent_key_ttl import resolve_ttl_hours, session_renewal_deadline
 from app.services.agent_session_service import (
     LISTED_WORKFLOWS,
@@ -340,6 +341,14 @@ def end_project_agent_session(
             status_code=409, detail=f"Session already in state '{session.status}'.",
         )
     end_agent_session(db, session, ended_by=current_user)
+    # Recorded here, not in ``end_agent_session``: housekeeping, a password
+    # reset and a member's removal end sessions through it too, and those are
+    # not somebody ending a session.  (The agent's own exit records in
+    # ``close_agent_session_from_agent``.)
+    project_events.record(
+        db, project.id, "agent_session_ended", subject_type="agent_session", subject_id=session.id,
+        label=f"#{session.id}",
+    )
     db.commit()
 
 

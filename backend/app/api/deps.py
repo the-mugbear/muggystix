@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.security import check_permissions, verify_token
 # Re-exported: agent_browse reads it from here.  Defined in the service layer
 # (v2.338.0) so the session sweep can share it without importing this module.
+from app.services import project_events
 from app.services.agent_key_ttl import session_renewal_deadline  # noqa: F401
 
 # What the agent auth dependency leaves on ``request.state`` for handlers and
@@ -114,6 +115,9 @@ def get_current_user(
         session.last_activity = now
         db.commit()
 
+    # Who this request's session acts as — what a changelog line is written
+    # under (``project_events.record`` reads it from the session).
+    project_events.note_actor(db, user_id=user.id)
     return user
 
 
@@ -197,6 +201,7 @@ def require_role(required_role: str):
 
 def require_password_changed(
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> User:
     """Post-login account-readiness gate, applied to every data endpoint.
 
@@ -221,6 +226,14 @@ def require_password_changed(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="two_factor_setup_required",
         )
+    # Every signed-in data route passes here, with the user the request acts
+    # as: who a changelog line is written under (``project_events.record``
+    # reads it from the request's session).  Noted here as well as in
+    # ``get_current_user`` because this gate is resolved by every data route
+    # whichever way the user was established.  The one direct caller (the
+    # upload door's pre-body check) passes no session.
+    if isinstance(db, Session):
+        project_events.note_actor(db, user_id=current_user.id)
     return current_user
 
 
@@ -820,6 +833,10 @@ def get_current_agent(
     # always one).  ``enforce_agent_operator_access`` checks their role on
     # every request and agent-authored writes are attributed to them.
     request.state.key_operator_id = agent_session.started_by_id or agent.owner_id
+    # The changelog's actor: the operator, marked as acting through an agent.
+    project_events.note_actor(
+        db, user_id=request.state.key_operator_id, agent_session_id=agent_session.id, by_agent=True,
+    )
     # What the operator gate decides from — plain values, so the request holds
     # no database rows after it has been answered.
     request.state._agent_operator_access = ctx.operator_access()

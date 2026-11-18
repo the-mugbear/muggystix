@@ -35,6 +35,25 @@ describe('a review mark whose reviewer was deleted', () => {
     expect(reviewerName('Alice Ng', 'alice')).toBe('Alice Ng');
   });
 
+  // Owner, 2026-11-18 — the label is the TEAM's state by the server's rule
+  // (reviewed outranks in review), so it agrees with the Review filter; who
+  // is still reviewing stays in the detail.
+  it('says Reviewed once anyone has reviewed, even while someone else is still in review', () => {
+    const mixed = [
+      hostWith({ follow: { status: 'in_review' } as Host['follow'], reviewed_by: [{ user_id: 2, name: 'Sam' }] }),
+      hostWith({ other_reviewers: [{ user_id: 3, name: 'Ana' }], reviewed_by: [{ user_id: 2, name: 'Sam' }] }),
+      hostWith({ follow: { status: 'reviewed' } as Host['follow'], other_reviewers: [{ user_id: 3, name: 'Ana' }] }),
+    ];
+    for (const host of mixed) {
+      const { container, unmount } = render(<ReviewCell host={host} />);
+      expect(container.querySelector('[data-review-state]')).toHaveTextContent('Reviewed');
+      unmount();
+    }
+    const { container } = render(<ReviewCell host={hostWith({ other_reviewers: [{ user_id: 3, name: 'Ana' }] })} />);
+    expect(container.querySelector('[data-review-state]')).toHaveTextContent('In review');
+    expect(screen.getByText('Ana reviewing')).toBeInTheDocument();
+  });
+
   it('a host in review by a former member says so on the row', () => {
     render(<ReviewCell host={hostWith({ other_reviewers: [{ user_id: null, name: null }] })} />);
     const detail = screen.getByText('a former member reviewing');
@@ -47,7 +66,8 @@ describe('a review mark whose reviewer was deleted', () => {
       follow: { status: 'in_review' } as Host['follow'],
       reviewed_by: [{ user_id: null, name: null }, { user_id: 3, name: 'Bo' }],
     })} />);
-    const detail = screen.getByText('Reviewed by a former member +1');
+    // The reader's own review is still open under the team's "Reviewed".
+    const detail = screen.getByText('Reviewed by a former member +1 · you are reviewing');
     expect(detail).toHaveAttribute('title', 'Reviewed by: a former member, Bo');
     expect(document.body.textContent).not.toMatch(/null|undefined/);
   });

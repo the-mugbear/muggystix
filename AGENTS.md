@@ -165,6 +165,7 @@ probe, the suite — touches no schema. The test schema is built by the migratio
   (`agent_read_floor`, listed in `test_agent_role_route_matrix.py`); a filter value that cannot be understood
   is a 422 on both doors, never dropped. Paged agent lists answer one envelope (`services/paging`).
 - Never advise collecting on out-of-scope hosts; say "confirm in scope".
+- A write that changes a project's record adds a line to its changelog through `project_events.record`, in the change's own transaction — or its route is named in `project_events.NOT_RECORDED` with the reason (`test_project_events_coverage.py`). A line never carries text someone wrote; an agent's line is always marked as an agent's.
 
 **Frontend**
 - Components import, and tests mock, the `services/api` barrel — never a submodule (a lint rule).

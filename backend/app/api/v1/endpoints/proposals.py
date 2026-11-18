@@ -98,12 +98,16 @@ class _LeftForOneAtATime(Exception):
 
 def _decide(
     db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody,
-    *, serialize: bool = True, skip_rewritten: bool = False,
+    *, serialize: bool = True, skip_rewritten: bool = False, changelog: bool = True,
 ):
     """Decide one proposal and commit.  Returns its row as the routes return
     it, or None with ``serialize=False`` (the bulk route reports ids only —
     it used to build and discard each row, about five statements apiece;
     review 2026-10-01 N8).
+
+    The decision is a line of the project's changelog, written with it
+    (``proposal_service.record_decision``); ``changelog=False`` is the bulk
+    route's, which writes ONE line for everything it decided.
 
     ``skip_rewritten`` (the bulk accept): a proposal
     ``proposal_service.left_for_one_at_a_time`` names — report text rewritten
@@ -114,7 +118,7 @@ def _decide(
     the draft, with the warning, and overwrites knowingly."""
     try:
         return _decide_locked(db, project_id, proposal_id, user, action, body,
-                              serialize=serialize, skip_rewritten=skip_rewritten)
+                              serialize=serialize, skip_rewritten=skip_rewritten, changelog=changelog)
     except DBAPIError as exc:
         # A promote / dismiss takes its own locks (evidence, then the finding);
         # a scan deleted by hand at the same moment cascades into the
@@ -131,7 +135,7 @@ def _decide(
 
 def _decide_locked(
     db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody,
-    *, serialize: bool, skip_rewritten: bool,
+    *, serialize: bool, skip_rewritten: bool, changelog: bool,
 ):
     # Locked until the commit below: a second decision on it waits, then
     # finds it decided (409) instead of applying it again.
@@ -154,6 +158,8 @@ def _decide_locked(
         # Keep the reason on the proposal (it stays pending) — then refuse.
         db.commit()
         raise
+    if changelog:
+        proposals.record_decision(db, project_id, [proposal.id], accepted=action == "accept")
     # Built before the commit, while the row and what it points at are still
     # loaded (after it, serialize_many reads them again together — never per
     # row).  The flush puts the decision where the lazy loads below read it.
@@ -228,7 +234,7 @@ def bulk_decide(
         try:
             _decide(
                 db, project.id, pid, user, body.action, DecideBody(note=body.note),
-                serialize=False, skip_rewritten=True,
+                serialize=False, skip_rewritten=True, changelog=False,
             )
             done.append(pid)
         except _LeftForOneAtATime as left:
@@ -237,6 +243,12 @@ def bulk_decide(
             })
         except HTTPException as exc:
             failed.append({"id": pid, "status_code": exc.status_code, "detail": exc.detail})
+    if done:
+        # ONE changelog line for the request — the proposals it decided; those
+        # left pending or refused are not among them.  Each decision above
+        # committed on its own, so the line has its own commit.
+        proposals.record_decision(db, project.id, done, accepted=body.action == "accept")
+        db.commit()
     return {"decided": done, "failed": failed, "skipped": skipped}
 
 

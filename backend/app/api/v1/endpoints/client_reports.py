@@ -48,7 +48,7 @@ from app.services.client_report_views import (
     serialize_report as _serialize,
 )
 from app.services.report_job_service import ReportJobService
-from app.services import client_report_render, report_defaults, report_images, report_scope
+from app.services import client_report_render, project_events, report_defaults, report_images, report_scope
 from app.services.note_attachment_service import store_image_attachment
 from app.services import report_template_service as templates
 from app.services import template_asset_store as asset_store_module
@@ -439,9 +439,16 @@ def upload_report_text_image(
         caption = report_images.clean_caption(caption)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    att = store_image_attachment(
-        db, note_id=None, project_id=project.id, uploaded_by_id=current_user.id, file=file, caption=caption,
-    )
+    # The changelog line goes into the transaction the store commits (it
+    # commits the image's row itself): a refused upload takes it back.
+    project_events.record(db, project.id, "report_image_added", subject_type="report_image")
+    try:
+        att = store_image_attachment(
+            db, note_id=None, project_id=project.id, uploaded_by_id=current_user.id, file=file, caption=caption,
+        )
+    except Exception:
+        db.rollback()
+        raise
     return _text_image_out(att, {}, _role(db, project, current_user), current_user)
 
 
@@ -516,6 +523,11 @@ def create_report(
         created_by_id=current_user.id,
     )
     db.add(report)
+    db.flush()
+    project_events.record(
+        db, project.id, "report_created", subject_type="report", subject_id=report.id, label=report.title,
+        summary=f"addendum to report {baseline.number}" if baseline is not None else None,
+    )
     db.commit()
     return _serialize(db, _load(db, project, report.id), _role(db, project, current_user), with_summary=True,
                       user_id=current_user.id)
@@ -547,13 +559,18 @@ def update_report(
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report cannot be changed; start a revision instead.")
     sent = body.model_fields_set
+    changed: List[str] = []       # what the changelog names: never a detail's text
     if "title" in sent:
         title = (body.title or "").strip()
         if not title:
             raise HTTPException(status_code=422, detail="A report needs a title.")
+        if report.title != title[:255]:
+            changed.append("title")
         report.title = title[:255]
     if "template" in sent and body.template:
         _template_or_422(body.template, client=True)
+        if report.template != body.template:
+            changed.append("template")
         report.template = body.template
     if "settings" in sent and body.settings is not None:
         # Only the details SENT change; every other stored override is kept
@@ -570,7 +587,17 @@ def update_report(
         # sent in this save only (`drop_followed` is given only those).
         follows, _ = ClientReportService(db).followed_details_with_sources(project.id, report.kind)
         own.update(report_defaults.drop_followed(report_defaults.overrides(data), follows))
+        was = report_defaults.overrides(report.settings)
+        changed += [
+            key.replace("_", " ") for key in report_defaults.DETAIL_KEYS
+            if (key in was) != (key in own) or (key in own and not report_defaults.same(key, was[key], own[key]))
+        ]
         report.settings = own
+    if changed:
+        project_events.record(
+            db, project.id, "report_changed", subject_type="report", subject_id=report.id, label=report.title,
+            summary=", ".join(changed),
+        )
     db.commit()
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
@@ -734,6 +761,9 @@ def delete_report(
         raise HTTPException(status_code=409, detail="An issued report is part of the record and cannot be deleted.")
     if not may_discard(report, _role(db, project, current_user), current_user.id):
         raise HTTPException(status_code=403, detail="Only the person who started this draft or a project admin can discard it.")
+    project_events.record(
+        db, project.id, "report_deleted", subject_type="report", subject_id=report.id, label=report.title,
+    )
     db.delete(report)
     db.commit()
     # An issue attempt that died between copying the images (and the
@@ -944,6 +974,11 @@ def revise_report(
         created_by_id=current_user.id,
     )
     db.add(draft)
+    db.flush()
+    project_events.record(
+        db, project.id, "report_revised", subject_type="report", subject_id=draft.id, label=draft.title,
+        summary=f"revises report {original.number}",
+    )
     db.commit()
     return _serialize(db, _load(db, project, draft.id), _role(db, project, current_user), with_summary=True,
                       user_id=current_user.id)

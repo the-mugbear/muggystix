@@ -31,6 +31,7 @@ from app.db.models_findings import Finding, FindingHost, FindingSource, FindingS
 from app.db.models_host_tests import ACTIVE_TEST_STATUSES, TESTED_OUTCOMES, HostTest
 from app.db.models_proposals import EvidenceRecord
 from app.db.models_vulnerability import Vulnerability, VulnerabilityCve, VulnerabilitySeverity, VulnerabilitySource
+from app.services import project_events
 from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
 from app.services.host_query_common import escape_like
@@ -674,6 +675,7 @@ def dismiss_issue(
             vuln=rep, project_id=project_id, actor_id=actor_id,
             status=fp, summary=reason, host_ids=sorted(by_host), on_join="set",
         )
+        _dismissal_line(db, project_id, rep, len(by_host))
         return DismissOutcome(issue_key=issue_key, finding_id=finding.id, host_count=len(by_host))
     chosen = sorted(dict.fromkeys(host_ids))
     if not chosen:
@@ -690,8 +692,24 @@ def dismiss_issue(
         finding, _created = promote_or_dismiss_vulnerability(
             db, vuln=vulns[by_host[host_id]], project_id=project_id, actor_id=actor_id,
             status=fp, summary=reason, scope="host",
+            # ONE line for the dismissal, below — not one per named host.
+            changelog=False,
         )
+    _dismissal_line(db, project_id, vulns[by_host[chosen[0]]], len(chosen))
     return DismissOutcome(issue_key=issue_key, finding_id=finding.id, host_count=len(chosen))
+
+
+def _hosts(n: int) -> str:
+    return f"{n} host" if n == 1 else f"{n} hosts"
+
+
+def _dismissal_line(db: Session, project_id: int, vuln: Vulnerability, host_count: int) -> None:
+    """The list's dismissal of one issue is ONE line of the project's
+    changelog, on however many hosts (the reason given is not copied)."""
+    project_events.record(
+        db, project_id, "observation_dismissed", subject_type="observation", subject_id=vuln.id,
+        label=vuln.title, summary=f"false positive on {_hosts(host_count)}",
+    )
 
 
 @dataclass
@@ -779,4 +797,16 @@ def promote_issues(
         outcomes[issue_key] = PromoteOutcome(
             issue_key=issue_key, finding_id=finding.id, created=created, host_count=len(chosen),
         )
+    # ONE changelog line for the promotion, however many issues it names.
+    one = plan[0] if len(plan) == 1 else None
+    project_events.record(
+        db, project_id, "observation_promoted", subject_type="observation",
+        subject_id=one[1].id if one is not None else None,
+        label=one[1].title if one is not None else None,
+        summary=(
+            f"to a finding on {_hosts(len(one[2]))}" if one is not None
+            else f"{len(plan)} scanner observations → findings"
+        ),
+        count=len(plan),
+    )
     return [outcomes[issue_key] for issue_key, _, _ in plan]

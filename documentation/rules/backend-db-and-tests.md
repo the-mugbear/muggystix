@@ -55,6 +55,16 @@ The root `AGENTS.md` holds FK `ondelete` parity, one head, real downgrades, no `
 - `parse_error_service.log_parse_error()` is a function; `SubnetCorrelationService` correlates hosts → scopes.
 - Open-source libraries and services only (check a new dependency's licence); no Redis — Postgres-native or Valkey.
 
+## The project's changelog (`services/project_events.py`)
+
+- **`project_events.record` is the ONE writer of `project_events`** — `db.add` only, never a commit or a flush: the line is in the change's transaction. Called in the service function that makes the change where one exists (never also in its route: two lines); a bulk action is one line with `count`; an action that changed nothing records nothing.
+- **A write route under `/projects/{project_id}`, `/agent` or `/remediation-overview/projects/{project_id}` is in `ROUTE_ACTIONS` (and records) or in `NOT_RECORDED` with its reason** — `test_project_events_coverage.py` fails on a route in neither, on an action no route records, on an action written out nowhere under `app/`, and on a `ProjectEvent(` outside the writer. An action's name is a plain string where it is recorded (a helper may take it as an argument); `record` refuses one that is not in `ACTIONS`.
+- Who acted is the request session's `Actor` (`note_actor`, set by `get_current_user`, `require_password_changed` and the agent gate); never passed by a route. Outside a request: `actor=`, or nothing is recorded.
+- A line never carries text someone wrote (a note, report text, a description, a secret, a URL): `subject_label` is what the subject is called, `summary` a status, a field's name or a count.
+- An agent's line has `by_agent` true under its operator; nothing shows it as the person's own. No `/agent/*` route or MCP tool reads the changelog.
+- Remediation lines are stored always, listed only when `remediation_policy` is on (`list_events(include_remediation=)`).
+- The cap (`PROJECT_EVENTS_MAX_PER_PROJECT`) is trimmed by `startup._purge_retained`; never per write.
+
 ## Roles
 
 - `UserRole` (`models_auth.py`): `ADMIN` (users, settings, audit) / `MEMBER`; `require_role` only for ADMIN.
@@ -163,6 +173,7 @@ The root `AGENTS.md` holds FK `ondelete` parity, one head, real downgrades, no `
 | `test_agent_note_notifies.py` | an agent's note notifies as a person's, not the operator |
 | `test_password_change_gate_coverage.py` | every signed-in route (included routers too) resolves `require_password_changed`; only named setup routes exempt |
 | `test_every_project_route_checks_membership.py` | every `{project_id}` route resolves `get_current_project` / `require_project_role` or is named with its reason |
+| `test_project_events_coverage.py` | every project / agent write route is in `ROUTE_ACTIONS` or `NOT_RECORDED`; every changelog action is recorded by a route and written out under `app/`; one writer; no agent route reads the changelog |
 | `test_download_headers.py` | `Content-Disposition` only via `app.api.downloads.attachment(name)` (`filename*` for non-ASCII); empty allowlist |
 | `test_docs_contract.py` | agent guide markers and endpoints; every `scripts/*.py|sh` named in `scripts/README.md` |
 | `test_ops_scripts.py` | deploy / backup / restore vs `tests/ops_fake_docker.py`; `check.sh`'s shard plan (each file in exactly one shard) and summed tally |
@@ -196,4 +207,5 @@ The root `AGENTS.md` holds FK `ondelete` parity, one head, real downgrades, no `
 - A user delete keeps the call log (nulled) and review marks (no one), and ends agent sessions.
 - Open-source dependencies only; no Redis (Postgres-native or Valkey).
 - Demoting a project's only admin is allowed (confirmed on the page); removing the last is refused.
+- The changelog (2026-11-18): read by project auditors and above, never viewers; every member action incl. notes, review marks, tags and remediation; an agent's action always marked as an agent's; history starts at the upgrade (no back-fill); kept for the project's life under a 500,000-line cap; no agent read.
 - A browser session has no absolute lifetime (2026-11-18): it ends `ACCESS_TOKEN_EXPIRE_MINUTES` after its last renewal, on logout or revocation, or on a password / 2FA reset — never because of its age.

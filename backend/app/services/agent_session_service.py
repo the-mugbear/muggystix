@@ -583,7 +583,19 @@ def resume_agent_session(
     who = resumed_by.full_name or resumed_by.username
     line = f"[{now.isoformat()}] Session resumed by {who}: key rotated, previous key revoked"
     session.notes = (f"{session.notes}\n{line}" if session.notes else line)[-8192:]
+    _session_line(db, session, "agent_session_resumed")
     return raw_key
+
+
+def _session_line(db: Session, session: AgentSession, action: str) -> None:
+    """One line of the project's changelog about an agent session, in this
+    transaction (who acted is the request's)."""
+    from app.services import project_events
+
+    project_events.record(
+        db, session.project_id, action, subject_type="agent_session", subject_id=session.id,
+        label=f"#{session.id}",
+    )
 
 
 def close_agent_session_from_agent(
@@ -602,6 +614,10 @@ def close_agent_session_from_agent(
         )
     reason = "closed by the agent" + (f": {notes.strip()}" if notes and notes.strip() else "")
     end_agent_session(db, session, ended_by=None, reason=reason, end_reason=END_REASON_AGENT)
+    # The agent's own exit is a changelog line; a person's End records in its
+    # route.  ``end_agent_session`` itself records nothing: the sweep, a
+    # password reset and a member's removal end sessions through it too.
+    _session_line(db, session, "agent_session_ended")
 
 
 def lapse_expired_agent_sessions(db: Session) -> int:

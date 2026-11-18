@@ -57,6 +57,7 @@ from app.schemas.schemas import (
     SubnetLabelInfo,
     SubnetLabelUpdate,
 )
+from app.services import project_events
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -241,6 +242,9 @@ def create_subnet_label(
         created_by_id=current_user.id,
     )
     db.add(label)
+    project_events.record(
+        db, project.id, "subnet_label_changed", subject_type="subnet_label", label=name, summary="label created",
+    )
     try:
         db.commit()
     except IntegrityError:
@@ -266,13 +270,23 @@ def update_subnet_label(
     project: Project = Depends(get_current_project),
 ):
     label = _label_or_404(db, project.id, label_id)
+    changed = []
     if payload.name is not None:
         name = payload.name.strip()
         if not name:
             raise HTTPException(status_code=422, detail="Label name cannot be empty")
+        if name != label.name:
+            changed.append("label renamed")
         label.name = name
     if payload.color is not None:
+        if (payload.color or None) != label.color:
+            changed.append("colour changed")
         label.color = payload.color or None
+    if changed:
+        project_events.record(
+            db, project.id, "subnet_label_changed", subject_type="subnet_label", subject_id=label.id,
+            label=label.name, summary=", ".join(changed),
+        )
     try:
         db.commit()
     except IntegrityError:
@@ -298,6 +312,10 @@ def delete_subnet_label(
     project: Project = Depends(get_current_project),
 ):
     label = _label_or_404(db, project.id, label_id)
+    project_events.record(
+        db, project.id, "subnet_label_changed", subject_type="subnet_label", subject_id=label.id,
+        label=label.name, summary="label deleted",
+    )
     db.delete(label)  # assignments cascade via FK ondelete=CASCADE + ORM cascade
     db.commit()
     return Response(status_code=204)
@@ -326,7 +344,7 @@ def replace_subnet_labels(
 
     Every label_id is project-scoped (``_labels_all_or_404``) so a guessed
     ID from another project 404s instead of leaking attachment."""
-    _subnet_or_404(db, project.id, subnet_id)
+    subnet = _subnet_or_404(db, project.id, subnet_id)
 
     target_ids = _labels_all_or_404(db, project.id, payload.label_ids)
 
@@ -344,6 +362,18 @@ def replace_subnet_labels(
         db.add(SubnetLabelAssignment(
             subnet_id=subnet_id, label_id=lid, created_by_id=current_user.id,
         ))
+    attached, detached = len(target_ids - existing_ids), len(existing_ids - target_ids)
+    if attached or detached:
+        project_events.record(
+            db, project.id, "subnet_label_changed", subject_type="subnet", subject_id=subnet_id,
+            label=subnet.cidr,
+            summary=", ".join(
+                part for part in (
+                    f"{attached} label{'s' if attached != 1 else ''} attached" if attached else "",
+                    f"{detached} label{'s' if detached != 1 else ''} detached" if detached else "",
+                ) if part
+            ),
+        )
     db.commit()
 
     rows = (
@@ -401,6 +431,11 @@ def bulk_apply_subnet_label(
         db.add(SubnetLabelAssignment(
             subnet_id=sid, label_id=label_id, created_by_id=current_user.id,
         ))
+    applied = len(valid_subnet_ids - already)
+    project_events.record(
+        db, project.id, "subnet_label_changed", subject_type="subnet_label", subject_id=label.id,
+        label=label.name, summary=f"applied to {applied} subnet{'s' if applied != 1 else ''}", count=applied,
+    )
     db.commit()
 
     counts = _counts_for_labels(db, project.id)

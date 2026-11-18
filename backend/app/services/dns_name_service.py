@@ -1000,6 +1000,20 @@ def import_names(
             db, scope, scope_entries, created_by_id=created_by_id,
         )
 
+    # The import's ONE changelog line, in the caller's transaction: how many
+    # names it added (and how many it declared in scope).  A re-import that
+    # added nothing writes none.
+    if created or scope_added:
+        from app.services import project_events
+
+        parts = [f"{created} name{'s' if created != 1 else ''} added"] if created else []
+        if scope_added:
+            parts.append(f"{scope_added} declared in scope")
+        project_events.record(
+            db, project_id, "names_imported", subject_type="name",
+            summary=", ".join(parts), count=created or scope_added,
+        )
+
     return {
         "names_created": created,
         "names_existing": existing,

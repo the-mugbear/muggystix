@@ -26,6 +26,7 @@ from app.api.deps import (
     require_role,
 )
 from app.core.security import log_audit_event
+from app.services import project_events
 from app.services.agent_session_service import end_sessions_of_operator
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -444,6 +445,11 @@ def update_project(
                 status_code=409,
                 detail="Another project took that name or slug concurrently; try again.",
             )
+        # The project's own changelog: the same action, and which fields.
+        project_events.record(
+            db, project.id, action, subject_type="project", subject_id=project.id,
+            summary=", ".join(key.replace("_", " ") for key in changes),
+        )
 
     try:
         db.commit()
@@ -492,8 +498,16 @@ def update_project_ingest_settings(
     # every project route (``get_current_project``) and the agents' gate.
     if project.is_archived:
         raise HTTPException(status_code=410, detail="Project is archived")
-    if "skip_informational_findings" in data.model_fields_set:
+    if (
+        "skip_informational_findings" in data.model_fields_set
+        and project.skip_informational_findings != data.skip_informational_findings
+    ):
         project.skip_informational_findings = data.skip_informational_findings
+        kept = {True: "skipped", False: "kept", None: "the installation's default"}
+        project_events.record(
+            db, project.id, "ingest_settings_changed", subject_type="project", subject_id=project.id,
+            summary=f"informational findings: {kept[data.skip_informational_findings]}",
+        )
     db.commit()
     return ProjectResponse.model_validate(project)
 
@@ -708,6 +722,10 @@ def add_member(
                "project_name": project.name, "user_id": user.id, "username": user.username,
                "old_role": None, "new_role": data.role,
            })
+    project_events.record(
+        db, project_id, "member_added", subject_type="member", subject_id=user.id, label=user.username,
+        summary=data.role,
+    )
     db.commit()
 
     return MembershipResponse(
@@ -763,6 +781,10 @@ def update_member(
                    "username": user.username if user else None,
                    "old_role": old_role, "new_role": data.role,
                })
+        project_events.record(
+            db, project_id, "member_role_changed", subject_type="member", subject_id=user_id,
+            label=user.username if user else None, summary=f"{old_role} → {data.role}",
+        )
     db.commit()
 
     return MembershipResponse(
@@ -829,6 +851,10 @@ def remove_member(
                "project_name": project.name, "user_id": user_id, "username": removed_username,
                "old_role": membership.role, "new_role": None,
            })
+    project_events.record(
+        db, project_id, "member_removed", subject_type="member", subject_id=user_id, label=removed_username,
+        summary=membership.role,
+    )
     db.delete(membership)
     # A site's owner must be a member (``sites.update_site``): one who left
     # no longer owns the project's sites.

@@ -51,10 +51,10 @@ from app.db.models_vulnerability import Vulnerability
 from app.db.session import has_expired, persisted_ids
 from app.services.cvss_service import CvssError, normalize_cvss
 from app.services.finding_actions import (
-    apply_report_text, finding_actor, promote_or_dismiss_vulnerability,
+    FIELD_LABELS, apply_report_text, finding_actor, promote_or_dismiss_vulnerability,
 )
 from app.schemas.client_reports import ReportProfilePatch
-from app.services import report_defaults, report_images
+from app.services import project_events, report_defaults, report_images
 from app.services.agent_evidence_service import promote_evidence
 from app.services.default_scope import project_scope
 from app.services.finding_service import FindingService, named_endpoint, validate_severity
@@ -183,6 +183,95 @@ def _add(db: Session, project_id: int, kind: str, who: Attribution, **cols) -> A
     db.add(proposal)
     db.flush()
     return proposal
+
+
+_KIND_WORDS = {
+    ProposalKind.FINDING_TEXT.value: "report text",
+    ProposalKind.FINDING_CREATE.value: "new finding",
+    ProposalKind.OBSERVATION_PROMOTE.value: "promoting a scanner observation",
+    ProposalKind.OBSERVATION_DISMISS.value: "dismissing a scanner observation",
+    ProposalKind.ENDPOINT_STATUS.value: "endpoint status",
+    ProposalKind.SUBNET_DETAILS.value: "subnet details",
+    ProposalKind.REPORT_DETAIL.value: "report defaults",
+}
+
+
+def _field_words(proposal: AgentProposal) -> Optional[str]:
+    """Which piece of text a text proposal is for (its name, never its text)."""
+    if proposal.kind == ProposalKind.FINDING_TEXT.value:
+        return FIELD_LABELS.get(proposal.field, proposal.field)
+    if proposal.kind == ProposalKind.REPORT_DETAIL.value:
+        return (proposal.field or "").replace("_", " ") or None
+    return None
+
+
+def _described(db: Session, proposal: AgentProposal) -> str:
+    """What the changelog calls a proposal: its kind and what it is about —
+    the finding's title, the observation's, the subnet — never what it
+    proposes (a text, a title, a status)."""
+    kind = proposal.kind
+    if kind in (ProposalKind.FINDING_TEXT.value, ProposalKind.ENDPOINT_STATUS.value):
+        finding = db.get(Finding, proposal.finding_id) if proposal.finding_id else None
+        about = finding.title if finding is not None else "a finding"
+        return f"report text for {about}" if kind == ProposalKind.FINDING_TEXT.value else f"an endpoint's status on {about}"
+    if kind in _OBSERVATION_KINDS:
+        vuln = db.get(Vulnerability, proposal.vulnerability_id) if proposal.vulnerability_id else None
+        doing = "promoting" if kind == ProposalKind.OBSERVATION_PROMOTE.value else "dismissing"
+        return f"{doing} scanner observation {vuln.title}" if vuln is not None else f"{doing} a scanner observation"
+    if kind == ProposalKind.SUBNET_DETAILS.value:
+        subnet = db.get(models.Subnet, proposal.subnet_id) if proposal.subnet_id else None
+        return f"details of subnet {subnet.cidr}" if subnet is not None else "details of a subnet"
+    if kind == ProposalKind.REPORT_DETAIL.value:
+        return "the report defaults"
+    return "a new finding"
+
+
+def _changelog(db: Session, project_id: int, action: str, proposals: List[AgentProposal]) -> None:
+    """ONE line of the project's changelog for what one request did to
+    ``proposals`` — made, accepted or rejected them (``project_events.record``,
+    in the caller's transaction).  One proposal is named; several are a count
+    (a finding's or the report defaults' sections also name the sections)."""
+    if not proposals:
+        return
+    first, n = proposals[0], len(proposals)
+    if n == 1:
+        project_events.record(
+            db, project_id, action, subject_type="proposal", subject_id=first.id,
+            label=_described(db, first), summary=_field_words(first),
+        )
+        return
+    same_kind = all(p.kind == first.kind for p in proposals)
+    if same_kind and first.kind in _TEXT_KINDS and all(p.finding_id == first.finding_id for p in proposals):
+        label, summary = _described(db, first), ", ".join(filter(None, map(_field_words, proposals)))
+    else:
+        label = None
+        summary = f"{n} proposals" + (f": {_KIND_WORDS.get(first.kind, first.kind)}" if same_kind else "")
+    project_events.record(
+        db, project_id, action, subject_type="proposal", subject_id=None, label=label, summary=summary, count=n,
+    )
+
+
+def record_decision(db: Session, project_id: int, proposal_ids: List[int], *, accepted: bool) -> None:
+    """The changelog line for a decision — ONE for the request: the single
+    accept / reject (called before its commit), or a bulk decision's decided
+    proposals together (a proposal left pending, refused or superseded is not
+    among them).  The change an accepted proposal made has its own line, from
+    the service that made it."""
+    if not proposal_ids:
+        return
+    if len(proposal_ids) == 1:
+        row = db.get(AgentProposal, proposal_ids[0])
+        if row is None:
+            return
+        if accepted:
+            _changelog(db, project_id, "proposal_accepted", [row])
+        else:
+            _changelog(db, project_id, "proposal_rejected", [row])
+        return
+    project_events.record(
+        db, project_id, "proposal_accepted" if accepted else "proposal_rejected", subject_type="proposal",
+        summary=f"{len(proposal_ids)} proposals", count=len(proposal_ids),
+    )
 
 
 def _active_project_admins(db: Session, project_id: int, exclude: Optional[int]) -> set:
@@ -502,6 +591,7 @@ def propose_finding_text(
             rationale=rationale, evidence_ids=ev,
         ))
     mark_replaced(db, claimed, out)
+    _changelog(db, project_id, "proposal_made", out)
     _notify_finding_people(db, finding_id, who)
     return out
 
@@ -560,6 +650,7 @@ def propose_finding(
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
     mark_replaced(db, claimed, [proposal])
+    _changelog(db, project_id, "proposal_made", [proposal])
     _notify_project_admins(db, project_id, who)
     return proposal
 
@@ -587,6 +678,7 @@ def propose_observation(
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
     mark_replaced(db, claimed, [proposal])
+    _changelog(db, project_id, "proposal_made", [proposal])
     # The findings this observation evidences, derived through
     # ``finding_vulnerabilities`` exactly as ``_about_findings`` does.
     finding_ids = [
@@ -626,6 +718,7 @@ def propose_endpoint_status(
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
     mark_replaced(db, claimed, [proposal])
+    _changelog(db, project_id, "proposal_made", [proposal])
     _notify_finding_people(db, finding_id, who)
     return proposal
 
@@ -709,6 +802,7 @@ def propose_subnet_details(
         for subnet, values in planned
     ]
     mark_replaced(db, claimed, out)
+    _changelog(db, project_id, "proposal_made", out)
     _notify_admins_of(db, project_id, who, ProposalKind.SUBNET_DETAILS.value)
     return out
 
@@ -796,6 +890,7 @@ def propose_report_details(
         for field, value in values.items()
     ]
     mark_replaced(db, claimed, out)
+    _changelog(db, project_id, "proposal_made", out)
     _notify_admins_of(db, project_id, who, ProposalKind.REPORT_DETAIL.value)
     return out
 

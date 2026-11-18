@@ -321,12 +321,18 @@ const ATTENTION_DOT: Record<AttentionReason['tone'], string> = {
 export const reviewStateText = (
   host: Pick<Host, 'follow' | 'other_reviewers' | 'reviewed_by'>,
 ): { kind: 'none' | 'in_review' | 'reviewed'; label: string } => {
+  // The column is the TEAM's state, by the server's rule — reviewed outranks
+  // in review, across everyone including the reader — because that is what
+  // the Review filter matches (`team_review_status`).  It used to lead with
+  // "In review" whenever anyone was, so a row under the Reviewed filter could
+  // read "In review" (owner, 2026-11-18: the label agrees with the filter).
+  // Worked out from the row's own parts rather than read from
+  // `team_review_status`, so it is right the moment a review status is set
+  // on the row, before the list is read again.  Who is still reviewing is in
+  // the detail line beside it.
   const status = host.follow?.status ?? null;
-  if (status === 'in_review') return { kind: 'in_review', label: 'In review' };
-  if (status === 'reviewed') return { kind: 'reviewed', label: 'Reviewed' };
-  // Someone else's review counts: the column is the team's state.
-  if ((host.other_reviewers?.length ?? 0) > 0) return { kind: 'in_review', label: 'In review' };
-  if ((host.reviewed_by?.length ?? 0) > 0) return { kind: 'reviewed', label: 'Reviewed' };
+  if (status === 'reviewed' || (host.reviewed_by?.length ?? 0) > 0) return { kind: 'reviewed', label: 'Reviewed' };
+  if (status === 'in_review' || (host.other_reviewers?.length ?? 0) > 0) return { kind: 'in_review', label: 'In review' };
   return { kind: 'none', label: 'Not started' };
 };
 
@@ -877,9 +883,13 @@ export function useHostColumns({
             otherReviewerCount > 0
               ? `${reviewerName(host.other_reviewers![0].name)}${otherReviewerCount > 1 ? ` +${otherReviewerCount - 1}` : ''} reviewing`
               : null,
-            reviewedCount > 0 && state.kind !== 'reviewed'
+            // "Reviewed" because a teammate reviewed it: say who (the reader's
+            // own finished review needs no name).
+            reviewedCount > 0 && host.follow?.status !== 'reviewed'
               ? `Reviewed by ${reviewerName(host.reviewed_by![0].name)}${reviewedCount > 1 ? ` +${reviewedCount - 1}` : ''}`
               : null,
+            // …and the reader's own review still open under that label.
+            state.kind === 'reviewed' && host.follow?.status === 'in_review' ? 'you are reviewing' : null,
             // A count is shown when it says something; "0 notes" was noise.
             noteCount > 0 ? `${noteCount} note${noteCount === 1 ? '' : 's'}` : null,
           ].filter(Boolean).join(' · ');

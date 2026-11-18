@@ -28,6 +28,7 @@ from app.db.models_project import Project
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import ProjectRole
+from app.services import project_events
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -133,6 +134,11 @@ def promote_project_default_view(
         HostFilterView.is_project_default.is_(True),
         HostFilterView.id != view_id,
     ).update({"is_project_default": False})
+    if not view.is_project_default:
+        project_events.record(
+            db, project.id, "default_view_changed", subject_type="host_view", subject_id=view.id,
+            label=view.name, summary="set",
+        )
     view.is_project_default = True
     db.commit()
     db.refresh(view)
@@ -150,10 +156,11 @@ def clear_project_default_view(
     project: Project = Depends(get_current_project),
 ):
     """Remove the project default (no view is applied by default afterwards)."""
-    db.query(HostFilterView).filter(
+    cleared = db.query(HostFilterView).filter(
         HostFilterView.project_id == project.id,
         HostFilterView.is_project_default.is_(True),
     ).update({"is_project_default": False})
+    project_events.record(db, project.id, "default_view_changed", summary="cleared", count=int(cleared or 0))
     db.commit()
     return Response(status_code=204)
 

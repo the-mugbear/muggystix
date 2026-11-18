@@ -252,6 +252,18 @@ class FindingService:
         # announced: {finding id: (finding, [rows])} — ``announce_retests``.
         self._retests_requested: Dict[int, Tuple[Finding, List[FindingHost]]] = {}
 
+    def _changelog(
+        self, finding: Finding, action: str, *, summary: Optional[str] = None, count: int = 1,
+    ) -> None:
+        """One line of the project's changelog about ``finding``, in this
+        transaction (``project_events.record``; who acted is the request's)."""
+        from app.services import project_events
+
+        project_events.record(
+            self.db, finding.project_id, action, subject_type="finding", subject_id=finding.id,
+            label=finding.title, summary=summary, count=count,
+        )
+
     def announce_retests(self, actor_id: Optional[int]) -> None:
         """Tell who must know that hosts now await a retest (owner,
         2026-10-14: the finding's owner; "When there's no owner notify all
@@ -882,6 +894,7 @@ class FindingService:
             self._attach_hosts(finding, host_ids, names_by_host=names_by_host)
         self._status_line(finding, from_status=None, to_status=status, actor_id=actor_id, summary=summary)
         self.db.flush()
+        self._changelog(finding, "finding_created", summary=f"{severity}, {len(host_ids or [])} affected")
         return finding
 
     # ------------------------------------------------------------------
@@ -917,10 +930,22 @@ class FindingService:
             finding.status = status
             self._status_line(finding, from_status=old, to_status=status, actor_id=actor_id, summary=summary)
             moved.append(finding)
+            was = old
         # ONE flush for the lot (TRI-9: it was one per finding — 5,000 round
         # trips for the bulk cap).
         if moved:
             self.db.flush()
+        # …and ONE changelog line: the finding by name when it is one, a
+        # count when it is a bulk change.
+        if len(moved) == 1:
+            self._changelog(moved[0], "finding_status_changed", summary=f"{was} → {status}")
+        elif moved:
+            from app.services import project_events
+
+            project_events.record(
+                self.db, moved[0].project_id, "finding_status_changed", subject_type="finding",
+                summary=f"{len(moved)} findings → {status}", count=len(moved),
+            )
         return moved
 
     def _status_line(
@@ -967,6 +992,10 @@ class FindingService:
             raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
         if self._move_endpoint(finding, row, host_status, actor_id, note):
             self.db.flush()
+            self._changelog(
+                finding, "finding_endpoint_status_changed",
+                summary=f"{self._endpoint_label(row)} → {host_status}",
+            )
             self.announce_retests(actor_id)
         return finding
 
@@ -1005,6 +1034,11 @@ class FindingService:
             )
         moved = sum(1 for row in rows if self._move_endpoint(finding, row, host_status, actor_id, note))
         self.db.flush()
+        # ONE line for the lot.
+        self._changelog(
+            finding, "finding_endpoint_status_changed",
+            summary=f"{moved} affected system{'s' if moved != 1 else ''} → {host_status}", count=moved,
+        )
         self.announce_retests(actor_id)
         return moved
 
@@ -1069,6 +1103,8 @@ class FindingService:
             outcome="no_finding" if fixed else "finding", summary=summary, command=command,
             raw_output=raw_output, finding_id=finding.id, finding_host_id=row.id,
             recorded_by_user_id=actor_id,
+            # The retest's own changelog line (below) says what this record is.
+            changelog=False,
         )
         self.db.flush()
         note = f"retest: {'fixed' if fixed else 'still present'} (evidence record {record.id})"
@@ -1084,6 +1120,10 @@ class FindingService:
             row.retest_requested_at = None
             self._endpoint_line(finding, actor_id, f"Endpoint {self._endpoint_label(row)}: {note}")
         self.db.flush()
+        self._changelog(
+            finding, "finding_retest_recorded",
+            summary=f"{self._endpoint_label(row)}: {'fixed' if fixed else 'still present'}",
+        )
         return record
 
     def request_retest(self, finding: Finding, row: FindingHost, actor_id: Optional[int], note: str) -> bool:
@@ -1200,6 +1240,7 @@ class FindingService:
             summary=f"Added {len(wanted)} affected host{'s' if len(wanted) != 1 else ''}: {shown}",
         ))
         self.db.flush()
+        self._changelog(finding, "finding_endpoints_added", summary=shown, count=len(wanted))
         return wanted
 
     def _before_endpoints_removed(
@@ -1238,6 +1279,11 @@ class FindingService:
             self._record_endpoint_removed(finding, row, actor_id)
             self.db.delete(row)
         self.db.flush()
+        if rows:
+            self._changelog(
+                finding, "finding_endpoints_removed",
+                summary=", ".join(self._endpoint_label(row) for row in rows[:10]), count=len(rows),
+            )
         return finding
 
     def _record_endpoint_removed(self, finding: Finding, row: FindingHost, actor_id: Optional[int]) -> None:
@@ -1309,6 +1355,7 @@ class FindingService:
         # (``_record_endpoint_removed``), where ``restore_endpoint`` reads it.
         snapshot = {"host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status}
         self._record_endpoint_removed(finding, row, actor_id)
+        self._changelog(finding, "finding_endpoints_removed", summary=self._endpoint_label(row))
         self.db.delete(row)
         self.db.flush()
         return snapshot
@@ -1373,6 +1420,7 @@ class FindingService:
         if row is not None:
             if not was_attached:
                 self._endpoint_line(finding, actor_id, f"Restored endpoint {self._endpoint_label(row)}")
+                self._changelog(finding, "finding_endpoints_added", summary=self._endpoint_label(row))
                 asked = self._removed_retest_request(finding, host_id, name_id)
                 if asked is not None:
                     row.retest_requested_at = asked
@@ -1409,6 +1457,8 @@ class FindingService:
             self.db.query(Annotation).filter(Annotation.id.in_(note_ids)).delete(
                 synchronize_session=False,
             )
+        # The line outlives the finding: it names what was deleted.
+        self._changelog(finding, "finding_deleted", summary=f"{finding.severity}, {finding.status}")
         self.db.delete(finding)
         self.db.flush()
         return note_ids
@@ -1865,6 +1915,9 @@ class FindingService:
         self.db.add(note)
         self.db.flush()  # assign note.id before stamping thread_root_id
         note.thread_root_id = (parent.thread_root_id or parent.id) if parent else note.id
+        commented_on = self.db.get(Finding, finding_id)
+        if commented_on is not None:
+            self._changelog(commented_on, "finding_comment_added")
         self.db.commit()
         self.db.refresh(note)
         self.db.refresh(note, attribute_names=["author"])

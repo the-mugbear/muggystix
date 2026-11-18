@@ -44,6 +44,37 @@ class HostFollowService:
     def __init__(self, db: Session):
         self.db = db
 
+    # --- the project's changelog --------------------------------------------
+    def _host_line(self, host_id: int, action: str, summary: Optional[str] = None) -> None:
+        """One changelog line about a host, in this transaction."""
+        from app.services import project_events
+
+        host = self.db.query(models.Host.project_id, models.Host.ip_address).filter(
+            models.Host.id == host_id,
+        ).first()
+        if host is not None:
+            project_events.record(
+                self.db, host.project_id, action, subject_type="host", subject_id=host_id,
+                label=host.ip_address, summary=summary,
+            )
+
+    def _note_line(self, note: Annotation, *, on_host: str, on_finding: str) -> None:
+        """A note was added / edited / deleted: a host's note is a line about
+        the host (``on_host``), a finding's comment a line about the finding
+        (``on_finding``).  The line never carries the note's text."""
+        from app.db.models_findings import Finding
+        from app.services import project_events
+
+        if note.host_id is not None:
+            self._host_line(note.host_id, on_host)
+        elif note.finding_id is not None:
+            finding = self.db.get(Finding, note.finding_id)
+            if finding is not None:
+                project_events.record(
+                    self.db, finding.project_id, on_finding, subject_type="finding",
+                    subject_id=finding.id, label=finding.title,
+                )
+
     def get_follow(self, host_id: int, user_id: int) -> Optional[HostFollow]:
         return (
             self.db.query(HostFollow)
@@ -89,6 +120,7 @@ class HostFollowService:
             follow = HostFollow(host_id=host_id, user_id=user_id, status=status)
             self.db.add(follow)
         self.apply_review_status(follow, status, user_id)
+        self._host_line(host_id, "host_review_changed", getattr(status, "value", str(status)))
         self.db.commit()
         self.db.refresh(follow)
         return follow
@@ -104,6 +136,7 @@ class HostFollowService:
         if not follow or getattr(follow.status, "value", follow.status) != FollowStatus.REVIEWED.value:
             return None
         follow.review_summary = note
+        self._host_line(host_id, "host_review_changed", "review note written" if note else "review note removed")
         self.db.commit()
         self.db.refresh(follow)
         return follow
@@ -141,6 +174,13 @@ class HostFollowService:
         if refused:
             self.db.rollback()
             return refused
+        from app.services import project_events
+
+        project_events.record(
+            self.db, project_id, "host_review_changed", subject_type="host",
+            summary=f"{len(stamped)} host{'s' if len(stamped) != 1 else ''} still reviewed",
+            count=len(stamped),
+        )
         self.db.commit()
         return []
 
@@ -173,6 +213,7 @@ class HostFollowService:
         follow = self.get_follow(host_id, user_id)
         if follow:
             self.db.delete(follow)
+            self._host_line(host_id, "host_review_changed", "cleared")
             self.db.commit()
 
     def list_notes(self, host_id: int, limit: int = 50) -> List[Annotation]:
@@ -235,6 +276,7 @@ class HostFollowService:
         # Persist the thread root (review #5): a root note points at itself;
         # a reply inherits its parent's root.
         note.thread_root_id = parent.thread_root_id or parent.id if parent else note.id
+        self._note_line(note, on_host="host_note_added", on_finding="finding_comment_added")
         self.db.commit()
         self.db.refresh(note)
         self.db.refresh(note, attribute_names=["author"])
@@ -325,6 +367,7 @@ class HostFollowService:
         if host_id is not None and note.host_id != host_id:
             raise ValueError("Note not found")
         note.body = body
+        self._note_line(note, on_host="host_note_edited", on_finding="finding_comment_edited")
         if commit:
             self.db.commit()
             self.db.refresh(note)
@@ -403,6 +446,7 @@ class HostFollowService:
                 self.db, image_ids, action="delete this comment", then="delete it",
             )
         nid = note.id
+        self._note_line(note, on_host="host_note_deleted", on_finding="finding_comment_deleted")
         self.db.delete(note)
         self.db.commit()
         # R6: the NoteAttachment rows cascaded with the note — drop their files too.

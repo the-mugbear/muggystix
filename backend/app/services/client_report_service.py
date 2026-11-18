@@ -2083,6 +2083,12 @@ class ClientReportService:
             report.render_error = None
             if original is not None:
                 original.status = ReportStatus.SUPERSEDED
+            from app.services import project_events
+
+            project_events.record(
+                self.db, project_id, "report_issued", subject_type="report", subject_id=report.id,
+                label=report.title, summary=f"report {number}",
+            )
             self.db.flush()
         except Exception:
             discard_report_copies(project_id, report_id)

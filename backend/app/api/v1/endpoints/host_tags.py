@@ -24,6 +24,7 @@ from app.db.models import HostTag, HostTagAssignment
 from app.db.models_project import Project, ProjectRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
+from app.services import project_events
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -83,13 +84,23 @@ def update_tag(
     project: Project = Depends(get_current_project),
 ):
     tag = _tag_or_404(db, project.id, tag_id)
+    changed = []
     if payload.name is not None:
         name = payload.name.strip()
         if not name:
             raise HTTPException(status_code=422, detail="Tag name cannot be empty")
+        if name != tag.name:
+            changed.append("renamed")
         tag.name = name
     if payload.color is not None:
+        if (payload.color or None) != tag.color:
+            changed.append("colour changed")
         tag.color = payload.color or None
+    if changed:
+        project_events.record(
+            db, project.id, "host_tags_changed", subject_type="tag", subject_id=tag.id,
+            label=tag.name, summary=", ".join(changed),
+        )
     try:
         db.commit()
     except IntegrityError:
@@ -114,6 +125,10 @@ def delete_tag(
     project: Project = Depends(get_current_project),
 ):
     tag = _tag_or_404(db, project.id, tag_id)
+    project_events.record(
+        db, project.id, "host_tags_changed", subject_type="tag", subject_id=tag.id,
+        label=tag.name, summary="tag deleted",
+    )
     db.delete(tag)  # assignments cascade via FK ondelete=CASCADE + ORM cascade
     db.commit()
     return Response(status_code=204)

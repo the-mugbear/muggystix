@@ -120,6 +120,16 @@ def record_edit(
         changed_by_id=actor_id, summary=summary,
         field=field, before_value=before_s, after_value=after_s,
     ))
+    if field != "owner":
+        # The project's changelog names the field, never its text (the values
+        # are on the finding's own history).  An owner change is one line for
+        # the whole assignment, written by ``assign_findings``.
+        from app.services import project_events
+
+        project_events.record(
+            db, finding.project_id, "finding_edited", subject_type="finding", subject_id=finding.id,
+            label=finding.title, summary=label,
+        )
 
 
 def edit_values(db: Session, finding_id: int, entry_id: int) -> FindingStatusHistory:
@@ -180,6 +190,20 @@ def assign_findings(
     changed = [f for f in findings if f.owner_id != owner_id]
     for finding in changed:
         set_owner(db, finding, owner_id, actor_id)
+    if changed:
+        # ONE changelog line for the assignment, single or bulk (``set_owner``'s
+        # history line is per finding; ``record_edit`` leaves the owner to this).
+        from app.services import project_events
+
+        to_whom = _person(db, owner_id) or "nobody"
+        one = changed[0] if len(changed) == 1 else None
+        project_events.record(
+            # The findings' own project: a caller may pass no project object.
+            db, changed[0].project_id, "finding_assigned", subject_type="finding",
+            subject_id=one.id if one is not None else None, label=one.title if one is not None else None,
+            summary=f"to {to_whom}" if one is not None else f"{len(changed)} findings to {to_whom}",
+            count=len(changed),
+        )
     if owner_id is not None and changed:
         actor = db.get(User, actor_id) if actor_id is not None else None
         NotificationService(db).notify_findings_assigned(
@@ -245,6 +269,7 @@ def promote_or_dismiss_vulnerability(
     summary: Optional[str] = None,
     scope: Optional[str] = None,
     on_join: str = "set",
+    changelog: bool = True,
 ) -> Tuple[Finding, bool]:
     """Promote a scanner observation to a finding, or dismiss it.
 
@@ -270,6 +295,12 @@ def promote_or_dismiss_vulnerability(
     endpoint of the finding on that host that was dismissed as a false
     positive goes back to open; an issue-wide promotion leaves every host's
     own dismissal alone.
+
+    The call is one line of the project's changelog about the observation —
+    dismissed (false positive, accepted risk) or promoted — for the click, an
+    accepted proposal and a promoted test result alike.  ``changelog=False``
+    is for a caller that makes several calls for ONE action and writes its
+    own line (the list's dismissal on named hosts).
     """
     status = status or FindingStatus.CONFIRMED.value
     is_fp = status == FindingStatus.FALSE_POSITIVE.value
@@ -281,22 +312,38 @@ def promote_or_dismiss_vulnerability(
                    "about the issue on every host.",
         )
     svc = FindingService(db)
-    if scope == "host" and is_fp:
-        return svc.dismiss_vulnerability_on_host(
+    on_this_host = scope == "host"
+    if on_this_host and is_fp:
+        finding, created = svc.dismiss_vulnerability_on_host(
             vuln=vuln, project_id=project_id, actor_id=actor_id,
             severity=severity, owner_id=owner_id, summary=summary,
         )
-    on_this_host = scope == "host"
-    # The evidence lock that must precede the finding, and the linking of the
-    # test results that showed the issue, are the service's own steps.
-    finding, created = svc.promote_vulnerability(
-        vuln=vuln, project_id=project_id, actor_id=actor_id,
-        severity=severity, status=status, owner_id=owner_id, summary=summary,
-        host_ids=([vuln.host_id] if vuln.host_id else []) if on_this_host else None,
-        on_join=on_join,
-    )
-    if on_this_host and not is_fp and vuln.host_id:
-        svc.reopen_false_positive_endpoints(
-            finding=finding, host_id=vuln.host_id, actor_id=actor_id, note="promoted on this host",
+    else:
+        # The evidence lock that must precede the finding, and the linking of the
+        # test results that showed the issue, are the service's own steps.
+        finding, created = svc.promote_vulnerability(
+            vuln=vuln, project_id=project_id, actor_id=actor_id,
+            severity=severity, status=status, owner_id=owner_id, summary=summary,
+            host_ids=([vuln.host_id] if vuln.host_id else []) if on_this_host else None,
+            on_join=on_join,
         )
+        if on_this_host and not is_fp and vuln.host_id:
+            svc.reopen_false_positive_endpoints(
+                finding=finding, host_id=vuln.host_id, actor_id=actor_id, note="promoted on this host",
+            )
+    if changelog:
+        # The outcome and where it applies — never the reason someone wrote.
+        from app.services import project_events
+
+        where = "on this host" if on_this_host else "on every host carrying it"
+        if is_fp or status == FindingStatus.ACCEPTED_RISK.value:
+            project_events.record(
+                db, project_id, "observation_dismissed", subject_type="observation", subject_id=vuln.id,
+                label=vuln.title, summary=f"false positive {where}" if is_fp else "accepted risk",
+            )
+        else:
+            project_events.record(
+                db, project_id, "observation_promoted", subject_type="observation", subject_id=vuln.id,
+                label=vuln.title, summary=f"{status} {where}",
+            )
     return finding, created

@@ -2055,6 +2055,11 @@ def test_the_gate_fails_on_a_skip_for_want_of_any_mount():
     kept = [
         "SKIPPED [1] ../app/tests/test_g.py:271: nothing follows it",
         "test_h.py ....s.   [100%]",
+        # Git-ignored fixtures only their owner has: absent by design on any
+        # other clone, so the gate must pass without them (A13, 2026-11-18).
+        "SKIPPED [9] ../app/tests/test_artifacts_manual_dispatcher.py:58: the operator-local scan fixtures "
+        "(artifacts/manual/, git-ignored) are absent on this machine; the same dispatcher routing is "
+        "covered by the inline cases in test_phase1_regressions.py",
     ]
     out = _mount_skips("\n".join(flagged + kept) + "\n")
     assert out.splitlines() == flagged

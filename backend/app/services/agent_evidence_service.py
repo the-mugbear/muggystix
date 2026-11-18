@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import models
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_proposals import EvidenceOutcome, EvidenceRecord
+from app.services import project_events
 
 from app.schemas.host_test_schemas import RAW_OUTPUT_MAX_BYTES  # noqa: F401  (5 MB; one constant, also the schemas' cap)
 
@@ -52,6 +53,7 @@ def record_evidence(
     host_test_id: Optional[int] = None,
     request_key: Optional[str] = None,
     server_timed: bool = False,
+    changelog: bool = True,
 ) -> EvidenceRecord:
     """Validate the targets belong to the project and add the row (the raw
     output is kept in it).  The caller commits.
@@ -59,14 +61,25 @@ def record_evidence(
     ``server_timed``: ``executed_at`` is the server's clock, not something the
     caller sent, so it is left out of the replay fingerprint — a retry of the
     same result is then recognised, and a changed one under the same key is
-    refused, by the one check below."""
-    return record_evidence_once(
+    refused, by the one check below.
+
+    A record this call stored is a line of the project's changelog (the tool
+    and the outcome — never the summary, the command or the output); a replay
+    writes none.  ``changelog=False``: the caller's own line says what the
+    record was part of (a finding's retest)."""
+    record, created = record_evidence_once(
         db, project_id=project_id, host_id=host_id, tool=tool, outcome=outcome, summary=summary,
         command=command, raw_output=raw_output, observed_ip=observed_ip, executed_at=executed_at,
         finding_id=finding_id, finding_host_id=finding_host_id, agent_session_id=agent_session_id,
         recorded_by_user_id=recorded_by_user_id, agent_model=agent_model, agent_client=agent_client,
         host_test_id=host_test_id, request_key=request_key, server_timed=server_timed,
-    )[0]
+    )
+    if changelog and created:
+        project_events.record(
+            db, project_id, "evidence_recorded", subject_type="evidence", subject_id=record.id,
+            label=record.tool, summary=record.outcome,
+        )
+    return record
 
 
 def record_evidence_once(
@@ -520,6 +533,12 @@ def promote_evidence(
     db.flush()
     if others:
         _link_cited_evidence(db, project_id, others, finding, issue_key)
+    # The promotion's own line, about the finding the result is now on (a new
+    # finding, or the observation's promotion, has its line from its service).
+    project_events.record(
+        db, project_id, "evidence_promoted", subject_type="finding", subject_id=finding.id,
+        label=finding.title, summary="new finding" if created else "joined the issue's finding",
+    )
     return EvidencePromotion(finding=finding, joined_issue=vuln is not None, created=created)
 
 

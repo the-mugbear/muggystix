@@ -2,6 +2,29 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.546.0",
+      "frontend": "5.435.0",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "kind": "new",
+          "text": "Changelog (under Collaboration, for project auditors and above): who did what to the project's findings, hosts, scans, scope, reports, proposals and members, newest first, filtered by person, by people or agents, and by kind."
+        },
+        {
+          "kind": "new",
+          "text": "In the changelog an agent's action is always shown as its operator's agent, never as the person's own. The changelog starts empty at this upgrade; earlier work is on each finding's, host's and scan's own page."
+        },
+        {
+          "kind": "changed",
+          "text": "On the Hosts list, the Review column reads \"Reviewed\" as soon as anyone has reviewed the host, so it always agrees with the Review filter; the line beside it still says who reviewed and who is still reviewing."
+        },
+        {
+          "kind": "before_upgrading",
+          "text": "This release adds a database table for the changelog. Each project keeps its newest 500,000 lines (PROJECT_EVENTS_MAX_PER_PROJECT in .env; 0 keeps all)."
+        }
+      ]
+    },
+    {
       "backend": "2.545.0",
       "frontend": "5.434.0",
       "date": "2026-11-18",

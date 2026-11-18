@@ -30,7 +30,7 @@ from app.api.deps import (
     require_project_role,
 )
 from app.schemas.schemas import ReviewStateToSet
-from app.services import host_query
+from app.services import host_query, project_events
 from app.services.host_follow_service import HostFollowService
 from app.services.webhook_dispatcher import stage_dispatch
 
@@ -64,6 +64,10 @@ def _valid_host_ids(db: Session, project_id: int, host_ids: List[int]) -> List[i
     return [r[0] for r in rows]
 
 
+def _hosts(n: int) -> str:
+    return f"{n} host{'s' if n != 1 else ''}"
+
+
 class BulkTagRequest(BaseModel):
     host_ids: List[int]
     tag_ids: List[int] = Field(default_factory=list)
@@ -87,10 +91,12 @@ def bulk_tags(
         return BulkResult(affected=0, requested=len(payload.host_ids))
 
     tag_ids: set[int] = set()
+    tag_names: dict[int, str] = {}  # for the changelog line
     for tid in payload.tag_ids:
         tag = db.query(HostTag).filter(HostTag.id == tid, HostTag.project_id == project.id).first()
         if tag:
             tag_ids.add(tag.id)
+            tag_names[tag.id] = tag.name
 
     # create-by-name only makes sense when adding
     if payload.action == "add":
@@ -105,16 +111,19 @@ def bulk_tags(
             )
             if existing:
                 tag_ids.add(existing.id)
+                tag_names[existing.id] = existing.name
             else:
                 tag = HostTag(project_id=project.id, name=name, created_by_id=current_user.id)
                 db.add(tag)
                 db.flush()
                 tag_ids.add(tag.id)
+                tag_names[tag.id] = tag.name
 
     if not tag_ids:
         return BulkResult(affected=0, requested=len(host_ids))
 
     affected = 0
+    changed_hosts: set[int] = set()
     if payload.action == "add":
         existing_pairs = {
             (h, t)
@@ -127,13 +136,27 @@ def bulk_tags(
                 if (h, t) not in existing_pairs:
                     db.add(HostTagAssignment(host_id=h, tag_id=t, created_by_id=current_user.id))
                     affected += 1
+                    changed_hosts.add(h)
     else:
+        changed_hosts = {
+            h for (h,) in db.query(HostTagAssignment.host_id)
+            .filter(HostTagAssignment.host_id.in_(host_ids), HostTagAssignment.tag_id.in_(tag_ids))
+            .distinct()
+        }
         affected = (
             db.query(HostTagAssignment)
             .filter(HostTagAssignment.host_id.in_(host_ids), HostTagAssignment.tag_id.in_(tag_ids))
             .delete(synchronize_session=False)
         )
 
+    # One changelog line for the whole action: how many hosts, which tags.
+    names = sorted(tag_names.values())
+    shown = ", ".join(names[:5]) + (f" +{len(names) - 5} more" if len(names) > 5 else "")
+    project_events.record(
+        db, project.id, "host_tags_changed", subject_type="host",
+        summary=f"{_hosts(len(changed_hosts))}, {'added' if payload.action == 'add' else 'removed'}: {shown}",
+        count=len(changed_hosts),
+    )
     db.commit()
     return BulkResult(affected=affected, requested=len(host_ids))
 
@@ -230,6 +253,10 @@ def bulk_assign(
         body=f"Assigned by @{current_user.username}",
         context=context,
     )
+    project_events.record(
+        db, project.id, "host_assigned", subject_type="host",
+        summary=f"{_hosts(len(host_ids))} to {assignee.username}", count=len(host_ids),
+    )
     db.commit()
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))
 
@@ -272,6 +299,10 @@ def bulk_unassign(
     for follow in rows:
         follow.assigned_at = None
         follow.assigned_by_id = None
+    project_events.record(
+        db, project.id, "host_unassigned", subject_type="host",
+        summary=_hosts(len(rows)), count=len(rows),
+    )
     db.commit()
     return BulkResult(affected=len(rows), requested=len(payload.host_ids))
 
@@ -314,5 +345,11 @@ def bulk_follow(
             db.add(follow)
         HostFollowService.apply_review_status(follow, status, current_user.id)
 
+    # ONE changelog line for the action (``apply_review_status`` records
+    # nothing; the single-host route's line is ``set_follow_status``'s).
+    project_events.record(
+        db, project.id, "host_review_changed", subject_type="host",
+        summary=f"{_hosts(len(host_ids))} → {status.value}", count=len(host_ids),
+    )
     db.commit()
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))

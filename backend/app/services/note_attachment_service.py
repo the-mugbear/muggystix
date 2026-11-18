@@ -164,13 +164,17 @@ def store_image_attachment(
     return store_image_bytes(
         db, note_id=note_id, project_id=project_id, uploaded_by_id=uploaded_by_id,
         data=data, content_type=declared, filename=file.filename, caption=caption,
+        # A note's image is a changelog line (the host note's route and the
+        # finding comment's both upload through here); an image of the
+        # report's own text is its route's.
+        note_image_line=note_id is not None,
     )
 
 
 def store_image_bytes(
     db: Session, *, note_id: Optional[int], project_id: int, uploaded_by_id: Optional[int],
     data: bytes, content_type: str, filename: Optional[str], caption: Optional[str] = None,
-    commit: bool = True,
+    commit: bool = True, note_image_line: bool = False,
 ) -> "models.NoteAttachment":
     """``store_image_attachment`` for bytes already in hand — the ONE writer
     of an image attachment's file and row (an upload, and an issued report's
@@ -224,6 +228,13 @@ def store_image_bytes(
         caption=caption,
     )
     db.add(att)
+    if note_image_line:
+        from app.services import project_events
+
+        project_events.record(
+            db, project_id, "note_image_changed", subject_type="note", subject_id=note_id,
+            label=display_name, summary="added",
+        )
     if not commit:
         # Part of the caller's transaction (an issued report's image restored
         # with its revision's draft — review 2026-10-16, N6): the file goes

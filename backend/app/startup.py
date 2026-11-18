@@ -232,6 +232,14 @@ def _purge_retained(retention_days: int, audit_days: int, mcp_days: int = 0, ses
             purge_rows_older_than(db, AuditLog, AuditLog.timestamp, audit_days)
             if audit_days > 0 else 0
         )
+        # A project's changelog keeps its newest PROJECT_EVENTS_MAX_PER_PROJECT
+        # lines (0 = all): the oldest beyond that go here, once a day.
+        from app.services import project_events
+
+        trimmed = project_events.trim_to_cap(db)
+        db.commit()
+        if trimmed:
+            logger.info("Retention: trimmed %d changelog line(s) beyond the per-project cap", trimmed)
         return calls, mcp, sessions, audits
 
 
@@ -258,7 +266,13 @@ async def agent_api_call_retention_loop() -> None:
     # Audit rows are kept forever unless an operator sets a window: deleting
     # security audit data is a policy decision, not a default.
     audit_days = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "0"))
-    if retention_days <= 0 and audit_days <= 0 and mcp_days <= 0 and session_days <= 0:
+    from app.core.config import settings as _settings
+
+    if (
+        retention_days <= 0 and audit_days <= 0 and mcp_days <= 0 and session_days <= 0
+        # The changelog's cap is trimmed by this pass too.
+        and _settings.PROJECT_EVENTS_MAX_PER_PROJECT <= 0
+    ):
         logger.info(
             "Retention loop disabled (AGENT_API_CALL_RETENTION_DAYS=%s, MCP_TOOL_CALL_RETENTION_DAYS=%s, "
             "USER_SESSION_RETENTION_DAYS=%s, AUDIT_LOG_RETENTION_DAYS=%s)",

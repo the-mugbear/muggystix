@@ -4,6 +4,7 @@ from app.api.v1.endpoints import (
     host_queries, findings, findings_bulk, scanner_observations, dns_names,
     # v2.509.0 — the Query page (a pipe query language) and saved queries.
     queries,
+    changelog,
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, parse_errors, reports, report_drafts, client_reports, presentations,
     auth, two_factor,
@@ -242,6 +243,8 @@ project_router.include_router(remediation.router, prefix="", tags=["remediation"
 # v2.386.0 — scanner observations by issue, and their bulk promotion.
 project_router.include_router(scanner_observations.router, prefix="", tags=["scanner-observations"])
 project_router.include_router(queries.router, prefix="", tags=["query"])
+# v2.546.0 — the project's changelog (auditor and above; no agent route).
+project_router.include_router(changelog.router, prefix="", tags=["changelog"])
 project_router.include_router(host_tags.router, prefix="/hosts", tags=["host-tags"])
 project_router.include_router(host_bulk.router, prefix="/hosts", tags=["host-bulk"])
 project_router.include_router(host_filter_views.router, prefix="/hosts", tags=["host-filter-views"])

@@ -237,10 +237,14 @@ def start_staged_job(
 
 def queue_job(
     db: Session, job_id: int, *, allowed_from: tuple, choice: Optional[Dict[str, Any]] = None,
-    keep_truncated: bool = False,
+    keep_truncated: bool = False, changelog_action: str = "scan_import_started",
 ) -> IngestionJob:
     """staged | failed → queued: the ONE path, for the format review's start
     and for a plain retry of a failed job.
+
+    Writes the project's changelog line in the transaction it commits:
+    ``changelog_action`` is what the line says (an import was started; an
+    agent's ``keep_truncated_for_agent`` names its own).
 
     ``keep_truncated`` is the operator's answer to a file that was cut short
     ("import what the file holds"): an instruction for the attempt being
@@ -326,6 +330,19 @@ def queue_job(
     else:
         chosen = choice.get("format_override")
         started.message = "Queued by the operator" + (f" as {format_label(chosen)}" if chosen else "")
+    if started.project_id is not None:
+        from app.services import project_events
+
+        chosen_format = (choice or {}).get("format_override")
+        detail = [
+            "retry" if found_as.get("status") == "failed" else "",
+            f"as {format_label(chosen_format)}" if chosen_format else "",
+            "keeping what the cut-short file holds" if keep_truncated else "",
+        ]
+        project_events.record(
+            db, started.project_id, changelog_action, subject_type="upload", subject_id=started.id,
+            label=started.original_filename, summary=", ".join(part for part in detail if part) or None,
+        )
     db.commit()
     db.refresh(started)
     return started
@@ -380,7 +397,10 @@ def keep_truncated_for_agent(
         user_agent=user_agent,
         commit=False,
     )
-    return queue_job(db, job.id, allowed_from=("failed",), keep_truncated=True)
+    return queue_job(
+        db, job.id, allowed_from=("failed",), keep_truncated=True,
+        changelog_action="truncated_upload_kept",
+    )
 
 
 def file_retained(job: IngestionJob) -> bool:
@@ -601,17 +621,32 @@ def _reprocess_into(
         ),
     )
     db.add(new)
+    if new.project_id is not None:
+        from app.services import project_events
+
+        db.flush()  # the new job's id, for the line committed with it
+        project_events.record(
+            db, new.project_id, "scan_reprocessed", subject_type="upload", subject_id=new.id,
+            label=new.original_filename,
+            summary=f"as {format_label(format_override)}" if format_override else None,
+        )
     db.commit()
     db.refresh(new)
     return new
 
 
-def discard_staged_job(db: Session, job: IngestionJob, *, now: Optional[datetime] = None) -> IngestionJob:
+def discard_staged_job(
+    db: Session, job: IngestionJob, *, now: Optional[datetime] = None, changelog: bool = True,
+) -> IngestionJob:
     """v2.355.0 — the operator's way out of a staged job they will not
     start: the file goes, the row becomes a dismissed failure ("Discarded
     before import") so it leaves the queue but stays in Ingestion Results as
     history.  Only a ``staged`` job can be discarded; anything queued or
-    later has its own cancel / dismiss."""
+    later has its own cancel / dismiss.
+
+    Writes the project's changelog line with the discard; a caller that
+    discards several as ONE action passes ``changelog=False`` and writes one
+    line for them all."""
     from app.services.ingestion_service import _transitions
     from app.services.job_transitions import JobNotTransitionable
 
@@ -635,6 +670,13 @@ def discard_staged_job(db: Session, job: IngestionJob, *, now: Optional[datetime
         raise ValueError("Only a staged job can be discarded (the job no longer exists)")
     discarded.completed_at = now
     _remove_file_of_locked_job(discarded, now)
+    if changelog and discarded.project_id is not None:
+        from app.services import project_events
+
+        project_events.record(
+            db, discarded.project_id, "scan_upload_discarded", subject_type="upload",
+            subject_id=discarded.id, label=discarded.original_filename,
+        )
     db.commit()
     db.refresh(discarded)
     return discarded

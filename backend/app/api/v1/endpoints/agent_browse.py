@@ -37,6 +37,7 @@ from app.api.deps import (
 )
 from app.core.security import check_permissions
 from app.db.models_tools import TOOL_REFERENCE
+from app.services import project_events
 from app.services.host_follow_service import HostFollowService
 from app.services.tool_registry_service import record_suggestion
 from app.services.agent_session_service import (
@@ -532,6 +533,12 @@ def update_agent_host(
     # host already has changes none, but it still pins the name (the source
     # above) — and that used to be left uncommitted, so the next scan could
     # rename a host its operator had just confirmed.
+    if changed:
+        said = {"hostname": "hostname", "os_name": "OS"}
+        project_events.record(
+            db, host.project_id, "host_corrected", subject_type="host", subject_id=host.id,
+            label=host.ip_address, summary=", ".join(said[field] for field in changed),
+        )
     if changed or db.is_modified(host):
         db.commit()
         db.refresh(host)

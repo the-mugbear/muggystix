@@ -15,6 +15,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
+from app.services import project_events
 from app.services.staged_import_service import (
     detect_for_job, discard_staged_job, reprocess_job, start_staged_job,
 )
@@ -368,8 +369,15 @@ def discard_all_staged_jobs(
     )
     ids = []
     for job in query.all():
-        discard_staged_job(db, job)
+        # Each discard commits by itself (its row lock goes with it); the
+        # action's ONE changelog line is written after them, below.
+        discard_staged_job(db, job, changelog=False)
         ids.append(job.id)
+    project_events.record(
+        db, project.id, "scan_upload_discarded", subject_type="upload",
+        summary=f"{len(ids)} staged upload{'s' if len(ids) != 1 else ''}", count=len(ids),
+    )
+    db.commit()
     return DiscardStagedResponse(discarded=len(ids), job_ids=ids)
 
 
@@ -422,6 +430,12 @@ def dismiss_superseded_jobs(
             continue
         db.commit()
         done.append(jid)
+    # ONE changelog line for the action, after the per-job commits.
+    project_events.record(
+        db, project.id, "import_dismissed", subject_type="upload",
+        summary=f"{len(done)} superseded import{'s' if len(done) != 1 else ''}", count=len(done),
+    )
+    db.commit()
     return DismissSupersededResponse(dismissed=len(done), job_ids=done)
 
 
@@ -721,6 +735,7 @@ def dismiss_ingestion_job(
     (an agent's upload included).
     """
     job = _load_job(db, job_id, project)
+    already_dismissed = job.dismissed_at is not None  # a repeat changes nothing, and records nothing
     # v2.403.0 — through job_transitions: the status is checked under the
     # row lock (a retry could be re-queuing it right now).
     try:
@@ -734,6 +749,12 @@ def dismiss_ingestion_job(
     if dismissed is None:
         db.rollback()
         raise HTTPException(status_code=404, detail="Ingestion job not found")
+    if not already_dismissed:
+        project_events.record(
+            db, project.id, "import_dismissed", subject_type="upload", subject_id=dismissed.id,
+            label=dismissed.original_filename,
+            summary="partial import" if dismissed.status == "completed" else "failed import",
+        )
     db.commit()
     db.refresh(dismissed)
     return annotate_jobs(db, [dismissed])[0]

@@ -28,7 +28,7 @@ from app.schemas.schemas import (
     Annotation, AnnotationCreate, AnnotationUpdate,
     NoteAttachmentOut,
 )
-from app.services import report_images
+from app.services import project_events, report_images
 from app.services.notification_service import NotificationService
 from app.services.host_follow_service import (
     HostFollowService, VALID_NOTE_TYPES, NoteHasRepliesError, NOTE_UPDATE_NOTIFY_FAILED,
@@ -506,6 +506,10 @@ def delete_note_attachment(
         report_images.refuse_if_report_text_places(db, att)
 
     target = attachment_path(att)
+    project_events.record(
+        db, project.id, "note_image_changed", subject_type="note", subject_id=att.annotation_id,
+        label=att.filename, summary="removed",
+    )
     db.delete(att)
     db.commit()
     # The file goes only AFTER the row's delete has committed (N4): unlinking
@@ -568,11 +572,15 @@ def set_note_attachment_report_flag(
                 detail="Only the person who attached this image or a project admin can choose whether it "
                        "goes in the report, or caption it.",
             )
+    changed = []  # for the changelog line: what changed, never the caption's text
     if "caption" in sent:
         try:
-            att.caption = report_images.clean_caption(body.caption)
+            caption = report_images.clean_caption(body.caption)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+        if (caption or None) != (att.caption or None):
+            changed.append("caption changed")
+        att.caption = caption
     if "include_in_report" in sent:
         if att.annotation_id is None and not body.include_in_report:
             raise HTTPException(
@@ -586,7 +594,14 @@ def set_note_attachment_report_flag(
             report_images.refuse_if_placed(
                 db, [att.id], action="take this image out of the report", then='un-tick "In report"',
             )
+        if bool(att.include_in_report) != bool(body.include_in_report):
+            changed.append("included in report" if body.include_in_report else "taken out of report")
         att.include_in_report = body.include_in_report
+    if changed:
+        project_events.record(
+            db, project.id, "note_image_changed", subject_type="note", subject_id=att.annotation_id,
+            label=att.filename, summary=", ".join(changed),
+        )
     db.commit()
     db.refresh(att)
     return att

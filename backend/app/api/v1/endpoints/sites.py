@@ -16,6 +16,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
+from app.services import project_events
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -81,7 +82,10 @@ def update_site(
     if not site:
         raise HTTPException(status_code=404, detail="Site not found in this project")
     fields = body.model_dump(exclude_unset=True)
+    changed = []  # the fields that changed, for the changelog line
     if "criticality_tier" in fields and fields["criticality_tier"] is not None:
+        if site.criticality_tier != fields["criticality_tier"]:
+            changed.append("criticality tier")
         site.criticality_tier = fields["criticality_tier"]
     if "owner_id" in fields:
         # Defence-in-depth: an owner must be a member of this project.
@@ -94,9 +98,18 @@ def update_site(
             )
             if not member:
                 raise HTTPException(status_code=422, detail="Owner must be a member of this project")
+        if site.owner_id != fields["owner_id"]:
+            changed.append("owner")
         site.owner_id = fields["owner_id"]
     if "expected_host_count" in fields:
+        if site.expected_host_count != fields["expected_host_count"]:
+            changed.append("expected host count")
         site.expected_host_count = fields["expected_host_count"]
+    if changed:
+        project_events.record(
+            db, project.id, "site_changed", subject_type="site", subject_id=site.id,
+            label=site.name, summary=", ".join(changed),
+        )
     db.commit()
     db.refresh(site)
     subnet_count = (

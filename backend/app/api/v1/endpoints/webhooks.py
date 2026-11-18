@@ -19,6 +19,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole, WebhookConfig
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
+from app.services import project_events
 from app.services.llm_provider_service import encrypt_secret
 from app.services.webhook_dispatcher import (
     RETIRED_WEBHOOK_EVENTS,
@@ -134,9 +135,20 @@ def create_webhook(
         created_by_id=current_user.id,
     )
     db.add(cfg)
+    db.flush()
+    _changelog(db, cfg, "created")
     db.commit()
     db.refresh(cfg)
     return _serialize(cfg)
+
+
+def _changelog(db: Session, cfg: WebhookConfig, what: str) -> None:
+    """One line of the project's changelog about a webhook: its name and what
+    was done — never its URL or its secret."""
+    project_events.record(
+        db, cfg.project_id, "webhook_changed", subject_type="webhook", subject_id=cfg.id,
+        label=cfg.name, summary=what,
+    )
 
 
 @router.patch("/{webhook_id:int}", response_model=WebhookResponse, summary="Update a webhook")
@@ -162,6 +174,8 @@ def update_webhook(
     if payload.secret is not None:
         # "" clears the secret; any other value replaces it.
         cfg.secret_encrypted = encrypt_secret(payload.secret) if payload.secret else None
+    if db.is_modified(cfg):
+        _changelog(db, cfg, "changed")
     db.commit()
     db.refresh(cfg)
     return _serialize(cfg)
@@ -175,6 +189,7 @@ def delete_webhook(
     _: object = _ADMIN,
 ):
     cfg = _config_or_404(db, project.id, webhook_id)
+    _changelog(db, cfg, "deleted")
     db.delete(cfg)
     db.commit()
     return Response(status_code=204)

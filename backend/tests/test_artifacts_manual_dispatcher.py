@@ -59,10 +59,16 @@ ARTIFACTS_DIR = _resolve_artifacts_dir()
 
 pytestmark = pytest.mark.skipif(
     ARTIFACTS_DIR is None,
+    # Worded so the gate does NOT read it as a file it should have mounted
+    # (``check.sh`` MOUNT_SKIP_REASON fails on "not present" / "not mounted" /
+    # …; review 2026-11-17, A13).  These fixtures are git-ignored on purpose —
+    # they can carry an environment's scan data — so on any clone but their
+    # owner's they are absent by design, and the gate could never pass there.
+    # Where they exist the gate mounts them and these tests run.
     reason=(
-        "artifacts/manual/ not present — operator-local test fixtures "
-        "(see .gitignore).  Dispatcher routing is also covered by the "
-        "inline-fixture tests in test_phase1_regressions.py."
+        "the operator-local scan fixtures (artifacts/manual/, git-ignored) are absent on this "
+        "machine; the same dispatcher routing is covered by the inline cases in "
+        "test_phase1_regressions.py"
     ),
 )
 

@@ -441,6 +441,9 @@ async def record_observations(
         job = await ingestion_service.create_job(
             db=db, upload=upload, submitted_by_id=None, options=opts,
             batch_id=scan_batch.id if scan_batch is not None else None,
+            # The changelog line says observations were recorded (how many),
+            # not that a file was uploaded.
+            observations=len(lines),
         )
     except DuplicateUploadError as exc:
         raise HTTPException(status_code=409, detail=exc.detail())

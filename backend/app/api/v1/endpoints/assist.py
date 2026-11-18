@@ -29,6 +29,7 @@ from app.api.deps import get_current_project, require_project_role
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
+from app.services import project_events
 from app.services.agent_key_ttl import resolve_ttl_hours
 from app.services.agent_prompt_service import build_session_instructions, resolve_base_url
 from app.services.agent_session_service import (
@@ -172,6 +173,11 @@ def start_assist_session(
     # Read before commit() expires the row (a SELECT per attribute after it).
     session_id = session.id
     agent_id = agent.id
+    # The person's action (the session's own calls are marked as an agent's).
+    project_events.record(
+        db, project.id, "agent_session_started", subject_type="agent_session", subject_id=session_id,
+        label=f"#{session_id}",
+    )
     db.commit()
 
     mcp_url = f"{resolve_base_url(request)}/mcp"

@@ -310,6 +310,12 @@ export const NAV_PAGES: NavPage[] = [
     id: 'activity', path: '/activity', label: 'Collaboration', requiredRole: 'viewer', hub: 'collaboration',
     palette: { Icon: ActivityPulseIcon, keywords: ['notes', 'team', 'comments', 'activity', 'mentions'], order: 4 },
   },
+  {
+    // Who did what to the project's record — auditors and above, as the
+    // route is (a page follows the server's READ rule).
+    id: 'changelog', path: '/changelog', label: 'Changelog', requiredRole: 'auditor', hub: 'collaboration',
+    palette: { Icon: ActivityPulseIcon, keywords: ['changelog', 'history', 'audit', 'who', 'actions', 'changes'], order: 4.1 },
+  },
 
   // Settings hub — what configures THIS project and its scanners.
   // Both are `viewer`: a page follows the server's READ rule (style guide §40).

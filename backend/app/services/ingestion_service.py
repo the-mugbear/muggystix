@@ -1016,8 +1016,14 @@ class IngestionService:
         batch_id: Optional[int] = None,
         allow_duplicate: bool = False,
         stage: bool = False,
+        observations: Optional[int] = None,
     ) -> IngestionJob:
         """Persist an upload to disk and register an ingestion job.
+
+        The registration writes the project's changelog line with the job
+        row: an uploaded file, or — when ``observations`` says how many
+        objects ``POST /agent/observations`` handed over as this file —
+        recorded observations.
 
         ``stage`` (v2.352.0): register the job as ``staged`` — on disk, not
         queued.  No worker touches it until ``POST /upload/jobs/{id}/start``;
@@ -1081,7 +1087,7 @@ class IngestionService:
                 self._register_job, db, upload=upload, destination=destination, raw_name=raw_name,
                 file_size=file_size, content_sha256=content_sha256, options=options,
                 submitted_by_id=submitted_by_id, batch_id=batch_id,
-                allow_duplicate=allow_duplicate, stage=stage,
+                allow_duplicate=allow_duplicate, stage=stage, observations=observations,
             )
         except Exception:
             await run_in_threadpool(db.rollback)
@@ -1098,6 +1104,7 @@ class IngestionService:
         self, db: Session, *, upload: UploadFile, destination: Path, raw_name: str,
         file_size: int, content_sha256: str, options: Optional[Dict[str, object]],
         submitted_by_id: Optional[int], batch_id: Optional[int], allow_duplicate: bool, stage: bool,
+        observations: Optional[int] = None,
     ) -> IngestionJob:
         """The upload's job row, committed — ``create_job``'s blocking half,
         run in the thread pool.  Raises (the caller rolls back and removes the
@@ -1143,6 +1150,23 @@ class IngestionService:
             content_sha256=content_sha256,
         )
         db.add(job)
+        if job.project_id is not None:
+            # The changelog line, committed with the row it names (the flush
+            # gives the job its id; the commit below was about to make it).
+            from app.services import project_events
+
+            db.flush()
+            if observations is None:
+                project_events.record(
+                    db, job.project_id, "scan_uploaded", subject_type="upload", subject_id=job.id,
+                    label=raw_name, summary="staged for review" if stage else None,
+                )
+            else:
+                project_events.record(
+                    db, job.project_id, "observations_recorded", subject_type="upload", subject_id=job.id,
+                    label=raw_name,
+                    summary=f"{observations} observation{'s' if observations != 1 else ''}", count=observations,
+                )
         db.commit()
         db.refresh(job)
         return job
@@ -1276,6 +1300,13 @@ class IngestionService:
         if job is None:
             db.rollback()
             return False
+        if job.project_id is not None:
+            from app.services import project_events
+
+            project_events.record(
+                db, job.project_id, "import_cancelled", subject_type="upload", subject_id=job.id,
+                label=job.original_filename,
+            )
         db.commit()
         return True
 

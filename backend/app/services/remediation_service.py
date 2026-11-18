@@ -25,6 +25,7 @@ from app.db.models_remediation import FindingHostRemediation as Remediation
 from app.db.models_remediation import RemediationDaily, RemediationEvent, TRACKED_FIELDS
 from app.db.models_reports import Report, ReportStatus
 from app.schemas.remediation_schemas import APPLY_MAX_TARGETS, NOTE_MAX_CHARS, ApplyBody, ApplyRow, NoteIn
+from app.services import project_events
 from app.services import remediation_policy as deadlines
 from app.services.paging import page_envelope
 from app.services.client_report_service import INCLUDED_STATUSES, told_by_report
@@ -747,8 +748,28 @@ def _decide(record: Optional[Remediation], sent: dict, overwrite: bool, *, today
     return changes, conflicts, unchanged, None
 
 
+def _applied_line(db, project_id: int, touched: int, summary: Optional[str] = None) -> None:
+    """ONE changelog line for one apply — however many records it touched and
+    however many batches wrote them."""
+    project_events.record(
+        db, project_id, "remediation_applied", subject_type="remediation",
+        summary=summary or _plural(touched, "record", "records"), count=touched,
+    )
+
+
 def apply(db, project_id: int, body, who) -> dict:
-    """Set tracked fields (and add notes) on findings on hosts.
+    """Set tracked fields (and add notes) on findings on hosts — and, when it
+    wrote something, the project's changelog line for it (``_apply`` is the
+    write itself; ``assign_from_report`` composes that and records its own
+    one line)."""
+    result, touched = _apply(db, project_id, body, who)
+    _applied_line(db, project_id, touched)
+    return result
+
+
+def _apply(db, project_id: int, body, who) -> tuple[dict, int]:
+    """Set tracked fields (and add notes) on findings on hosts.  Returns the
+    answer and how many records it wrote to (0 for a dry run).
 
     Everything is PLANNED first and written only if the whole plan is valid:
     a row naming nothing here, a closed date without a closed status, a
@@ -864,7 +885,8 @@ def apply(db, project_id: int, body, who) -> dict:
         db.flush()
         _freeze_closed_deadlines(db, refreeze)
         findings.announce_retests(who.user_id)
-    return {"dry_run": body.dry_run, "overwrite": body.overwrite, "summary": summary, "rows": report}
+    touched = 0 if body.dry_run else sum(1 for _, changes, notes in plan if changes or notes)
+    return {"dry_run": body.dry_run, "overwrite": body.overwrite, "summary": summary, "rows": report}, touched
 
 
 def _no_defect(fh: FindingHost) -> bool:
@@ -1125,6 +1147,7 @@ def add_note(db, project_id: int, body, who) -> tuple[RemediationEvent, bool]:
     if not body.request_key:
         db.add(row)
         db.flush()
+        _entry_line(db, row, "remediation_recorded")
         return row, True
     # A retry sent while the first call is still in flight sees no stored row
     # and loses the unique index: it answers with the winner's note, as the
@@ -1138,6 +1161,7 @@ def add_note(db, project_id: int, body, who) -> tuple[RemediationEvent, bool]:
         if stored is None:
             raise
         return stored, False
+    _entry_line(db, row, "remediation_recorded")
     return row, True
 
 
@@ -1162,18 +1186,35 @@ def _own_note(db, project_id: int, event_id: int, user_id: Optional[int]) -> Rem
 
 def update_note(db, project_id: int, event_id: int, body, user_id: Optional[int]) -> RemediationEvent:
     row = _own_note(db, project_id, event_id, user_id)
+    changed = []
     if body.body is not None and body.body != row.body:
         row.body = body.body
         row.edited_at = datetime.now(timezone.utc)
+        changed.append("note")
     if body.occurred_at is not None:
+        if row.occurred_at is None or not _same_moment(row.occurred_at, body.occurred_at):
+            changed.append("date")
         row.occurred_at = body.occurred_at
+    if changed:
+        _entry_line(db, row, "remediation_changed", ", ".join(changed))
     db.flush()
     return row
 
 
 def delete_note(db, project_id: int, event_id: int, user_id: Optional[int]) -> None:
-    db.delete(_own_note(db, project_id, event_id, user_id))
+    row = _own_note(db, project_id, event_id, user_id)
+    _entry_line(db, row, "remediation_removed")
+    db.delete(row)
     db.flush()
+
+
+def _entry_line(db, row: RemediationEvent, action: str, summary: Optional[str] = None) -> None:
+    """One changelog line about a timeline note, in this transaction: which
+    finding it is about (the title the entry already keeps) — never its text."""
+    project_events.record(
+        db, row.project_id, action, subject_type="remediation", subject_id=row.id,
+        label=row.finding_title, summary=summary,
+    )
 
 
 def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
@@ -1473,6 +1514,17 @@ def _record_follow_up(db, project_ids: Sequence[int], who, *, contact_email: str
             record.last_follow_up_on = on
         db.add(_event(record.project_id, targets[record.finding_host_id], who, kind="follow_up",
                       body=note, new_value=contact_email, occurred_at=happened, created_at=now))
+    # One changelog line per project the follow-up was recorded in (the
+    # cross-project door records in several): the day and how many rows —
+    # never the note, nor whom it was about.
+    per_project: dict[int, int] = {}
+    for record in records:
+        per_project[record.project_id] = per_project.get(record.project_id, 0) + 1
+    for followed_project, rows in sorted(per_project.items()):
+        project_events.record(
+            db, followed_project, "remediation_follow_up", subject_type="remediation",
+            summary=f"{_plural(rows, 'row', 'rows')}, followed up on {on.isoformat()}", count=rows,
+        )
     db.flush()
     return records, already
 
@@ -1564,7 +1616,7 @@ def assign_from_report(db, project_id: int, body, who) -> dict:
 
     note = NoteIn(body=(f"Assigned from the report \"{report.title}\", "
                         f"issued on {policy.today(report.issued_at).isoformat()}.")[:NOTE_MAX_CHARS])
-    assigned = 0
+    assigned = touched = 0
     to_assign.sort()
     if not body.dry_run:
         # Every lock of the whole set first, in the writers' one order (its
@@ -1578,9 +1630,12 @@ def assign_from_report(db, project_id: int, body, who) -> dict:
         batch = ApplyBody(dry_run=body.dry_run, rows=[
             ApplyRow(finding_host_id=fh_id, notified_on=on, notes=[note])
             for fh_id in to_assign[start:start + APPLY_MAX_TARGETS]])
-        summary = apply(db, project_id, batch, who)["summary"]
+        result, written = _apply(db, project_id, batch, who)
+        summary = result["summary"]
+        touched += written
         assigned += summary["changed"]
         already_assigned += summary["conflicts"]         # dated by someone else a moment ago
+    _applied_line(db, project_id, touched, f"assigned from report {report.number}, {on.isoformat()}")
     return {"report_id": report.id, "assigned_on": on.isoformat(), "assigned": assigned,
             "already_assigned": already_assigned, "not_open": not_open,
             "not_in_list": len(told - found), "dry_run": body.dry_run}

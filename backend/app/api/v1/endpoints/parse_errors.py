@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from app.db.session import get_db
 from app.db import models
+from app.services import project_events
 from app.services.host_query_common import escape_like
 from app.schemas.schemas import ParseErrorSummary
 from app.api.deps import get_current_user
@@ -252,6 +253,11 @@ def update_parse_error_status(
     if not error:
         raise HTTPException(status_code=404, detail="Parse error not found")
 
+    if error.status != status:
+        project_events.record(
+            db, project.id, "parse_error_changed", subject_type="parse_error", subject_id=error.id,
+            label=error.filename, summary=f"{error.status} → {status}",
+        )
     error.status = status
     db.commit()
     db.refresh(error)
@@ -287,6 +293,10 @@ def delete_parse_error(
             .count()
         )
 
+        project_events.record(
+            db, project.id, "parse_error_changed", subject_type="parse_error", subject_id=error.id,
+            label=error.filename, summary="deleted",
+        )
         db.delete(error)
         db.commit()
 

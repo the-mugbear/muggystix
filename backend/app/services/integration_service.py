@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.security import log_audit_event
 from app.db.models_integrations import IntegrationCredential, IntegrationType
+from app.services import project_events
 from app.services.llm_provider_service import encrypt_secret, decrypt_secret
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,13 @@ def share_credentials_with_agent(
         user_agent=user_agent,
         commit=False,
     )
+    if project_id is not None:
+        # The project's changelog says so too (under the agent's operator,
+        # marked as the agent's): the scanner's name, never a secret.
+        project_events.record(
+            db, project_id, "scanner_credentials_shared", subject_type="integration", subject_id=row.id,
+            label=row.name,
+        )
     first, second = _CREDENTIAL_FIELDS.get(row.integration_type, _GENERIC_CREDENTIAL_FIELDS)
     credentials = {first: decrypt_secret(row.secret_encrypted)}
     if second is not None:

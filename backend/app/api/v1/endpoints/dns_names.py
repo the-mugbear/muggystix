@@ -52,6 +52,7 @@ from app.schemas.dns_names import (
 )
 from app.schemas.pagination import Paginated
 from app.services import dns_name_service as svc
+from app.services import project_events
 from app.services.csv_utils import safe_csv_row
 from app.services.names_list_service import NameSort, NameState, SortOrder, apply_name_state, names_query
 
@@ -438,6 +439,9 @@ def delete_name(
                 "a named endpoint is never merged into the unnamed record for its host."
             ),
         )
+    project_events.record(
+        db, project.id, "name_deleted", subject_type="name", subject_id=name.id, label=name.fqdn,
+    )
     db.delete(name)
     db.commit()
     return Response(status_code=204)

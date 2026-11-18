@@ -15,7 +15,7 @@ from app.schemas.dns_names import (
     ScopeDomainPage,
     ScopeDomainRow,
 )
-from app.services import dns_name_service, scope_coverage
+from app.services import dns_name_service, project_events, scope_coverage
 from app.services.default_scope import get_or_create_default_scope
 from app.services.host_query_common import escape_like
 from app.api.deps import get_current_user
@@ -91,6 +91,22 @@ def _insert_subnets(db: Session, rows: List[Subnet]) -> bool:
             raise
         return False
     return True
+
+
+def _subnets_added_line(db: Session, project_id: int, cidrs: List[str], domains_added: int = 0) -> None:
+    """The changelog line of one addition to the scope (the add form, a scope
+    file): how many entries, and the first few CIDRs.  Nothing was added →
+    no line."""
+    parts = []
+    if cidrs:
+        parts.append(", ".join(cidrs[:5]) + (f" +{len(cidrs) - 5} more" if len(cidrs) > 5 else ""))
+    if domains_added:
+        parts.append(f"{domains_added} domain{'s' if domains_added != 1 else ''}")
+    project_events.record(
+        db, project_id, "scope_subnets_added", subject_type="subnet",
+        label=cidrs[0] if len(cidrs) == 1 and not domains_added else None,
+        summary="; ".join(parts), count=len(cidrs) + domains_added,
+    )
 
 
 @router.post("/upload-subnets", response_model=SubnetFileUploadResponse, dependencies=[Depends(require_project_role(ProjectRole.ANALYST))])
@@ -321,6 +337,7 @@ async def upload_subnet_file(
                     detail="Invalid domain entries: " + "; ".join(invalid_domains[:5]),
                 )
 
+        _subnets_added_line(db, project.id, [sub.cidr for sub in created], domains_added)
         db.commit()
 
         correlation_service = SubnetCorrelationService(db)
@@ -713,6 +730,7 @@ def add_subnets(
     # one pass (review 2026-10-01 R24): one read of the project's hosts, one
     # trie, one commit.  It was one full host read and one commit PER subnet,
     # up to 500 of them.  Only these subnets' mapping rows are touched.
+    _subnets_added_line(db, project.id, [row.cidr for row in created])  # committed with them, below
     SubnetCorrelationService(db).correlate_subnets([row.id for row in created])
     for row in created:
         db.refresh(row)
@@ -761,7 +779,11 @@ def update_subnet(
         cidr_changed = True
     # The one write of a subnet's description and site; an accepted agent
     # proposal (`subnet_details`) calls it too.
-    set_subnet_details(db, project.id, subnet, description=body.description, site=body.site)
+    # It also writes the edit's ONE changelog line, the CIDR change included.
+    set_subnet_details(
+        db, project.id, subnet, description=body.description, site=body.site,
+        also_changed=("CIDR",) if cidr_changed else (),
+    )
 
     try:
         db.commit()
@@ -798,6 +820,9 @@ def delete_subnet(
     """Remove a single subnet from the scope. FK cascades drop mappings."""
     disable_statement_timeout(db)  # a wide subnet maps every host of the project
     subnet = _project_subnet_or_404(db, project.id, subnet_id)
+    project_events.record(
+        db, project.id, "scope_subnet_removed", subject_type="subnet", subject_id=subnet.id, label=subnet.cidr,
+    )
     db.delete(subnet)
     db.commit()
     return {"message": "Subnet deleted successfully"}
@@ -878,6 +903,16 @@ def add_scope_domains(
         [(d.domain, d.include_subdomains, d.description) for d in body.domains],
         created_by_id=current_user.id,
     )
+    if added or updated:
+        parts = [f"{added} added"] if added else []
+        if updated:
+            parts.append(f"{updated} widened or described")
+        project_events.record(
+            db, project.id, "scope_domains_added", subject_type="scope_domain",
+            # Named when the request was one domain; a list is its counts.
+            label=body.domains[0].domain.strip().lower() if len(body.domains) == 1 else None,
+            summary=", ".join(parts), count=added + updated,
+        )
     db.commit()
     # First page only — the caller re-lists to page through a large set.
     page = _scope_domain_page(db, project.id, 0, 100)
@@ -908,6 +943,9 @@ def delete_scope_domain(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Scope domain not found")
+    project_events.record(
+        db, project.id, "scope_domain_removed", subject_type="scope_domain", subject_id=row.id, label=row.domain,
+    )
     db.delete(row)
     db.commit()
     return {"message": "Domain removed from scope"}
