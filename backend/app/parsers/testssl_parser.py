@@ -28,6 +28,7 @@ import re
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.parser_utils import (
+    skip_reason,
     ProgressBeat,
     ProjectHostsByAddress,
     ResolvedHost,
@@ -399,7 +400,7 @@ class TestsslParser:
             )
             if outcome.error is not None:
                 logger.warning("testssl: skipping target %s:%s due to %s", ip, port, outcome.error)
-                skipped_targets.append(f"{ip}:{port} ({outcome.error})")
+                skipped_targets.append(f"{ip}:{port} ({skip_reason(outcome.error)})")
                 continue
             resolved, target_observations = outcome.value
             observations += target_observations

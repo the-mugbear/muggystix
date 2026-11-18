@@ -22,10 +22,9 @@ from app.db.models_auth import User
 from app.db.models_llm import LLMProvider, LLMProviderType
 from app.api.deps import can_write_in_some_project, get_current_user
 from app.services.llm_provider_service import (
-    LLMProviderService, test_connection, chat_completion,
+    LLMProviderService, test_connection, end_read_before_provider_call,
 )
 from app.services.url_validator import require_public_http_url
-from app.services.prompt_sanitizer import sanitize_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +257,8 @@ def test_llm_provider(
     row = svc.get(provider_id, current_user.id)
     if not row:
         raise HTTPException(status_code=404, detail="Provider not found")
+    # No transaction is held while the provider answers (or does not).
+    end_read_before_provider_call(db, row)
     result = test_connection(row)
     return TestConnectionResponse(**result)
 
@@ -273,111 +274,9 @@ def list_provider_types():
     ]
 
 
-# ---------------------------------------------------------------------------
-# Chat completion (used by in-app agent runtime)
-# ---------------------------------------------------------------------------
-
-class CompletionRequest(BaseModel):
-    system: Optional[str] = None
-    prompt: str = Field(..., min_length=1)
-    max_tokens: int = Field(2048, ge=1, le=16384)
-    temperature: float = Field(0.3, ge=0.0, le=2.0)
-
-
-class CompletionResponse(BaseModel):
-    provider_id: int
-    provider_name: str
-    model_id: Optional[str]
-    content: str
-    raw_metadata: Dict[str, Any]  # tokens/finish reason, not full raw payload
-
-
-@router.post(
-    "/{provider_id}/complete",
-    response_model=CompletionResponse,
-    summary="Send a chat completion to a configured provider",
-    dependencies=[Depends(require_drafting_account)],
-)
-def complete(
-    body: CompletionRequest,
-    provider_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Generic chat completion — the building block for in-app agent runs.
-
-    Deliberately stateless: the endpoint does NOT spawn tool calls or
-    persist a session.  The caller supplies the full prompt (including
-    any tool-use instructions) and gets back the raw text response.
-    Approval and execution of proposed commands happen in the browser,
-    preserving the "agents are coordinators" architectural rule.
-    """
-    svc = LLMProviderService(db)
-    provider = svc.get(provider_id, current_user.id)
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    # Audit finding H2 — server-side prompt sanitization.
-    # The frontend ``promptSanitizer.ts`` already strips API keys and
-    # inlined credentials before posting here, but that protection
-    # only covers the happy path.  A caller hitting this endpoint
-    # directly (curl, scripted client, compromised session) could
-    # deliberately include a real secret in ``prompt`` or ``system``
-    # to leak it to the LLM provider's request log.  Re-run the
-    # same sanitization on the server side as the enforcement point.
-    # Keep the client-side version as defense in depth.
-    sanitized_prompt = sanitize_for_llm(body.prompt)
-    sanitized_system = sanitize_for_llm(body.system)
-
-    try:
-        result = chat_completion(
-            provider,
-            system=sanitized_system,
-            messages=[{"role": "user", "content": sanitized_prompt}],
-            max_tokens=body.max_tokens,
-            temperature=body.temperature,
-        )
-    except RuntimeError as exc:
-        # Configuration error (missing base_url, missing API key for a
-        # provider that needs one, etc).  These are user-facing.
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:  # noqa: BLE001
-        # Code review nitpick #1: don't leak upstream exception text to
-        # the client.  Log the detail server-side and return a stable
-        # user-facing message so error responses don't carry provider
-        # internals (stack frames, API keys accidentally echoed, etc.).
-        logger.exception(
-            "Upstream LLM call failed",
-            extra={"provider_id": provider.id, "provider_type": provider.provider_type},
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "The LLM provider rejected the request or was unreachable. "
-                "Use the Test Connection button on the LLM Providers page to "
-                "check credentials and network reachability."
-            ),
-        )
-
-    # Extract a minimal metadata payload — token counts when available,
-    # but not the full raw response (which could be large and include
-    # provider-specific debug info we don't need in the UI).
-    raw = result.get("raw") or {}
-    meta: Dict[str, Any] = {}
-    usage = raw.get("usage") or {}
-    if isinstance(usage, dict):
-        meta["usage"] = usage
-    if "model" in raw:
-        meta["model"] = raw["model"]
-    if "stop_reason" in raw:
-        meta["stop_reason"] = raw["stop_reason"]
-    if "finish_reason" in raw:
-        meta["finish_reason"] = raw["finish_reason"]
-
-    return CompletionResponse(
-        provider_id=provider.id,
-        provider_name=provider.name,
-        model_id=provider.model_id,
-        content=result.get("content") or "",
-        raw_metadata=meta,
-    )
+# There is no generic completion route (review 2026-11-17, A7).  ``POST
+# /{provider_id}/complete`` was built for in-app agent runs, which were
+# removed; nothing called it, and it relayed any prompt to an address its
+# caller chose while holding the request's transaction for the provider's
+# whole timeout.  The server calls a provider only to draft report text
+# (``report_draft_service``) and to test a connection (above).

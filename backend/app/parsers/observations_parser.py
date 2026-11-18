@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.parser_utils import (
+    skip_reason,
     ProgressBeat,
     ScanClock,
     ensure_scan,
@@ -203,7 +204,7 @@ class ObservationsParser:
             )
             if outcome.error is not None:
                 logger.warning("observations: skipping line %d on %s: %s", seen, ip, outcome.error)
-                problems.append(f"line {seen} on {ip}: {outcome.error}")
+                problems.append(f"line {seen} on {ip}: {skip_reason(outcome.error)}")
                 continue
             recorded += 1
             hosts.add(ip)

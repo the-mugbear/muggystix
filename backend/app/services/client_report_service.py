@@ -345,6 +345,34 @@ def stored_file_path(storage_path: str) -> Path:
     return target
 
 
+class StoredFileAltered(Exception):
+    """A stored report file is not the file whose SHA-256 was recorded."""
+
+
+def verified_report_file(storage_path: str, sha256: str) -> Path:
+    """``stored_file_path``, and only if the file still has the SHA-256
+    recorded when the render was published (review 2026-11-17, A18).
+
+    An issued report's scope file, image copies and template copy were each
+    refused on a hash mismatch; its rendered DOCX / HTML — the file that was
+    signed off, under a hash the page displays — was served whatever it had
+    become.  Read in pieces: a render is a few megabytes, but nothing here
+    should hold one whole.  Raises ``StoredFileAltered``."""
+    target = stored_file_path(storage_path)
+    digest = hashlib.sha256()
+    try:
+        with target.open("rb") as handle:
+            for piece in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(piece)
+    except OSError as exc:
+        raise FileNotFoundError("The file could not be read from report storage.") from exc
+    if digest.hexdigest() != sha256:
+        raise StoredFileAltered(
+            f"{storage_path}: no longer has the SHA-256 recorded at publication ({sha256})"
+        )
+    return target
+
+
 def report_image_dir(project_id: int, report_id: int) -> Path:
     """Where an issued report keeps its own copies of its evidence images:
     beside its rendered files, under ``REPORT_FILES_DIR`` (so the uploads

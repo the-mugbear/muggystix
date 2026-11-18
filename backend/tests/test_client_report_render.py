@@ -98,7 +98,8 @@ def test_preview_then_issue_then_download(client, db_session, test_project):
     from app.db.models_reports import ReportFile
     (Path(settings.REPORT_FILES_DIR) / "legacy.pdf").write_bytes(b"%PDF-1.7 legacy")
     db_session.add(ReportFile(report_id=draft["id"], format="pdf", filename="legacy.pdf",
-                              media_type="application/pdf", size_bytes=15, sha256="0" * 64,
+                              media_type="application/pdf", size_bytes=15,
+                              sha256=hashlib.sha256(b"%PDF-1.7 legacy").hexdigest(),
                               storage_path="legacy.pdf"))
     db_session.commit()
     r = client.get(f"{base}/{draft['id']}/files/pdf")

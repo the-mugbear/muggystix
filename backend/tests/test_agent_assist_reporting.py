@@ -277,8 +277,11 @@ def test_report_evidence_is_an_attachment_id_and_files_download(client, db_sessi
     stored = tmp_path / "client_reports" / "r.html"
     stored.parent.mkdir(parents=True)
     stored.write_text("<h1>Report</h1>")
+    import hashlib
+
     db_session.add(ReportFile(report_id=report["id"], format="html", filename="report.html",
-                              media_type="text/html", size_bytes=15, sha256="0" * 64, storage_path="r.html"))
+                              media_type="text/html", size_bytes=15,
+                              sha256=hashlib.sha256(b"<h1>Report</h1>").hexdigest(), storage_path="r.html"))
     db_session.commit()
 
     headers = _assist_headers(client, test_project.id)
@@ -288,6 +291,16 @@ def test_report_evidence_is_an_attachment_id_and_files_download(client, db_sessi
     assert file["download_path"] == f"/api/v1/agent/assist/client-reports/{report['id']}/files/html"
     download = client.get(file["download_path"], headers=headers)
     assert download.status_code == 200 and download.text == "<h1>Report</h1>"
+
+    # Review 2026-11-17, A18: a stored file that is no longer the file whose
+    # SHA-256 was recorded is refused on both doors — the scope file, the
+    # image copies and the template copy already were.
+    stored.write_text("<h1>Report</h1><p>changed since it was issued</p>")
+    page = f"/api/v1/projects/{test_project.id}/client-reports/{report['id']}/files/html"
+    for refused in (client.get(file["download_path"], headers=headers), client.get(page)):
+        assert refused.status_code == 500, refused.text
+        assert "no longer matches the SHA-256" in refused.json()["detail"]
+        assert "changed since" not in refused.text
     assert client.get(f"/api/v1/agent/assist/client-reports/{report['id']}/files/docx",
                       headers=headers).status_code == 404
 

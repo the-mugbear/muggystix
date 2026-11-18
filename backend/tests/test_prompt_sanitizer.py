@@ -1,7 +1,8 @@
 """Contract tests for the server-side prompt sanitizer.
 
-Text posted to ``/llm-providers/{id}/complete`` (and what the report drafter
-sends) goes to a hosted provider, so a BlueStick agent key and the well-known
+What the report drafter sends goes to a hosted provider (the generic
+``/llm-providers/{id}/complete`` route that also did is gone, 2.544.0), so a
+BlueStick agent key and the well-known
 third-party token formats are replaced first.
 
 The labelled-bullet rule (``- Access key: `…```) and its tests went with

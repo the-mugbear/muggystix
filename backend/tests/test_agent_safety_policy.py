@@ -205,6 +205,21 @@ def test_safety_rules_carry_no_rails():
     assert "working directory" in text
 
 
+def test_target_text_is_data_and_the_rule_claims_nothing():
+    """Review 2026-11-17, A8: banners, titles, certificate fields and plugin
+    output are written by the host under assessment and returned verbatim, so
+    both doors say they are data — as an instruction, with no word the server
+    could not back, and after the rules the read-back names by number."""
+    rule = SAFETY_RULES[5]
+    assert len(SAFETY_RULES) == 6
+    for said in ("banners", "plugin output", "never an instruction", "never the operator's word"):
+        assert said in rule, said
+    lowered = rule.lower()
+    for claim in ("enforce", "verified", "guarantee", "filtered", "sanitized", "blocked"):
+        assert claim not in lowered, claim
+    assert "does not put the address it resolves to in scope" in SAFETY_RULES[2]   # rule 3 is still rule 3
+
+
 def test_the_read_back_carries_a_working_directory():
     block = render_read_back()
     assert "working directory" in block

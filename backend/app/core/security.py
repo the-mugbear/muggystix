@@ -396,11 +396,9 @@ def reauth_password(
         db, username=user.username, ip_address=None,
         actions=REAUTH_FAILED_ACTIONS, per_username=REAUTH_THROTTLE_FAILURES,
     ):
-        log_audit_event(
-            db=db, user_id=user.id, action="login_throttled",
-            details={"username": user.username, "stage": "reauth"},
-            success=False, error_message="Throttled",
-            ip_address=ip_address, user_agent=user_agent,
+        note_login_throttled(
+            db, username=user.username, user_id=user.id, details={"stage": "reauth"},
+            error_message="Throttled", ip_address=ip_address, user_agent=user_agent,
         )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -452,6 +450,50 @@ def check_permissions(user_role: str, required_role: str) -> bool:
     return user_level >= required_level
 
 
+AUDIT_USER_AGENT_MAX = 512
+
+
+def note_login_throttled(
+    db: Session,
+    *,
+    username: str,
+    ip_address: Optional[str],
+    user_agent: Optional[str],
+    error_message: str,
+    user_id: Optional[int] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record that a sign-in (or a re-authentication) was refused by a limit —
+    ONCE per account name and address per ``LOGIN_THROTTLE_WINDOW_MINUTES``
+    (review 2026-11-17, A6).
+
+    Every refused request used to write and commit a row.  The failures that
+    trip a limit are bounded by the limit; the refusals after it were not, so
+    anyone who could reach the sign-in page could grow ``audit_logs`` — kept
+    for ever by default — for as long as they kept asking.  The first refusal
+    of a window says everything the later ones would: who, from where, when.
+    The one writer of ``login_throttled``."""
+    since = datetime.now(timezone.utc) - timedelta(minutes=LOGIN_THROTTLE_WINDOW_MINUTES)
+    already = (
+        db.query(AuditLog.id)
+        .filter(
+            AuditLog.action == "login_throttled",
+            AuditLog.timestamp >= since,
+            _audit_username() == username,
+            AuditLog.ip_address == ip_address if ip_address else AuditLog.ip_address.is_(None),
+        )
+        .first()
+    )
+    if already is not None:
+        return
+    log_audit_event(
+        db=db, user_id=user_id, action="login_throttled",
+        details={"username": username, **(details or {})},
+        success=False, error_message=error_message,
+        ip_address=ip_address, user_agent=user_agent,
+    )
+
+
 def log_audit_event(
     db: Session,
     user_id: Optional[int],
@@ -478,7 +520,10 @@ def log_audit_event(
         resource_type=resource_type,
         resource_id=resource_id,
         ip_address=ip_address,
-        user_agent=user_agent,
+        # The client's own header, as long as it cared to make it (nginx's
+        # header buffers were the only limit): kept to what identifies a
+        # browser (review 2026-11-17, A6).
+        user_agent=user_agent[:AUDIT_USER_AGENT_MAX] if user_agent else user_agent,
         details=details,
         success=success,
         error_message=error_message

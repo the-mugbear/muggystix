@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from sqlalchemy import case, select, text
+from sqlalchemy import case, func, select, text
 
 from app.core.config import settings
 # Imported as a module (not ``from … import SessionLocal``) so tests can rebind
@@ -575,6 +575,23 @@ class ReportJobService:
                 self._remove_artifact(job)
                 db.delete(job)
                 removed += 1
+            # A failed or cancelled job has no artifact and so no
+            # ``expires_at``: every failed render, operator cancel and
+            # superseded preview stayed for the life of the installation
+            # (review 2026-11-17, A19).  Rows only; kept long enough to be
+            # read, then removed in one statement.
+            keep_days = settings.REPORT_FAILED_JOB_RETENTION_DAYS
+            if keep_days > 0:
+                removed += (
+                    db.query(ReportJob)
+                    .filter(
+                        ReportJob.status.in_(("failed", "cancelled")),
+                        ReportJob.expires_at.is_(None),
+                        func.coalesce(ReportJob.completed_at, ReportJob.created_at)
+                        < now - timedelta(days=keep_days),
+                    )
+                    .delete(synchronize_session=False)
+                )
             db.commit()
             self.reconcile_orphan_artifacts(db, now)
         except Exception:

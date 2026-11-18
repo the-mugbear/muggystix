@@ -22,7 +22,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import inspect as sa_inspect, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -32,6 +32,7 @@ from app.services import report_writing_guidance
 from app.services.llm_provider_service import (
     LLMProviderService,
     chat_completion,
+    end_read_before_provider_call,
 )
 from app.services.prompt_sanitizer import sanitize_for_llm
 from app.services.report_text import internal_reference_message, internal_references
@@ -337,13 +338,10 @@ class ReportDraftService:
         findings, reports and hosts all that time, so a migration's ALTER
         queues behind it and every request behind the ALTER.  The renderer
         does the same before Quarto (``before_quarto=db.rollback``).  Nothing
-        is pending here, and what the prompt needs is plain data by now; the
-        provider row is detached first so the call reads its loaded values
-        rather than opening a new transaction to reload them."""
-        state = sa_inspect(provider, raiseerr=False)
-        if state is not None and state.session is not None:
-            self.db.expunge(provider)
-        self.db.rollback()
+        is pending here, and what the prompt needs is plain data by now.  The
+        one implementation is the provider service's, shared with the
+        connection test."""
+        end_read_before_provider_call(self.db, provider)
 
     def _provider(self, provider_id: Optional[int]):
         svc = LLMProviderService(self.db)

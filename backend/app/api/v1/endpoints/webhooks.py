@@ -284,6 +284,9 @@ def retry_delivery(
             WebhookDelivery.id == delivery_id,
             WebhookDelivery.project_id == project.id,
         )
+        # Locked, as the sender's outcome write is: the status read here is
+        # the one the write below replaces.
+        .with_for_update()
         .first()
     )
     if row is None:
@@ -291,6 +294,17 @@ def retry_delivery(
     if row.status == WebhookDeliveryStatus.PENDING.value:
         raise HTTPException(
             status_code=409, detail="This delivery is already queued for retry.",
+        )
+    if row.status != WebhookDeliveryStatus.FAILED.value:
+        # Only a FAILED delivery is requeued (review 2026-11-17, A20): a
+        # delivered one was sent again, and one being sent became claimable
+        # while its POST was in flight — the receiver got it twice.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This delivery is being sent now." if row.status == WebhookDeliveryStatus.SENDING.value
+                else "This delivery was already delivered; only a failed delivery can be retried."
+            ),
         )
     row.status = WebhookDeliveryStatus.PENDING.value
     row.attempts = 0

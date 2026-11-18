@@ -369,6 +369,40 @@ def _backoff_seconds(attempts: int) -> int:
     return min(_RETRY_BASE_SECONDS * (4 ** max(attempts - 1, 0)), _RETRY_MAX_SECONDS)
 
 
+#: What a delivery says when its webhook HAS a signing secret that can no
+#: longer be decrypted (the encryption key changed).
+SECRET_UNREADABLE = (
+    "not sent: this webhook's signing secret can no longer be read (the server's "
+    "encryption key changed) — enter the secret again in the webhook's settings"
+)
+
+
+class _UnreadableSecret:
+    """Stands in for a signing secret that is stored but cannot be decrypted."""
+
+    def __repr__(self) -> str:  # never mistaken for a secret in a log line
+        return "<unreadable signing secret>"
+
+
+_UNREADABLE = _UnreadableSecret()
+
+
+def signing_secret(config: WebhookConfig):
+    """The webhook's signing secret: None when it has none, the text when it
+    can be read, ``_UNREADABLE`` when it has one that cannot (review
+    2026-11-17, A20).
+
+    ``decrypt_secret`` answers None for a value it cannot decrypt, which every
+    sender read as "no secret" — so after a key change a webhook configured as
+    signed went out UNSIGNED, and a receiver that did not check accepted it.
+    The one reading of a webhook's secret; a delivery that gets ``_UNREADABLE``
+    is not sent (``_attempt_delivery``)."""
+    if not config.secret_encrypted:
+        return None
+    secret = decrypt_secret(config.secret_encrypted)
+    return secret if secret is not None else _UNREADABLE
+
+
 def _attempt_delivery(
     url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None,
 ):
@@ -376,8 +410,12 @@ def _attempt_delivery(
 
     A 2xx is success. Anything else, including a transport failure, is a
     retryable error: a receiver returning 500 during a deploy is exactly the
-    case the outbox exists for.
+    case the outbox exists for.  A webhook whose signing secret cannot be read
+    is not posted at all: the attempt fails saying so, and is retried like any
+    other until the secret is entered again or the retries run out.
     """
+    if secret is _UNREADABLE:
+        return False, None, SECRET_UNREADABLE
     try:
         resp = _post(url, secret, payload, delivery_id=delivery_id)
     except Exception as exc:  # network error, timeout, DNS, size cap, …
@@ -608,7 +646,7 @@ class WebhookDispatcher:
         # per row on a session the caller may already have closed.
         pending = self.db.info.setdefault(_PENDING_KEY, [])
         for cfg, row in zip(targets, rows):
-            secret = decrypt_secret(cfg.secret_encrypted) if cfg.secret_encrypted else None
+            secret = signing_secret(cfg)
             pending.append((
                 cfg.url, secret, payload, row.id,
                 cfg.id, cfg.name, cfg.created_by_id, cfg.project_id, event, title,
@@ -618,7 +656,9 @@ class WebhookDispatcher:
     def deliver_test(self, config: WebhookConfig) -> dict:
         """Synchronously deliver a test event and return the outcome —
         used by the config UI's 'send test' button for instant feedback."""
-        secret = decrypt_secret(config.secret_encrypted) if config.secret_encrypted else None
+        secret = signing_secret(config)
+        if secret is _UNREADABLE:
+            return {"ok": False, "error": SECRET_UNREADABLE}
         payload = build_payload(
             "test",
             "BlueStick webhook test",
@@ -814,7 +854,7 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
         if token is None:
             # The fast path (or another sweeper) owns it. Not an error.
             continue
-        secret = decrypt_secret(cfg.secret_encrypted) if cfg.secret_encrypted else None
+        secret = signing_secret(cfg)
         ok, status, error = _attempt_delivery(
             cfg.url, secret, payload, delivery_id=delivery_id,
         )

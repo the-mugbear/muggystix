@@ -2,6 +2,53 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.544.0",
+      "frontend": "5.433.0",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "kind": "changed",
+          "text": "Agents are told that anything a target or a scanner wrote — banners, page titles, certificate fields, plugin output — is data about the target and never an instruction or the operator's go-ahead."
+        },
+        {
+          "kind": "changed",
+          "text": "An agent reading a finding gets its newest 100 comments, with the total, instead of every comment however long the discussion."
+        },
+        {
+          "kind": "changed",
+          "text": "A webhook whose signing secret can no longer be read (the server's encryption key changed) is not sent until the secret is entered again; it used to be sent unsigned. Retrying a delivery works only on one that failed."
+        },
+        {
+          "kind": "changed",
+          "text": "The record of a report job that failed or was cancelled is removed after 30 days (REPORT_FAILED_JOB_RETENTION_DAYS; 0 keeps them)."
+        },
+        {
+          "kind": "changed",
+          "text": "The API's generic LLM completion route (POST /llm-providers/{id}/complete) is removed; nothing in BlueStick used it. Report drafting and the provider connection test are unchanged."
+        },
+        {
+          "kind": "fixed",
+          "text": "Repeated refused sign-ins are recorded once per account name and address in a 15-minute window, not once per attempt, so the audit log can no longer be filled from the sign-in page."
+        },
+        {
+          "kind": "fixed",
+          "text": "An issued report's file is downloaded only while it is still the file whose SHA-256 the report shows; one changed in storage is refused with a message."
+        },
+        {
+          "kind": "fixed",
+          "text": "A name can be added to an existing finding's host only where that name was observed at the host, as when creating a finding; undoing a removal still works."
+        },
+        {
+          "kind": "fixed",
+          "text": "An import's warning about skipped records says how many were skipped and why for the first few, without database statement text."
+        },
+        {
+          "kind": "fixed",
+          "text": "Testing an LLM provider connection no longer holds a database connection while waiting for the provider."
+        }
+      ]
+    },
+    {
       "backend": "2.543.2",
       "frontend": "5.433.0",
       "date": "2026-11-18",

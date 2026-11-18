@@ -78,7 +78,6 @@ def test_an_account_that_writes_nowhere_cannot_add_change_test_or_use_one(
         "create": client.post(f"{URL}/", json=OLLAMA),
         "update": client.patch(f"{URL}/{existing.id}", json={"base_url": "http://10.1.2.4:22"}),
         "test": client.post(f"{URL}/{existing.id}/test"),
-        "complete": client.post(f"{URL}/{existing.id}/complete", json={"prompt": "hello"}),
     }
     for name, resp in attempts.items():
         assert resp.status_code == 403, f"{who} {name}: {resp.status_code} {resp.text[:200]}"
@@ -165,22 +164,79 @@ def test_a_failed_connection_answers_one_fixed_text(client, world, acting_as, mo
     TimeoutError("request budget exceeded"),
     RuntimeError("anything else"),
 ])
-def test_a_failed_completion_answers_the_same_fixed_text(client, world, acting_as, monkeypatch, failure):
-    """Review 2026-10-14, H2: `/complete` (and the drafter, which shares
-    `chat_completion`) passed the transport's text on as a 400 — the same
-    port probe the connection test had stopped answering."""
+def test_a_failed_completion_answers_the_same_fixed_text(
+    client, db_session, world, acting_as, monkeypatch, failure,
+):
+    """Review 2026-10-14, H2: ``chat_completion`` (the drafter's call) passed
+    the transport's text on — the same port probe the connection test had
+    stopped answering.  Asked of the service since 2.544.0: the generic
+    ``/complete`` route this went through is gone (it had no caller), and the
+    drafter's routes say exactly what the service raises."""
     acting_as(world["analyst"])
     pid = client.post(f"{URL}/", json=OLLAMA).json()["id"]
+    provider = LLMProviderService(db_session).get(pid, world["analyst"].id)
 
     def fail(*args, **kwargs):
         raise failure
 
     monkeypatch.setattr(llm_provider_service, "safe_request", fail)
-    resp = client.post(f"{URL}/{pid}/complete", json={"prompt": "hi"})
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"] == PROVIDER_UNREACHABLE
+    with pytest.raises(RuntimeError) as refused:
+        llm_provider_service.chat_completion(provider, system=None, messages=[{"role": "user", "content": "hi"}])
+    assert str(refused.value) == PROVIDER_UNREACHABLE
     for leaked in ("refused", "timed out", "10.1.2.3", "private", "disconnected", "anything else", "budget"):
-        assert leaked not in resp.text
+        assert leaked not in str(refused.value)
+
+
+def test_the_generic_completion_route_is_gone(client, world, acting_as):
+    acting_as(world["analyst"])
+    pid = client.post(f"{URL}/", json=OLLAMA).json()["id"]
+    assert client.post(f"{URL}/{pid}/complete", json={"prompt": "hi"}).status_code in (404, 405)
+
+
+def test_the_connection_test_holds_no_transaction_while_the_provider_answers(
+    client, db_session, world, acting_as, monkeypatch,
+):
+    """Review 2026-11-17, A7: a provider that never answers kept a pooled
+    connection idle in transaction for the whole test."""
+    acting_as(world["analyst"])
+    pid = client.post(f"{URL}/", json=OLLAMA).json()["id"]
+    during = []
+
+    def answer(provider):
+        during.append((db_session.in_transaction(), provider.base_url))   # still readable, detached
+        return {"ok": True, "detail": "fine"}
+
+    from app.api.v1.endpoints import llm_providers as routes
+    monkeypatch.setattr(routes, "test_connection", answer)
+    assert client.post(f"{URL}/{pid}/test").json() == {"ok": True, "detail": "fine"}
+    assert during == [(False, OLLAMA["base_url"])]
+
+
+def test_every_provider_call_ends_the_read_first():
+    """A function that calls a provider ends the request's read before it
+    does (``end_read_before_provider_call``, or the drafter's ``_end_read``
+    which is that) — the rule a new LLM call used to have to remember."""
+    import ast
+    import pathlib
+
+    app_dir = pathlib.Path(llm_provider_service.__file__).resolve().parents[1]
+    calls, enders = {"chat_completion", "test_connection"}, {"end_read_before_provider_call", "_end_read"}
+    found, unguarded = 0, []
+    for path in app_dir.rglob("*.py"):
+        for func in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            named = [
+                (node.lineno, getattr(node.func, "attr", getattr(node.func, "id", None)))
+                for node in ast.walk(func) if isinstance(node, ast.Call)
+            ]
+            for line, name in named:
+                if name in calls:
+                    found += 1
+                    if not any(n in enders and at < line for at, n in named):
+                        unguarded.append(f"{path.relative_to(app_dir)}:{line} {func.name}")
+    assert found >= 4, "the scan no longer finds the provider calls"
+    assert unguarded == []
 
 
 def test_a_provider_that_answered_still_says_its_status(client, world, acting_as, monkeypatch):

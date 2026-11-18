@@ -100,6 +100,7 @@ Contract: `test_quarto_render.py::test_hostile_text_stays_text_in_every_format` 
 ## An issued report owns its copies
 
 - `freeze_report_images` copies printed images to `evidence/` and writes `report_images` in the issue's transaction; the issue render reads only those, hash-checked; a missing file refuses the issue. Reports issued before copies read live attachments.
+- An issued report's rendered files are served only while they are the files whose SHA-256 was recorded at publication: `client_report_service.verified_report_file` (the page's and the agents' download, `report_file_response`); a mismatch is a logged 500, as for the scope file (`test_agent_assist_reporting.py`).
 - `report_images.attachment_id` is NOT a foreign key (the snapshot's key; outlives the attachment).
 - `discard_report_copies` (evidence/, template/, scope/; `discard_report_images` the evidence part) runs only under the report's lock, in `issue()` and draft deletion — never after a rolled-back issue (another request may have committed copies). Each freeze empties its folder first. Drafts only.
 
@@ -107,7 +108,7 @@ Contract: `test_quarto_render.py::test_hostile_text_stays_text_in_every_format` 
 
 - Draft PATCH / DELETE `FOR UPDATE` (`_load_for_change`); `issue()` fingerprints the locked row (`test_report_review_2026_10_01.py`).
 - Renders end the read transaction before Quarto (`quarto_render.render(before_quarto=db.rollback)`; `client_report_render._render`, `remediation_report.run_job`).
-- AI drafting before the provider call (`ReportDraftService._end_read`; `test_review_2026_10_23b_reports.py`); any new LLM call too (hazard — removable: a test over every provider route).
+- Every provider call ends the request's read first: `llm_provider_service.end_read_before_provider_call` (the drafter's `_end_read` is it; the connection test calls it). `test_llm_provider_account_floor.py::test_every_provider_call_ends_the_read_first` scans every caller of `chat_completion` / `test_connection`; `test_review_2026_10_23b_reports.py` pins the drafter's.
 - Quarto and the post-processor run in their own process group (`quarto_render._run_group`); a timeout kills the group (the `quarto` launcher does not `exec`).
 - Generic `/reports/jobs/{id}…` 404 a page-owned job: `app/api/report_jobs.job_or_404` (doors pass `owner=`) is the ONE lookup, `job_file_response` the ONE file server; previews via `/client-reports/{id}/previews/{job}`, contact documents `/remediation/contact-report/{job}` (the switch's 404). Dismiss / retry / cancel: analyst or requester (`test_review_2026_10_23_reports.py`).
 - `report_job_service.PAGE_OWNED_REPORT_TYPES` (`client`, `remediation`): no "report ready" notification, not in `/reports/jobs`.

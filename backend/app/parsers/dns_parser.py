@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import (
+    skip_reason,
     ProgressBeat,
     ProjectHostsByAddress,
     ScanHostObservations,
@@ -185,7 +186,7 @@ class DNSParser:
                 )
                 if outcome.error is not None:
                     logger.warning(f"Error processing DNS record row {i}: {outcome.error}")
-                    self._reject(i, str(outcome.error)[:80])
+                    self._reject(i, skip_reason(outcome.error)[:120])
                     continue
                 # Counted only once the row's savepoint is released.
                 dns_records_processed += 1

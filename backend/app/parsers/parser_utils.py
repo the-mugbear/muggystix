@@ -477,6 +477,51 @@ def record_savepoint(db: Session, observed: Optional["ScanHostObservations"] = N
         raise
 
 
+#: How many skipped records an import names in its warnings; the count says
+#: how many there were.
+SKIP_REASONS_SHOWN = 5
+
+
+def skip_reason(exc: BaseException) -> str:
+    """Why a record was skipped, fit to be stored on the job and shown
+    (review 2026-11-17, A14).
+
+    ``str()`` of a database error is the driver's message followed by
+    ``[SQL: …] [parameters: …]`` — statement text and the record's own values
+    — which the job's ``error_message`` deliberately never carries; a parser's
+    skip warning carried it straight into ``parser_warnings``.  For a database
+    error this is the first line of the driver's own message (what was wrong,
+    without the ``DETAIL:`` line that quotes values); for anything else the
+    exception's name and a bounded part of its text."""
+    from sqlalchemy.exc import DBAPIError
+
+    if isinstance(exc, DBAPIError):
+        first = (str(exc.orig).strip().splitlines() or [""])[0] if exc.orig is not None else ""
+        return f"database refused the record ({first[:200]})" if first else "database refused the record"
+    text = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {text[:200]}" if text else type(exc).__name__
+
+
+def note_skip(reasons: List[str], exc: BaseException) -> None:
+    """Keep the first ``SKIP_REASONS_SHOWN`` reasons; the caller counts every
+    skip.  A file whose every record fails then stores a few lines, not one
+    per record."""
+    if len(reasons) < SKIP_REASONS_SHOWN:
+        reasons.append(skip_reason(exc))
+
+
+def skip_summary(reasons: List[str], skipped: int, noun: str = "record") -> Optional[str]:
+    """``"3 hosts were skipped: why; why; why"`` — with ``and N more`` when
+    more were skipped than are named — or None when nothing was."""
+    if skipped <= 0:
+        return None
+    plural = "" if skipped == 1 else "s"
+    verb = "was" if skipped == 1 else "were"
+    more = skipped - len(reasons)
+    listed = "; ".join(reasons) + (f"; and {more:,} more" if more > 0 and reasons else "")
+    return f"{skipped:,} {noun}{plural} {verb} skipped" + (f": {listed}" if listed else "")
+
+
 class RecordOutcome(NamedTuple):
     """``write_record``'s answer: what ``write`` returned, or the error the
     record was skipped for (``None`` when it was written)."""

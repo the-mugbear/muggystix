@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import uuid
 from contextvars import ContextVar
@@ -138,6 +139,8 @@ def _route_template(scope) -> str | None:
 _access_logger = logging.getLogger("app.access")
 
 _REQUEST_ID_HEADER = b"x-request-id"
+# What an inbound id may be: letters, digits, ``_`` and ``-``, at most 64.
+_REQUEST_ID_SHAPE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _SERVER_TIMING_HEADER = b"server-timing"
 _CACHE_CONTROL_HEADER = b"cache-control"
 # Authenticated API responses carry per-project, often-mutating data (host
@@ -165,8 +168,13 @@ def get_request_id() -> str:
 def _incoming_request_id(scope) -> str | None:
     for name, value in scope.get("headers", ()):
         if name == _REQUEST_ID_HEADER and value:
-            # Bound the length so a hostile inbound header can't bloat logs.
-            return value.decode("latin-1", "replace")[:64]
+            # Kept only when it is an id's shape (review 2026-11-17, A20): it
+            # goes into the access line, which operators and the diagnostics
+            # bundle read field by field, and a caller's header could carry
+            # spaces and ``key=value`` text into it.  Anything else gets an id
+            # of ours, as a request with no header does.
+            text = value.decode("latin-1", "replace")
+            return text if _REQUEST_ID_SHAPE.fullmatch(text) else None
     return None
 
 

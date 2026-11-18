@@ -37,7 +37,8 @@ from app.schemas.client_reports import (
 )
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import (
-    ClientReportService, ReportStateError, discard_report_copies, issued_scope_file, stored_file_path,
+    ClientReportService, ReportStateError, StoredFileAltered, discard_report_copies, issued_scope_file,
+    verified_report_file,
 )
 from app.services.client_report_views import (
     load_report,
@@ -1018,9 +1019,16 @@ def report_scope_response(service: ClientReportService, report: Report) -> Respo
 def report_file_response(record) -> FileResponse:
     """One stored report file as a download — shared with the agent's route."""
     try:
-        target = stored_file_path(record.storage_path)
+        target = verified_report_file(record.storage_path, record.sha256)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=410, detail=str(exc))
+    except StoredFileAltered as exc:
+        logger.error("Report file refused: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="This file no longer matches the SHA-256 recorded when the report was issued, so it "
+                   "is not served. Restore the report's storage from a backup, or revise the report.",
+        )
     return FileResponse(path=str(target), media_type=record.media_type, filename=record.filename)

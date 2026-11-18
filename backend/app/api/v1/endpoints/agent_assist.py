@@ -2861,9 +2861,16 @@ class AssistFindingDetail(BaseModel):
     # qualification ("only on the staging vhost") or a screenshot posted as a
     # reply is part of the evidence; before this the detail carried the root
     # alone and those replies — and their attachments — were silently absent.
+    # The FIRST ``_FINDING_NOTE_CAP`` replies, oldest first;
+    # ``evidence_thread_total`` is all of them.
     evidence_thread: List[AssistFindingNote] = []
-    # The finding's own discussion thread.
+    evidence_thread_total: int = 0
+    evidence_thread_truncated: bool = False
+    # The finding's own discussion thread: the NEWEST ``_FINDING_NOTE_CAP``
+    # comments, oldest first; ``comments_total`` is all of them.
     comments: List[AssistFindingNote] = []
+    comments_total: int = 0
+    comments_truncated: bool = False
     # Provenance for scanner- and execution-sourced findings.  At most
     # ``_SCANNER_EVIDENCE_CAP`` rows (review 2026-10-01 C2); the total says
     # how many scanner rows evidence the finding.
@@ -2913,6 +2920,10 @@ _SCANNER_EVIDENCE_CAP = 100
 _EVIDENCE_RECORD_CAP = 50
 #: A finding's status changes are few; the cap only stops a pathological one.
 _STATUS_HISTORY_CAP = 100
+#: Comments, and replies under the source note, listed on a finding's detail
+#: (the page's own page size); ``comments_total`` / ``evidence_thread_total``
+#: are all of them.
+_FINDING_NOTE_CAP = 100
 
 
 def _serialize_finding_note(note, attachments_by_note, uploaders=None) -> "AssistFindingNote":
@@ -3050,11 +3061,18 @@ def get_assist_finding(
     #     finding's own comment thread, fetched together so attachments are
     #     one query rather than one per note.
     note_q = db.query(models.Annotation).options(joinedload(models.Annotation.author))
-    comment_notes = (
-        note_q.filter(models.Annotation.finding_id == finding.id)
-        .order_by(models.Annotation.created_at.asc())
-        .all()
+    # The discussion is the PAGE's read (``FindingService.list_finding_notes``,
+    # the newest ``_FINDING_NOTE_CAP``), shown here oldest first as it always
+    # was, with its total (review 2026-11-17, A9).  It was this handler's own
+    # query with no limit — the one list in this answer without one — and a
+    # comment is up to 16,384 characters.
+    from app.services.finding_service import FindingService
+
+    newest_comments, comments_total = FindingService(db).list_finding_notes(
+        finding.id, limit=_FINDING_NOTE_CAP,
     )
+    comment_notes = list(reversed(newest_comments))
+    evidence_thread_total = 0
     evidence_note = None
     evidence_replies: list = []
     if finding.evidence_annotation_id:
@@ -3068,15 +3086,20 @@ def get_assist_finding(
             # The rest of the source thread.  ``thread_root_id`` is the
             # canonical link; ``parent_id`` covers a reply written before the
             # root was stamped (roots point at themselves, so exclude it).
+            replies = note_q.filter(
+                or_(
+                    models.Annotation.thread_root_id == evidence_note.id,
+                    models.Annotation.parent_id == evidence_note.id,
+                ),
+                models.Annotation.id != evidence_note.id,
+            )
+            evidence_thread_total = (
+                replies.order_by(None).with_entities(func.count(models.Annotation.id)).scalar() or 0
+            )
+            # The first replies: they qualify the note the finding rests on.
             evidence_replies = (
-                note_q.filter(
-                    or_(
-                        models.Annotation.thread_root_id == evidence_note.id,
-                        models.Annotation.parent_id == evidence_note.id,
-                    ),
-                    models.Annotation.id != evidence_note.id,
-                )
-                .order_by(models.Annotation.created_at.asc(), models.Annotation.id.asc())
+                replies.order_by(models.Annotation.created_at.asc(), models.Annotation.id.asc())
+                .limit(_FINDING_NOTE_CAP)
                 .all()
             )
 
@@ -3203,7 +3226,11 @@ def get_assist_finding(
             if evidence_note is not None else None
         ),
         evidence_thread=[_serialize_finding_note(n, attachments_by_note, uploaders) for n in evidence_replies],
+        evidence_thread_total=evidence_thread_total,
+        evidence_thread_truncated=evidence_thread_total > len(evidence_replies),
         comments=[_serialize_finding_note(n, attachments_by_note, uploaders) for n in comment_notes],
+        comments_total=comments_total,
+        comments_truncated=comments_total > len(comment_notes),
         scanner_evidence=scanner_evidence,
         evidence_records=evidence_records,
         evidence_records_total=evidence_records_total,

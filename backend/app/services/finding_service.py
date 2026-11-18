@@ -1272,6 +1272,21 @@ class FindingService:
         )
         return line[0] if line is not None else None
 
+    def _endpoint_was_removed(self, finding: Finding, host_id: int, name_id: Optional[int]) -> bool:
+        """Whether this finding's history holds a removal of exactly this
+        endpoint — what makes a restore an Undo (the same indexed lookup as
+        ``_removed_retest_request``)."""
+        return self.db.query(
+            self.db.query(FindingStatusHistory.id)
+            .filter(
+                FindingStatusHistory.removed_host_id == host_id,
+                FindingStatusHistory.finding_id == finding.id,
+                FindingStatusHistory.removed_name_id.is_(None) if name_id is None
+                else FindingStatusHistory.removed_name_id == name_id,
+            )
+            .exists()
+        ).scalar()
+
     def remove_endpoint(
         self, *, finding: Finding, finding_host_id: int,
         actor_id: Optional[int] = None, is_project_admin: bool = False,
@@ -1342,6 +1357,16 @@ class FindingService:
             )
 
         was_attached = _row() is not None
+        if name_id is not None and not was_attached and not self._endpoint_was_removed(finding, host_id, name_id):
+            # A NEW named endpoint, not an Undo: the one rule of every door
+            # that writes a finding on a name (``named_endpoint`` — the name
+            # is observed at that host).  This door only asked that the name
+            # be in the project, so a hand-made request could pair any name
+            # with any host and the report printed it (review 2026-11-17,
+            # A17).  An Undo is let through — the removal's history line is
+            # the server's own record that the pair stood, whatever became of
+            # the observation since.
+            named_endpoint(self.db, finding.project_id, [host_id], name_id=name_id)
         self._attach_hosts(finding, [host_id], names_by_host={host_id: name_id} if name_id is not None else None)
         self.db.flush()  # autoflush is off — the row must exist before we look it up
         row = _row()

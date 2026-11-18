@@ -272,6 +272,26 @@ def _did_not_answer(where: str, provider: LLMProvider, exc: BaseException) -> st
     return PROVIDER_UNREACHABLE
 
 
+def end_read_before_provider_call(db: Session, provider: LLMProvider) -> None:
+    """End the request's read transaction before a provider is called — the
+    ONE implementation, for the drafter (review 2026-10-23b, REP-2) and the
+    connection test (review 2026-11-17, A7).
+
+    The call can take minutes (a local model: 120 s, twice), and an open
+    transaction keeps its share locks all that time, so a migration's ALTER
+    queues behind it and every request behind the ALTER; it also keeps a
+    pooled connection idle for a provider that never answers.  Nothing may be
+    pending when this is called.  The provider row is detached first, so the
+    call reads its loaded values rather than opening a new transaction to
+    reload them."""
+    from sqlalchemy import inspect as sa_inspect
+
+    state = sa_inspect(provider, raiseerr=False)
+    if state is not None and state.session is not None:
+        db.expunge(provider)
+    db.rollback()
+
+
 def test_connection(provider: LLMProvider) -> Dict[str, Any]:
     """Issue a lightweight request to the provider to verify connectivity.
 

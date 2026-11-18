@@ -13,7 +13,8 @@ from app.db import models
 from app.parsers import nse_vulns
 from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
 from app.parsers.parser_utils import (
-    announce_scan, epoch_to_utc, map_numeric_severity, upsert_vulnerability, write_record,
+    announce_scan, epoch_to_utc, map_numeric_severity, note_skip, skip_summary, upsert_vulnerability,
+    write_record,
 )
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -53,6 +54,9 @@ class NmapXMLParser:
         hosts_processed = 0
         hosts_skipped = 0  # host elements that failed to import (v2.332.0)
         parse_warnings: list = []
+        # Why the first few skipped hosts were skipped (``note_skip``); every
+        # one is counted in ``hosts_skipped``.
+        skip_reasons: list = []
         # True only for a truncated/unparseable tail — distinct from
         # per-host skips, because it means an unknown number of hosts were
         # never seen at all.
@@ -120,7 +124,7 @@ class NmapXMLParser:
                             if outcome.error is not None:
                                 logger.warning(f"Skipping malformed host element: {outcome.error}")
                                 hosts_skipped += 1
-                                parse_warnings.append(str(outcome.error))
+                                note_skip(skip_reasons, outcome.error)
                             elif outcome.value:
                                 # A down host with nothing to record is read,
                                 # not processed (review 2026-10-16, N8: it was
@@ -202,6 +206,9 @@ class NmapXMLParser:
         # a clean import.  In a security tool that's the worst kind of silent
         # failure: the hosts that never got parsed are indistinguishable from
         # hosts that were genuinely down.
+        skipped_line = skip_summary(skip_reasons, hosts_skipped, "host")
+        if skipped_line:
+            parse_warnings.insert(0, skipped_line)
         if parse_warnings:
             logger.warning(
                 f"Scan {filename} completed with {len(parse_warnings)} warning(s): "

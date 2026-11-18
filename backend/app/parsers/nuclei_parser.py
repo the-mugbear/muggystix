@@ -41,6 +41,7 @@ from app.parsers.parser_utils import (
     map_text_severity,
     normalize_ip,
     parse_rfc3339,
+    skip_reason,
     persist_host_observation,
     upsert_vulnerability,
     write_record,
@@ -169,8 +170,11 @@ class NucleiParser:
         clock = ScanClock(models.SCAN_TIME_TOOL_RECORDS)
         seen = recorded = 0
         hosts: set = set()
+        # The first ten of each are named; every one is counted (a list per
+        # skipped result grew with the file to print ten of them).
         no_address: List[str] = []
         failed: List[str] = []
+        no_address_count = failed_count = 0
 
         # R6 — heartbeat between results, outside the result's savepoint.
         beat = ProgressBeat("results")
@@ -181,7 +185,9 @@ class NucleiParser:
             seen += 1
             ip, hostname, port, scheme = _target_of(record)
             if not ip:
-                no_address.append(str(record.get("matched-at") or record.get("host") or record["template-id"]))
+                no_address_count += 1
+                if len(no_address) < 10:
+                    no_address.append(str(record.get("matched-at") or record.get("host") or record["template-id"]))
                 continue
             if scan is None:
                 scan = ensure_scan(
@@ -200,7 +206,11 @@ class NucleiParser:
             if outcome.error is not None:
                 exc = outcome.error
                 logger.warning("nuclei: skipping %s on %s: %s", record.get("template-id"), ip, exc)
-                failed.append(f"{record.get('template-id')} on {ip} ({exc})")
+                failed_count += 1
+                if len(failed) < 10:
+                    # ``skip_reason``: never ``str()`` of a database error,
+                    # which carries the statement and the record's values.
+                    failed.append(f"{record.get('template-id')} on {ip} ({skip_reason(exc)})")
                 continue
             recorded += 1
             hosts.add(ip)
@@ -216,17 +226,17 @@ class NucleiParser:
         clock.apply(scan)
         self.db.commit()
 
-        skipped = len(no_address) + len(failed)
+        skipped = no_address_count + failed_count
         warnings = []
         if no_address:
             warnings.append(
-                f"{len(no_address)} result(s) had no IP address and were not recorded: "
-                + "; ".join(no_address[:10]) + (" …" if len(no_address) > 10 else "")
+                f"{no_address_count} result(s) had no IP address and were not recorded: "
+                + "; ".join(no_address) + (" …" if no_address_count > len(no_address) else "")
             )
         if failed:
             warnings.append(
-                f"{len(failed)} result(s) failed to import: "
-                + "; ".join(failed[:10]) + (" …" if len(failed) > 10 else "")
+                f"{failed_count} result(s) failed to import: "
+                + "; ".join(failed) + (" …" if failed_count > len(failed) else "")
             )
         self.last_parse_stats = {
             "skipped": skipped,

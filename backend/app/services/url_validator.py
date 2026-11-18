@@ -47,6 +47,12 @@ _ALLOWED_SCHEMES = frozenset({"http", "https"})
 # a metadata exfiltration probe.
 _ALWAYS_FORBIDDEN_NETWORKS = [
     ipaddress.ip_network("169.254.0.0/16"),    # IPv4 link-local + AWS/GCP metadata
+    # Two providers' metadata services outside link-local (review 2026-11-17,
+    # A20).  Their ranges (100.64.0.0/10, 192.0.0.0/24) are only in the
+    # private tier, which ``allow_private`` skips — and every operator-
+    # configured target (webhooks, a local model, scanners) allows private.
+    ipaddress.ip_network("100.100.100.200/32"),  # Alibaba Cloud metadata
+    ipaddress.ip_network("192.0.0.192/32"),      # Oracle Cloud metadata
     ipaddress.ip_network("0.0.0.0/8"),         # "this network"
     ipaddress.ip_network("224.0.0.0/4"),       # multicast
     ipaddress.ip_network("240.0.0.0/4"),       # reserved

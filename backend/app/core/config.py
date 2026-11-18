@@ -174,6 +174,11 @@ class Settings:
     # How long a completed report artifact is kept before the report worker's
     # cleanup pass deletes it (and its job row).
     REPORT_ARTIFACT_TTL_HOURS: int = int(os.getenv("REPORT_ARTIFACT_TTL_HOURS", "24"))
+    # How long the ROW of a report job that failed or was cancelled is kept
+    # (its error is what someone reads to see why a render failed); 0 keeps
+    # them for ever, as every release before 2.544.0 did.  Such a job has no
+    # ``expires_at`` — it has no artifact — so nothing ever removed it.
+    REPORT_FAILED_JOB_RETENTION_DAYS: int = int(os.getenv("REPORT_FAILED_JOB_RETENTION_DAYS", "30"))
     # A report job stuck in 'processing' longer than this (no heartbeat) is
     # re-queued/failed by the reaper. Generous — must exceed the worst-case
     # render time for a capped report so a still-rendering job isn't re-queued.

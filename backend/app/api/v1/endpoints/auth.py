@@ -27,6 +27,7 @@ from app.core.security import (
     lock_account_attempts,
     login_lockout_active,
     login_throttle_exceeded,
+    note_login_throttled,
     reauth_password,
     verify_password,
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -166,14 +167,9 @@ def login(
         username=login_data.username,
         ip_address=client_info.get("ip_address"),
     ):
-        log_audit_event(
-            db=db,
-            user_id=None,
-            action="login_throttled",
-            details={"username": login_data.username, "reason": "lockout"},
-            success=False,
-            error_message="Locked out",
-            **client_info,
+        note_login_throttled(
+            db, username=login_data.username, details={"reason": "lockout"},
+            error_message="Locked out", **client_info,
         )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -187,14 +183,8 @@ def login(
         username=login_data.username,
         ip_address=client_info.get("ip_address"),
     ):
-        log_audit_event(
-            db=db,
-            user_id=None,
-            action="login_throttled",
-            details={"username": login_data.username},
-            success=False,
-            error_message="Throttled",
-            **client_info,
+        note_login_throttled(
+            db, username=login_data.username, error_message="Throttled", **client_info,
         )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -343,10 +333,9 @@ def login_2fa(
         username_actions=("login_2fa_failed",),
         per_username=LOGIN_2FA_THROTTLE_PER_USERNAME,
     ):
-        log_audit_event(
-            db=db, user_id=user.id, action="login_throttled",
-            details={"username": user.username, "stage": "2fa"},
-            success=False, error_message="Throttled", **client_info,
+        note_login_throttled(
+            db, username=user.username, user_id=user.id, details={"stage": "2fa"},
+            error_message="Throttled", **client_info,
         )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

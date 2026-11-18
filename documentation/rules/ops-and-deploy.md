@@ -129,5 +129,6 @@ Guards here without a file are in `test_collect_logs_summaries.py`.
 - No pre-built-image deploy path: option 1 always builds, and the build needs package indexes.
 - No permissions finding stops the application; the gate fixes what the caller can and says the rest.
 - Installed report-template files are part of every backup.
+- No hosted CI (2026-11-18): there is none to push to and testing is local — `./scripts/check.sh` is the gate. Do not propose a workflow again.
 - Tool-found credentials are never masked or scrubbed in the app (isolated network; analysts need them); the bundle's anonymisation is a separate matter.
 

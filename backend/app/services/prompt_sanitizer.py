@@ -1,8 +1,8 @@
 """
 Server-side prompt sanitizer.
 
-Text sent to a configured LLM provider (``POST /llm-providers/{id}/complete``,
-the report drafter) lands in that provider's request log, so secret-shaped
+Text sent to a configured LLM provider (by the report drafter, the one
+sender) lands in that provider's request log, so secret-shaped
 strings are replaced first: a BlueStick agent key (as an ``X-API-Key`` line
 or bare) and the well-known third-party token formats.
 
