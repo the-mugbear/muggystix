@@ -331,6 +331,7 @@ const sections: GuideSection[] = [
           <li><strong>Type and pin</strong> — label a thread (question, decision, handoff…) and pin the ones that must stay at the top.</li>
           <li><strong>Screenshots for the report</strong> — put them on the finding: <em>Attach image</em> on one of its comments, then tick <strong>In report</strong>. An image is left out until it is ticked; captions and placing an image in the report text are described under Findings.</li>
           <li><strong>Markdown</strong> — headers, lists, and bold render in the UI.</li>
+          <li><strong>Changelog</strong> (auditors and above; the tab beside Collaboration) — one line for each change to the project’s record: who, what, to what, when. Findings, scanner observations, tests and evidence, hosts (notes, review marks, tags, assignment), scans and imports, scope, reports, proposals, members and settings, agent sessions — and remediation entries where remediation tracking is on. A bulk action is one line with its count. An agent’s action reads “<em>name</em>’s agent”, never as the person’s own. A line names what was changed and a short fact about it (a status, a field’s name), not the text someone wrote — that is on the finding, host or report itself. Filter by person, by people or agents, and by kind; the filters are in the address, so a view can be shared. It starts at the release that added it: earlier work is on each finding’s, host’s and scan’s own page.</li>
         </UnorderedList>
       </div>
     ),

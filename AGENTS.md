@@ -46,6 +46,10 @@ R=$PWD; docker compose -f "$R/docker-compose.yml" --project-directory "$R" run -
   sh -c "cd /tmp && python -m pytest /app/tests -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov"
 ```
 
+The suite runs as the application's database role (not a superuser) and creates its own databases:
+`check.sh` gives that role `CREATEDB` on the development database; a targeted run on a database the gate
+never ran against stops with the one command to run.
+
 In this recipe the Quarto, template-mount and repo-root doc tests SKIP and the run is still green; only
 `check.sh` runs them (in the report-worker image) and fails on such a skip. The gate deals test FILES to
 shards that share one database server, so a test must not need the server to itself (no fixed database

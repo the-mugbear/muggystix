@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.2",
+      "frontend": "5.435.1",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "kind": "changed",
+          "text": "The user guide describes the Changelog (Getting started, Notes and collaboration, Roles). The agent guide tells agents that what they change appears in the project's changelog as their operator's agent; resume a running agent session to give it the new guide."
+        }
+      ]
+    },
+    {
       "backend": "2.547.1",
       "frontend": "5.435.0",
       "date": "2026-11-18",

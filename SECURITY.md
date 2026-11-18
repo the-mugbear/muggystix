@@ -63,5 +63,6 @@ that changes data or refuses an upgrade are in `README.md` ("Upgrading across") 
 `./scripts/deploy.sh` option 5 (Security status) reports the installation's permissions, certificate and
 settings; `README.md` and `scripts/README.md` describe each. Defaults worth knowing: 2FA is required for every
 account, the first administrator's password is written to `uploads/initial-admin-password.txt` and never
-logged, `uploads/` belongs to the containers alone, the database runs with TLS when a certificate is present,
+logged, `uploads/` belongs to the containers alone, the database runs with TLS when a certificate is present, the application connects to it as a role
+that is not a superuser (the superuser has no password and is used only from inside the database container),
 and every agent key expires and is bound to one project session.

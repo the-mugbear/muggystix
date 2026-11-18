@@ -84,6 +84,11 @@ R=$PWD; docker compose -f "$R/docker-compose.yml" --project-directory "$R" run -
   sh -c "cd /tmp && python -m pytest /app/tests -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov"
 ```
 
+The suite connects as the application's database role (`POSTGRES_APP_USER`, `bluestick_app` — not a
+superuser since 2.547.0) and creates its own databases, which that role may do only on a development
+database: `./scripts/check.sh` gives it the right (`CREATEDB`) before the suite. If this recipe is the first
+thing run against a database, it stops with the one command that gives it.
+
 Running from `/tmp` with the cache plugin off keeps root-owned `.pytest_cache` / `.coverage`
 files out of the working tree (the older `-w /app` form left them in `backend/`).
 

@@ -57,6 +57,8 @@ The session keeps the last model reported. A host test, an evidence record and a
 
 Every authenticated `/agent/*` request, and an `/agent/` path that matched no route, is recorded and shown to the operator on the session's page ("API activity", filterable by host, target address and status code).
 
+**What you change is also a line in the project's changelog**, which the project's auditors and above read (Collaboration → Changelog): a note, a review status, a host correction, an upload, recorded observations, a test or its update, an evidence record, a proposal, a remediation entry, scanner credentials you were given, the session's end. The line is always marked as an agent's — "<your operator>'s agent" — and never shown as the operator's own action. It names what was changed and a short fact about it (a status, a field's name, a count), never the text you wrote. You cannot read the changelog: there is no route or tool for it, and you do not need one — what you wrote is on the record you wrote it to.
+
 ## Safety rules
 
 The six rules are in your session prompt or, over MCP, the opening instructions. BlueStick cannot enforce them: commands run on the operator's machine and the server sees only what you report, so the client's sandbox is the boundary and the recorded audit trail is what a person reviews. A target outside the declared scope, anything outside the working directory, or a change to the machine waits for the operator's explicit go-ahead. Report accurately, including when you went outside the bounds and why.
