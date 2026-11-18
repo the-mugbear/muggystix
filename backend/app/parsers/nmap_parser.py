@@ -136,11 +136,10 @@ class NmapXMLParser:
                             if hosts_read % 100 == 0:
                                 logger.info(f"Read {hosts_read} hosts so far ({hosts_processed} recorded)")
                                 from app.services.ingestion_service import report_progress
+                                # (The heartbeat's commit also releases the
+                                # history rows the dedup service held —
+                                # ``_release_history_on_commit``.)
                                 report_progress(f"{hosts_read} hosts read")
-                                # R7 — the heartbeat committed (under a job):
-                                # stop pinning every host's and port's history
-                                # row for the rest of the file.
-                                self.dedup_service.release_committed_history()
                             # (The heartbeat's commit every 100 hosts is what keeps
                             # a 10k-host scan from holding row locks for the whole
                             # parse; a second commit every 500 hosts was redundant

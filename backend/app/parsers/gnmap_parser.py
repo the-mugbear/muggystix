@@ -100,9 +100,6 @@ class GnmapParser:
                     logger.info(f"Processed {hosts_processed} host observations")
                     from app.services.ingestion_service import report_progress
                     report_progress(f"{hosts_processed} hosts")
-                    # Committed (under a job): stop pinning every history
-                    # row for the rest of the file.
-                    self.dedup_service.release_committed_history()
 
         self.db.commit()
 

@@ -138,6 +138,34 @@ class HostDeduplicationService:
         self._ws_history_checked: set = set()
         # Hosts created in this parse: they have no ports, scripts or history.
         self._fresh_host_ids: set = set()
+        self._release_history_on_commit()
+
+    def _release_history_on_commit(self) -> None:
+        """Every commit of this service's session lets go of the history rows
+        it made durable (review 2026-11-17, A3).
+
+        Only nmap and gnmap called ``release_committed_history`` after their
+        heartbeat; every other parser that writes through this service pinned
+        one ORM row per host and per port for the whole file.  Releasing
+        where the commit happens means no parser has to remember to.  A
+        SAVEPOINT's release fires ``after_commit`` too (``write_record`` opens
+        one per record) and is skipped: releasing there would rebuild the
+        per-host working set for every record.  The listener holds the
+        service weakly, so a session that outlives it keeps nothing alive."""
+        import weakref
+
+        from sqlalchemy import event
+
+        if not isinstance(self.db, Session):
+            return  # a test double: there is no commit to listen for
+        service = weakref.ref(self)
+
+        def _released(session) -> None:
+            live = service()
+            if live is not None and not session.in_nested_transaction():
+                live.release_committed_history()
+
+        event.listen(self.db, "after_commit", _released)
 
     def discard_rolled_back_state(self) -> None:
         """Forget what a caller's SAVEPOINT rollback just discarded (v2.419.0,
@@ -191,7 +219,8 @@ class HostDeduplicationService:
 
     def release_committed_history(self) -> None:
         """Let go of the history rows that are already in the database (review
-        2026-10-01 R7).  Call it between hosts, after a flush or commit.
+        2026-10-01 R7).  Runs by itself after every commit of the session
+        (``_release_history_on_commit``); safe after any flush.
 
         The pending-history dicts exist to find a row added in THIS parse
         before it was flushed.  Kept for the whole file they pinned one ORM

@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 # one upsert per IP, exact counts.  Only a genuinely huge scan flushes, trading
 # some repeat host-upserts for bounded RAM.
 _COLLECT_FLUSH_IPS = 100_000
+# … or this many buffered port records, whichever comes first (review
+# 2026-11-17, A2).  The address bound alone never fires for a file of FEW
+# addresses and very many ports (a tarpit answering on every port of a
+# full-range sweep: 200 hosts are 13 million records), which was then held
+# whole — one dict per record — until the worker was killed for memory.
+_COLLECT_FLUSH_RECORDS = 1_000_000
 # Review 2026-10-01 R6 — heartbeat while COLLECTING, every this many records.
 _READ_BEAT_EVERY = 50_000
 
@@ -93,6 +99,8 @@ class MasscanParser:
         self._unread_lines = 0
         # The other spellings the file wrote each address in (``_address``).
         self._written: Dict[str, set] = {}
+        # Port records buffered since the last flush (``_maybe_flush``).
+        self._buffered_records = 0
         self._dedup = HostDeduplicationService(self.db)
         self.last_parse_stats = None
         start = time.time()
@@ -154,8 +162,17 @@ class MasscanParser:
                     f"file is empty or not masscan output."
                 )
 
-            total_unique_ips = counters["ips"]
-            processed_hosts = counters["hosts"]
+            # The hosts this scan recorded, as the database holds them: an
+            # address whose records straddled a flush was upserted by each,
+            # so the flush tallies count it more than once (A2).
+            self.db.flush()
+            processed_hosts = (
+                self.db.query(models.HostScanHistory.host_id)
+                .filter(models.HostScanHistory.scan_id == scan.id)
+                .distinct()
+                .count()
+            )
+            total_unique_ips = processed_hosts
 
             self.db.commit()
 
@@ -224,19 +241,30 @@ class MasscanParser:
     # Phase 1 — Collect data from file into {ip: [ports]} dict
     # ------------------------------------------------------------------
 
+    # A collector called on its own (a unit test) never ran ``parse_file``.
+    _buffered_records = 0
+
     def _maybe_flush(
         self,
         host_ports: Dict[str, List[Dict[str, Any]]],
         flush: Optional[Callable[[Dict[str, List[Dict[str, Any]]]], None]],
+        added: int = 1,
     ) -> None:
-        """Drain ``host_ports`` to the DB once it buffers too many distinct IPs.
+        """Drain ``host_ports`` to the DB once it buffers too many distinct IPs
+        or too many port records (``added`` = the records the caller just
+        buffered).
 
         ``flush`` pops every entry, so on return the map is empty and the
-        collector keeps accumulating from where it left off.  No-op when no
-        sink is wired (e.g. a direct unit-test call) or the threshold isn't met.
+        collector keeps accumulating from where it left off — an address whose
+        records straddle a flush is simply upserted again.  No-op when no
+        sink is wired (e.g. a direct unit-test call) or no threshold is met.
         """
-        if flush is not None and len(host_ports) >= _COLLECT_FLUSH_IPS:
+        self._buffered_records += added
+        if flush is None:
+            return
+        if len(host_ports) >= _COLLECT_FLUSH_IPS or self._buffered_records >= _COLLECT_FLUSH_RECORDS:
             flush(host_ports)
+            self._buffered_records = 0
 
     def _collect_xml(
         self,
@@ -288,7 +316,7 @@ class MasscanParser:
                     if host_info:
                         host_ports[host_info["ip_address"]].extend(host_info["ports"])
                     clear_element(elem)
-                    self._maybe_flush(host_ports, flush)
+                    self._maybe_flush(host_ports, flush, added=len(host_info["ports"]) if host_info else 0)
                 elif event == "end" and tag == "finished":
                     # Epoch only: `timestr` is the scanner's zone-less local
                     # clock and would not be comparable with the epoch start.
@@ -338,6 +366,7 @@ class MasscanParser:
             if ip_address is None:
                 continue
             self._observe_epoch(entry.get("timestamp"))
+            buffered_before = len(host_ports[ip_address])
             for port_info in entry.get("ports", []):
                 try:
                     port_number = int(port_info.get("port"))
@@ -357,8 +386,10 @@ class MasscanParser:
                     "reason": _port_reason(port_info.get("reason")),
                 })
             # Flush at entry boundaries so an IP's ports from one record stay
-            # together in the same persist call.
-            self._maybe_flush(host_ports, flush)
+            # together in the same persist call.  Counted by the ports the
+            # entry buffered — an entry may carry several, and none when every
+            # port of it was skipped.
+            self._maybe_flush(host_ports, flush, added=len(host_ports[ip_address]) - buffered_before)
 
         return dict(host_ports)
 
@@ -391,7 +422,7 @@ class MasscanParser:
                         if ts_match:
                             self._observe_epoch(ts_match.group(1))
                         host_ports[ip_address].extend(ports)
-                        self._maybe_flush(host_ports, flush)
+                        self._maybe_flush(host_ports, flush, added=len(ports))
                     continue
 
                 # Detect gnmap/greppable format lines that don't belong here

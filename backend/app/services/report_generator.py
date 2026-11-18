@@ -463,13 +463,25 @@ class ReportGenerator:
             # capped.
             "truncated": False, "host_cap": None,
         }
-        tail: Dict[str, Any] = {"summary": summary}
+        # The tail's keys continue the open object.  The findings are written
+        # one per line, as the hosts are (review 2026-11-17, A4): the whole
+        # tail used to be one ``json.dumps``, with every finding's endpoints
+        # in it.
+        def member(key: str, value: Any, last: bool = False) -> str:
+            text = json.dumps(value, indent=2, default=str).replace("\n", "\n  ")
+            return f'  {json.dumps(key)}: {text}' + ("\n" if last else ",\n")
+
+        write(member("summary", summary, last=not is_comprehensive))
         if is_comprehensive:
-            tail["findings"] = self._findings_for_report_ids(host_ids)
-            tail["hotspots"] = self._build_hotspots()
-            tail["systemic"] = self._build_systemic()
-        body = json.dumps(tail, indent=2, default=str)
-        write(body[1:].lstrip("\n"))  # the tail's keys continue the open object
+            write('  "findings": [')
+            written = 0
+            for finding in self._findings_for_report_ids(host_ids):
+                write(("\n    " if written == 0 else ",\n    ") + json.dumps(finding, default=str))
+                written += 1
+            write("\n  ],\n" if written else "],\n")
+            write(member("hotspots", self._build_hotspots()))
+            write(member("systemic", self._build_systemic(), last=True))
+        write("}")
         return count
 
     def _resolve_scan_info(self, host: models.Host) -> Dict[str, Any]:
@@ -505,19 +517,40 @@ class ReportGenerator:
         if not host_ids:
             return []
         host_id_set = set(host_ids)
-        findings = (
-            self.db.query(Finding)
-            .options(
-                selectinload(Finding.hosts).selectinload(FindingHost.host),
-                selectinload(Finding.owner),
-            )
-            .filter(
-                Finding.project_id == self.project_id,
-                Finding.hosts.any(FindingHost.host_id.in_(host_ids)),
-            )
-            .all()
+        # The project's endpoints as COLUMNS, in endpoint order (review
+        # 2026-11-17, A4).  This loaded each finding with its FindingHost and
+        # Host entities, chosen by one ``IN`` over every matching host id —
+        # 70,000 literals for an unfiltered download; the client report's
+        # reader was moved to columns for the same shape (R2, 2026-10-22).
+        # Which findings touch a downloaded host is decided here, against the
+        # set, so no id list is sent to the database.
+        endpoints: Dict[int, List[Tuple[int, str]]] = {}
+        for finding_id, host_id, ip_address in (
+            self.db.query(FindingHost.finding_id, FindingHost.host_id, models.Host.ip_address)
+            .join(Finding, Finding.id == FindingHost.finding_id)
+            .join(models.Host, models.Host.id == FindingHost.host_id)
+            .filter(Finding.project_id == self.project_id)
+            .order_by(FindingHost.finding_id, FindingHost.id)
+        ):
+            endpoints.setdefault(finding_id, []).append((host_id, ip_address))
+        finding_ids = sorted(
+            fid for fid, rows in endpoints.items() if any(hid in host_id_set for hid, _ in rows)
         )
-        comments_by_finding = self._finding_comments([f.id for f in findings])
+        from app.db.models_auth import User
+
+        findings = []
+        for chunk in _id_chunks(finding_ids):
+            findings.extend(
+                self.db.query(
+                    Finding.id, Finding.title, Finding.severity, Finding.status, Finding.source,
+                    Finding.vuln_id, Finding.evidence_annotation_id, User.full_name, User.username,
+                )
+                .outerjoin(User, User.id == Finding.owner_id)
+                .filter(Finding.id.in_(chunk))
+                .order_by(Finding.id)
+                .all()
+            )
+        comments_by_finding = self._finding_comments(finding_ids)
         out = [
             {
                 "id": f.id,
@@ -525,15 +558,13 @@ class ReportGenerator:
                 "severity": f.severity,
                 "status": f.status,
                 "source": f.source,
-                "owner": (f.owner.full_name or f.owner.username) if f.owner else None,
-                "host_count": len(f.hosts),
-                "affected_hosts": [fh.host.ip_address for fh in f.hosts if fh.host],
+                "owner": f.full_name or f.username,
+                "host_count": len(endpoints[f.id]),
+                "affected_hosts": [ip for _, ip in endpoints[f.id]],
                 # The affected hosts that are IN this download (ip + id) — the
                 # join from a finding to the ``hosts`` records beside it.
                 "affected": [
-                    {"ip": fh.host.ip_address, "host_id": fh.host_id}
-                    for fh in f.hosts
-                    if fh.host and fh.host_id in host_id_set
+                    {"ip": ip, "host_id": hid} for hid, ip in endpoints[f.id] if hid in host_id_set
                 ],
                 "vuln_id": f.vuln_id,
                 # The note thread this finding was promoted from — its image

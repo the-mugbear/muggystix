@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload, noload, aliased
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy import or_, and_, case, distinct, false, func, true
 
 from app.core.config import settings
@@ -1417,10 +1418,8 @@ def get_hosts_by_scan_v2(
         raise HTTPException(status_code=404, detail="Scan not found")
 
     # Query hosts through HostScanHistory.  v2.424.1 — only what ScanHost
-    # carries is loaded: the host row and its ports.
-    query = db.query(models.Host).options(
-        selectinload(models.Host.ports),
-    ).join(
+    # carries is loaded: the host row and (below) its OPEN ports.
+    query = db.query(models.Host).join(
         models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id
     ).filter(
         models.HostScanHistory.scan_id == scan_id
@@ -1465,6 +1464,22 @@ def get_hosts_by_scan_v2(
     # Apply pagination and return.  Ordered: OFFSET over an unordered join
     # can repeat a host on one page and miss it on the next.
     hosts = query.order_by(models.Host.id).offset(skip).limit(limit).all()
+    # A row carries its OPEN ports, as a Hosts list row does (review
+    # 2026-11-17, A10): the scan page counts and links those and nothing
+    # else, and every stored port of a host swept on its full range was a
+    # page of megabytes.  Every port in every state is on ``GET /hosts/{id}``;
+    # what THIS scan observed is ``GET /scans/{id}/ports``.
+    open_ports: Dict[int, list] = {}
+    host_ids = [host.id for host in hosts]
+    for start in range(0, len(host_ids), 1000):
+        for port in (
+            db.query(models.Port)
+            .filter(models.Port.host_id.in_(host_ids[start:start + 1000]), models.Port.state == "open")
+            .order_by(models.Port.host_id, models.Port.port_number, models.Port.protocol, models.Port.id)
+        ):
+            open_ports.setdefault(port.host_id, []).append(port)
+    for host in hosts:
+        set_committed_value(host, "ports", open_ports.get(host.id, []))
     return hosts
 
 
@@ -1807,8 +1822,9 @@ def get_host_dns_records(
 
 # Tool-ready caps (module-level so tests can shrink them). IP-only formats
 # stream in chunks of TOOL_READY_STREAM_CHUNK and are never capped; formats
-# that load the Host entity with its port/script graph stop at
-# TOOL_READY_ENTITY_CAP (v2.90.1: a 42k-host eager load OOM-killed a worker).
+# that load the Host entity (its ports are read as columns beside it) stop at
+# TOOL_READY_ENTITY_CAP (v2.90.1: a 42k-host eager load of the port/script
+# graph OOM-killed a worker).
 TOOL_READY_STREAM_CHUNK = 5_000
 TOOL_READY_ENTITY_CAP = 50_000
 
@@ -1911,15 +1927,12 @@ def get_tool_ready_hosts(
     # formats walk just ``host.ip_address`` — no relationship access —
     # so skipping the eager-load shrinks the working set from
     # gigabytes to ~8 MB for the host rows themselves.  The
-    # port-bearing formats (host-port, json with include_ports,
-    # nuclei) still need the join; for those we keep the existing
-    # eager-load shape.  JSON without include_ports also skips.
+    # port-bearing formats (host-port, json with include_ports, nuclei,
+    # web-targets) read their ports as COLUMNS after the hosts are chosen
+    # (``_export_ports_by_host``; review 2026-11-17, A1): they kept the
+    # eager load of every port in every state AND every script, which no
+    # format prints, under a cap above the size that killed the worker.
     _NEEDS_PORT_DATA = {"host-port", "nuclei", "web-targets"}
-    if format in _NEEDS_PORT_DATA or (format == "json" and include_ports):
-        query = query.options(
-            selectinload(models.Host.ports).selectinload(models.Port.scripts),
-            selectinload(models.Host.host_scripts),
-        )
 
     if scan_id:
         host_ids_in_scan = db.query(models.HostScanHistory.host_id).filter(
@@ -2039,6 +2052,11 @@ def get_tool_ready_hosts(
         output_filters = (
             _filter_matched_port_ids(db, [h.id for h in hosts], filters) if emits_ports else None
         )
+        # Only ``json`` prints a port that is not open.
+        ports_by_host = (
+            _export_ports_by_host(db, [h.id for h in hosts], open_only=format != "json")
+            if emits_ports else {}
+        )
         names_by_host = (
             _current_names_for_hosts(
                 db, project.id, [h.id for h in hosts], in_scope_only=in_scope_names_only,
@@ -2046,7 +2064,9 @@ def get_tool_ready_hosts(
             if format in _NAME_AWARE_FORMATS
             else {}
         )
-        output = _generate_tool_output(hosts, format, include_ports, output_filters, names_by_host)
+        output = _generate_tool_output(
+            hosts, format, include_ports, output_filters, names_by_host, ports_by_host,
+        )
 
     response_headers["X-Tool-Ready-Returned"] = str(hosts_returned)
     return Response(
@@ -2088,14 +2108,36 @@ def _filter_matched_port_ids(
     return matched
 
 
+def _export_ports_by_host(
+    db: Session, host_ids: List[int], *, open_only: bool,
+) -> Dict[int, list]:
+    """``host_id -> [port row, ...]`` (by port id) for the export: the columns
+    a format prints, never the ``Port`` entity or its scripts.  ``open_only``
+    for the formats that print open ports alone, so a host swept on every
+    port costs its open ones.  One statement per 1000 hosts."""
+    out: Dict[int, list] = {}
+    for start in range(0, len(host_ids), 1000):
+        chunk = host_ids[start:start + 1000]
+        rows = db.query(
+            models.Port.host_id, models.Port.id, models.Port.port_number, models.Port.protocol,
+            models.Port.state, models.Port.service_name, models.Port.service_product,
+            models.Port.service_version,
+        ).filter(models.Port.host_id.in_(chunk))
+        if open_only:
+            rows = rows.filter(models.Port.state == "open")
+        for row in rows.order_by(models.Port.host_id, models.Port.id).all():
+            out.setdefault(row.host_id, []).append(row)
+    return out
+
+
 def _get_filtered_output_ports(
-    host: models.Host, matched_port_ids: Optional[Set[int]] = None,
-) -> List[models.Port]:
-    """The host's ports the export emits: all of them, or those among
-    ``matched_port_ids`` when a port filter is in force."""
-    ports = list(host.ports or [])
+    ports: list, matched_port_ids: Optional[Set[int]] = None,
+) -> list:
+    """The host's ports the export emits (``_export_ports_by_host`` rows): all
+    of them, or those among ``matched_port_ids`` when a port filter is in
+    force."""
     if matched_port_ids is None:
-        return ports
+        return list(ports)
     return [port for port in ports if port.id in matched_port_ids]
 
 
@@ -2147,14 +2189,14 @@ def _current_names_for_hosts(
 
 
 def _web_urls_for_host(
-    host: models.Host, filters: Optional[Set[int]], names: List[str],
+    host: models.Host, filters: Optional[Set[int]], names: List[str], ports: list,
 ) -> List[str]:
     """URLs for the host's open web ports: one per (bound name, port), or the
     IP URL per port when no bound name qualifies.  Empty when the host has no
     open web port."""
     web_ports = [
         p.port_number
-        for p in _get_filtered_output_ports(host, filters)
+        for p in _get_filtered_output_ports(ports, filters)
         if p.state == 'open' and p.port_number in _WEB_PORTS
     ]
     if not web_ports:
@@ -2175,8 +2217,10 @@ def _generate_tool_output(
     include_ports: bool = False,
     filters: Optional[Set[int]] = None,
     names_by_host: Optional[Dict[int, List[str]]] = None,
+    ports_by_host: Optional[Dict[int, list]] = None,
 ) -> str:
     names_by_host = names_by_host or {}
+    ports_by_host = ports_by_host or {}
     """Generate tool-specific output format"""
     
     if format == 'ip-list':
@@ -2200,7 +2244,9 @@ def _generate_tool_output(
         # fallback — see _web_urls_for_host), bare IP for non-web hosts.
         targets = []
         for host in hosts:
-            urls = _web_urls_for_host(host, filters, names_by_host.get(host.id, []))
+            urls = _web_urls_for_host(
+                host, filters, names_by_host.get(host.id, []), ports_by_host.get(host.id, []),
+            )
             targets.extend(urls if urls else [host.ip_address])
         return '\n'.join(targets)
 
@@ -2208,14 +2254,19 @@ def _generate_tool_output(
         # Only hosts with an open web port; one URL per (bound name, port).
         targets = []
         for host in hosts:
-            targets.extend(_web_urls_for_host(host, filters, names_by_host.get(host.id, [])))
+            targets.extend(_web_urls_for_host(
+                host, filters, names_by_host.get(host.id, []), ports_by_host.get(host.id, []),
+            ))
         return '\n'.join(targets)
     
     elif format == 'host-port':
         # IP:PORT format for each open port
         results = []
         for host in hosts:
-            open_ports = [port for port in _get_filtered_output_ports(host, filters) if port.state == 'open']
+            open_ports = [
+                port for port in _get_filtered_output_ports(ports_by_host.get(host.id, []), filters)
+                if port.state == 'open'
+            ]
             if open_ports:
                 for port in open_ports:
                     results.append(f"{host.ip_address}:{port.port_number}")
@@ -2241,7 +2292,7 @@ def _generate_tool_output(
             }
             
             if include_ports:
-                filtered_ports = _get_filtered_output_ports(host, filters)
+                filtered_ports = _get_filtered_output_ports(ports_by_host.get(host.id, []), filters)
                 host_info['ports'] = [
                     {
                         'port': port.port_number,
@@ -2376,24 +2427,37 @@ def list_host_web_paths(
     )
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    latest: Dict[str, Any] = {}
-    counts: Dict[str, int] = {}
-    for row, port_number in (
-        db.query(models.WebPath, models.Port.port_number)
-        .outerjoin(models.Port, models.Port.id == models.WebPath.port_id)
-        .filter(models.WebPath.host_id == host_id)
-        .order_by(models.WebPath.id)
+    # The latest row of each URL and how many scans reported it, folded by the
+    # DATABASE (review 2026-11-17, A11).  Every stored row — one per scan per
+    # URL — used to be loaded as an entity and folded here: a recursive
+    # content-discovery run, re-run a few times, was tens of thousands of
+    # objects on every open of the host.  The answer is still the whole list
+    # of distinct URLs; paging it is the page's change to make with this one.
+    wp = models.WebPath
+    folded = (
+        db.query(
+            wp.url.label("url"), wp.path.label("path"), wp.status_code.label("status_code"),
+            wp.size.label("size"), wp.source.label("source"), wp.port_id.label("port_id"),
+            wp.first_seen.label("first_seen"),
+            func.count(wp.id).over(partition_by=wp.url).label("scans"),
+            func.row_number().over(partition_by=wp.url, order_by=wp.id.desc()).label("rn"),
+        )
+        .filter(wp.host_id == host_id)
+        .subquery()
+    )
+    rows = (
+        db.query(folded, models.Port.port_number)
+        .outerjoin(models.Port, models.Port.id == folded.c.port_id)
+        .filter(folded.c.rn == 1)
         .all()
-    ):
-        counts[row.url] = counts.get(row.url, 0) + 1
-        latest[row.url] = (row, port_number)
+    )
     return sorted(
         (
             WebPathResponse(
                 url=r.url, path=r.path, status_code=r.status_code, size=r.size, source=r.source,
-                port=p, last_seen=r.first_seen, scans=counts[r.url],
+                port=r.port_number, last_seen=r.first_seen, scans=r.scans,
             )
-            for r, p in latest.values()
+            for r in rows
         ),
         key=lambda w: (w.port or 0, w.path),
     )

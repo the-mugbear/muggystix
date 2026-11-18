@@ -2,6 +2,29 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.543.2",
+      "frontend": "5.433.0",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "kind": "changed",
+          "text": "A scan's \"current inventory\" rows and a host's discovered web paths load faster on hosts with very many ports or paths. The API's hosts-of-a-scan answer now lists each host's open ports only."
+        },
+        {
+          "kind": "fixed",
+          "text": "A masscan file with very many ports on few addresses (a full-range sweep of hosts that answer on every port) is imported in pieces instead of being held whole in memory, which could end the import with no explanation."
+        },
+        {
+          "kind": "fixed",
+          "text": "Large imports from naabu, RustScan, nuclei, OpenVAS, NetExec and the other line-by-line formats no longer use more memory the longer the file is."
+        },
+        {
+          "kind": "fixed",
+          "text": "The host:port, nuclei, web-targets and JSON-with-ports target exports, and the comprehensive JSON inventory download, no longer load far more than they print; on a very large project they could fail."
+        }
+      ]
+    },
+    {
       "backend": "2.543.1",
       "frontend": "5.433.0",
       "date": "2026-11-17",
