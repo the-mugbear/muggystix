@@ -215,6 +215,8 @@ describe('FindingEndpoints — a host awaiting a retest', () => {
     setFindingEndpointStatus.mockRejectedValueOnce(refused());
     render(<Harness initial={finding([asked, judged])} />);
     expect(screen.getByTestId('endpoint-1-retest-asked')).toHaveTextContent('Retest still asked for');
+    // …and when it was asked (review 2026-11-17, B13: served, never shown).
+    expect(screen.getByTestId('endpoint-1-retest-asked')).toHaveTextContent(/since .*2026/);
     expect(screen.queryByTestId('endpoint-2-retest-asked')).toBeNull();
     expect(screen.getByRole('button', { name: 'Record the retest of 10.0.0.1' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Record the retest of 10.0.0.2' })).toBeNull();

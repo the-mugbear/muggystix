@@ -104,6 +104,9 @@ const HOSTNAME_SOURCE_LABEL: Record<string, string> = {
   forward: 'from a forward DNS record',
 };
 
+/** What a hand-set OS means for the reader (the OS row's hover text). */
+const OS_SET_BY_HAND = 'Set by hand: later imports record a conflict and do not replace it';
+
 // One empty list each, so "nothing loaded" is the same value on every render.
 const NO_NOTES: Annotation[] = [];
 const NO_CONFLICTS: HostConflict[] = [];
@@ -692,6 +695,7 @@ const HostInspectorView: React.FC<HostInspectorViewProps> = ({
                     Number(host.os_accuracy) > 0 && Number(host.os_accuracy) < 70
                       ? `Low-confidence OS guess (${Number(host.os_accuracy)}% match)`
                       : '',
+                    host.os_source === 'operator' ? OS_SET_BY_HAND : '',
                   ].filter(Boolean).join(' — ') || undefined}>
                   {host.os_name ? (() => {
                     // De-weight a low-confidence guess so a 60% match doesn't read
@@ -711,6 +715,15 @@ const HostInspectorView: React.FC<HostInspectorViewProps> = ({
                         {acc != null && (
                           <span className={tentative ? 'text-caption text-amber-600' : 'text-caption text-muted-foreground'}>
                             {' · '}{acc}%
+                          </span>
+                        )}
+                        {host.os_source === 'operator' && (
+                          // Served and never shown (review 2026-11-17, B10): a
+                          // hand-set OS stops following new scans and counts
+                          // as work when a scan is deleted, with nothing on
+                          // the page to say why.
+                          <span className="text-caption text-muted-foreground" data-testid="os-set-by-hand">
+                            {' · '}set by hand
                           </span>
                         )}
                       </>

@@ -418,6 +418,45 @@ describe('useUploadReview', () => {
     expect(deps.getJobDetection).not.toHaveBeenCalled();
   });
 
+  // Review 2026-11-17, A16 — only four files upload at once; the rest wait at
+  // "Uploading 0%" with the same Cancel, which did nothing for them: the row
+  // stayed and the file was staged when its turn came.
+  it('cancelling a file that is still waiting for a slot removes it and never uploads it', async () => {
+    const deps = makeDeps();
+    const releases: Array<() => void> = [];
+    const sent: string[] = [];
+    deps.uploadFile.mockImplementation((_projectId: number, f: File) =>
+      new Promise((resolve) => {
+        sent.push(f.name);
+        const id = 100 + sent.length;
+        releases.push(() => resolve({ job_id: id, filename: f.name, status: 'staged', message: 'staged', scan_id: null }));
+      }));
+    deps.getJobDetection.mockImplementation(async (_projectId: number, jobId: number) => ({ ...ready, job_id: jobId }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
+
+    const names = ['a.xml', 'b.xml', 'c.xml', 'd.xml', 'waiting.xml', 'last.xml'];
+    let adding: Promise<void> | undefined;
+    act(() => { adding = result.current.addFiles(names.map((n) => file(n))); });
+    await waitFor(() => expect(sent).toEqual(['a.xml', 'b.xml', 'c.xml', 'd.xml']));
+
+    const waiting = result.current.rows.find((r) => r.filename === 'waiting.xml')!;
+    expect(waiting.phase).toBe('uploading');
+    act(() => { result.current.cancelUpload(waiting.key); });
+    expect(result.current.rows.map((r) => r.filename)).not.toContain('waiting.xml');
+
+    // Slots free up: the next file to be sent is the one after the cancelled one.
+    await act(async () => {
+      while (releases.length) {
+        releases.shift()!();
+        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      await adding;
+    });
+    expect(sent).toEqual(['a.xml', 'b.xml', 'c.xml', 'd.xml', 'last.xml']);
+    expect(result.current.rows.map((r) => r.filename)).toEqual(['a.xml', 'b.xml', 'c.xml', 'd.xml', 'last.xml']);
+  });
+
   // 5.353.0 — the review is given its project once.  Its rows are that
   // project's staged jobs, so a later step is asked of it too, whatever the
   // owner renders with afterwards.

@@ -279,7 +279,11 @@ export const uploadFile = async (
     };
     if (options.signal) {
       if (options.signal.aborted) {
-        xhr.abort();
+        // Aborting a request that was never sent fires no event, so the
+        // promise must be settled here or its caller waits for ever.
+        const err = new Error('Upload cancelled');
+        err.name = 'AbortError';
+        reject(err);
         return;
       }
       options.signal.addEventListener('abort', () => xhr.abort(), { once: true });

@@ -162,9 +162,10 @@ class ScanInventorySummary(BaseModel):
     """
 
     total_scans: int = Field(..., ge=0, description="Scans matching the filters")
-    total_hosts: int = Field(..., ge=0, description="Sum of host observations across matching scans")
-    up_hosts: int = Field(..., ge=0, description="Sum of up-host observations across matching scans")
-    open_services: int = Field(..., ge=0, description="Sum of open ports across matching scans")
+    # ``total_hosts`` / ``up_hosts`` / ``open_services`` (sums over every
+    # matching scan's host and port history) went in 2.545.0: the headline
+    # cards they fed were removed long ago, no page or agent read them, and
+    # they were recomputed on every open of Scans and every filter change.
     # v2.350.0 — files per tool over the search/date filters (NOT the tool
     # filter), batched files included; drives the tool chips.
     tool_counts: Dict[str, int] = Field(default_factory=dict)
@@ -839,49 +840,18 @@ def get_scans_summary(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """Filter-aware totals for the /scans headline cards.
+    """Filter-aware totals for the Scans page: how many scans match, files per
+    tool, who uploaded them, and the import history's failure figures.
 
-    Mirrors the list endpoint's per-scan aggregates (total_hosts / up_hosts
-    via HostScanHistory; open_ports via Port->Host->HostScanHistory) but
-    summed across *every* scan matching the filters, not just the loaded
-    page — so the headline reflects reality regardless of pagination.
+    It reads the scan rows only (review 2026-11-17, A21).  It also summed
+    every matching scan's host history and counted its open port history —
+    millions of rows on a large project, on every open of the page and every
+    filter change — for three figures nothing read.
     """
-    # Scan count + host observation sums in one pass over Scan -> history.
-    host_agg = (
-        db.query(
-            func.count(distinct(models.Scan.id)).label("total_scans"),
-            func.count(models.HostScanHistory.id).label("total_hosts"),
-            func.sum(
-                case((models.HostScanHistory.state_at_scan == "up", 1), else_=0)
-            ).label("up_hosts"),
-        )
-        .select_from(models.Scan)
-        .outerjoin(models.HostScanHistory, models.Scan.id == models.HostScanHistory.scan_id)
-        .filter(models.Scan.project_id == project.id)
-    )
-    host_agg = apply_scan_inventory_filters(
-        host_agg, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
-    )
-    host_row = host_agg.one()
-
-    # Open services — count open ports across the (port, scan) observations
-    # of the matching scans.  Matches the list endpoint's per-scan open_ports
-    # summed client-side: each scan contributes the ports IT saw open
-    # (v2.298.0 — was the hosts' current open ports, so this total moved
-    # whenever a later scan changed the inventory).
-    open_services_query = (
-        db.query(func.count(models.PortScanHistory.port_id))
-        .select_from(models.PortScanHistory)
-        .join(models.Scan, models.PortScanHistory.scan_id == models.Scan.id)
-        .filter(
-            models.Scan.project_id == project.id,
-            models.PortScanHistory.state_at_scan == "open",
-        )
-    )
-    open_services_query = apply_scan_inventory_filters(
-        open_services_query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
-    )
-    open_services = open_services_query.scalar() or 0
+    total_scans = apply_scan_inventory_filters(
+        db.query(func.count(models.Scan.id)).filter(models.Scan.project_id == project.id),
+        search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
+    ).scalar() or 0
 
     # v2.350.0 — per-tool file counts for the filter chips, over EVERY scan
     # matching the search/date filters (batched or not), and deliberately
@@ -928,10 +898,7 @@ def get_scans_summary(
     not_imported = sum(by_reason.values())
 
     return ScanInventorySummary(
-        total_scans=host_row.total_scans or 0,
-        total_hosts=host_row.total_hosts or 0,
-        up_hosts=host_row.up_hosts or 0,
-        open_services=open_services,
+        total_scans=int(total_scans),
         tool_counts=tool_counts,
         total_files=sum(tool_counts.values()),
         uploaders=uploaders,

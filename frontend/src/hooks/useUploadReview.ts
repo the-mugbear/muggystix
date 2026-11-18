@@ -217,11 +217,18 @@ export function useUploadReview({ projectId: givenProjectId, skipInformational, 
   // the dialog could not be closed while anything uploaded, and nothing
   // could stop it (review 2026-09-23 B-UI-4).
   const uploadsRef = useRef<Map<string, AbortController>>(new Map());
+  // Rows cancelled while they WAITED for a slot (only `STAGE_CONCURRENCY`
+  // upload at once; the rest sit at "Uploading 0%" with the same Cancel).
+  // Such a row has no controller yet, so Cancel did nothing and the file was
+  // staged when its turn came (review 2026-11-17, A16).
+  const cancelledRef = useRef<Set<string>>(new Set());
 
   /** Stages a dropped file; true when the server kept it. */
   const stageOne = useCallback(
     async (row: ReviewRow, options: UploadOptions): Promise<boolean> => {
       if (!row.file) return false;
+      // Cancelled before its turn: nothing is sent.
+      if (cancelledRef.current.delete(row.key)) return false;
       const controller = new AbortController();
       uploadsRef.current.set(row.key, controller);
       try {
@@ -408,14 +415,19 @@ export function useUploadReview({ projectId: givenProjectId, skipInformational, 
     [rows, api, projectId, patch],
   );
 
-  /** Stop an upload in flight and drop its row.  Nothing was staged for it
-   *  (a request cut off in the last instant may still have been stored; an
-   *  unstarted staged job expires after 24 h). */
+  /** Stop an upload in flight — or one still waiting for a slot — and drop
+   *  its row.  Nothing was staged for it (a request cut off in the last
+   *  instant may still have been stored; an unstarted staged job expires
+   *  after 24 h). */
   const cancelUpload = useCallback((key: string) => {
     const controller = uploadsRef.current.get(key);
-    if (!controller) return;
-    controller.abort();
-    uploadsRef.current.delete(key);
+    if (controller) {
+      controller.abort();
+      uploadsRef.current.delete(key);
+    } else {
+      // Not started: `stageOne` skips it when its turn comes.
+      cancelledRef.current.add(key);
+    }
     setRows((prev) => prev.filter((r) => r.key !== key));
   }, []);
 

@@ -43,6 +43,7 @@ import {
 import {
   ENDPOINT_STATUS_LABEL, ENDPOINT_STATUS_SHORT_LABEL, ENDPOINT_STATUS_TONE, describeEndpointStates,
 } from '../../utils/findingStatus';
+import { formatDate } from '../../utils/relativeTime';
 import { runLimited } from '../../utils/runLimited';
 import { selectAllState } from '../../utils/selection';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
@@ -94,6 +95,15 @@ const endpointName = (h: FindingHostInfo) => `${h.fqdn ? `${h.fqdn} on ` : ''}${
  *  `finding_needs.retest_stands_on`, the rule every retest list counts by);
  *  the page keeps no copy of the rule (third review 2026-10-15, R1/R6). */
 const awaitsRetest = (h: FindingHostInfo) => !!h.retest_stands;
+
+/** The day a standing retest was asked for, or null when it is not known: a
+ *  request that predates the column is stored as the epoch, which is not a
+ *  day anyone asked on. */
+const retestAskedOn = (h: FindingHostInfo): string | null => {
+  const asked = h.retest_requested_at;
+  if (!asked || new Date(asked).getFullYear() < 2000) return null;
+  return formatDate(asked, null);
+};
 
 /** A sticky cell needs an opaque fill, and draws its own rule: a collapsed
  *  table border does not travel with a stuck cell. */
@@ -484,7 +494,15 @@ const FindingEndpoints: React.FC<Props> = ({
             // 2026-10-15): said on the row, or Remediated's refusal names a
             // retest the reader cannot see.
             <p className="mt-xxs text-caption text-muted-foreground" data-testid={`endpoint-${h.id}-retest-asked`}>
-              Retest still asked for
+              Retest still asked for{retestAskedOn(h) ? ` · since ${retestAskedOn(h)}` : ''}
+            </p>
+          )}
+          {awaitsRetest(h) && h.host_status === 'retest' && retestAskedOn(h) && (
+            // Which request this is, without opening the history (review
+            // 2026-11-17, B13: the date was served and never shown).  When it
+            // was asked — provenance, not a deadline.
+            <p className="mt-xxs text-caption text-muted-foreground" data-testid={`endpoint-${h.id}-retest-since`}>
+              Asked {retestAskedOn(h)}
             </p>
           )}
           {canManage && awaitsRetest(h) && (

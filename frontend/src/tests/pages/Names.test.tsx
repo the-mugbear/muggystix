@@ -186,11 +186,11 @@ describe('Names page export', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Export names as text' }));
     await waitFor(() => expect(mocked.exportNames).toHaveBeenCalledTimes(1));
-    expect(mocked.exportNames).toHaveBeenCalledWith(1, 'txt', { search: 'portal', state: 'in_scope' });
+    expect(mocked.exportNames).toHaveBeenCalledWith(1, 'txt', { search: 'portal', state: 'in_scope', sort: 'fqdn', order: 'asc' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Export names as CSV' }));
     await waitFor(() => expect(mocked.exportNames).toHaveBeenCalledTimes(2));
-    expect(mocked.exportNames).toHaveBeenLastCalledWith(1, 'csv', { search: 'portal', state: 'in_scope' });
+    expect(mocked.exportNames).toHaveBeenLastCalledWith(1, 'csv', { search: 'portal', state: 'in_scope', sort: 'fqdn', order: 'asc' });
   });
 
   it('hides export from viewers (server enforces AUDITOR+; this is the affordance)', async () => {

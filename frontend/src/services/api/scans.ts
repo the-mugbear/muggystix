@@ -336,9 +336,6 @@ export const getScanInventoryMarker = async (projectId: number, signal?: AbortSi
  */
 export interface ScanInventorySummary {
   total_scans: number;
-  total_hosts: number;
-  up_hosts: number;
-  open_services: number;
   // v2.350.0 — files per tool (keys upper-cased) over the search/date
   // filters, batched files included, ignoring the tool filter.
   tool_counts?: Record<string, number>;

@@ -78,11 +78,42 @@ describe('Names — the filters are the address (real router)', () => {
     expect(chip(/^Unresolved/)).toHaveAttribute('aria-pressed', 'true');
     expect(pressed()).toHaveLength(1);
     expect(box().value).toBe('portal');
-    expect(asked()).toEqual([{ skip: 0, limit: 100, search: 'portal', state: 'unresolved' }]);
+    expect(asked()).toEqual([{ skip: 0, limit: 100, search: 'portal', state: 'unresolved', sort: 'fqdn', order: 'asc' }]);
     // Opening it changed nothing in the address, then or later.
     await settle();
     expect(router.state.location.search).toBe('?state=unresolved&search=portal');
     expect(asked()).toHaveLength(1);
+  });
+
+  // Review 2026-11-17, B11 — the route always took `sort` / `order`; the page
+  // never sent them and its headers were plain text.
+  it('the order is the address too: a header sorts, the same one again turns it round', async () => {
+    const router = open('/names?state=in_scope&page=2');
+    await screen.findByText('portal.acme.com');
+    const head = (name: string) => screen.getByRole('columnheader', { name: new RegExp(name) });
+    expect(head('Name')).toHaveAttribute('aria-sort', 'ascending');
+    expect(head('Last seen')).toHaveAttribute('aria-sort', 'none');
+
+    // A date starts newest first; the filter stays, the page goes.
+    fireEvent.click(screen.getByRole('button', { name: /Sort by Last seen/ }));
+    await waitFor(() => expect(last()).toMatchObject({ sort: 'last_seen', order: 'desc', state: 'in_scope', skip: 0 }));
+    expect(router.state.location.search).toBe('?state=in_scope&sort=last_seen');
+    expect(head('Last seen')).toHaveAttribute('aria-sort', 'descending');
+
+    fireEvent.click(screen.getByRole('button', { name: /Sort by Last seen/ }));
+    await waitFor(() => expect(last()).toMatchObject({ sort: 'last_seen', order: 'asc' }));
+    expect(router.state.location.search).toBe('?state=in_scope&sort=last_seen&order=asc');
+
+    // Back to the name, A–Z: the default, so it leaves the address.
+    fireEvent.click(screen.getByRole('button', { name: /Sort by Name/ }));
+    await waitFor(() => expect(last()).toMatchObject({ sort: 'fqdn', order: 'asc' }));
+    expect(router.state.location.search).toBe('?state=in_scope');
+  });
+
+  it('a link that names an order opens in it, and an unknown one is the default', async () => {
+    open('/names?sort=last_seen&order=asc');
+    await screen.findByText('portal.acme.com');
+    expect(last()).toMatchObject({ sort: 'last_seen', order: 'asc' });
   });
 
   it('a bare address is every name, and an emptied filter leaves the address', async () => {
@@ -163,7 +194,7 @@ describe('Names — the filters are the address (real router)', () => {
     expect(router.state.location.search).toBe('?state=in_scope&page=2');
 
     await settle();
-    expect(asked()).toEqual([{ skip: 0, limit: 100, search: 'portal', state: 'in_scope' }]);
+    expect(asked()).toEqual([{ skip: 0, limit: 100, search: 'portal', state: 'in_scope', sort: 'fqdn', order: 'asc' }]);
     expect(router.state.location.search).toBe('?state=in_scope&search=portal');
     expect(box().value).toBe('portal');
   });

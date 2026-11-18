@@ -52,7 +52,10 @@ export interface HostVulnerability {
   /** v5.298.0 — the misconfiguration-catalog check (if any) and the kind. */
   check_id?: string | null;
   kind?: 'misconfiguration' | 'vulnerability' | 'informational' | null;
+  /** The scan that first recorded the row (it never moves). */
   scan_id: number | null;
+  /** The latest scan that reported it; null when no scan is recorded. */
+  last_seen_scan_id?: number | null;
   port_id: number | null;
   port_number: number | null;
   protocol: string | null;
@@ -169,6 +172,9 @@ export interface Host {
   smb_signing?: 'disabled' | 'not_required' | 'required' | string | null;
   /** operator | ptr | scanner | forward — where `hostname` came from. */
   hostname_source?: string | null;
+  /** `operator` when the OS was set by hand (through an agent's host
+   *  correction): later imports record a conflict and do not replace it. */
+  os_source?: string | null;
   /** v5.276.0 — MAC / vendor (nmap, Nessus) and NetBIOS name (Nessus). */
   mac_address?: string | null;
   mac_vendor?: string | null;

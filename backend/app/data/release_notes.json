@@ -2,6 +2,33 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.545.0",
+      "frontend": "5.434.0",
+      "date": "2026-11-18",
+      "entries": [
+        {
+          "kind": "new",
+          "text": "The Names list can be sorted: click the Name or Last seen header (click again to reverse). The order is in the page's address and the export follows it."
+        },
+        {
+          "kind": "new",
+          "text": "A scanner observation on a host links to the scan that last reported it and the scan that first recorded it."
+        },
+        {
+          "kind": "new",
+          "text": "A host's OS row says when the OS was set by hand, which is why later scans do not change it. A finding's endpoint shows the day its retest was asked for."
+        },
+        {
+          "kind": "changed",
+          "text": "The Scans page opens faster on large projects: it no longer totals every scan's hosts and open ports for figures it did not show. The API's scans summary no longer returns total_hosts, up_hosts or open_services."
+        },
+        {
+          "kind": "fixed",
+          "text": "Cancel on a file still waiting to upload (when more than four are dropped at once) now removes it; it used to do nothing and the file was uploaded when its turn came."
+        }
+      ]
+    },
+    {
       "backend": "2.544.0",
       "frontend": "5.433.0",
       "date": "2026-11-18",

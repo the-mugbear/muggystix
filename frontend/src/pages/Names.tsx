@@ -65,6 +65,7 @@ import {
   TableHeader,
   TableRow,
 } from '../components/ui/table';
+import { SortableHeader } from '../components/ui/data-table';
 import { Textarea } from '../components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { ListFilterBar, ListFilterSearch } from '../components/ListFilterBar';
@@ -87,6 +88,12 @@ import { formatTimestamp } from '../utils/relativeTime';
  */
 
 const PAGE_SIZE = 100;
+
+// The columns the list can be ordered by, and the direction each starts in.
+type NameSort = 'fqdn' | 'last_seen';
+const NAME_SORT_DEFAULT_ORDER: Record<NameSort, 'asc' | 'desc'> = { fqdn: 'asc', last_seen: 'desc' };
+const ariaSort = (active: boolean, order: 'asc' | 'desc'): 'ascending' | 'descending' | 'none' =>
+  (active ? (order === 'asc' ? 'ascending' : 'descending') : 'none');
 const NO_ROWS: NameRow[] = [];
 
 const STATE_OPTIONS: Array<{ value: NameStateFilter; label: string; hint: string }> = [
@@ -699,14 +706,37 @@ const Names: React.FC = () => {
   // address — and so what is asked for.
   const search = useUrlSearchDraft('search');
   const searchValue = search.value;
+  // The order is the address's too (`?sort=last_seen&order=desc`; by name,
+  // A–Z, is the default and is left out).  The route always took both; the
+  // page never sent them, so "which names did the last import add" could
+  // not be asked (review 2026-11-17, B11).  Anything else in the address is
+  // read as the default — the server refuses an unknown value.
+  const sort: NameSort = searchParams.get('sort') === 'last_seen' ? 'last_seen' : 'fqdn';
+  const order: 'asc' | 'desc' = (searchParams.get('order') ?? NAME_SORT_DEFAULT_ORDER[sort]) === 'desc' ? 'desc' : 'asc';
+  const sortBy = useCallback((next: NameSort) => {
+    setSearchParams((prev) => {
+      const out = new URLSearchParams(prev);
+      const current: NameSort = prev.get('sort') === 'last_seen' ? 'last_seen' : 'fqdn';
+      const currentOrder = (prev.get('order') ?? NAME_SORT_DEFAULT_ORDER[current]) === 'desc' ? 'desc' : 'asc';
+      // The same column again turns it round; another column starts in its
+      // own natural direction (a name A–Z, a date newest first).
+      const nextOrder = next === current ? (currentOrder === 'asc' ? 'desc' : 'asc') : NAME_SORT_DEFAULT_ORDER[next];
+      if (next === 'fqdn') out.delete('sort');
+      else out.set('sort', next);
+      if (nextOrder === NAME_SORT_DEFAULT_ORDER[next]) out.delete('order');
+      else out.set('order', nextOrder);
+      out.delete('page');
+      return out;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [importOpen, setImportOpen] = useState(false);
 
   // The page is in the address (`?page=`, left out for the first); under a
   // new filter it is the first page at once (usePagedList).
   const list = usePagedList<NameRow>(
     'listNames',
-    ({ offset, limit, signal }) => listNames(projectId, { skip: offset, limit, search: searchValue, state }, signal),
-    [projectId, state, searchValue],
+    ({ offset, limit, signal }) => listNames(projectId, { skip: offset, limit, search: searchValue, state, sort, order }, signal),
+    [projectId, state, searchValue, sort, order],
     { pageSize: PAGE_SIZE, errorMessage: 'Failed to load names.', page: useUrlPage() },
   );
   const { page, setPage, loading, error } = list;
@@ -754,7 +784,8 @@ const Names: React.FC = () => {
 
   const exportList = useMutation({
     mutationFn: (format: 'txt' | 'csv') =>
-      exportNames(projectId, format, { search: searchValue || undefined, state }),
+      // In the order on screen: the file is the list.
+      exportNames(projectId, format, { search: searchValue || undefined, state, sort, order }),
     onError: (err) => toast.error(formatApiError(err, 'Failed to export names.')),
   });
   const exporting = exportList.isPending ? exportList.variables : null;
@@ -915,11 +946,15 @@ const Names: React.FC = () => {
               <Table style={{ tableLayout: 'fixed' }} className="min-w-[820px]">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[27%]">Name</TableHead>
+                    <TableHead className="w-[27%]" aria-sort={ariaSort(sort === 'fqdn', order)}>
+                      <SortableHeader label="Name" sortDirection={sort === 'fqdn' ? order : false} onToggle={() => sortBy('fqdn')} />
+                    </TableHead>
                     <TableHead className="w-[13%]">Scope</TableHead>
                     <TableHead className="w-[26%]">Resolves to</TableHead>
                     <TableHead className="w-[22%]">Evidence</TableHead>
-                    <TableHead className="w-[12%]">Last seen</TableHead>
+                    <TableHead className="w-[12%]" aria-sort={ariaSort(sort === 'last_seen', order)}>
+                      <SortableHeader label="Last seen" sortDirection={sort === 'last_seen' ? order : false} onToggle={() => sortBy('last_seen')} />
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
