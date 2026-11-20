@@ -110,8 +110,12 @@ test('three people, one presentation', async ({ browser }) => {
   expect(DMZ).toContain('f:F-01:hosts:1');
 
   // Dropped heartbeats: A says it is out of sync, then catches up.
+  // Each press is waited for at the backend before `be.live.slide` is read:
+  // the key's request is still on its way when `press` returns.
+  const dmzAt = DMZ.indexOf('f:F-01:hosts:1');
   await ctxA.route('**/presentations/9/heartbeat', (route) => route.abort());
   await b.keyboard.press('j');
+  await expect.poll(() => be.live?.slide).toBe(DMZ[dmzAt + 1]);
   await expect(a.getByRole('status')).toContainText('Reconnecting', { timeout: 10_000 });
   await ctxA.unroute('**/presentations/9/heartbeat');
   await expect(shown(a)).toHaveAttribute('data-slide', be.live!.slide, { timeout: 10_000 });
@@ -123,6 +127,7 @@ test('three people, one presentation', async ({ browser }) => {
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await b.keyboard.press('j');
+  await expect.poll(() => be.live?.slide).toBe(DMZ[dmzAt + 2]);
   await expect(shown(a)).toHaveAttribute('data-slide', be.live!.slide, { timeout: 10_000 });
 
   // C browses on her own: her own position, nothing sent.
