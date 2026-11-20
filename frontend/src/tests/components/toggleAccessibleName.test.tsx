@@ -15,7 +15,7 @@ let warn: ReturnType<typeof vi.spyOn>;
 beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined); });
 afterEach(() => { warn.mockRestore(); });
 
-const unnamed = () => warn.mock.calls.filter(([message]) => /has no accessible name/.test(String(message)));
+const unnamed = () => warn.mock.calls.filter(([message]: unknown[]) => /has no accessible name/.test(String(message)));
 
 describe.each([
   ['Switch', Switch, 'switch'],

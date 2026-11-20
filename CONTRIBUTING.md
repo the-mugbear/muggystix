@@ -55,9 +55,9 @@ includes your changes.
   `requirements*.txt` *and* its line in `constraints.txt` (pip refuses the build when they
   disagree), rebuild, run `scripts/check.sh`, then replace the list in `constraints.txt` with
   `docker compose exec -T backend pip freeze` from the new image.
-- **Base images** are pinned to exact release tags (not digests): `postgres:16.13` in
-  `docker-compose.yml`; `python:3.11.16-slim-trixie` and `debian:12.15-slim` (the stage that
-  downloads Quarto) in `backend/Dockerfile`; `node:22.23.4-alpine` and `nginx:1.31.9-alpine` in
+- **Base images** are pinned to exact release tags (not digests): `postgres:16.16` in
+  `docker-compose.yml`; `python:3.11.18-slim-trixie` and `debian:12.15-slim` (the stage that
+  downloads Quarto) in `backend/Dockerfile`; `node:22.23.5-alpine` and `nginx:1.31.9-alpine` in
   `frontend/Dockerfile`. Moving one is a deliberate commit: change the tag, rebuild, run the
   gate. `.env` can override each (`POSTGRES_IMAGE`, `PYTHON_IMAGE`, `DEBIAN_IMAGE`, `NODE_IMAGE`,
   `NGINX_IMAGE`) for a host that cannot pull. A build still downloads packages (PyPI, npm,

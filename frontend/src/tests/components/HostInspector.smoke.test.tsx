@@ -259,7 +259,7 @@ describe('HostInspector smoke', () => {
   // v5.215.0 — informational rows are left out of the detail payload; the
   // card says how many are hidden and refetches with them on request.
   it('offers to load hidden informational findings and refetches with include_info', async () => {
-    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn<(...args: any[]) => any>>;
     const base = await getHost.getMockImplementation()!();
     getHost.mockResolvedValueOnce({
       ...base, informational_count: 3, informational_included: false,
@@ -283,7 +283,7 @@ describe('HostInspector smoke', () => {
   // the next re-read of the host (an assignee, a tag, a test's result, a note's
   // image: each says "this host is out of date") came back without them.
   it('keeps the informational rows when the host is read again after another change', async () => {
-    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn<(...args: any[]) => any>>;
     const base = await getHost.getMockImplementation()!();
     const summary = { total_vulnerabilities: 3, critical: 0, high: 0, medium: 0, low: 0, info: 3 };
     getHost.mockImplementation((_project: number, _host: number, options?: { includeInfo?: boolean }) => Promise.resolve({
@@ -313,7 +313,7 @@ describe('HostInspector smoke', () => {
 
   // The wider read failing was a toast over a link that had stopped spinning.
   it('says where the link is when the informational rows cannot be loaded, with Retry; the host stays', async () => {
-    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn<(...args: any[]) => any>>;
     const base = await getHost.getMockImplementation()!();
     let fail = true;
     getHost.mockImplementation((_project: number, _host: number, options?: { includeInfo?: boolean }) => {
@@ -341,7 +341,7 @@ describe('HostInspector smoke', () => {
   // Review follow-up: a late "show informational" response for host A must not
   // be merged into host B after the operator has navigated on.
   it('drops a late informational response after navigating to another host', async () => {
-    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn<(...args: any[]) => any>>;
     const base = await getHost.getMockImplementation()!();
     let resolveA!: (v: unknown) => void;
     const deferredA = new Promise((res) => { resolveA = res; });

@@ -10,8 +10,8 @@
 #
 # Versions are fixed by constraints.txt, like the runtime ones.
 -r requirements.txt
-pytest==8.4.2
-pytest-cov==7.0.0
-pytest-asyncio==1.2.0
+pytest==9.2.0
+pytest-cov==7.1.0
+pytest-asyncio==1.5.0
 # pyflakes rules only — see ruff.toml.
 ruff==0.16.10

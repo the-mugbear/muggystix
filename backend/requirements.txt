@@ -11,16 +11,13 @@ uvicorn==0.36.0
 sqlalchemy==2.0.43
 psycopg2-binary==2.9.10
 alembic==1.16.5
-pydantic[email]==2.11.9
+pydantic==2.11.9
 python-multipart==0.0.34
 lxml==6.1.3
 # Not imported by BlueStick: required by fastapi, pydantic, sqlalchemy, alembic
 # and starlette.  Pinned here only so a rebuild cannot move it; it could live
 # in constraints.txt alone.
 typing-extensions==4.15.0
-# Not imported by BlueStick: pinned because email-validator (pydantic[email])
-# requires it.
-dnspython==2.9.2
 # Runtime, not only tests: the MCP loopback, LLM-provider and integration
 # clients and the URL validator import httpx (starlette's TestClient too).
 httpx==0.28.1

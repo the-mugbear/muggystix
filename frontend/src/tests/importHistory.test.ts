@@ -9,19 +9,23 @@ const batch = (id: number) => ({ id, label: `b${id}` }) as ScanBatchSummary;
 const upload = (id: number) => ({ id, original_filename: `u${id}.xml`, status: 'failed' }) as IngestionResultItem;
 const results = (items: IngestionResultItem[]) => ({ items, total: items.length, summary: {} as never });
 
-const anApi = (over: Partial<Record<'getScans' | 'getScanBatches' | 'getIngestionResults', ReturnType<typeof vi.fn>>> = {}) => ({
-  getScans: vi.fn().mockResolvedValue([]),
-  getScanBatches: vi.fn().mockResolvedValue([]),
-  getIngestionResults: vi.fn().mockResolvedValue(results([])),
+// vitest 5: a bare `vi.fn()` is "a function or a constructor", which the
+// API's function types do not accept.
+const fn = () => vi.fn<(...args: any[]) => Promise<any>>();
+
+const anApi = (over: Partial<Record<'getScans' | 'getScanBatches' | 'getIngestionResults', ReturnType<typeof fn>>> = {}) => ({
+  getScans: fn().mockResolvedValue([]),
+  getScanBatches: fn().mockResolvedValue([]),
+  getIngestionResults: fn().mockResolvedValue(results([])),
   ...over,
 });
 
 describe('hydrateHistoryRows', () => {
   it('fetches a page\'s files, batches and uploads by id — batches with the page filters', async () => {
     const api = anApi({
-      getScans: vi.fn().mockResolvedValue([scan(3), scan(9)]),
-      getScanBatches: vi.fn().mockResolvedValue([batch(4)]),
-      getIngestionResults: vi.fn().mockResolvedValue(results([upload(12)])),
+      getScans: fn().mockResolvedValue([scan(3), scan(9)]),
+      getScanBatches: fn().mockResolvedValue([batch(4)]),
+      getIngestionResults: fn().mockResolvedValue(results([upload(12)])),
     });
     const items = [entry('scan', 9), entry('upload', 12), entry('batch', 4), entry('scan', 3)];
     const rows = await hydrateHistoryRows(5, items, { tool: 'NMAP' }, api);
@@ -38,7 +42,7 @@ describe('hydrateHistoryRows', () => {
   });
 
   it('makes no request for a kind the page does not contain', async () => {
-    const api = anApi({ getScanBatches: vi.fn().mockResolvedValue([batch(4)]) });
+    const api = anApi({ getScanBatches: fn().mockResolvedValue([batch(4)]) });
     await hydrateHistoryRows(5, [entry('batch', 4)], {}, api);
     expect(api.getScans).not.toHaveBeenCalled();
     // A viewer's history holds no upload entries, so nothing analyst-only is asked.
@@ -47,9 +51,9 @@ describe('hydrateHistoryRows', () => {
 
   it('one kind failing leaves the others, and says the list is incomplete', async () => {
     const api = anApi({
-      getScans: vi.fn().mockRejectedValue(new Error('down')),
-      getScanBatches: vi.fn().mockResolvedValue([batch(4)]),
-      getIngestionResults: vi.fn().mockRejectedValue(new Error('down')),
+      getScans: fn().mockRejectedValue(new Error('down')),
+      getScanBatches: fn().mockResolvedValue([batch(4)]),
+      getIngestionResults: fn().mockRejectedValue(new Error('down')),
     });
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const rows = await hydrateHistoryRows(5, [entry('scan', 9), entry('batch', 4), entry('upload', 1)], {}, api);

@@ -181,10 +181,10 @@ describe('SafeMarkdown', () => {
 
 describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
   // The finding's ticked images: 57 (bytes loaded) and 58 (still loading).
-  const resolver = (): EvidenceResolver & { ensure: ReturnType<typeof vi.fn> } => ({
+  const resolver = (): EvidenceResolver & { ensure: ReturnType<typeof vi.fn<(id: number) => void>> } => ({
     lookup: (id) => (id === 57 ? { caption: 'Stored caption', src: 'blob:fifty-seven' }
       : id === 58 ? { caption: null } : null),
-    ensure: vi.fn(),
+    ensure: vi.fn<(id: number) => void>(),
   });
   const withImages = (text: string, evidence = resolver()) => ({
     c: render(<SafeMarkdown text={text} evidence={evidence} />).container, evidence,
@@ -284,7 +284,7 @@ describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
   it.each(REFERENCE_CASES)('shows an image for %j exactly when the server places it', (text, ids) => {
     // Every id the table names is a loaded image here (58 too — review
     // 2026-10-02 H5's rows place it beside a fenced example of 57).
-    const { c } = withImages(text, { lookup: (id) => ({ caption: null, src: `blob:${id}` }), ensure: vi.fn() });
+    const { c } = withImages(text, { lookup: (id) => ({ caption: null, src: `blob:${id}` }), ensure: vi.fn<(id: number) => void>() });
     expect(Array.from(c.querySelectorAll('img')).map((i) => i.getAttribute('src')))
       .toEqual(ids.map((id) => `blob:${id}`));
     // A spelling that places nothing is not an "image not available" either:

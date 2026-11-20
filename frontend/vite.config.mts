@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
@@ -42,6 +43,12 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
+    // Every router a test mounts runs with the app's transition setting
+    // (src/lib/router.ts) — see the helper.
+    alias: [{
+      find: /^react-router-dom$/,
+      replacement: fileURLToPath(new URL('./src/tests/helpers/reactRouterDom.tsx', import.meta.url)),
+    }],
     // The Playwright suites (`npm run e2e`) run in real browsers, not here.
     exclude: [...configDefaults.exclude, 'e2e/**'],
   }

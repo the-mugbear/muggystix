@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import './index.css';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
+import { ROUTER_TRANSITIONS } from './lib/router';
 
 /**
  * Recover from stale-tab-after-redeploy (v4.8.2).
@@ -41,7 +42,7 @@ const root = ReactDOM.createRoot(
 root.render(
   <React.StrictMode>
     <ErrorBoundary scope="root" fullReload>
-      <BrowserRouter>
+      <BrowserRouter useTransitions={ROUTER_TRANSITIONS}>
         <App />
       </BrowserRouter>
     </ErrorBoundary>

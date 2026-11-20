@@ -5,7 +5,7 @@
 # .env (compose passes it through) — e.g. an isolated host that only has
 # another 3.11 tag loaded.  Declared before the first FROM so every stage can
 # use it.
-ARG PYTHON_IMAGE=python:3.11.16-slim-trixie
+ARG PYTHON_IMAGE=python:3.11.18-slim-trixie
 # The stage that downloads Quarto.  It was `debian:bookworm-slim`, the one
 # base still floating after the others were pinned (branch review B2): pinned
 # to the point release, overridable the same way (DEBIAN_IMAGE in .env).
@@ -20,9 +20,9 @@ ARG DEBIAN_IMAGE=debian:12.15-slim
 # exports it), so no TeX is installed.  Its own stage so the
 # download is cached apart from the application code.
 FROM ${DEBIAN_IMAGE} AS quarto
-ARG QUARTO_VERSION=1.10.18
-ARG QUARTO_SHA256_AMD64=afad071b5bd22c02f2d300695743189d3650e0537a53073e654b630cff2b0c73
-ARG QUARTO_SHA256_ARM64=f6a07df68e25330b5df34f65d3df66bca605acce3b830c593a58e91884d4cf6c
+ARG QUARTO_VERSION=1.10.20
+ARG QUARTO_SHA256_AMD64=c43fc13454337b7ca73ee78371228e1554679053b856a4ff07f068f2c36a5202
+ARG QUARTO_SHA256_ARM64=dbea6737797559c43ca7b595b220ed8fd5befead33004805f42306bcc17e8713
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

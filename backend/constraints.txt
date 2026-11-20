@@ -11,7 +11,7 @@
 #
 # Generated from the running image:
 #     docker compose exec -T backend pip freeze
-# (2026-11-20, Python 3.11.16, pip 26.2.1) plus ruff, added with
+# (2026-11-20, Python 3.11.18, pip 26.2.1) plus ruff, added with
 # requirements-dev.txt.
 #
 # To change a dependency: edit the pin in requirements*.txt and the matching
@@ -29,8 +29,6 @@ click==8.3.0
 coverage==7.16.1
 cryptography==50.0.1
 defusedxml==0.7.1
-dnspython==2.9.2
-email-validator==2.3.0
 fastapi==0.141.1
 greenlet==3.5.6
 h11==0.16.0
@@ -53,9 +51,9 @@ Pygments==2.21.0
 PyJWT==2.15.1
 pyotp==2.9.0
 pypng==0.20220715.0
-pytest==8.4.2
-pytest-asyncio==1.2.0
-pytest-cov==7.0.0
+pytest==9.2.0
+pytest-asyncio==1.5.0
+pytest-cov==7.1.0
 python-multipart==0.0.34
 qrcode==7.4.2
 ruff==0.16.10

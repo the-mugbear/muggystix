@@ -13,12 +13,12 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => {
-  const named: Record<string, ReturnType<typeof vi.fn>> = {};
+  const named: Record<string, ReturnType<typeof vi.fn<(...args: any[]) => any>>> = {};
   return new Proxy(named, {
     get(target, prop: string) {
       if (prop === '__esModule') return true;
       if (prop === 'then') return undefined;
-      if (!(prop in target)) target[prop] = vi.fn().mockResolvedValue([]);
+      if (!(prop in target)) target[prop] = vi.fn<(...args: any[]) => any>().mockResolvedValue([]);
       return target[prop];
     },
     has: () => true,
