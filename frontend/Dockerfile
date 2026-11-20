@@ -3,7 +3,7 @@
 # Tags, not digests.  Override per host with NODE_IMAGE / NGINX_IMAGE in .env
 # (compose passes them through).
 ARG NODE_IMAGE=node:22.23.4-alpine
-ARG NGINX_IMAGE=nginx:1.31.3-alpine
+ARG NGINX_IMAGE=nginx:1.31.9-alpine
 
 # Build stage
 # node:22-alpine ships npm 10.x which has the optional-deps install bug

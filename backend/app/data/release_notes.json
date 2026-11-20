@@ -3,6 +3,15 @@
   "releases": [
     {
       "backend": "2.547.2",
+      "frontend": "5.435.2",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "fixed", "text": "The web server is nginx 1.31.9, which fixes the HTTP/2 memory-safety flaws disclosed on 18 November 2026 (CVE-2026-123007, CVE-2026-123633)."},
+        {"kind": "before_upgrading", "text": "The rebuild pulls the image nginx:1.31.9-alpine; a host that cannot pull needs it loaded first. Until the rebuild, \"http2 off;\" in the nginx configuration closes both flaws."}
+      ]
+    },
+    {
+      "backend": "2.547.2",
       "frontend": "5.435.1",
       "date": "2026-11-18",
       "entries": [

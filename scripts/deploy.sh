@@ -236,7 +236,7 @@ postgres_volume_exists() {
 #
 # docker-compose.yml and the Dockerfiles name exact releases
 # (postgres:16.13, python:3.11.16-slim-trixie, node:22.23.4-alpine,
-# nginx:1.31.3-alpine) where they used to name floating tags.  A host that
+# nginx:1.31.9-alpine) where they used to name floating tags.  A host that
 # pulled the floating tag earlier already HAS that release under the old
 # name, and an isolated host cannot pull the new one.  When the pinned name
 # is missing locally and the floating one is the very same release (checked
@@ -289,7 +289,7 @@ ensure_pinned_base_images() {
         [[ -n "${!arg:-}" || -n "$env_override" ]] && continue
         pinned="$(sed -n "s/^ARG ${arg}=//p" "$dockerfile" 2>/dev/null | head -1)"
         [[ -z "$pinned" ]] && continue
-        # python:3.11.16-slim-trixie -> 3.11.16 ; nginx:1.31.3-alpine -> 1.31.3
+        # python:3.11.16-slim-trixie -> 3.11.16 ; nginx:1.31.9-alpine -> 1.31.9
         version="${pinned#*:}"; version="${version%%-*}"
         adopt_local_base_image "$pinned" "$floating" "$var" "$version"
     done
