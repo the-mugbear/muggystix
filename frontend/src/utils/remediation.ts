@@ -4,7 +4,7 @@
  * the API client.
  */
 import type {
-  OverdueBand, RemediationApplyRow, RemediationFields, RemediationFlag, RemediationGroup, RemediationPage,
+  OverdueBand, OverdueBandFilter, RemediationApplyRow, RemediationFields, RemediationFlag, RemediationGroup, RemediationPage,
   RemediationDefect, RemediationPolicy, RemediationRow, RemediationState, RemediationStatus, RemediationVerification,
 } from '../services/api';
 import type { QueryClient } from '@tanstack/react-query';
@@ -555,11 +555,16 @@ const deadlineState = (
 };
 
 export const OVERDUE_BANDS: OverdueBand[] = ['1-7', '8-30', '31-90', '90+'];
-export const OVERDUE_BAND_LABEL: Record<OverdueBand, string> = {
+/** The two longest bands together: a FILTER, not a band of its own (no count
+ *  is kept for it) — the list Oversight's "Over 30 days late" opens. */
+export const OVER_30_DAYS = 'over-30' as const;
+export const OVERDUE_BAND_LABEL: Record<OverdueBandFilter, string> = {
   '1-7': '1–7 days', '8-30': '8–30 days', '31-90': '31–90 days', '90+': 'Over 90 days',
+  [OVER_30_DAYS]: 'More than 30 days',
 };
-export const isOverdueBand = (v: string | null): v is OverdueBand =>
-  v != null && (OVERDUE_BANDS as string[]).includes(v);
+/** A `?band=` the list understands: one of the bands, or `over-30`. */
+export const isOverdueBand = (v: string | null): v is OverdueBandFilter =>
+  v != null && (v === OVER_30_DAYS || (OVERDUE_BANDS as string[]).includes(v));
 
 // --- handing it to someone else --------------------------------------------------
 

@@ -237,7 +237,10 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
     if status:
         wanted &= set(_STATES_OF_STATUS[status])
     narrowed = overdue_band is not None or no_follow_up_days is not None or upcoming_days is not None
-    if overdue_band is not None:
+    if overdue_band == deadlines.OVER_30_DAYS:
+        # The two longest bands together: what "Over 30 days late" counts.
+        query = query.filter(band_of.in_(deadlines.OVER_30_DAYS_BANDS))
+    elif overdue_band is not None:
         query = query.filter(band_of == overdue_band)
     if no_follow_up_days is not None:
         # At risk and not chased: nobody recorded a follow-up in that many days.

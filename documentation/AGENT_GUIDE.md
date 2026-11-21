@@ -644,7 +644,7 @@ Report a gap to the operator; do not close it for them — setting `status: clos
 Filters:
 - `status`; `state` (repeat it for several); `severity` (repeat it for several); `host_id`; `finding_id`
 - `contact` (part of an address or name); `unassigned` (only rows with no contact); `team` (exactly this team; case does not matter)
-- `overdue_band` (`1-7` / `8-30` / `31-90` / `90+` — only overdue rows that many days past their deadline)
+- `overdue_band` (`1-7` / `8-30` / `31-90` / `90+` — only overdue rows that many days past their deadline; `over-30` — every row more than 30 days past it, the two longest bands together)
 - `no_follow_up_days` (1–365 — only overdue and due-soon rows nobody recorded a follow-up for in that many days, or ever)
 - `verification` (`reported_fixed_not_retested` / `remediated_record_open`)
 - `flag` (`deferral_review_due` / `deadline_overridden`)

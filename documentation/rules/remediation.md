@@ -112,6 +112,7 @@ The client's fixing progress, kept by project admins **per FINDING ON A HOST** (
 - "Remediated, record still open" counts only endpoints with a record; `deferred` counts as open. Contact and status may differ per host of one finding.
 - The reminder is copied, never sent. No cross-project contact document until asked; it extends the pentest format, restylable.
 - No one-off alert for rows deferred before the review date existed. A severity change writes an entry only when the deadline moved. An addendum's start-the-clock dates only what it added. A hand-set deadline survives an assigned-date change. `status: deferred` alone is 422. A closed row's corrected assigned date re-freezes against today's policy.
+- Oversight's "Over 30 days late" opens `?band=over-30` (2026-11-21): `overdue_band=over-30` is a FILTER — the bands 31–90 and 90+ together (`remediation_policy.OVER_30_DAYS`) — so the count opens its exact list; it is not a band and has no count of its own.
 - No median or other derived figure; one trend day is a sentence; Oversight shows both gap counts. "Copy summary" opens `RemediationSummaryDialog`. A timeline note is its author's to edit and remove.
 
 ## Removed on purpose

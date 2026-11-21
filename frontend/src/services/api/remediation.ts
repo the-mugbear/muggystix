@@ -12,6 +12,9 @@ export type RemediationDefect = 'open' | 'remediated' | 'deferred';
 export type RemediationGroup = 'host' | 'finding' | 'contact' | 'due' | 'team';
 /** How many days past its deadline an overdue row is. */
 export type OverdueBand = '1-7' | '8-30' | '31-90' | '90+';
+/** What the list can be narrowed to: a band, or the two longest together
+ *  (`over-30` — the list Oversight's "Over 30 days late" count opens). */
+export type OverdueBandFilter = OverdueBand | 'over-30';
 /** Where a row stands against its deadline (`remediation_policy.STATES`). */
 export type RemediationState =
   | 'overdue' | 'due_soon' | 'on_track' | 'not_assigned' | 'no_deadline' | 'deferred' | 'closed';
@@ -148,7 +151,7 @@ export interface RemediationQuery {
   /** Cross-project list only: leave out archived projects. */
   active_only?: boolean;
   team?: string;
-  overdue_band?: OverdueBand;
+  overdue_band?: OverdueBandFilter;
   no_follow_up_days?: number;
   verification?: RemediationVerification;
   flag?: RemediationFlag;

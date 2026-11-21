@@ -732,8 +732,8 @@ const Oversight: React.FC = () => {
                     )}
                   </PostureMeasure>
                   <PostureMeasure label="Over 30 days late" value={n((s.remediation.overdue_age_31_90 ?? 0) + (s.remediation.overdue_age_90_plus ?? 0))}
-                    to="/remediation-deadlines?band=31-90" toLabel="Findings on hosts more than 30 days overdue — view"
-                    info="Overdue findings on hosts more than 30 days past their deadline: slippage that has become neglect. The link opens the 31–90 day band; the over-90 band is beside it on that page.">
+                    to="/remediation-deadlines?band=over-30" toLabel="Findings on hosts more than 30 days overdue — view"
+                    info="Overdue findings on hosts more than 30 days past their deadline: slippage that has become neglect.">
                     {(s.remediation.overdue_age_90_plus ?? 0) > 0
                       ? `${n(s.remediation.overdue_age_90_plus ?? 0)} of them over 90 days`
                       : 'of the overdue'}

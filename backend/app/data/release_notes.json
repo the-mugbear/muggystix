@@ -2,6 +2,18 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.548.0",
+      "frontend": "5.436.0",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "new", "text": "Tool Reference shows whether a tool is intrusive or needs privileges, and its output format, where the catalogue states them."},
+        {"kind": "new", "text": "Creating, changing and deleting a presentation agenda are lines in the project's changelog."},
+        {"kind": "changed", "text": "A notification is removed a week after you read it; an unread one stays until it is read."},
+        {"kind": "changed", "text": "Oversight's \"Over 30 days late\" opens every row it counts, not only those 31-90 days late."},
+        {"kind": "before_upgrading", "text": "Read notifications older than a week are removed at the first daily clean-up after the upgrade. NOTIFICATION_READ_RETENTION_DAYS in .env sets another period; 0 keeps them."}
+      ]
+    },
+    {
       "backend": "2.547.11",
       "frontend": "5.435.8",
       "date": "2026-11-20",

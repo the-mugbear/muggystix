@@ -62,6 +62,7 @@ from app.db.models_presentations import (
 from app.db.models_project import Project, ProjectMembership
 from app.db.models_reports import Report, ReportImage, ReportStatus
 from app.services import presentation_slides as slides_mod
+from app.services import project_events
 from app.services.notification_service import NotificationService
 from app.services.person import person_of
 
@@ -769,6 +770,8 @@ def create_agenda(db: Session, report: Report, user: User, name: str, items) -> 
     db.add(a)
     db.flush()
     db.add(PresentationAgendaVersion(agenda_id=a.id, version=1, items=items, created_by_id=user.id))
+    project_events.record(db, report.project_id, "presentation_agenda_created",
+                          subject_type="report", subject_id=report.id, label=name)
     db.commit()
     db.refresh(a)
     return agenda_out(db, a)
@@ -805,6 +808,9 @@ def save_agenda(db: Session, report: Report, user: User, agenda_id: int, name: s
         a.latest_version += 1
         db.add(PresentationAgendaVersion(agenda_id=a.id, version=a.latest_version, items=items,
                                          created_by_id=user.id))
+        # Only a save that made a version: one that changed nothing is no line.
+        project_events.record(db, report.project_id, "presentation_agenda_changed",
+                              subject_type="report", subject_id=report.id, label=name)
     a.name = name
     a.updated_at = func.now()
     db.commit()
@@ -823,6 +829,8 @@ def delete_agenda(db: Session, report: Report, agenda_id: int) -> None:
         update(Presentation).where(Presentation.agenda_id == a.id)
         .values(agenda_id=None, agenda_version=None, agenda_mode=None, agenda_item_index=None)
     )
+    project_events.record(db, report.project_id, "presentation_agenda_deleted",
+                          subject_type="report", subject_id=report.id, label=a.name)
     db.delete(a)
     db.commit()
 

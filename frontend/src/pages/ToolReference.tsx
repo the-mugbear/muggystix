@@ -345,6 +345,20 @@ const ToolReference: React.FC = () => {
                                   What BlueStick reads
                                 </Link>
                               )}
+                              {/* What someone weighs before saying "run it" (owner,
+                                  2026-11-21: shown; a tool with no value says
+                                  nothing — the catalogue does not state it yet). */}
+                              {(tool.intrusive || tool.requires_privileges || tool.output_format) && (
+                                <span className="flex flex-wrap items-center gap-xxs text-caption text-muted-foreground">
+                                  {tool.intrusive && <Badge variant="warning-outline">intrusive</Badge>}
+                                  {tool.requires_privileges && <Badge variant="outline">needs privileges</Badge>}
+                                  {tool.output_format && (
+                                    <span className="min-w-0 break-words" title="The output format the catalogue names for this tool">
+                                      output: {tool.output_format}
+                                    </span>
+                                  )}
+                                </span>
+                              )}
                               {isAdmin && (
                                 <Button
                                   variant="ghost"

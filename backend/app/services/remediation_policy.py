@@ -377,6 +377,11 @@ def days_between(db: Session, end, start):
 
 #: How long past its deadline an overdue row is: ``(name, first day, last day)``.
 OVERDUE_BANDS = (("1-7", 1, 7), ("8-30", 8, 30), ("31-90", 31, 90), ("90+", 91, None))
+#: A filter value, not a band: every row more than 30 days past its deadline —
+#: the bands Oversight's "Over 30 days late" adds up, so the count opens its
+#: exact list (owner, 2026-11-21).
+OVER_30_DAYS = "over-30"
+OVER_30_DAYS_BANDS = ("31-90", "90+")
 
 
 def overdue_days_expr(db: Session, policy: Policy, today: date):

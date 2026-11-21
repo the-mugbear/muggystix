@@ -208,5 +208,8 @@ The root `AGENTS.md` holds FK `ondelete` parity, one head, real downgrades, no `
 - A user delete keeps the call log (nulled) and review marks (no one), and ends agent sessions.
 - Open-source dependencies only; no Redis (Postgres-native or Valkey).
 - Demoting a project's only admin is allowed (confirmed on the page); removing the last is refused.
+- The changelog's cap is trimmed oldest first whoever wrote the line (2026-11-21): 500,000 lines a project is large enough that agents' per-item lines are not trimmed before people's — do not propose it again without a project that reached the cap.
+- A presentation agenda's create / change / delete are changelog lines (2026-11-21: `presentation_agenda_*`, subject the report, label the agenda's name; a save that makes no version is no line); a live presentation's moves stay out (`_LIVE`).
+- Notifications: a READ one is removed `NOTIFICATION_READ_RETENTION_DAYS` (7, "a week to start") after it was read, by the daily retention pass; an unread one never (2026-11-21).
 - The changelog (2026-11-18): read by project auditors and above, never viewers; every member action incl. notes, review marks, tags and remediation; an agent's action always marked as an agent's; history starts at the upgrade (no back-fill); kept for the project's life under a 500,000-line cap; no agent read.
 - A browser session has no absolute lifetime (2026-11-18): it ends `ACCESS_TOKEN_EXPIRE_MINUTES` after its last renewal, on logout or revocation, or on a password / 2FA reset — never because of its age.

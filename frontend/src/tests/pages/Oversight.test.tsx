@@ -462,7 +462,8 @@ describe('Oversight — overdue by severity and by how late (5.341.0)', () => {
     expect(screen.getByText('the longest by 110 days')).toBeInTheDocument();
     const late = screen.getByRole('link', { name: 'Findings on hosts more than 30 days overdue — view' });
     expect(late).toHaveTextContent('3');
-    expect(late).toHaveAttribute('href', '/remediation-deadlines?band=31-90');
+    // The count adds the two longest bands; its link opens exactly those rows.
+    expect(late).toHaveAttribute('href', '/remediation-deadlines?band=over-30');
     expect(screen.getByText('1 of them over 90 days')).toBeInTheDocument();
   });
 });

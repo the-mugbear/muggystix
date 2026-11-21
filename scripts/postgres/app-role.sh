@@ -97,13 +97,35 @@ app_signs_in() {
     local address
     address="$(hostname -i 2>/dev/null | awk '{print $1}')"
     [[ -n "$address" ]] || return 1
-    PGPASSWORD="$APP_PASSWORD" PGCONNECT_TIMEOUT=3 \
-        psql -X -q -h "$address" -U "$APP" -d "$DB" -tAc "SELECT 1" >/dev/null 2>&1
+    # What the server said is kept: only a REFUSED sign-in is the password's
+    # business (SIGN_IN_ERROR, read below).
+    SIGN_IN_ERROR="$(PGPASSWORD="$APP_PASSWORD" PGCONNECT_TIMEOUT=3 \
+        psql -X -q -h "$address" -U "$APP" -d "$DB" -tAc "SELECT 1" 2>&1 >/dev/null)"
 }
 
+# The sign-in failed because the role or its password is wrong — the two
+# failures the repair below can put right (SQLSTATE 28P01 / 28000; psql prints
+# the server's sentence, not the code).  Anything else — no free connection
+# slot, the server still starting, a timeout — is not the password's doing:
+# rewriting the role's password every ten seconds through a connection-
+# exhaustion incident changed nothing and sent the operator to .env (owner,
+# 2026-11-21: repair on authentication failures only).
+sign_in_was_refused() {
+    grep -qiE 'password authentication failed|role "[^"]*" does not exist|no pg_hba\.conf entry|authentication failed' \
+        <<< "$SIGN_IN_ERROR"
+}
+
+SIGN_IN_ERROR=""
 misplaced="$(super_sql -tA <<< "$MISPLACED_SQL" 2>/dev/null)" || exit 1
-if [[ "$misplaced" == "f" ]] && app_signs_in; then
-    exit 0
+if [[ "$misplaced" == "f" ]]; then
+    if app_signs_in; then
+        exit 0
+    fi
+    if ! sign_in_was_refused; then
+        say "Role '$APP' is in place, but a sign-in as it did not complete: $(head -n 1 <<< "$SIGN_IN_ERROR" | cut -c1-200)"
+        say "That is not a wrong password, so nothing was changed. Look at the connection limit and at what holds the connections."
+        exit 1
+    fi
 fi
 
 # A restore in progress makes its tables as the superuser, one statement at a

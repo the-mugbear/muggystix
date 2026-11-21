@@ -138,6 +138,12 @@ ACTIONS: Dict[str, Tuple[str, str]] = {
     "report_revised": ("reports", "started a revision of report"),
     "report_defaults_changed": ("reports", "changed the report defaults"),
     "report_image_added": ("reports", "added a report image"),
+    # A presentation's agenda is a saved, versioned record of the report (owner,
+    # 2026-11-21: its edits belong in the changelog) — the subject is the
+    # report, the label the agenda's name.  A live presentation's moves are not.
+    "presentation_agenda_created": ("reports", "created presentation agenda"),
+    "presentation_agenda_changed": ("reports", "changed presentation agenda"),
+    "presentation_agenda_deleted": ("reports", "deleted presentation agenda"),
     # proposals
     "proposal_made": ("proposals", "proposed"),
     "proposal_accepted": ("proposals", "accepted proposal"),
@@ -474,6 +480,9 @@ ROUTE_ACTIONS: Dict[Tuple[str, str], Tuple[str, ...]] = {
     ("PATCH", "/sites/{site_id}"): ("site_changed",),
     # reports
     ("POST", "/client-reports"): ("report_created",),
+    ("POST", "/client-reports/{report_id}/presentation/agendas"): ("presentation_agenda_created",),
+    ("PUT", "/client-reports/{report_id}/presentation/agendas/{agenda_id}"): ("presentation_agenda_changed",),
+    ("DELETE", "/client-reports/{report_id}/presentation/agendas/{agenda_id}"): ("presentation_agenda_deleted",),
     ("PATCH", "/client-reports/{report_id}"): ("report_changed",),
     ("DELETE", "/client-reports/{report_id}"): ("report_deleted",),
     ("POST", "/client-reports/{report_id}/issue"): ("report_issued",),
@@ -557,9 +566,6 @@ NOT_RECORDED: Dict[Tuple[str, str], str] = {
     # presentations
     ("POST", "/client-reports/{report_id}/presentation"): _LIVE,
     ("POST", "/client-reports/{report_id}/presentation/layout-reports"): _LIVE,
-    ("POST", "/client-reports/{report_id}/presentation/agendas"): _LIVE,
-    ("PUT", "/client-reports/{report_id}/presentation/agendas/{agenda_id}"): _LIVE,
-    ("DELETE", "/client-reports/{report_id}/presentation/agendas/{agenda_id}"): _LIVE,
     ("POST", "/presentations/{presentation_id}/heartbeat"): _LIVE,
     ("POST", "/presentations/{presentation_id}/move"): _LIVE,
     ("POST", "/presentations/{presentation_id}/spotlight"): _LIVE,

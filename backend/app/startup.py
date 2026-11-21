@@ -200,6 +200,31 @@ def user_session_retention_days() -> int:
     return _retention_days("USER_SESSION_RETENTION_DAYS", 90)
 
 
+def notification_read_retention_days() -> int:
+    """``NOTIFICATION_READ_RETENTION_DAYS`` (default 7): how long a
+    notification is kept AFTER it was read (owner, 2026-11-21: a week, to
+    start).  An unread one is never purged, whatever its age; 0 keeps the
+    read ones too.  Nothing deleted them before, so the table only grew."""
+    return _retention_days("NOTIFICATION_READ_RETENTION_DAYS", 7)
+
+
+def purge_read_notifications(db, days: int) -> int:
+    """Delete the notifications read more than ``days`` ago (batched).  When
+    one was read is ``read_at``; a row marked read without it (older rows) is
+    dated by ``created_at``.  The age of an UNREAD row is NULL, which is older
+    than nothing."""
+    from sqlalchemy import case, func
+
+    from app.db.models_project import Notification
+    from app.services.agent_api_log_service import purge_rows_older_than
+
+    read_when = case(
+        (Notification.is_read.is_(True), func.coalesce(Notification.read_at, Notification.created_at)),
+        else_=None,
+    )
+    return purge_rows_older_than(db, Notification, read_when, days)
+
+
 def _purge_retained(retention_days: int, audit_days: int, mcp_days: int = 0, session_days: int = 0) -> tuple:
     """One retention pass (runs in a thread — the batched DELETEs must not
     block the event loop): agent API calls, MCP telemetry, ended browser
@@ -240,6 +265,10 @@ def _purge_retained(retention_days: int, audit_days: int, mcp_days: int = 0, ses
         db.commit()
         if trimmed:
             logger.info("Retention: trimmed %d changelog line(s) beyond the per-project cap", trimmed)
+        notification_days = notification_read_retention_days()
+        read = purge_read_notifications(db, notification_days) if notification_days > 0 else 0
+        if read:
+            logger.info("Retention: purged %d notification(s) read more than %d day(s) ago", read, notification_days)
         return calls, mcp, sessions, audits
 
 
@@ -270,8 +299,10 @@ async def agent_api_call_retention_loop() -> None:
 
     if (
         retention_days <= 0 and audit_days <= 0 and mcp_days <= 0 and session_days <= 0
-        # The changelog's cap is trimmed by this pass too.
+        # The changelog's cap is trimmed by this pass too, and read
+        # notifications are purged by it.
         and _settings.PROJECT_EVENTS_MAX_PER_PROJECT <= 0
+        and notification_read_retention_days() <= 0
     ):
         logger.info(
             "Retention loop disabled (AGENT_API_CALL_RETENTION_DAYS=%s, MCP_TOOL_CALL_RETENTION_DAYS=%s, "

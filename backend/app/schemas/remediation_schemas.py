@@ -18,7 +18,9 @@ RemediationState = Literal["overdue", "due_soon", "on_track", "not_assigned", "n
 Severity = Literal["critical", "high", "medium", "low", "info"]
 Grouping = Literal["host", "finding", "contact", "due", "team"]
 #: How long past its deadline an overdue row is (``remediation_policy.OVERDUE_BANDS``).
-OverdueBand = Literal["1-7", "8-30", "31-90", "90+"]
+#: ``over-30`` is a FILTER only — the two longest bands together, the list that
+#: Oversight's "Over 30 days late" count opens (it adds those two bands).
+OverdueBand = Literal["1-7", "8-30", "31-90", "90+", "over-30"]
 #: What an admin is to look at beside the deadline states (``remediation_policy.FLAGS``).
 Flag = Literal["deferral_review_due", "deadline_overridden"]
 #: Where a row stands as a defect (`remediation_policy.defect_expr`).

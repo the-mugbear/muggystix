@@ -541,6 +541,13 @@ def test_how_late_the_overdue_rows_are_and_each_band_opens_its_rows(client, test
         assert all(item["state"] == "overdue" for item in rows["items"])
     assert listing(client, test_project, overdue_band="90+")["items"][0]["days_left"] == -110
     assert client.get(base(test_project), params={"overdue_band": "soon"}).status_code == 422
+    # "Over 30 days late" (Oversight) adds the two longest bands; `over-30` is
+    # the list that count opens — exactly those rows, never one band of them.
+    late = listing(client, test_project, overdue_band="over-30")
+    assert late["total"] == page["overdue_ages"]["31-90"] + page["overdue_ages"]["90+"] == len(late["items"])
+    assert all(item["days_left"] < -30 for item in late["items"])
+    # A filter, not a band: no count is kept for it.
+    assert "over-30" not in late["overdue_ages"]
 
 
 def test_at_risk_rows_nobody_is_chasing(client, db_session, test_project, backlog):
