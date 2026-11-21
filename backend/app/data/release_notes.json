@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.10",
+      "frontend": "5.435.7",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "fixed", "text": "Presentation mode: changing the host filter with many people following no longer makes every screen show \"Reconnecting\" while each of them rebuilt the slides."},
+        {"kind": "fixed", "text": "Presentation mode: a Display whose slides failed to load tries again by itself instead of staying on the previous slide until someone reloads it."}
+      ]
+    },
+    {
       "backend": "2.547.9",
       "frontend": "5.435.6",
       "date": "2026-11-20",

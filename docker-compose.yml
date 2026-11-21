@@ -150,7 +150,7 @@ services:
         INSTALL_DEV:
         # The build's own version, written into the image (GET / reports it
         # as `build_version`); bump-version.py keeps the fallback.
-        BACKEND_VERSION: ${APP_VERSION:-2.547.9}
+        BACKEND_VERSION: ${APP_VERSION:-2.547.10}
     logging: *default-logging
     # No process in the container can gain privileges it did not start with
     # (a setuid binary, file capabilities).  The entrypoints only DROP them
@@ -251,7 +251,7 @@ services:
         CACHE_BUST: ${CACHE_BUST:-}
         PYTHON_IMAGE:
         INSTALL_DEV:
-        BACKEND_VERSION: ${APP_VERSION:-2.547.9}
+        BACKEND_VERSION: ${APP_VERSION:-2.547.10}
     logging: *default-logging
     # No process in the container can gain privileges it did not start with
     # (a setuid binary, file capabilities).  The entrypoints only DROP them
@@ -329,7 +329,7 @@ services:
         # builds it); passed only when set, like PYTHON_IMAGE.
         DEBIAN_IMAGE:
         INSTALL_DEV:
-        BACKEND_VERSION: ${APP_VERSION:-2.547.9}
+        BACKEND_VERSION: ${APP_VERSION:-2.547.10}
     logging: *default-logging
     # No process in the container can gain privileges it did not start with
     # (a setuid binary, file capabilities).  The entrypoints only DROP them
@@ -394,9 +394,9 @@ services:
         # in this file (the services above read the mounted file).  Kept equal
         # to platform_version.json by scripts/bump-version.py and
         # versionConsistency.test.ts.
-        BACKEND_VERSION: ${APP_VERSION:-2.547.9}
+        BACKEND_VERSION: ${APP_VERSION:-2.547.10}
         # Stamped by generate-build-info.js (shown under About BlueStick).
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.435.6}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.435.7}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.

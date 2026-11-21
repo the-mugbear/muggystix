@@ -49,7 +49,7 @@ import StageView from '../components/presentation/Stage';
 import PresenterView from '../components/presentation/PresenterView';
 import AgendaPanel from '../components/presentation/AgendaPanel';
 import AgendaEditorDialog from '../components/presentation/AgendaEditorDialog';
-import { slideLabel, slidesQuery } from '../components/presentation/slidesQuery';
+import { SLIDES_RETRY_MS, slideLabel, slidesQuery } from '../components/presentation/slidesQuery';
 import PersonAvatar from '../components/PersonAvatar';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -220,7 +220,16 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
   const [editingAgendas, setEditingAgendas] = useState(false);
 
   const filter = position?.host_filter ?? null;
-  const slidesRead = useQuery({ ...slidesQuery(projectId, reportId, filter), enabled: presentationId != null });
+  // A read that failed is asked again by itself: nothing else re-reads this
+  // list (no retry, no focus refetch, no poll), so one failed request left a
+  // Display — the shared screen, with nobody at its keyboard — on the slide
+  // before, or on "Loading…", until the filter changed or someone reloaded it.
+  // In the background too on a Display: that tab is usually not the focused one.
+  const slidesRead = useQuery({
+    ...slidesQuery(projectId, reportId, filter),
+    enabled: presentationId != null,
+    ...pollEvery((q) => (q.state.status === 'error' ? SLIDES_RETRY_MS : null), { inBackground: kind === 'display' }),
+  });
   const slides: PresentationSlides | undefined = useLastSettled(slidesRead.data, { resetKey: reportId });
   // The slide for THIS position, from the list for THIS position's filter —
   // never a same-named slide of the list before (a filter change is loading).
@@ -379,7 +388,8 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
           placeholder={
             <span className="text-2xl text-muted-foreground">
               {state?.ended ? `The presentation ended${state.ended.by ? ` — ${state.ended.by.name}` : ''}.`
-                : presentationId == null ? 'Waiting for the presentation to start…' : 'Loading…'}
+                : presentationId == null ? 'Waiting for the presentation to start…'
+                  : slidesRead.isError ? 'The slides could not be read — trying again…' : 'Loading…'}
             </span>
           } />
         {(inSync || sync.readFailed || liveFailed) && (
@@ -449,7 +459,7 @@ const PresentationBody: React.FC<BodyProps> = ({ projectId, reportId, clientId, 
             <div className="aspect-video w-full overflow-hidden rounded-panel border border-border" data-testid="presentation-stage">
               <StageView projectId={projectId} reportId={reportId} stage={slides?.stage ?? { width: 1600, height: 900 }}
                 slide={slide} onOverflow={onOverflow} spotlight={ring} onPoint={canSpotlight ? onPoint : undefined}
-                placeholder={<span className="text-muted-foreground">{slidesRead.isError ? queryErrorText(slidesRead.error, 'Could not read the slides.') : 'Loading…'}</span>} />
+                placeholder={<span className="text-muted-foreground" data-testid="slides-read-failed">{slidesRead.isError ? `${queryErrorText(slidesRead.error, 'Could not read the slides.')} Trying again…` : 'Loading…'}</span>} />
             </div>
             <div className="mt-sm flex flex-wrap items-center gap-sm">
               {canNavigate && (

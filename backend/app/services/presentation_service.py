@@ -39,6 +39,7 @@ Stages B and C (2.531.0):
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import OrderedDict
@@ -46,6 +47,7 @@ from datetime import timedelta
 from typing import Optional, Tuple
 
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -138,6 +140,11 @@ def _frozen_images_on_disk(db: Session, report: Report) -> frozenset:
 _CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
 _CACHE_MAX = 32
 _CACHE_LOCK = threading.Lock()
+# The lists being built right now (key → set when the build ended), and the
+# encoded answer of each cached list (``slides_answer``).  Both under the lock.
+_BUILDING: "dict[tuple, threading.Event]" = {}
+_BUILD_WAIT_S = 30.0
+_ENCODED: "dict[int, tuple[dict, bytes]]" = {}
 
 
 def _dataset(db: Session, report: Report) -> dict:
@@ -176,27 +183,77 @@ def status_notes(report: Report) -> dict:
 def slides_for(db: Session, report: Report, kind: Optional[str], value: Optional[str]) -> dict:
     images = frozen_images(db, report)
     key = (report.id, kind, (value or "").strip() or None, images)
-    with _CACHE_LOCK:
-        hit = _CACHE.get(key)
-        if hit is not None:
-            _CACHE.move_to_end(key)
-            return hit
-    # Read when the list is built, not per move: it hashes the frozen copy.
-    shown = status_notes(report)
-    dataset = _dataset(db, report)
+    # ONE build per list at a time.  Nothing used to mark a list as being
+    # built, so every request that missed built its own copy: when the driver
+    # changed the host filter, every following tab and every Display's
+    # heartbeat asked for the new list within a second, and the build —
+    # pure-Python text measurement, one at a time under the interpreter lock —
+    # ran N times over, each N times as long, with every other request of the
+    # worker (the one-second heartbeats among them) waiting behind it (review
+    # 2026-11-20, C9).  The first to miss builds; the others wait for it and
+    # read the cache.  A wait that outlasts ``_BUILD_WAIT_S`` builds for itself
+    # rather than hold its thread on a build that may have died.
+    mine: Optional[threading.Event] = None
+    while mine is None:
+        with _CACHE_LOCK:
+            hit = _CACHE.get(key)
+            if hit is not None:
+                _CACHE.move_to_end(key)
+                return hit
+            building = _BUILDING.get(key)
+            if building is None:
+                mine = _BUILDING[key] = threading.Event()
+        if mine is None and not building.wait(timeout=_BUILD_WAIT_S):
+            break
     try:
-        flt = slides_mod.check_filter(dataset, kind, value)
-    except slides_mod.FilterError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    result = slides_mod.presentation_slides(dataset, flt, set(images), shown)
-    result["keys"] = {s["key"] for s in result["slides"]}
-    result["sites"] = slides_mod.scope_sites(dataset)
-    result["segments"] = slides_mod.scope_segments(dataset)
+        # Read when the list is built, not per move: it hashes the frozen copy.
+        shown = status_notes(report)
+        dataset = _dataset(db, report)
+        try:
+            flt = slides_mod.check_filter(dataset, kind, value)
+        except slides_mod.FilterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        result = slides_mod.presentation_slides(dataset, flt, set(images), shown)
+        result["keys"] = {s["key"] for s in result["slides"]}
+        result["sites"] = slides_mod.scope_sites(dataset)
+        result["segments"] = slides_mod.scope_segments(dataset)
+        with _CACHE_LOCK:
+            _CACHE[key] = result
+            while len(_CACHE) > _CACHE_MAX:
+                _CACHE.popitem(last=False)
+        return result
+    finally:
+        if mine is not None:
+            # Whatever happened — built, refused (422), failed — the waiters
+            # go on: they find the list in the cache or build it themselves.
+            with _CACHE_LOCK:
+                _BUILDING.pop(key, None)
+            mine.set()
+
+
+def slides_answer(result: dict) -> bytes:
+    """The slide list as the route answers it — everything but the server's own
+    ``keys`` — encoded ONCE per built list and kept with it.  Every viewer's
+    GET used to walk and encode the whole deck again (megabytes for a large
+    report), after each join, reload and filter change."""
     with _CACHE_LOCK:
-        _CACHE[key] = result
-        while len(_CACHE) > _CACHE_MAX:
-            _CACHE.popitem(last=False)
-    return result
+        encoded = _ENCODED.get(id(result))
+        if encoded is not None and encoded[0] is result:
+            return encoded[1]
+    body = json.dumps(
+        jsonable_encoder({k: v for k, v in result.items() if k != "keys"}),
+        ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    with _CACHE_LOCK:
+        # Keyed by the list's identity and holding the list itself, so an id
+        # re-used by another list after an eviction is never mistaken for it;
+        # what the cache no longer holds is dropped here.
+        live = {id(entry) for entry in _CACHE.values()}
+        for stale in [k for k in _ENCODED if k not in live]:
+            del _ENCODED[stale]
+        if id(result) in live:
+            _ENCODED[id(result)] = (result, body)
+    return body
 
 
 def _ref_of(key: str) -> Optional[str]:

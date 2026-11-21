@@ -85,7 +85,9 @@ def presentation_slides(
     every read."""
     report = svc.presentable_report(db, project.id, report_id)
     result = svc.slides_for(db, report, host_filter_kind, host_filter_value)
-    return {k: v for k, v in result.items() if k != "keys"}
+    # The list's own encoded form, made once per built list — not the dict,
+    # which would be walked and encoded again for every viewer.
+    return Response(content=svc.slides_answer(result), media_type="application/json")
 
 
 @router.get("/client-reports/{report_id}/presentation/images/{attachment_id}")
