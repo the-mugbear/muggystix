@@ -654,6 +654,10 @@ const Scopes: React.FC = () => {
                 label="In scope"
                 info="Hosts whose address is inside at least one declared subnet."
                 value={coverage.scoped_hosts.toLocaleString()}
+                // Every count opens its list: the Hosts query Posture links
+                // for the same figure.
+                to={coverage.scoped_hosts > 0 ? buildHostsUrl({ q: 'scope:subnet' }) : undefined}
+                toLabel="Hosts in a declared subnet — view"
               >
                 of {coverage.total_hosts.toLocaleString()} host{coverage.total_hosts === 1 ? '' : 's'}
               </PostureMeasure>
@@ -661,6 +665,8 @@ const Scopes: React.FC = () => {
                 label="Via an in-scope name"
                 info="Hosts in no declared subnet that an in-scope name currently resolves to. A third state: not out of scope, but not subnet-in-scope either — the name is approved, the address is not. Declare the subnet if the address itself should be in scope."
                 value={coverage.name_reachable_hosts.toLocaleString()}
+                to={coverage.name_reachable_hosts > 0 ? buildHostsUrl({ q: 'scope:name' }) : undefined}
+                toLabel="Hosts reached only through an in-scope name — view"
               >
                 name approved, address not
               </PostureMeasure>

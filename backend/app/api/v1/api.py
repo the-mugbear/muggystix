@@ -45,8 +45,6 @@ from app.api.v1.endpoints import (
     # The import history's upload rows, by id (the Ingestion results view
     # until 2.523.0; under /parse-errors until 2026-10-22).
     ingestion_results,
-    # Site-metrics arc P1 — project "needs help" attention model.
-    attention,
     # Site-metrics arc P1.5 — Site entity management (tier / owner / coverage).
     sites,
     # Subnet-insights — per-subnet exposure + neglect + hygiene (the
@@ -254,7 +252,6 @@ project_router.include_router(dashboard.router, prefix="/dashboard", tags=["dash
 # The Operations page's data (its path was ``/workbench`` until 2026-10-22;
 # the old paths are a 404, owner decision — no alias).
 project_router.include_router(operations.router, prefix="/operations", tags=["operations"])
-project_router.include_router(attention.router, prefix="/attention", tags=["attention"])
 project_router.include_router(sites.router, prefix="/sites", tags=["sites"])
 project_router.include_router(insights.router, prefix="/insights", tags=["insights"])
 project_router.include_router(posture.router, prefix="/posture", tags=["posture"])

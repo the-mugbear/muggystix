@@ -670,7 +670,12 @@ const FindingsList: React.FC = () => {
               </span>
             )}
           </span>
-          <Select onValueChange={(v) => void applyBulkStatus(v as FindingStatus)} disabled={bulkApplying}>
+          {/* An ACTION, not a setting: `value=""` keeps the placeholder showing
+              and makes every pick fire.  Uncontrolled, the trigger kept the
+              status chosen — after Cancel on the "why?" dialog or a failed
+              request it read as applied, and picking it again did nothing
+              (a Select reports only a CHANGE of value). */}
+          <Select value="" onValueChange={(v) => void applyBulkStatus(v as FindingStatus)} disabled={bulkApplying}>
             <SelectTrigger className="h-8 w-48 text-caption" aria-label="Set status for selected findings">
               <SelectValue placeholder={bulkApplying ? 'Applying…' : 'Set status…'} />
             </SelectTrigger>
@@ -684,6 +689,7 @@ const FindingsList: React.FC = () => {
               finding's detail page — one round trip per finding for a large
               unowned queue. */}
           <Select
+            value=""
             onValueChange={(v) => runBulkAssign(v === '__unassign' ? null : Number(v))}
             disabled={bulkApplying}
           >

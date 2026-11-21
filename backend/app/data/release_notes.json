@@ -2,6 +2,19 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.11",
+      "frontend": "5.435.8",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "new", "text": "A web interface's TLS line shows the certificate's subject, and \"N SANs\" opens the names themselves, with Copy."},
+        {"kind": "new", "text": "An evidence record's output shows its SHA-256, with Copy."},
+        {"kind": "changed", "text": "On Scope, the \"In scope\" and \"Via an in-scope name\" counts open their hosts, as \"Out of scope\" already did."},
+        {"kind": "fixed", "text": "On Findings, \"Set status…\" and \"Assign owner…\" for a selection can be used again with the same choice after a cancel or a failed request."},
+        {"kind": "fixed", "text": "Tool Activity's project chips work from the keyboard, and a project filter that hides every row says so with a way to clear it."},
+        {"kind": "before_upgrading", "text": "For a script of your own: GET /attention and /attention/sites are gone (no page used them; Security Posture carries the same figures)."}
+      ]
+    },
+    {
       "backend": "2.547.10",
       "frontend": "5.435.7",
       "date": "2026-11-20",

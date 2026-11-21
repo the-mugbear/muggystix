@@ -907,10 +907,6 @@ def _finding_slides(finding: dict, rep_line: str, match, host_filter: Optional[H
     return slides
 
 
-def slide_keys(result: dict) -> List[str]:
-    return [s["key"] for s in result["slides"]]
-
-
 def first_hosts_key(result: dict, ref: str) -> Optional[str]:
     for s in result["slides"]:
         if s.get("ref") == ref and s["kind"] == "hosts":

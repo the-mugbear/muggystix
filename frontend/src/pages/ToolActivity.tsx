@@ -957,14 +957,19 @@ export const ToolActivity: React.FC = () => {
               {projectsInResults.map((p) => {
                 const active = projectFilter.has(p.id);
                 return (
-                  <Badge
+                  // A button, so the keyboard reaches it and it says whether
+                  // it is on (a Badge is a <span>: mouse only, no state).
+                  <button
                     key={p.id}
-                    variant={active ? 'default' : 'outline'}
+                    type="button"
+                    aria-pressed={active}
                     onClick={() => toggleProject(p.id)}
-                    className="cursor-pointer select-none whitespace-normal break-words"
+                    className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {p.name} · {p.count}
-                  </Badge>
+                    <Badge variant={active ? 'default' : 'outline'} className="select-none whitespace-normal break-words">
+                      {p.name} · {p.count}
+                    </Badge>
+                  </button>
                 );
               })}
               {projectFilter.size > 0 && (
@@ -980,10 +985,22 @@ export const ToolActivity: React.FC = () => {
           )}
 
           <div className="overflow-x-auto">
-              {filteredItems.length === 0 ? (
+              {filteredItems.length === 0 && projectFilter.size > 0 && (response?.items.length ?? 0) > 0 ? (
+                // The answer has rows; the project filter hides them all (a
+                // shared link naming a project this answer does not hold, with
+                // the chips not shown for a single project): say that, with
+                // the way out — not "No activity".
+                <p className="text-caption text-muted-foreground">
+                  {(response?.items.length ?? 0).toLocaleString()} activit{response?.items.length === 1 ? 'y is' : 'ies are'} hidden
+                  by the project filter.{' '}
+                  <Button size="sm" variant="link" className="h-auto p-0" onClick={() => setProjectFilter(new Set())}>
+                    Clear the filter
+                  </Button>
+                </p>
+              ) : filteredItems.length === 0 ? (
                 <p className="text-caption text-muted-foreground">
                   {askedNarrowed
-                    ? 'Nothing recorded for that tool / target in this window: no scan observed the host, no agent recorded a command against it, and no run covered it. If a scan ran but was never uploaded, BlueStick cannot know about it.'
+                    ? 'Nothing recorded for that tool / target in this window: no scan observed the host and no agent recorded a command against it. If a scan ran but was never uploaded, BlueStick cannot know about it.'
                     : 'No activity in this window. Widen the tolerance, pick a different time, or switch to a range.'}
                 </p>
               ) : (

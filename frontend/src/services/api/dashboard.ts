@@ -406,11 +406,6 @@ export const markStillReviewed = async (projectId: number, hostIds: number[]): P
   return response.data;
 };
 
-// (The /attention + /attention/sites client functions were removed once their
-// last consumers — the Operations AttentionCard and the Subnet-Insights by-site
-// rollup — moved to Security Posture, which composes site attention server-side
-// via GET /posture. The backend routes remain for that composition.)
-
 export const markOperationsSeen = async (
   projectId: number,
   asOf?: string | null,

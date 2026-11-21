@@ -48,6 +48,25 @@ describe('WebInterfacesCard — the TLS line', () => {
     }
   });
 
+  it('names the certificate — its subject and its other names — not only how many there are', () => {
+    const many = Array.from({ length: 35 }, (_, n) => `vhost${n}.example.com`);
+    renderRow({
+      ...base,
+      tls_summary: {
+        version: 'tls13', issuer: 'Example CA', subject_cn: 'app.example.com',
+        not_after: '2999-01-01T00:00:00Z', sans: many, flags: [],
+      },
+    });
+    expect(screen.getByText('CN: app.example.com')).toBeInTheDocument();
+    expect(screen.getByText('35 SANs')).toBeInTheDocument();
+    // The first thirty are listed, the rest counted — and Copy takes all of them.
+    expect(screen.getByText('vhost0.example.com')).toBeInTheDocument();
+    expect(screen.getByText('vhost29.example.com')).toBeInTheDocument();
+    expect(screen.queryByText('vhost30.example.com')).not.toBeInTheDocument();
+    expect(screen.getByText(/and 5 more — Copy takes all 35/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: "Copy the certificate's names" })).toBeInTheDocument();
+  });
+
   it('shows no TLS line without a summary', () => {
     renderRow({ ...base, tls_info: { tls_version: 'tls13', mismatched: true }, tls_summary: null });
     expect(screen.queryByText('tls13')).not.toBeInTheDocument();

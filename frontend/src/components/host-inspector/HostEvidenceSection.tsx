@@ -17,6 +17,7 @@ import { queryErrorText } from '../../lib/query';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
+import { CopyButton } from '../ui/code-block';
 import { InspectorSection } from './InspectorSection';
 
 const OUTCOME: Record<string, { label: string; variant: 'warning-outline' | 'success' | 'muted' | 'destructive-outline' | 'outline' }> = {
@@ -40,6 +41,16 @@ const Output: React.FC<{ rec: EvidenceRecord }> = ({ rec }) => {
       <summary className="cursor-pointer select-none text-muted-foreground">
         Output{rec.raw_output_bytes ? ` · ${Math.max(1, Math.round(rec.raw_output_bytes / 1024))} KB` : ''}
       </summary>
+      {rec.raw_output_sha256 && (
+        // Provenance: the hash of the stored output, as the client report
+        // prints for its own files.  Shown short; the title and Copy have it whole.
+        <div className="mt-xxs flex min-w-0 items-center gap-xs text-muted-foreground">
+          <span className="min-w-0 truncate font-mono" title={`SHA-256 ${rec.raw_output_sha256}`}>
+            SHA-256 {rec.raw_output_sha256.slice(0, 12)}…
+          </span>
+          <CopyButton text={rec.raw_output_sha256} label="Copy the output's SHA-256" size="compact" />
+        </div>
+      )}
       <pre className="mt-xxs max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-xs font-mono text-caption">
         {full ?? rec.raw_output_preview}
       </pre>

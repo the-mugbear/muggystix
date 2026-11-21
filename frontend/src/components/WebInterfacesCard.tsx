@@ -20,6 +20,7 @@ import { formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
 import ScreenshotLightbox from './ScreenshotLightbox';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
+import { CopyButton } from './ui/code-block';
 import { safeHttpHref } from '../utils/safeHref';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
@@ -177,11 +178,19 @@ const TLS_FLAG_WORDS: Record<TlsRecordFlag, string> = {
   wildcard: 'wildcard',
 };
 
+/** Certificate names listed before "and N more" (Copy always takes all). */
+const SANS_SHOWN = 30;
+
 interface TlsSummary {
   version: string | null;
   issuer: string | null;
   expiry: string | null;
   daysToExpiry: number | null; // computed from not_after; null if unparseable
+  /** The certificate's subject and its other names — how a tester finds the
+   *  further virtual hosts an address serves.  They were on the wire and only
+   *  counted ("N SANs"). */
+  subject: string | null;
+  sans: string[];
   sanCount: number;
   flags: string[]; // self-signed / expired / hostname mismatch / wildcard
 }
@@ -209,11 +218,13 @@ const summarizeTls = (record: TlsRecordSummary | null | undefined): TlsSummary |
     issuer: record.issuer,
     expiry,
     daysToExpiry,
+    subject: record.subject_cn || null,
+    sans: record.sans ?? [],
     sanCount: (record.sans ?? []).length,
     flags: dedupedFlags,
   };
   // Nothing worth a line if every field came back empty.
-  if (!summary.version && !summary.issuer && !summary.expiry && summary.sanCount === 0 && flags.length === 0) {
+  if (!summary.version && !summary.issuer && !summary.subject && !summary.expiry && summary.sanCount === 0 && flags.length === 0) {
     return null;
   }
   return summary;
@@ -393,8 +404,13 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreensh
             {tls.version && (
               <Badge variant="outline" className="text-caption">{tls.version}</Badge>
             )}
+            {tls.subject && (
+              <span className="min-w-0 max-w-[16rem] truncate font-mono text-caption text-foreground" title={`Certificate subject: ${tls.subject}`}>
+                CN: {tls.subject}
+              </span>
+            )}
             {tls.issuer && (
-              <span className="min-w-0 max-w-[16rem] truncate text-caption text-muted-foreground">
+              <span className="min-w-0 max-w-[16rem] truncate text-caption text-muted-foreground" title={tls.issuer}>
                 CA: {tls.issuer}
               </span>
             )}
@@ -417,9 +433,27 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreensh
               )
             )}
             {tls.sanCount > 0 && (
-              <span className="text-caption text-muted-foreground">
-                {tls.sanCount} SAN{tls.sanCount === 1 ? '' : 's'}
-              </span>
+              // The names themselves, not only how many: opened on demand
+              // (a wildcard certificate can carry hundreds), the first
+              // SANS_SHOWN listed and all of them copied.
+              <details className="min-w-0 text-caption text-muted-foreground">
+                <summary className="cursor-pointer select-none">
+                  {tls.sanCount} SAN{tls.sanCount === 1 ? '' : 's'}
+                </summary>
+                <div className="mt-xxs flex min-w-0 items-start gap-xs">
+                  <ul className="min-w-0 space-y-px font-mono text-foreground">
+                    {tls.sans.slice(0, SANS_SHOWN).map((name) => (
+                      <li key={name} className="break-all">{name}</li>
+                    ))}
+                    {tls.sanCount > SANS_SHOWN && (
+                      <li className="font-sans text-muted-foreground">
+                        and {(tls.sanCount - SANS_SHOWN).toLocaleString()} more — Copy takes all {tls.sanCount.toLocaleString()}
+                      </li>
+                    )}
+                  </ul>
+                  <CopyButton text={tls.sans.join('\n')} label="Copy the certificate's names" size="compact" />
+                </div>
+              </details>
             )}
             {tls.flags.map((flag) => (
               <Badge key={flag} variant="destructive" className="text-caption">
