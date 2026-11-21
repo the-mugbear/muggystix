@@ -402,6 +402,56 @@ def parse_host_port_token(token: str) -> Tuple[Optional[str], Optional[int], Opt
     return extract_first_ip(cleaned), None, None
 
 
+def valid_port_number(value: Any) -> bool:
+    """A TCP / UDP port number: a whole number from 1 to 65535."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return False
+    return 0 < number <= 65535 and not isinstance(value, bool)
+
+
+class HostPortBuffer:
+    """Port records grouped by address for a parser that reads a file of
+    ``address:port`` lines and writes one host at a time (naabu, RustScan) —
+    drained to ``write(address, ports)`` whenever it holds ``max_hosts``
+    addresses or ``max_records`` records, and once more by ``drain()`` at the
+    end (review 2026-11-20, C11).
+
+    Without the bound the whole file was held, one dict per line, until the
+    first write: a 15-byte line is a 200-byte dict, so a few hundred megabytes
+    of sweep output ended the worker for memory on every retry.  The bounds
+    are masscan's (``_COLLECT_FLUSH_IPS`` / ``_COLLECT_FLUSH_RECORDS``): an
+    ordinary file never reaches them and is written exactly as before, grouped
+    whole.  Past them an address can be written in two parts; both land on the
+    same host and the same scan-history row.
+
+    ``records`` counts every record taken (a parser's "found nothing" test);
+    it holds no set of addresses, so its own size does not grow with the file
+    — count a scan's hosts from ``host_scan_history``, as masscan does."""
+
+    def __init__(self, write: Callable[[str, List[Dict[str, Any]]], None], *,
+                 max_hosts: int = 100_000, max_records: int = 1_000_000):
+        self._write = write
+        self._max_hosts = max(1, max_hosts)
+        self._max_records = max(1, max_records)
+        self._hosts: Dict[str, List[Dict[str, Any]]] = {}
+        self._buffered = 0
+        self.records = 0
+
+    def add(self, address: str, port: Dict[str, Any]) -> None:
+        self._hosts.setdefault(address, []).append(port)
+        self._buffered += 1
+        self.records += 1
+        if len(self._hosts) >= self._max_hosts or self._buffered >= self._max_records:
+            self.drain()
+
+    def drain(self) -> None:
+        hosts, self._hosts, self._buffered = self._hosts, {}, 0
+        for address, ports in hosts.items():
+            self._write(address, ports)
+
+
 def persist_host_observation(
     *,
     dedup_service: HostDeduplicationService,
@@ -597,6 +647,13 @@ def _persist_host_observation_inner(
     for port in ports or []:
         port_number = port.get("port_number")
         if not port_number:
+            continue
+        # The one range check for every parser that writes through here
+        # (naabu, RustScan, the web parsers, smbmap, testssl…): a number no
+        # port can have is not written — five parsers checked it in five
+        # spellings and the rest not at all (review 2026-11-20, T2).
+        if not valid_port_number(port_number):
+            logger.warning("Port %r on %s is not a port number (1-65535); not recorded", port_number, ip_address)
             continue
         protocol = str(port.get("protocol", "tcp")).lower()
         persisted = dedup_service.find_or_create_port(

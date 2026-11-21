@@ -37,10 +37,15 @@ from app.services.dns_name_service import (
     InvalidName,
     address_state_for_names,
     get_or_create_name,
+    insert_ignore_many,
     normalize_fqdn,
     record_observation,
 )
 from app.services.host_deduplication_service import HostDeduplicationService
+
+# Paths held before they are written (``_collect``), and rows per INSERT.
+_FLUSH_PATHS = 200_000
+_INSERT_CHUNK = 5_000
 
 # ---------------------------------------------------------------------------
 # Compiled patterns reused across text-format parsers
@@ -125,6 +130,13 @@ class DirBusterParser:
             scan_type="web_content_discovery",
             project_id=self._project_id,
         )
+        # What the readers collect (``_collect``) and what was written of it.
+        self._scan = scan
+        self._buffered: Dict[HostKey, List[dict]] = {}
+        self._buffered_paths = 0
+        self._paths_read = 0
+        self._services: set = set()             # the web services written, across every part
+        self._unresolved: Dict[str, int] = {}   # name → paths not attached
 
         suffix = Path(filename).suffix.lower()
         if suffix in (".json", ".jsonl"):
@@ -133,20 +145,20 @@ class DirBusterParser:
             # grep text path which fails closed with "No valid URL
             # entries found in file" (less bad than naabu/amass/smbmap
             # silent zero-success, but still wrong).
-            hosts = self._parse_json(file_path)
+            self._parse_json(file_path)
         elif suffix == ".csv":
-            hosts = self._parse_csv(file_path)
+            self._parse_csv(file_path)
         else:
-            hosts = self._parse_text(file_path)
+            self._parse_text(file_path)
 
-        if not hosts:
+        if not self._paths_read:
             raise ValueError("No valid URL entries found in file")
 
-        hosts, unresolved = self._bind_named_targets(hosts, scan)
+        self._drain()
+        hosts, unresolved = self._services, self._unresolved
         if not hosts and not unresolved:
             raise ValueError("No valid URL entries found in file")
 
-        self._persist(hosts, scan)
         if unresolved:
             paths = sum(unresolved.values())
             sample = ", ".join(sorted(unresolved)[:5])
@@ -236,7 +248,7 @@ class DirBusterParser:
     # JSON parsing (ffuf, feroxbuster, dirsearch)
     # ------------------------------------------------------------------
 
-    def _parse_json(self, file_path: str) -> Dict[HostKey, List[dict]]:
+    def _parse_json(self, file_path: str) -> None:
         # ffuf wraps results in {"results": [...]}; feroxbuster and
         # dirsearch emit top-level arrays.  The streaming helper picks
         # the right shape and avoids loading huge directory-busting
@@ -253,14 +265,13 @@ class DirBusterParser:
             array_keys=("results",),
             tool_label="Directory-buster JSON",
         )
-        return self._parse_entries(records)
+        self._parse_entries(records)
 
     # ------------------------------------------------------------------
     # CSV parsing (dirsearch CSV, ffuf CSV)
     # ------------------------------------------------------------------
 
-    def _parse_csv(self, file_path: str) -> Dict[HostKey, List[dict]]:
-        hosts: Dict[HostKey, List[dict]] = {}
+    def _parse_csv(self, file_path: str) -> None:
         with open(file_path, "r", encoding="utf-8", errors="ignore", newline="") as fh:
             reader = csv.DictReader(fh)
             for row in beat_while_reading(reader, "rows read"):
@@ -276,21 +287,18 @@ class DirBusterParser:
                     row.get("content_length") or row.get("content-length")
                     or row.get("length") or row.get("size")
                 )
-                key: HostKey = (ip, port, scheme)
-                hosts.setdefault(key, []).append({
+                self._collect((ip, port, scheme), {
                     "path": path,
                     "status_code": status,
                     "size": size,
                     "origin": _origin(host, port, scheme),
                 })
-        return hosts
 
     # ------------------------------------------------------------------
     # Text parsing (gobuster, feroxbuster, dirsearch, dirbuster)
     # ------------------------------------------------------------------
 
-    def _parse_text(self, file_path: str) -> Dict[HostKey, List[dict]]:
-        hosts: Dict[HostKey, List[dict]] = {}
+    def _parse_text(self, file_path: str) -> None:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
             for line in beat_while_reading(fh, "lines read"):
                 line = line.strip()
@@ -325,15 +333,12 @@ class DirBusterParser:
                     continue
                 host, port, scheme, path = parsed
                 ip = normalize_ip(host) or host
-                key: HostKey = (ip, port, scheme)
-                hosts.setdefault(key, []).append({
+                self._collect((ip, port, scheme), {
                     "path": path,
                     "status_code": status,
                     "size": size,
                     "origin": _origin(host, port, scheme),
                 })
-
-        return hosts
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -350,8 +355,7 @@ class DirBusterParser:
                 return entry[k]
         return None
 
-    def _parse_entries(self, entries) -> Dict[HostKey, List[dict]]:
-        hosts: Dict[HostKey, List[dict]] = {}
+    def _parse_entries(self, entries) -> None:
         # R6 — the read phase heartbeats (only the committed scan row exists).
         for entry in beat_while_reading(entries, "results read"):
             if not isinstance(entry, dict):
@@ -367,14 +371,39 @@ class DirBusterParser:
             ip = normalize_ip(host) or host
             status = self._coerce_int(self._first(entry, self._STATUS_KEYS))
             size = self._coerce_int(self._first(entry, self._SIZE_KEYS))
-            key: HostKey = (ip, port, scheme)
-            hosts.setdefault(key, []).append({
+            self._collect((ip, port, scheme), {
                 "path": path,
                 "status_code": status,
                 "size": size,
                 "origin": _origin(host, port, scheme),
             })
-        return hosts
+
+    # ------------------------------------------------------------------
+    # Collected in parts, written at a bound
+    # ------------------------------------------------------------------
+
+    def _collect(self, key: HostKey, record: dict) -> None:
+        """One path the file states, kept until ``_FLUSH_PATHS`` are held and
+        then written (``_drain``).  The whole export used to be held — a dict
+        per path, "millions of URLs is realistic" — before the first write, so
+        a large one ended the worker for memory on every retry (review
+        2026-11-20, C11).  An ordinary file never reaches the bound and is
+        written exactly as before, in one part."""
+        self._buffered.setdefault(key, []).append(record)
+        self._buffered_paths += 1
+        self._paths_read += 1
+        if self._buffered_paths >= _FLUSH_PATHS:
+            self._drain()
+
+    def _drain(self) -> None:
+        hosts, self._buffered, self._buffered_paths = self._buffered, {}, 0
+        if not hosts:
+            return
+        bound, unresolved = self._bind_named_targets(hosts, self._scan)
+        for name, paths in unresolved.items():
+            self._unresolved[name] = self._unresolved.get(name, 0) + paths
+        self._services.update(bound)
+        self._persist(bound, self._scan)
 
     def _persist(
         self,
@@ -385,7 +414,7 @@ class DirBusterParser:
         # carry a million of them); outside the host's savepoint.
         beat = ProgressBeat("paths", every=5000)
         for (ip, port, scheme), findings in hosts.items():
-            beat.tick(len(findings) or 1)
+            beat.tick()
             # The name carries no confidence, so should_replace_service lets it
             # fill a blank but never replace an nmap identification (v2.390.3;
             # before that this parser queried "is the port already named?" per
@@ -408,8 +437,11 @@ class DirBusterParser:
                 continue
             host, port_map = persisted
             port_row = port_map.get((port, "tcp"))
+            host_id, port_id = host.id, port_row.id if port_row else None
+            source = scan.tool_name or "dirbuster"
             base = _origin(ip, port, scheme)
             seen: set = set()
+            rows: List[dict] = []
             for f in findings:
                 path = f.get("path") or "/"
                 # The URL the tool requested (its name, when it asked for
@@ -418,13 +450,20 @@ class DirBusterParser:
                 if url in seen:
                     continue
                 seen.add(url)
-                self.db.add(models.WebPath(
-                    project_id=self._project_id, host_id=host.id,
-                    port_id=port_row.id if port_row else None, scan_id=scan.id,
-                    source=scan.tool_name or "dirbuster", url=url, path=path,
-                    status_code=f.get("status_code"), size=f.get("size"),
-                ))
-            self.db.flush()
+                rows.append({
+                    "project_id": self._project_id, "host_id": host_id, "port_id": port_id,
+                    "scan_id": scan.id, "source": source, "url": url, "path": path,
+                    "status_code": f.get("status_code"), "size": f.get("size"),
+                })
+            # In statements of ``_INSERT_CHUNK`` rows, a heartbeat between
+            # them: one ORM object per path and ONE flush for the service was
+            # a single long step for "a million of them".  A URL this scan
+            # already holds (the file states it twice, in two parts) is left
+            # as it is (``uq_web_paths_scan_url``).
+            for start in range(0, len(rows), _INSERT_CHUNK):
+                chunk = rows[start:start + _INSERT_CHUNK]
+                insert_ignore_many(self.db, models.WebPath.__table__, chunk)
+                beat.tick(len(chunk))
 
     @staticmethod
     def _coerce_int(value: object) -> Optional[int]:

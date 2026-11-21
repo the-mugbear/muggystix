@@ -116,7 +116,13 @@ def iter_json_records(
 def _load_records_eager(
     file_path: str, array_keys: Sequence[str], tool_label: str,
 ) -> List[dict]:
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+    # ``utf-8-sig``: a byte-order mark is taken off (PowerShell 5's
+    # ``Out-File -Encoding utf8``, some Windows editors).  Detection strips it
+    # before it looks at the structure, so the file was recognised — and then
+    # read here with the mark in front of its ``[`` or ``{``: a document fell
+    # to the line reader and every line was refused, JSON lines lost their
+    # first record (review 2026-11-20, C14).
+    with open(file_path, "r", encoding="utf-8-sig", errors="ignore") as handle:
         text = handle.read()
     raw = text.strip()
     if not raw:
@@ -355,6 +361,10 @@ def _stream_records(
 ) -> Iterator[dict]:
     with open(file_path, "rb") as handle:
         head = handle.read(_PEEK_BYTES)
+    # A byte-order mark is not structure: JSON lines behind one are streamed
+    # by line (which takes it off).  A streamed DOCUMENT behind one is still
+    # read from its first byte by ``iter_document``.
+    head = head.removeprefix(b"\xef\xbb\xbf")
     head_stripped = head.lstrip()
 
     if head_stripped.startswith(b"["):
@@ -405,7 +415,8 @@ def _looks_like_jsonl(head: bytes) -> bool:
 
 
 def _stream_jsonl_file(file_path: str, tool_label: str) -> Iterator[dict]:
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+    # ``utf-8-sig``: see ``_load_records_eager``.
+    with open(file_path, "r", encoding="utf-8-sig", errors="ignore") as handle:
         yield from _iter_jsonl_lines(handle, tool_label)
 
 

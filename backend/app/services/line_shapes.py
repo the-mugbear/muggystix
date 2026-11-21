@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
 SHAPE_MAX_CHARS = 240
@@ -69,6 +70,42 @@ _LOGIN_TOKEN = re.compile(r"^(\[[+-]\])\s+(\S+)")
 _PASSWORD_ONLY = {"vnc"}
 
 
+_WORD = re.compile(r"[\w-]+")
+
+
+@lru_cache(maxsize=8)
+def _host_index(known_hosts: Tuple[str, ...]) -> Tuple[dict, Tuple[Tuple[str, str], ...]]:
+    """``known_hosts`` once per file: the names that are one word (a NetBIOS
+    name — found by looking the message's words up) and the rest (a dotted
+    name — found by a substring test), each by its lower-case form."""
+    words: dict = {}
+    others = []
+    for name in known_hosts:
+        if not name:
+            continue
+        lowered = name.lower()
+        if _WORD.fullmatch(name):
+            words.setdefault(lowered, name)
+        else:
+            others.append((lowered, name))
+    return words, tuple(others)
+
+
+def _names_in(message: str, known_hosts: Tuple[str, ...]) -> list:
+    """The known host names that occur in ``message``, longest first — the
+    only ones worth a substitution.  Substituting every known name into every
+    line was (lines) x (names) regular expressions, each compiled again past
+    the first 512 names: a 10,000-host sweep with a module run spent hours on
+    its receipt and was failed as stalled (review 2026-11-20, C12)."""
+    if not known_hosts:
+        return []
+    words, others = _host_index(known_hosts)
+    lowered = message.lower()
+    found = {words[word] for word in set(_WORD.findall(lowered)) if word in words}
+    found.update(name for low, name in others if low in lowered)
+    return sorted(found, key=len, reverse=True)
+
+
 def nxc_line_shape(line: str, known_hosts: Tuple[str, ...] = ()) -> str:
     """A NetExec console line's shape: protocol, port and status marker kept;
     address, host column, credential and every value in the message
@@ -87,9 +124,8 @@ def nxc_line_shape(line: str, known_hosts: Tuple[str, ...] = ()) -> str:
         token = login.group(2) if login else ""
         if login and ((":" in token and not token.endswith(":")) or proto.lower() in _PASSWORD_ONLY):
             message = f"{login.group(1)} <CREDENTIAL>" + message[login.end():]
-        for name in known_hosts:
-            if name:
-                message = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", "<HOST>", message, flags=re.IGNORECASE)
+        for name in _names_in(message, known_hosts):
+            message = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", "<HOST>", message, flags=re.IGNORECASE)
         shape = f"{proto} <IP> {port} <HOST> {redact_message(message)}"
     return shape[:SHAPE_MAX_CHARS]
 

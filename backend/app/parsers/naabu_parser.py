@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
-
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
+    HostPortBuffer,
     ProgressBeat,
     ScanClock,
     beat_while_reading,
@@ -35,9 +34,26 @@ class NaabuParser:
             project_id=project_id,
         )
         suffix = Path(filename).suffix.lower()
-        hosts: Dict[str, List[dict]] = {}
         # naabu -json stamps every record (RFC 3339); plain text has no time.
         clock = ScanClock()
+        # R6 — heartbeat between hosts, outside the host's savepoint
+        # (persist_host_observation(isolate=True)).
+        beat = ProgressBeat("hosts")
+
+        def write(ip_address: str, ports: list) -> None:
+            beat.tick()
+            persist_host_observation(
+                dedup_service=self.dedup_service,
+                scan_id=scan.id,
+                ip_address=ip_address,
+                ports=ports,
+                project_id=project_id,
+                isolate=True,
+            )
+
+        # Grouped by address and written at a bound: the whole file used to be
+        # held, one dict per line, until the first write (review 2026-11-20).
+        hosts = HostPortBuffer(write)
 
         if suffix in (".json", ".jsonl"):
             # Streams large naabu exports via ijson instead of loading
@@ -56,52 +72,35 @@ class NaabuParser:
                 port = row.get("port")
                 if not ip_address or port in (None, ""):
                     continue
-                hosts.setdefault(ip_address, []).append(
-                    {
-                        "port_number": int(port),
-                        "protocol": str(row.get("protocol") or "tcp").lower(),
-                        "state": "open",
-                        "service_name": row.get("scheme"),
-                    }
-                )
+                hosts.add(ip_address, {
+                    "port_number": int(port),
+                    "protocol": str(row.get("protocol") or "tcp").lower(),
+                    "state": "open",
+                    "service_name": row.get("scheme"),
+                })
         else:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
                 for line in beat_while_reading(handle, "lines read"):
                     ip_address, port, scheme = parse_host_port_token(line)
                     if not ip_address or port is None:
                         continue
-                    hosts.setdefault(ip_address, []).append(
-                        {
-                            "port_number": port,
-                            "protocol": "tcp",
-                            "state": "open",
-                            "service_name": scheme,
-                        }
-                    )
+                    hosts.add(ip_address, {
+                        "port_number": port,
+                        "protocol": "tcp",
+                        "state": "open",
+                        "service_name": scheme,
+                    })
 
         # Fail closed on 0 records — pre-v2.55.0 this returned a
         # completed `tool_name='naabu'` scan with no hosts, which
         # masked dispatch misroutes (e.g. a JSONL file silently demoted
         # to the text path) as "successful" ingests.
-        if not hosts:
+        if not hosts.records:
             raise ValueError(
                 f"Naabu parser found 0 host:port records in {filename}; "
                 f"file is empty or not naabu output."
             )
 
         clock.apply(scan)
-        # R6 — heartbeat between hosts, outside the host's savepoint
-        # (persist_host_observation(isolate=True)).
-        beat = ProgressBeat("hosts")
-        for ip_address, ports in hosts.items():
-            beat.tick()
-            persist_host_observation(
-                dedup_service=self.dedup_service,
-                scan_id=scan.id,
-                ip_address=ip_address,
-                ports=ports,
-                project_id=project_id,
-                isolate=True,
-            )
-
+        hosts.drain()
         return scan

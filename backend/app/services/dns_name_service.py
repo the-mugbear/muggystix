@@ -304,6 +304,11 @@ def _insert_ignore_many(db: Session, table, rows: List[dict]):
     return db.execute(insert(table).values(rows).on_conflict_do_nothing())
 
 
+#: For a parser that writes many plain rows a constraint may already hold (the
+#: directory-buster's web paths): the same statement, by its public name.
+insert_ignore_many = _insert_ignore_many
+
+
 def get_or_create_name(
     db: Session,
     project_id: int,
@@ -423,7 +428,15 @@ def record_observation(
     if cache is not None and key in cache.observations:
         return None
 
-    if check_exists or name_id is None:
+    # With a cache, a name and a scan there is nothing for the SELECT to find
+    # that the cache does not hold: a row carrying THIS scan's id was written
+    # by this parse, through this function, and is in ``cache.observations``
+    # (checked above; a rolled-back one is forgotten with its row).  It was
+    # one wasted round trip per DNS answer — a third of the statements of a
+    # dnsx or DNS CSV import (review 2026-11-20, C13).  The INSERT below is ON
+    # CONFLICT DO NOTHING either way.
+    known_to_the_cache = cache is not None and scan_id is not None and name_id is not None
+    if (check_exists and not known_to_the_cache) or name_id is None:
         exists_q = db.query(models.DNSRecord.id).filter(
             models.DNSRecord.record_type == record_type,
             models.DNSRecord.value == value,

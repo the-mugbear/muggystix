@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
-    ProgressBeat, beat_while_reading, ensure_scan, extract_first_ip,
+    HostPortBuffer, ProgressBeat, beat_while_reading, ensure_scan, extract_first_ip,
     normalize_ip, persist_host_observation,
 )
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -41,18 +41,40 @@ class RustScanParser:
             scan_type="port_scan",
             project_id=project_id,
         )
-        hosts: Dict[str, List[dict]] = {}
         # RustScan hands its ports to nmap and prints nmap's report in the
         # same console output.  That report (services, versions, scripts) is
         # not read here; say so rather than let it look imported (v2.417.0,
         # review R11/R12).
         embedded_nmap = False
 
+        # R6 — heartbeat between hosts, outside each host's savepoint.  One
+        # host that fails to write is skipped and counted, never the whole
+        # file (comprehensive review 2026-10-16, B-OPS-6).
+        beat = ProgressBeat("hosts", every=200)
+        skipped = 0
+
+        def write(ip_address: str, ports: list) -> None:
+            nonlocal skipped
+            beat.tick()
+            if persist_host_observation(
+                dedup_service=self.dedup_service,
+                scan_id=scan.id,
+                ip_address=ip_address,
+                ports=ports,
+                project_id=project_id,
+                isolate=True,
+            ) is None:
+                skipped += 1
+
+        # Grouped by address and written at a bound: the whole file used to be
+        # held, one dict per line, until the first write (review 2026-11-20).
+        hosts = HostPortBuffer(write)
+
         def add_port(address: str, port: int) -> None:
+            # Every form of line comes through here: the IPv4 ones took a
+            # port number of any size.
             if 0 < port <= 65535:
-                hosts.setdefault(address, []).append(
-                    {"port_number": port, "protocol": "tcp", "state": "open"}
-                )
+                hosts.add(address, {"port_number": port, "protocol": "tcp", "state": "open"})
 
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
             # R6 — the read phase heartbeats (only the committed scan row exists).
@@ -80,9 +102,7 @@ class RustScanParser:
                     ip_address = extract_first_ip(match.group(1))
                     port = int(match.group(2))
                     if ip_address:
-                        hosts.setdefault(ip_address, []).append(
-                            {"port_number": port, "protocol": "tcp", "state": "open"}
-                        )
+                        add_port(ip_address, port)
                     continue
 
                 list_match = LIST_PATTERN.search(line)
@@ -93,15 +113,9 @@ class RustScanParser:
                     for port_text in list_match.group(2).split(","):
                         port_text = port_text.strip()
                         if port_text.isdigit():
-                            hosts.setdefault(ip_address, []).append(
-                                {
-                                    "port_number": int(port_text),
-                                    "protocol": "tcp",
-                                    "state": "open",
-                                }
-                            )
+                            add_port(ip_address, int(port_text))
 
-        if not hosts:
+        if not hosts.records:
             # An import of nothing is not a success (it used to finish
             # "processed successfully" with zero hosts).
             raise ValueError(
@@ -111,24 +125,15 @@ class RustScanParser:
                    if embedded_nmap else "")
             )
 
-        # R6 — heartbeat between hosts, outside each host's savepoint.  One
-        # host that fails to write is skipped and counted, never the whole
-        # file (comprehensive review 2026-10-16, B-OPS-6).
-        beat = ProgressBeat("hosts", every=200)
-        skipped = 0
-        for ip_address, ports in hosts.items():
-            beat.tick()
-            if persist_host_observation(
-                dedup_service=self.dedup_service,
-                scan_id=scan.id,
-                ip_address=ip_address,
-                ports=ports,
-                project_id=project_id,
-                isolate=True,
-            ) is None:
-                skipped += 1
+        hosts.drain()
 
-        port_count = sum(len(p) for p in hosts.values())
+        # The hosts of the scan are its history rows (a buffer drained in
+        # parts holds no list of them, and a skipped host has no row).
+        port_count = hosts.records
+        host_count = skipped + (
+            self.db.query(func.count(models.HostScanHistory.id))
+            .filter(models.HostScanHistory.scan_id == scan.id).scalar() or 0
+        )
         self.last_parse_stats = {
             "skipped": skipped,
             "warnings": (
@@ -137,7 +142,7 @@ class RustScanParser:
                 "XML (pass `-- -oX out.xml` to RustScan) to keep them."
                 if embedded_nmap else None
             ),
-            "summary": f"{port_count} open port{'s' if port_count != 1 else ''} on {len(hosts)} host{'s' if len(hosts) != 1 else ''}"
+            "summary": f"{port_count} open port{'s' if port_count != 1 else ''} on {host_count} host{'s' if host_count != 1 else ''}"
                        + (f"; {skipped} host{'s' if skipped != 1 else ''} could not be written and were skipped"
                           if skipped else ""),
             "partial": skipped > 0,

@@ -2,6 +2,17 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.8",
+      "frontend": "5.435.6",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "fixed", "text": "Very large naabu, RustScan and directory-buster files (ffuf, feroxbuster, gobuster, dirsearch) are imported in parts instead of being held in memory whole, so they no longer end the import worker."},
+        {"kind": "fixed", "text": "A large NetExec sweep with module output no longer stalls while its import summary is prepared."},
+        {"kind": "fixed", "text": "A JSON file saved with a byte-order mark (PowerShell's Out-File, some Windows editors) imports; before, it was recognised and then read as empty or lost its first record."},
+        {"kind": "fixed", "text": "A port number outside 1-65535 in a tool's output is skipped instead of being recorded as a port."}
+      ]
+    },
+    {
       "backend": "2.547.7",
       "frontend": "5.435.6",
       "date": "2026-11-20",
