@@ -531,7 +531,11 @@ argument is a JSON-RPC `-32602`, never a call to a different route.
 Separate from the MCP registry, `tool_registry` is the table of **tools BlueStick
 knows about** — seeded from `app/data/tool_registry_seed.json`, rendered for
 people at `/tool-reference` and readable by agents, unfiltered, through
-`list_tools` (`GET /api/v1/references/tools`).
+`list_tools` (`GET /api/v1/references/tools`).  Every shipped tool states
+`intrusive`, `requires_privileges` and (unless it writes no file)
+`output_format` (v2.550.0) — what the tool's own documentation says, as
+reference for people; like the rest of the catalogue it permits and recommends
+nothing.
 
 **It is a catalogue for people, not a permission list and not a recommendation.**
 The agent chooses its tools and parameters from its own judgment and its

@@ -89,7 +89,9 @@ const sections: GuideSection[] = [
           what you confirm in it, and the session dialog hands you the flags that set it. What the
           server adds is the record. The{' '}
           <Link to="/tool-reference" className="underline">Tool Reference</Link> is a catalogue both
-          you and the agent read — it does not decide what may run; an agent that needs a tool the
+          you and the agent read — each tool says whether it is intrusive, whether it needs
+          privileges and what file it writes, as its own documentation does; it does not decide
+          what may run; an agent that needs a tool the
           catalogue lacks records it with <Mono>suggest_tool</Mono> for an admin to add.
         </Para>
         <Subhead>Configured scanners: the agent asks you first</Subhead>

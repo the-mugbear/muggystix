@@ -2,6 +2,21 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.550.1",
+      "frontend": "5.437.1",
+      "date": "2026-11-21",
+      "entries": [
+        {
+          "kind": "changed",
+          "text": "The user guide covers the technology filters (tech: and techis:), the host kept in the address, declaring a name in scope from its panel, and what Tool Reference says about each tool."
+        },
+        {
+          "kind": "changed",
+          "text": "The guide an agent reads says that a host's port list is the first 500 with the total beside it, that a remediation row can be a name at a host, and the limits of the host query language."
+        }
+      ]
+    },
+    {
       "backend": "2.550.0",
       "frontend": "5.437.0",
       "date": "2026-11-21",

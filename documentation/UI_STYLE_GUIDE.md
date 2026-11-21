@@ -909,6 +909,13 @@ project, and the same host could appear three times.  The shape is:
     title row → lead sentence → callouts (only when there is something)
     → tab bar with counts → the ONE selected list as a full table → foot line
 
+- **Every tab strip takes the arrow keys.**  One built from
+  `components/ui/tabs` has Radix's; one drawn by hand (`role="tablist"` over
+  `role="tab"` — a view switch, a filter strip, `ui/view-tabs`) takes
+  `onKeyDown={tabListKeys}` (`utils/tabList`: Left / Right move to the
+  neighbour and choose it, Home / End the first / last, a disabled tab is
+  skipped).  The `TAB_STRIP` lint selector refuses a `role="tablist"` without
+  a key handler (5.437.0).
 - **A tab bar with counts** (`components/ui/tabs`, Radix: arrow keys move
   between tabs).  A count that is still loading reads "…"; one that could not
   be checked reads "—" — never 0 — and the tab's panel then says "could not be
@@ -1097,7 +1104,10 @@ From the codebase review of 2026-10-07 (5.339.0).
   per-viewer preference (`localStorage`, or `?per=`); a filter or sort change
   still returns to page 1 (on Hosts and the audit log a LINK that names
   filters and a page opens that page — §39, `keepAddressPage`), and a page
-  past the end steps back to the last one that exists. A cross-project page (Portfolio, Oversight,
+  past the end steps back to the last one that exists. **The record open in a
+  list's side sheet is in the address too** — Hosts `?host=<id>` (5.437.0),
+  Names `?name_id=` — written with the list's other state, kept across a page
+  turn or a filter edit, so a reload or a shared link opens it again. A cross-project page (Portfolio, Oversight,
   Remediation deadlines) keeps its filters when the reader switches project;
   a project page drops them, because they name the previous project's ids. A narrowing that came from the URL (`?host=`, `?finding=`) is always
   shown as a removable chip naming what it narrows to.

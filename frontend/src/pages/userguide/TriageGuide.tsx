@@ -127,7 +127,7 @@ const sections: GuideSection[] = [
           <li><strong>Assignment</strong> — assign hosts to teammates; find yours with <Mono>assigned:me</Mono>. Taking a host In Review also makes it yours.</li>
           <li><strong>Notes</strong> — threaded notes with @mentions for collaboration.</li>
           <li><strong>Export targets / Download inventory</strong> (auditors and above) — <em>Export targets</em> writes the filtered list in tool formats (IP list, Nmap targets, …); <em>Download inventory</em> saves the filtered hosts as CSV (one row per host) or JSON (everything recorded per host). Both honour the full active filter + query.</li>
-          <li><strong>Share &amp; save</strong> — <strong>Copy link</strong> reproduces the exact view; <strong>Save view</strong> stores it as a named view.</li>
+          <li><strong>Share &amp; save</strong> — <strong>Copy link</strong> reproduces the exact view; <strong>Save view</strong> stores it as a named view. The host open in the side panel is part of the address too, so a reload or a shared link opens the same host.</li>
         </UnorderedList>
         <Para>
           Click any host to open it: ports and services, scanner observations, its
@@ -164,6 +164,7 @@ const sections: GuideSection[] = [
         <Subhead>Examples</Subhead>
         <UnorderedList>
           <li><Mono>has:critical AND NOT follow:in_review_any</Mono> — critical-vuln hosts nobody is reviewing yet.</li>
+          <li><Mono>tech:nginx</Mono> — hosts showing a web technology whose name contains &ldquo;nginx&rdquo;; <Mono>techis:"nginx 1.14.0"</Mono> — exactly that technology, the list a technology count on Patterns opens. Both read the latest observation of each URL, so a technology a later scan no longer reports stops matching.</li>
           <li><Mono>follow:mine</Mono> — the hosts <em>you</em> have in review (the other <Mono>follow:</Mono> values — <Mono>in_review</Mono>, <Mono>in_review_any</Mono>, <Mono>reviewed</Mono>, <Mono>none</Mono> — count any teammate's review).</li>
           <li><Mono>follow:revisit</Mono> — hosts <em>you</em> reviewed that changed after your review (an open port, or a critical / high scanner observation): Operations' "Changed since review".</li>
           <li><Mono>has:changed_since_review</Mono> — the same question for the whole team: any reviewed host that changed after its review.</li>
