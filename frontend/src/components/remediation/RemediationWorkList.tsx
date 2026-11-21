@@ -833,9 +833,12 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                             </TableCell>
                             <TableCell className="min-w-0 align-middle">
                               {hostCell(r)}
-                              {r.hostname && (
-                                <span className="block truncate text-caption text-muted-foreground" title={r.hostname}>
-                                  {r.hostname}
+                              {/* The endpoint's own name when it is one (two
+                                  rows of a finding can share an address), else
+                                  the host's. */}
+                              {(r.name ?? r.hostname) && (
+                                <span className="block truncate text-caption text-muted-foreground" title={r.name ?? r.hostname ?? undefined}>
+                                  {r.name ?? r.hostname}
                                 </span>
                               )}
                             </TableCell>

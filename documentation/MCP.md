@@ -101,7 +101,9 @@ settings. **Where it is off, every `remediation_*` tool answers 404 "not enabled
 on this installation"** — the agent says so and does not retry — and nothing
 about remediation appears in any other answer.
 
-Where it is on, `remediation_list` returns one row per finding on a host: the
+Where it is on, `remediation_list` returns one row per finding on a host — or
+on a NAME at a host (`name`, `name_id`; two rows of one finding can share an
+address and differ only in the name): the
 contact, the team, the assigned date, the contact's progress (`status` open /
 closed / deferred) and where the row stands against its deadline (`state`,
 `due_on`, `days_left`). Two things are easy to get wrong:

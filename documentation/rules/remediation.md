@@ -14,6 +14,8 @@ paths:
 
 The client's fixing progress, kept by project admins **per FINDING ON A HOST** (`finding_host_remediation`, 1:1 with `finding_hosts`). Routes: `documentation/API_GUIDE.md`.
 
+**A row is an ENDPOINT, and an endpoint can be a NAME at a host** (2.547.7): one finding may have several on one address (`uq_finding_host_name`), each with its own contact, deadline and state. A row carries `name_id` / `name` beside `ip_address` and the host's `hostname`; nothing that tells rows apart or matches them goes by the address alone — the contact document keys its systems by (finding, address, name), and text for a reader names the endpoint with `remediation_service.endpoint_label` (the reminder, an alert's body: "shop.example.test (10.0.0.9)") (`test_review_2026_11_20_batch3.py`). `findings_wholly_of` stays by host on purpose.
+
 ## The switch
 
 - `remediation_policy`: ONE row (id 1; none = defaults, OFF): `enabled`, days per severity (30/30/90/120, info none), `due_soon_days` (7), `time_zone` (IANA, UTC). `GET /remediation-policy` anyone; `PUT` GLOBAL admin, audited `remediation_policy_updated` (`RemediationSettingsSection`, System settings).
@@ -44,7 +46,7 @@ The client's fixing progress, kept by project admins **per FINDING ON A HOST** (
 - **Hand-set deadline:** `due_expr` = `coalesce(due_override_on, policy_due_expr)`, the only reader. It IS the deadline: runs without assigned date or timeline (`state_expr` skips `no_deadline` / `not_assigned`), frozen on close, resets alert bookkeeping; any change needs a note in the `apply` row. Rows carry `due_on`, `policy_due_on` (policy's, any status), `due_override_on`, `deadline_source` (`policy` / `override`).
 - **Deferral = review date + reason:** entering `deferred` or moving the date carries `deferred_review_on` (≥ `Policy.today()`) and a note; leaving clears it (`ck_remediation_deferred_review_date`). A NULL date is never back-filled; it reads as due for review.
 - **Flags** (`remediation_policy.flag_exprs`): `deferral_review_due` (null or ≤ today), `deadline_overridden`; `flag=`; `flag_counts` before `flag` / `verification` / `state` / `status`; state counts and at-risk follow it (`tests/test_remediation_due_dates.py`).
-- **Search** `q=` (2–200): title, address, host name; caseless, LIKE-escaped; counts follow it.
+- **Search** `q=` (2–200): title, address, host name, the endpoint's own name; caseless, LIKE-escaped; counts follow it.
 - **Severity change:** `PATCH /findings/{id}` calls `remediation_service.severity_changed`: ONE `INSERT … SELECT` of `change` entries (`field: "severity"`, deadlines in `body`) for assigned, open, non-overridden rows (`test_remediation_due_dates.py`). A new severity-changing path calls it too (hazard — removable: the call inside the one writer of `Finding.severity`).
 
 ## Follow-up — by contact

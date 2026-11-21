@@ -185,7 +185,7 @@ export const RemediationEditDialog: React.FC<{
         changed === 0 && notes > 0
           ? `Note added to ${notes === 1 ? 'the timeline' : `${notes} timelines`}.`
           : rows.length === 1
-            ? `Saved for ${rows[0].finding_title} on ${rows[0].ip_address}.`
+            ? `Saved for ${rows[0].finding_title} on ${rows[0].name ?? rows[0].ip_address}.`
             : `Saved for ${rows.length.toLocaleString()} findings on hosts.`,
       );
       onSaved();
@@ -217,7 +217,7 @@ export const RemediationEditDialog: React.FC<{
           <DialogTitle className="break-words">
             {several
               ? `Edit ${rows.length.toLocaleString()} findings on ${hosts.toLocaleString()} host${hosts === 1 ? '' : 's'}`
-              : `${rows[0].finding_title} on ${rows[0].ip_address}`}
+              : `${rows[0].finding_title} on ${rows[0].name ? `${rows[0].name} (${rows[0].ip_address})` : rows[0].ip_address}`}
           </DialogTitle>
           <DialogDescription>
             {several

@@ -25,12 +25,13 @@ from typing import Optional
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from app.db.models import Host
+from app.db.models import DNSName, Host
 from app.db.models_auth import User, UserRole
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Notification, Project, ProjectMembership, ProjectRole
 from app.db.models_remediation import FindingHostRemediation as Remediation
 from app.services import remediation_policy as deadlines
+from app.services import remediation_service
 from app.services.notification_service import REMEDIATION_NOTIFICATION_TYPE
 
 logger = logging.getLogger(__name__)
@@ -110,16 +111,20 @@ def sweep(db: Session, today: Optional[date] = None) -> int:
         # alerted on the next sweep), so it cannot be part of a lock cycle
         # with the writers, which lock in ``remediation_service._lock_for_write``'s order.
         # The most overdue (or the soonest) first: the first few are named.
-        rows = (db.query(Remediation.id, Remediation.project_id, day, Finding.title, Host.ip_address)
+        rows = (db.query(Remediation.id, Remediation.project_id, day, Finding.title, Host.ip_address,
+                         DNSName.fqdn)
                 .join(FindingHost, FindingHost.id == Remediation.finding_host_id)
                 .join(Finding, Finding.id == FindingHost.finding_id)
                 .join(Host, Host.id == FindingHost.host_id)
+                # The name the endpoint is, if it is one (never locked: `of=`).
+                .outerjoin(DNSName, DNSName.id == FindingHost.name_id)
                 .filter(reached, or_(alerted.is_(None), alerted != day))
                 .order_by(day, Remediation.id).with_for_update(of=Remediation, skip_locked=True).all())
         per_project: dict[int, list[tuple[str, str]]] = {}
         by_day: dict[date, list[int]] = {}
-        for row_id, project_id, reached_on, title, address in rows:
-            per_project.setdefault(project_id, []).append((title, address))
+        for row_id, project_id, reached_on, title, address, name in rows:
+            per_project.setdefault(project_id, []).append(
+                (title, remediation_service.endpoint_label(address, None, name)))
             by_day.setdefault(deadlines.as_date(reached_on), []).append(row_id)
         names = dict(db.query(Project.id, Project.name).filter(Project.id.in_(per_project))) if per_project else {}
         for project_id, found in per_project.items():

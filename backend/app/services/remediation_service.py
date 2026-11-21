@@ -144,6 +144,13 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
             func.lower(Finding.title).like(pattern, escape="\\"),
             func.lower(models.Host.ip_address).like(pattern, escape="\\"),
             func.lower(models.Host.hostname).like(pattern, escape="\\"),
+            # …or the NAME the endpoint is (a finding on a name at a host).
+            # An alias: the rows' statement joins ``dns_names`` itself, and the
+            # un-aliased table would correlate to that join.
+            select(_SearchedName.id).where(
+                _SearchedName.id == FindingHost.name_id,
+                func.lower(_SearchedName.fqdn).like(pattern, escape="\\"),
+            ).exists(),
         ))
     if team:
         query = query.filter(func.lower(Remediation.team) == team.strip().lower())
@@ -243,8 +250,14 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
              else sum(n for name, n in state_counts.items() if name in wanted))
 
     rows = (
-        query.join(Project, Project.id == Finding.project_id).with_entities(
+        query.join(Project, Project.id == Finding.project_id)
+        # The name an endpoint is, when the finding is on a NAME at the host:
+        # one finding can have several on one address (`uq_finding_host_name`),
+        # each with its own contact and deadline.  By primary key: no row more.
+        .outerjoin(models.DNSName, models.DNSName.id == FindingHost.name_id)
+        .with_entities(
             FindingHost.id.label("finding_host_id"), FindingHost.host_status.label("endpoint_status"),
+            FindingHost.name_id.label("name_id"), models.DNSName.fqdn.label("name"),
             Finding.id.label("finding_id"), Finding.project_id.label("project_id"),
             Project.name.label("project_name"), Finding.title.label("finding_title"),
             Finding.severity.label("severity"), Finding.status.label("finding_status"),
@@ -319,6 +332,19 @@ def _status_counts(state_counts: dict) -> dict:
             for status, names in _STATES_OF_STATUS.items()}
 
 
+_SearchedName = aliased(models.DNSName)
+
+
+def endpoint_label(address: str, hostname: Optional[str] = None, name: Optional[str] = None) -> str:
+    """How an endpoint is named to a reader outside the row's table — the
+    reminder text, an alert: the NAME at its address when the finding is on a
+    name (what the contact fixes), else the address with the host's own name.
+    The one wording (review 2026-11-20, C1 / U8)."""
+    if name:
+        return f"{name} ({address})"
+    return address + (f" ({hostname})" if hostname else "")
+
+
 def _item(r, today: date) -> dict:
     """One list row from the labelled columns ``list_rows`` selects."""
     state = r.state
@@ -341,6 +367,9 @@ def _item(r, today: date) -> dict:
         "finding_id": r.finding_id, "project_id": r.project_id, "project_name": r.project_name,
         "finding_title": r.finding_title, "severity": r.severity, "finding_status": r.finding_status,
         "host_id": r.host_id, "ip_address": r.ip_address, "hostname": r.hostname,
+        # The endpoint's own name (``hostname`` is the HOST's): None when the
+        # finding is on the host as a whole.
+        "name_id": r.name_id, "name": r.name,
         "contact_email": r.contact_email, "contact_name": r.contact_name,
         "notified_on": _iso(r.notified_on), "status": r.status, "closed_on": _iso(r.closed_on),
         "updated_at": _iso(r.updated_at),
@@ -1430,7 +1459,7 @@ def follow_up_text(name: Optional[str], items: Sequence[dict], today: date, *,
     rows as overdue, approaching and coming up.  ``not_listed``: rows of the
     contact that ``items`` leaves out."""
     def line(row: dict) -> str:
-        where = row["ip_address"] + (f" ({row['hostname']})" if row["hostname"] else "")
+        where = endpoint_label(row["ip_address"], row["hostname"], row.get("name"))
         left = row["days_left"]
         when = (f"{_plural(-left, 'day', 'days')} overdue" if left < 0
                 else "due today" if left == 0 else f"due in {_plural(left, 'day', 'days')}")

@@ -182,9 +182,14 @@ def _build(db: Session, project_id: int, contact_email: str, *,
     # (finding, address) → the row to print and its place in the list; rows
     # arrive most urgent first, so the first one seen for a system is the one
     # whose deadline is printed.
-    mine: dict[tuple[int, str], tuple[int, dict]] = {}
+    # Keyed by the ENDPOINT — the address and the name it is, if it is one —
+    # never the address alone: a finding can have several named endpoints on
+    # one address, each with its own contact, deadline and state, and by
+    # address every one of them took the first row's (review 2026-11-20, C1:
+    # another contact's endpoint printed in this contact's document).
+    mine: dict[tuple[int, str, Optional[str]], tuple[int, dict]] = {}
     for order, row in enumerate(rows):
-        mine.setdefault((row["finding_id"], row["ip_address"]), (order, row))
+        mine.setdefault((row["finding_id"], row["ip_address"], row.get("name") or None), (order, row))
     # Whose a system is does not depend on what the document LISTS: every row
     # of the contact, in every state, is theirs — the closed ones, and, in a
     # narrowed document, the ones due outside its window.  (Deciding it from
@@ -203,7 +208,7 @@ def _build(db: Session, project_id: int, contact_email: str, *,
     for finding in dataset["findings"]:
         affected = []
         for endpoint in finding["affected"]:
-            found = mine.get((finding["id"], endpoint["address"]))
+            found = mine.get((finding["id"], endpoint["address"], endpoint.get("name") or None))
             if found is None:
                 continue
             order, row = found
@@ -292,7 +297,8 @@ def _build(db: Session, project_id: int, contact_email: str, *,
         # document; the template does not print it.
         "images_withheld": images_withheld,
     }
-    printed = {(finding["id"], entry["address"]) for finding in findings for entry in finding["affected"]}
+    printed = {(finding["id"], entry["address"], entry.get("name") or None)
+               for finding in findings for entry in finding["affected"]}
     host_ids = sorted({row["host_id"] for key, (_, row) in mine.items() if key in printed})
     return dataset, host_ids
 

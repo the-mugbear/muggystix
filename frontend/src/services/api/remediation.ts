@@ -70,6 +70,11 @@ export interface RemediationRow {
   host_id: number;
   ip_address: string;
   hostname: string | null;
+  /** The NAME this endpoint is, when the finding is on a name at the host
+   *  (`hostname` is the host's own): two rows of one finding can share an
+   *  address and differ only in this.  Null for the host as a whole. */
+  name_id?: number | null;
+  name?: string | null;
   contact_email: string | null;
   contact_name: string | null;
   /** The group that owns the fix (free text). */

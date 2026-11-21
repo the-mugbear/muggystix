@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.7",
+      "frontend": "5.435.6",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "changed", "text": "Remediation shows which name a row is about when a finding is on a name at a host: in the list, the search, the CSV, the reminder text and deadline alerts."},
+        {"kind": "fixed", "text": "A contact's remediation document lists only that contact's own endpoints when one finding is on several names at the same address; before, it could print another contact's endpoint with the wrong deadline."}
+      ]
+    },
+    {
       "backend": "2.547.6",
       "frontend": "5.435.5",
       "date": "2026-11-20",

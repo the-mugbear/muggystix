@@ -581,6 +581,7 @@ const CSV_COLUMNS: Array<[string, (r: RemediationRow) => string | number | null]
   ['Project', (r) => r.project_name],
   ['Host', (r) => r.ip_address],
   ['Host name', (r) => r.hostname],
+  ['Endpoint name', (r) => r.name ?? null],
   ['Finding', (r) => r.finding_title],
   ['Severity', (r) => r.severity],
   ['State', (r) => REMEDIATION_STATE_LABEL[r.state]],
