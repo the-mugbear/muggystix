@@ -453,6 +453,16 @@ def check_permissions(user_role: str, required_role: str) -> bool:
 AUDIT_USER_AGENT_MAX = 512
 
 
+def stored_user_agent(value: Optional[str]) -> Optional[str]:
+    """A client's ``User-Agent`` as any table keeps it: cut to what identifies
+    a client.  The header is as long as the client cares to make it (nginx's
+    header buffers are the only limit), and three tables store it —
+    ``audit_logs``, ``agent_api_calls`` and ``mcp_tool_calls``, the last
+    written for requests with no accepted key (review 2026-11-17, A6;
+    2026-11-20, C16).  The one cut."""
+    return value[:AUDIT_USER_AGENT_MAX] if value else value
+
+
 def note_login_throttled(
     db: Session,
     *,
@@ -523,7 +533,7 @@ def log_audit_event(
         # The client's own header, as long as it cared to make it (nginx's
         # header buffers were the only limit): kept to what identifies a
         # browser (review 2026-11-17, A6).
-        user_agent=user_agent[:AUDIT_USER_AGENT_MAX] if user_agent else user_agent,
+        user_agent=stored_user_agent(user_agent),
         details=details,
         success=success,
         error_message=error_message

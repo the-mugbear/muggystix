@@ -271,28 +271,14 @@ def get_agent_activity_summary(
     )
     base = db.query(AgentApiCall).filter(*in_window)
 
-    total_calls = base.count()
-    hygiene = _session_hygiene(db, project.id, window_start)
-    if total_calls == 0:
-        return AgentActivitySummary(
-            window_days=window_days,
-            total_calls=0,
-            distinct_agents=0,
-            status_breakdown=AgentActivityStatusBreakdown(),
-            daily=[],
-            busiest_sessions=[],
-            session_hygiene=hygiene,
-        )
-
-    distinct_agents = (
-        base.with_entities(func.count(func.distinct(AgentApiCall.agent_id))).scalar() or 0
-    )
-    first_call_at, last_call_at = base.with_entities(
-        func.min(AgentApiCall.created_at), func.max(AgentApiCall.created_at)
-    ).one()
-
-    # Status mix in a single pass.
-    status_row = base.with_entities(
+    # The window's totals in ONE pass: the count, the agents, the first and last
+    # call and the status mix were four passes over the same rows, on every
+    # load of the Agent Sessions page (review 2026-11-20, C17).
+    (total_calls, distinct_agents, first_call_at, last_call_at, *status_row) = base.with_entities(
+        func.count(AgentApiCall.id),
+        func.count(func.distinct(AgentApiCall.agent_id)),
+        func.min(AgentApiCall.created_at),
+        func.max(AgentApiCall.created_at),
         func.sum(case((AgentApiCall.status_code.between(200, 299), 1), else_=0)),
         func.sum(case((AgentApiCall.status_code.between(400, 499), 1), else_=0)),
         func.sum(case((AgentApiCall.status_code >= 500, 1), else_=0)),
@@ -305,6 +291,19 @@ def get_agent_activity_summary(
             )
         ),
     ).one()
+    total_calls = int(total_calls or 0)
+    hygiene = _session_hygiene(db, project.id, window_start)
+    if total_calls == 0:
+        return AgentActivitySummary(
+            window_days=window_days,
+            total_calls=0,
+            distinct_agents=0,
+            status_breakdown=AgentActivityStatusBreakdown(),
+            daily=[],
+            busiest_sessions=[],
+            session_hygiene=hygiene,
+        )
+
     status_breakdown = AgentActivityStatusBreakdown(
         success=int(status_row[0] or 0),
         client_error=int(status_row[1] or 0),

@@ -313,7 +313,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "description": (
             "One host as the host inspector shows it: identity, `names` (every "
             "name seen at the address), OS, ports with service detail and bounded "
-            "NSE output, severity counts, the operator's review status (`follow`), "
+            "NSE output (`ports` is at most 500, every open port first; "
+            "`ports_total`, `ports_truncated` and `port_states` say what the "
+            "host has in all), severity counts, the operator's review status (`follow`), "
             "tags, assignees, scope membership, per-domain `assessment` "
             "(vuln_scan_credentialed: yes / no / not_stated), weakness flags, "
             "certificates, scan conflicts (`resolved_at` = when the shown value "

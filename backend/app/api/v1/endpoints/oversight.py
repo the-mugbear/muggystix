@@ -404,10 +404,13 @@ def get_oversight_dashboard(
         db, ids, tester_id=tester_id,
         recorded_in=window if severity_basis == "period" else None,
     )
-    # The defect rate is a current measure in both bases.
-    defects = (
-        project_engagement(db, ids, tester_id=tester_id) if severity_basis == "period" else engagement
-    )
+    # The defect rate is a current measure in both bases — and
+    # `project_engagement` counts `defect_targets` with no window whatever
+    # `recorded_in` is (its endpoint filters carry none), so this is the same
+    # answer.  The period basis used to run the whole function a second time
+    # for it: nine statements, the installation-wide observation aggregate
+    # among them (review 2026-11-20, C18).
+    defects = engagement
     activity, contributors, unattributed = period_activity(db, ids, window, tester_id=tester_id)
     signals = project_signals(db, cohort, now)
     remediation = remediation_counts(db, ids)

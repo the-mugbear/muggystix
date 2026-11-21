@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.security import stored_user_agent
 from app.db import session as _session_module
 from app.db.models_agent import McpToolCall
 
@@ -75,7 +76,7 @@ def build_event(
         "duration_ms": duration_ms,
         "api_key_prefix": key_prefix(api_key),
         "source_ip": source_ip,
-        "user_agent": user_agent,
+        "user_agent": stored_user_agent(user_agent),
         "client_name": client_name,
         "client_version": client_version,
         "protocol_version": protocol_version,

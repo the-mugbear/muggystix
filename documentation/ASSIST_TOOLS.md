@@ -177,7 +177,7 @@ when `tier` is passed.
 | Question | Tool |
 |---|---|
 | Which hosts match | `assist_list_hosts` (`q=`) |
-| One host in detail | `assist_get_host` |
+| One host in detail | `assist_get_host` — `ports` is at most 500, every open port first; `ports_total`, `ports_truncated` and `port_states` (a count per state) describe all of the host's stored ports |
 | Scanner observations on a host | `assist_get_host_vulnerabilities` — raw scanner rows, not findings; each row carries `finding_id`, `finding_status`, `finding_on_this_host` and `finding_endpoint_status` (the inspector's rule for "is this judged on this host"), and its provenance: `scan_id`, `last_seen_scan_id`, `observed_at` (when the latest scan that reported it ran); `cve` / `plugin_id` / `search` narrow to one issue's rows |
 | Findings across the project | `assist_list_findings` — `total` and `severity_counts` over the filter; each row's `hosts` is a sample of at most 10 addresses (`hosts_truncated`), and its `needs` says what it still needs before the report goes out (required report text missing, a report image without a caption, proposals to decide); `needs=missing_text\|uncaptioned_images\|proposals\|any` lists only those |
 | Counts and groups across hosts, ports or scanner observations | `assist_query` (a pipe query: `… \| stats dc(host) by service`; `judged` on observations, `site` / `scope` / `open_ports` on hosts; a long listing's next page with `after=<next_after>`), `assist_query_schema`; the team's saved queries: `assist_list_saved_queries`; the operator's Query history (every run recorded, agents' labelled): `assist_query_history` |

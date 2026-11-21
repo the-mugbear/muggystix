@@ -751,6 +751,16 @@ class AssistHostDetail(HostDetail):
     ``host_query.host_weakness_flags``), so the two cannot state different facts.
     """
     ports: List[AssistPortDetail] = []
+    # ``ports`` is the first ``_PORT_CAP`` — every OPEN port before any other —
+    # and these say what the whole is (review 2026-11-20, C15: a host that a
+    # full-range sweep recorded closed or filtered on returned every stored
+    # port with every script, uncapped, into a model's context).
+    ports_total: int = 0
+    ports_truncated: bool = False
+    port_states: Dict[str, int] = Field(
+        default_factory=dict,
+        description="How many stored ports the host has in each state — all of them, not only those in `ports`.",
+    )
     web_interfaces: List[AssistWebInterface] = []
     # v2.343.2 (review) — ``web_interfaces`` is capped at _WEB_INTERFACE_CAP;
     # without these an analyst read the sample as the complete record.
@@ -803,6 +813,11 @@ class AssistHostDetail(HostDetail):
 #: Per host. Enough to characterise what a host serves without turning a host
 #: lookup into a page dump; `assist_list_hosts` with `has:web` finds the rest.
 _WEB_INTERFACE_CAP = 10
+#: Ports on host detail: every open one first, then the others in port order.
+#: Far above what a host serves; it bounds a host on which a full-range sweep
+#: recorded tens of thousands of closed or filtered ports.  `ports_total`,
+#: `ports_truncated` and `port_states` say what the whole is.
+_PORT_CAP = 500
 #: NSE script output on host detail (v2.428.0).  Verbose scripts (ssl-enum-
 #: ciphers, http-headers) run to kilobytes each; a host with dozens of ports
 #: would otherwise turn one lookup into a page dump.  Per-script, per-owner
@@ -1099,7 +1114,9 @@ def get_assist_host(
     host = (
         db.query(models.Host)
         .options(
-            selectinload(models.Host.ports).selectinload(models.Port.scripts),
+            # The ports' own columns (the assessment and the "not revalidated"
+            # ids read every one); scripts only for the ports returned, below.
+            selectinload(models.Host.ports),
             selectinload(models.Host.host_scripts),
             selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
         )
@@ -1112,11 +1129,21 @@ def get_assist_host(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
     budget = _ScriptBudget()
-    port_details = [
-        _assist_port_detail(p, budget)
-        for p in sorted(host.ports, key=lambda p: (p.port_number, p.protocol or ""))
-    ]
-    open_count = sum(1 for p in host.ports if p.state == "open")
+    in_order = sorted(host.ports, key=lambda p: (p.port_number, p.protocol or ""))
+    # Every open port before any other, then the rest in port order, up to the cap.
+    shown = ([p for p in in_order if p.state == "open"]
+             + [p for p in in_order if p.state != "open"])[:_PORT_CAP]
+    shown.sort(key=lambda p: (p.port_number, p.protocol or ""))
+    if shown:
+        # One statement for the returned ports' scripts (it fills `scripts` on
+        # the rows already loaded); never the scripts of a port not returned.
+        db.query(models.Port).options(selectinload(models.Port.scripts)).filter(
+            models.Port.id.in_([p.id for p in shown])).all()
+    port_details = [_assist_port_detail(p, budget) for p in shown]
+    port_states: Dict[str, int] = {}
+    for p in in_order:
+        port_states[p.state or "unknown"] = port_states.get(p.state or "unknown", 0) + 1
+    open_count = port_states.get("open", 0)
     _, vuln_map = batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
     follow_map = _operator_follow_map(db, [host.id], request.state.key_operator_id)
@@ -1219,6 +1246,9 @@ def get_assist_host(
         else None,
         follow=follow_map.get(host.id),
         ports=port_details,
+        ports_total=len(in_order),
+        ports_truncated=len(in_order) > len(shown),
+        port_states=port_states,
         web_interfaces=web_interfaces,
         web_interfaces_total=int(web_total),
         web_interfaces_truncated=int(web_total) > len(web_interfaces),

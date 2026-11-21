@@ -42,6 +42,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from app.core.security import stored_user_agent
 from app.db import session as _session_module
 from app.db.models_agent import AgentApiCall
 
@@ -740,7 +741,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 api_key_id=api_key_id,
                 api_key_prefix=api_key_prefix,
                 source_ip=request.client.host if request.client else None,
-                user_agent=request.headers.get("user-agent"),
+                user_agent=stored_user_agent(request.headers.get("user-agent")),
                 project_id=project_id,
                 agent_session_id=agent_session_id,
                 method=request.method,

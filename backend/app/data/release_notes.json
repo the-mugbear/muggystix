@@ -2,6 +2,15 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.9",
+      "frontend": "5.435.6",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "changed", "text": "An agent reading one host receives at most 500 of its ports, every open one first, with the total and a count per state; a host with tens of thousands of recorded closed ports no longer floods the agent."},
+        {"kind": "fixed", "text": "Agent Sessions and Oversight (with a date range) load with fewer passes over the same data."}
+      ]
+    },
+    {
       "backend": "2.547.8",
       "frontend": "5.435.6",
       "date": "2026-11-20",
