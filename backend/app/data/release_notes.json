@@ -3,6 +3,17 @@
   "releases": [
     {
       "backend": "2.550.1",
+      "frontend": "5.437.2",
+      "date": "2026-11-21",
+      "entries": [
+        {
+          "kind": "fixed",
+          "text": "The arrow keys now move through the user guide's section tabs; 5.437.0 said they did, and they did not."
+        }
+      ]
+    },
+    {
+      "backend": "2.550.1",
       "frontend": "5.437.1",
       "date": "2026-11-21",
       "entries": [

@@ -14,11 +14,19 @@ import type React from 'react';
 export function tabListKeys(event: React.KeyboardEvent<HTMLElement>): void {
   const step = { ArrowRight: 1, ArrowLeft: -1, Home: 'first', End: 'last' }[event.key];
   if (step === undefined || event.altKey || event.ctrlKey || event.metaKey) return;
-  const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'))
+  // A strip of links (the user guide's sections are `NavLink`s, which carry
+  // `aria-current` and no `role="tab"`) is walked by its links: the first
+  // version looked for `role="tab"` only and did nothing there (found in the
+  // browser, 2026-11-21).
+  const strip = event.currentTarget;
+  const marked = strip.querySelectorAll<HTMLElement>('[role="tab"]');
+  const tabs = Array.from(marked.length ? marked : strip.querySelectorAll<HTMLElement>('a[href], button'))
     .filter((tab) => !tab.hasAttribute('disabled') && tab.getAttribute('aria-disabled') !== 'true');
   if (tabs.length === 0) return;
   const at = tabs.findIndex((tab) => tab === document.activeElement || tab.contains(document.activeElement));
-  const from = at >= 0 ? at : Math.max(0, tabs.findIndex((tab) => tab.getAttribute('aria-selected') === 'true'));
+  const chosen = (tab: HTMLElement) =>
+    tab.getAttribute('aria-selected') === 'true' || tab.getAttribute('aria-current') === 'page';
+  const from = at >= 0 ? at : Math.max(0, tabs.findIndex(chosen));
   const to = step === 'first' ? 0
     : step === 'last' ? tabs.length - 1
       : (from + (step as number) + tabs.length) % tabs.length;

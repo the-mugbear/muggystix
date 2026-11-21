@@ -41,6 +41,27 @@ describe('tabListKeys', () => {
     expect(selected()).toBe('c');
   });
 
+  // The user guide's strip is links with `aria-current`, not `role="tab"`
+  // buttons: the first version found no tab there and did nothing.
+  it('walks a strip of links, starting from the current page', () => {
+    const opened: string[] = [];
+    render(
+      <div role="tablist" aria-label="Sections" onKeyDown={tabListKeys}>
+        {['one', 'two', 'three'].map((id) => (
+          <a key={id} href={`#${id}`} aria-current={id === 'two' ? 'page' : undefined}
+            onClick={(e) => { e.preventDefault(); opened.push(id); }}>
+            {id}
+          </a>
+        ))}
+      </div>,
+    );
+    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });   // nothing focused yet
+    expect(opened).toEqual(['three']);
+    expect(document.activeElement).toBe(screen.getByText('three'));
+    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'Home' });
+    expect(opened).toEqual(['three', 'one']);
+  });
+
   it('leaves every other key, and a modified arrow, to the page', () => {
     render(<Strip />);
     const strip = screen.getByRole('tablist');
