@@ -10,7 +10,7 @@ Key changes:
 """
 
 import enum
-from sqlalchemy import CheckConstraint, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum, text
+from sqlalchemy import event, CheckConstraint, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum, text
 from sqlalchemy.orm import relationship, backref
 from app.db.session import Base
 
@@ -174,6 +174,9 @@ class Port(Base):
         # Hot path: "open ports for host X" — composite avoids the
         # extra in-table filter on state after the host_id lookup.
         Index('idx_port_host_state', 'host_id', 'state'),
+        # The writers ask `host_deduplication_service.valid_port_number`; this
+        # is the same rule where none can forget it (revision c1d7a9e3b5f2).
+        CheckConstraint('port_number BETWEEN 1 AND 65535', name='ck_ports_v2_port_number'),
     )
 
 
@@ -691,7 +694,12 @@ class WebInterface(Base):
     # Flattened technology list for UI chip rendering (e.g.
     # ["Nginx 1.18.0", "React", "Bootstrap"]).  Wappalyzer categories
     # preserved in raw.  Null when the tool didn't report any.
+    # What the tool wrote, kept as written.  Nothing filters or groups on it:
+    # the rows are `web_interface_technologies` (`services/web_technologies.py`).
     technologies = Column(JSON)
+    # The tool said which technologies it saw here (possibly none): this row
+    # is an observation of them, for "the latest observation of a URL wins".
+    technologies_stated = Column(Boolean, nullable=False, server_default=text("false"), default=False)
     favicon_hash = Column(String(64))  # mmh3 hash; idx_web_interface_favicon serves cross-host clustering
     tls_info = Column(JSON)  # raw blob: {issuer, subject, not_after, sni, ...}
     # Promoted cert predicates (v2.205.0) — parsed once at ingest from tls_info
@@ -744,6 +752,89 @@ class WebInterface(Base):
     host = relationship("Host")
     port_row = relationship("Port", foreign_keys=[port_id])
     name = relationship("DNSName", foreign_keys=[name_id])
+
+
+class WebInterfaceTechnology(Base):
+    """One technology a web interface was reported with (revision
+    ``d2e8b0f4a6c3``; review 2026-11-20, T1).  Written only by
+    ``web_technologies.state_technologies``; read by ``tech:`` / ``techis:``,
+    the Hosts facet, the query suggestions and the technology monoculture —
+    all through ``web_technologies``, so they count the same rows."""
+    __tablename__ = "web_interface_technologies"
+
+    id = Column(Integer, primary_key=True)
+    web_interface_id = Column(Integer, ForeignKey("web_interfaces.id", ondelete="CASCADE"), nullable=False)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(160), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("web_interface_id", "name", name="uq_web_interface_technology"),
+    )
+
+
+#: A technology name as stored: trimmed and cut at this length — what the
+#: technology monoculture always counted by.
+TECHNOLOGY_NAME_MAX = 160
+
+
+def technology_names(raw) -> list:
+    """The names a ``technologies`` value states, as they are stored: its
+    strings, trimmed, cut, once each, in the tool's order."""
+    names: dict = {}
+    for item in raw if isinstance(raw, (list, tuple)) else ():
+        name = str(item).strip()[:TECHNOLOGY_NAME_MAX].strip() if item is not None else ""
+        if name:
+            names.setdefault(name, None)
+    return list(names)
+
+
+# The technology rows follow the row's ``technologies`` by themselves: any
+# writer that sets the attribute (a parser, a seed, a test) has the rows
+# written in the same flush, so there is no second step to remember and no
+# reader of the JSON array across hosts.  Setting it — to a list or to None —
+# is the tool's statement, which makes the row an observation of technologies.
+
+def _technologies_set(target) -> bool:
+    from sqlalchemy.orm import attributes
+
+    return attributes.get_history(target, "technologies").has_changes()
+
+
+@event.listens_for(WebInterface, "before_insert")
+def _state_technologies_on_insert(_mapper, _connection, target) -> None:
+    if "technologies" in target.__dict__:
+        target.technologies_stated = True
+
+
+@event.listens_for(WebInterface, "before_update")
+def _state_technologies_on_update(_mapper, _connection, target) -> None:
+    if _technologies_set(target):
+        target.technologies_stated = True
+
+
+def _write_technology_rows(connection, target, *, replace: bool) -> None:
+    rows = WebInterfaceTechnology.__table__
+    if replace:
+        connection.execute(rows.delete().where(rows.c.web_interface_id == target.id))
+    names = technology_names(target.technologies) if target.host_id is not None else []
+    if names:
+        connection.execute(rows.insert(), [
+            {"web_interface_id": target.id, "host_id": target.host_id, "name": name} for name in names
+        ])
+
+
+@event.listens_for(WebInterface, "after_insert")
+def _technology_rows_on_insert(_mapper, connection, target) -> None:
+    if "technologies" in target.__dict__:
+        _write_technology_rows(connection, target, replace=False)
+
+
+@event.listens_for(WebInterface, "after_update")
+def _technology_rows_on_update(_mapper, connection, target) -> None:
+    from sqlalchemy.orm import attributes
+
+    if _technologies_set(target) or attributes.get_history(target, "host_id").has_changes():
+        _write_technology_rows(connection, target, replace=True)
 
 
 class WebPath(Base):

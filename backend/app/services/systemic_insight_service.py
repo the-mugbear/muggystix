@@ -47,9 +47,7 @@ from app.services.host_condition_sets import (
     weak_tls_host_ids,
 )
 from app.services.subnet_insight_service import (
-    _EPOCH,
     _load_subnet_meta,
-    _normalize_dt,
     UNASSIGNED_SEGMENT,
     group_hosts_into_segments,
     resolve_host_locations,
@@ -341,44 +339,38 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     # patchable flaw with a large blast radius. Require a version token (a digit)
     # to exclude ubiquitous version-less entries ("Bootstrap", "PHP") that would
     # otherwise flag as noise — the actionable target is a specific version to
-    # upgrade. Python-side bucketing (no JSON WHERE/GROUP BY), exactly like the
-    # vuln monoculture reads typed rows and buckets — so no typed technologies
-    # table is required to emit this family.
+    # upgrade.
     # Latest observation per (host, url) wins — a technology seen on an EARLIER
     # scan that a later scan no longer reports (e.g. nginx 1.14 after the host
     # was upgraded to 1.24) must NOT keep counting as current, exactly as the
     # cert / weak-TLS conditions retire stale observations (host_condition_sets).
-    latest_tech: Dict[Tuple[int, Optional[str]], Tuple[Any, Any]] = {}
-    for hid, url, technologies, last_seen in (
-        db.query(
-            models.WebInterface.host_id,
-            models.WebInterface.url,
-            models.WebInterface.technologies,
-            models.WebInterface.last_seen,
-        )
-        .filter(
-            models.WebInterface.project_id == project_id,
-            models.WebInterface.host_id.isnot(None),
-            models.WebInterface.technologies.isnot(None),
-        )
-        .all()
-    ):
-        if hid not in in_scope:
-            continue
-        ls = _normalize_dt(last_seen) or _EPOCH
-        prev = latest_tech.get((hid, url))
-        if prev is None or ls >= prev[0]:
-            latest_tech[(hid, url)] = (ls, technologies)
+    # 2.549.0 — read from the technology rows by `web_technologies`' rule for
+    # "current" (the same latest-per-URL rule, in SQL), so a monoculture's
+    # count is the hosts `techis:"<name>" scope:subnet` lists.  Only names
+    # that could reach the threshold are brought back: Postgres counts first.
+    from app.services import web_technologies
 
     tech_hosts: Dict[str, Set[int]] = defaultdict(set)
-    for (hid, _url), (_ls, technologies) in latest_tech.items():
-        if not isinstance(technologies, list):
-            continue
-        for tech in technologies:
-            name = str(tech).strip()
-            if not name or not any(ch.isdigit() for ch in name):
-                continue  # require a version token — skip version-less libraries
-            tech_hosts[name[:160]].add(hid)
+    if estate_large_enough:
+        counted, tech_row = web_technologies.current_technologies(db, lambda t: t.name)
+        frequent = [
+            name for (name,) in (
+                counted.filter(models.Host.project_id == project_id)
+                .group_by(tech_row.name)
+                .having(func.count(func.distinct(models.Host.id)) >= min_hosts)
+            )
+            if any(ch.isdigit() for ch in name)  # a version token — skip version-less libraries
+        ]
+        for start in range(0, len(frequent), 500):
+            pairs, pair_row = web_technologies.current_technologies(
+                db, lambda t: t.name, lambda t: t.host_id,
+            )
+            for name, hid in (
+                pairs.filter(models.Host.project_id == project_id,
+                             pair_row.name.in_(frequent[start:start + 500])).distinct()
+            ):
+                if hid in in_scope:
+                    tech_hosts[name].add(hid)
     tech_fam = FAMILIES["technology_monoculture"]
     for tech_name, hosts in tech_hosts.items():
         if not estate_large_enough or len(hosts) < min_hosts:

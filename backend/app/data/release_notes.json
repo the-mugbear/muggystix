@@ -2,6 +2,64 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.549.0",
+      "frontend": "5.436.1",
+      "date": "2026-11-21",
+      "entries": [
+        {
+          "kind": "new",
+          "text": "Hosts query: techis:\"nginx 1.14.0\" lists the hosts showing exactly that technology. A technology monoculture's count on Patterns opens that list."
+        },
+        {
+          "kind": "changed",
+          "text": "tech: and the Technologies filter count the latest observation of each URL, as the certificate and weak-TLS filters do: a technology a later scan no longer reports stops counting."
+        },
+        {
+          "kind": "fixed",
+          "text": "Recording a follow-up for a contact with thousands of rows no longer times out."
+        },
+        {
+          "kind": "fixed",
+          "text": "Agent Sessions, Oversight and later pages of Segments load faster on large installations."
+        },
+        {
+          "kind": "before_upgrading",
+          "text": "The upgrade copies every web interface's technologies into a new table; on a large installation this adds a moment to the first start."
+        }
+      ]
+    },
+    {
+      "backend": "2.548.1",
+      "frontend": "5.436.0",
+      "date": "2026-11-21",
+      "entries": [
+        {
+          "kind": "changed",
+          "text": "A host query with more than ten NOTs in a row is refused with a message, as deeply nested parentheses are."
+        },
+        {
+          "kind": "changed",
+          "text": "A Nikto result whose report names no port is recorded on the host with no port; it used to be placed on port 80."
+        },
+        {
+          "kind": "fixed",
+          "text": "An EyeWitness row is attributed to the address its URL points at, not to an address that only appears in the path or query."
+        },
+        {
+          "kind": "fixed",
+          "text": "A large JSON export saved with a byte-order mark (PowerShell 5) is read; it used to be refused."
+        },
+        {
+          "kind": "fixed",
+          "text": "A very large testssl file is imported in parts, so it no longer needs memory for every target at once."
+        },
+        {
+          "kind": "fixed",
+          "text": "Operations' Changed since review tab answers quickly for a host that gained thousands of ports, and the changelog opens faster on a project with many lines."
+        }
+      ]
+    },
+    {
       "backend": "2.548.0",
       "frontend": "5.436.0",
       "date": "2026-11-20",

@@ -350,4 +350,7 @@ class ProjectEvent(Base):
     __table_args__ = (
         # The list's one order, newest first, and the trim's cut.
         Index("ix_project_events_project_created", "project_id", "created_at", "id"),
+        # One person's lines in order, and "does this person have a line here"
+        # as one probe (revision c1d7a9e3b5f2).
+        Index("ix_project_events_project_actor_created", "project_id", "actor_user_id", "created_at", "id"),
     )

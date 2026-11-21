@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Optional, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import DateTime, Integer, String, and_, case, cast, func, insert, literal, or_, select, tuple_, update
+from sqlalchemy import DateTime, Integer, String, Text, and_, case, cast, func, insert, literal, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -602,6 +602,71 @@ def verification_counts_by_project(db, project_ids: Sequence[int]) -> dict[int, 
                         .group_by(Finding.project_id, verification_of)):
         if gap in out[pid]:
             out[pid][gap] = n
+    return out
+
+
+def oversight_by_project(db, project_ids: Sequence[int], policy: deadlines.Policy,
+                         today: date) -> dict[int, dict]:
+    """What Oversight shows of each project's remediation, in ONE grouped
+    statement over the list's rows: ``states`` (:func:`state_counts_by_project`),
+    ``durations`` (:func:`durations_by_project`), ``overdue``
+    (:func:`overdue_breakdown_by_project`) and ``gaps``
+    (:func:`verification_counts_by_project`) — the same expressions, grouped
+    once by (project, state, severity, overdue band, gap) and folded here.
+    They were four passes over the same join, each over every project of the
+    installation (review 2026-11-20, C18).  Every id is present;
+    ``test_review_2026_11_20_leftovers2.py`` pins this to the four."""
+    out = {pid: {
+        "states": {name: 0 for name in deadlines.STATES},
+        "durations": {"longest_overdue_days": None, "days_to_close_total": 0, "closed_measured": 0,
+                      "closed_late": 0, "closed_with_deadline": 0},
+        "overdue": {key: 0 for key in OVERDUE_KEYS},
+        "gaps": {name: 0 for name in deadlines.VERIFICATIONS},
+    } for pid in project_ids}
+    if not out:
+        return out
+    state_of = deadlines.state_expr(db, policy, today)
+    severity_of = func.lower(Finding.severity)
+    band_of = case((state_of == "overdue", deadlines.overdue_band_expr(db, policy, today)))
+    gap_of = deadlines.verification_expr()
+    measured = and_(Remediation.status == "closed", Remediation.notified_on.isnot(None),
+                    Remediation.closed_on.isnot(None), Remediation.closed_on >= Remediation.notified_on)
+    judged = and_(Remediation.status == "closed", Remediation.closed_on.isnot(None),
+                  Remediation.closed_due_on.isnot(None))
+    if db.get_bind().dialect.name == "postgresql":
+        days = Remediation.closed_on - Remediation.notified_on            # date - date is whole days
+    else:
+        days = cast(func.julianday(Remediation.closed_on) - func.julianday(Remediation.notified_on), Integer)
+    earliest: dict[int, Optional[date]] = {}
+    for pid, state, sev, band, gap, n, due, n_measured, total, late, with_deadline in (
+        _rows(db, list(out)).with_entities(
+            Finding.project_id, state_of, severity_of, band_of, gap_of, func.count(),
+            func.min(case((state_of == "overdue", deadlines.due_expr(db, policy)))),
+            func.sum(case((measured, 1), else_=0)),
+            func.sum(case((measured, days), else_=0)),
+            func.sum(case((and_(judged, Remediation.closed_on > Remediation.closed_due_on), 1), else_=0)),
+            func.sum(case((judged, 1), else_=0)),
+        ).group_by(Finding.project_id, state_of, severity_of, band_of, gap_of)
+    ):
+        row = out[pid]
+        row["states"][state] += n
+        if state == "overdue":
+            if f"overdue_{sev}" in row["overdue"]:
+                row["overdue"][f"overdue_{sev}"] += n
+            if band in _AGE_KEY:
+                row["overdue"][_AGE_KEY[band]] += n
+        if gap in row["gaps"]:
+            row["gaps"][gap] += n
+        durations = row["durations"]
+        durations["closed_measured"] += int(n_measured or 0)
+        durations["days_to_close_total"] += int(total or 0)
+        durations["closed_late"] += int(late or 0)
+        durations["closed_with_deadline"] += int(with_deadline or 0)
+        due = deadlines.as_date(due)
+        if due is not None and (earliest.get(pid) is None or due < earliest[pid]):
+            earliest[pid] = due
+    for pid, due in earliest.items():
+        out[pid]["durations"]["longest_overdue_days"] = (today - due).days
     return out
 
 
@@ -1405,6 +1470,8 @@ def first_of_twelve_months(today: date) -> date:
 # --- following up with a contact ---------------------------------------------
 
 FOLLOW_UP_MAX_ROWS = 500
+# Rows per statement when a follow-up is recorded (an id list, not a page).
+_FOLLOW_UP_CHUNK = 5_000
 
 
 def follow_up(db, project_ids: Sequence[int], contact_email: str, *, upcoming_days: int = 0,
@@ -1527,8 +1594,6 @@ def _record_follow_up(db, project_ids: Sequence[int], who, *, contact_email: str
     if not ids:
         return [], []
     records = _lock_for_write(db, ids)
-    targets = {fh.id: fh for fh in db.query(FindingHost).options(joinedload(FindingHost.finding))
-               .filter(FindingHost.id.in_(ids))}
     now = datetime.now(timezone.utc)
     # A past day is noon of that day in the POLICY's zone (review 2026-10-23:
     # noon UTC is the next day east of UTC+12, so the entry showed the wrong day).
@@ -1541,11 +1606,40 @@ def _record_follow_up(db, project_ids: Sequence[int], who, *, contact_email: str
     # a second admin the same day, is not a second follow-up.
     already = [r for r in records if r.last_follow_up_on == on]
     records = [r for r in records if r.last_follow_up_on != on]
+    # The entries and the day are TWO statements, whatever the number of
+    # rows — a contact owning a finding on thousands of hosts was one
+    # hydrated endpoint, one ORM entry and one INSERT per row, under the
+    # finding locks and the request's statement timeout (review 2026-11-20,
+    # C20).  The shape ``severity_changed`` uses.
+    session = getattr(who, "session", None)
+    for start in range(0, len(records), _FOLLOW_UP_CHUNK):
+        part = [r.finding_host_id for r in records[start:start + _FOLLOW_UP_CHUNK]]
+        stamp = lambda value: literal(value, DateTime(timezone=True))  # noqa: E731
+        entries = (
+            select(
+                Finding.project_id, FindingHost.host_id, FindingHost.finding_id, FindingHost.id,
+                func.substr(func.coalesce(Finding.title, ""), 1, 500), literal("follow_up"),
+                cast(literal(note), Text), literal(contact_email), stamp(happened), stamp(now),
+                cast(literal(who.user_id), Integer),
+                cast(literal(session.id if session is not None else None), Integer),
+            )
+            .select_from(FindingHost).join(Finding, Finding.id == FindingHost.finding_id)
+            .where(FindingHost.id.in_(part))
+        )
+        db.execute(insert(RemediationEvent).from_select(
+            ["project_id", "host_id", "finding_id", "finding_host_id", "finding_title", "kind",
+             "body", "new_value", "occurred_at", "created_at", "author_id", "agent_session_id"], entries))
+        db.execute(
+            update(Remediation)
+            .where(Remediation.finding_host_id.in_(part),
+                   or_(Remediation.last_follow_up_on.is_(None), Remediation.last_follow_up_on < on))
+            .values(last_follow_up_on=on)
+            .execution_options(synchronize_session=False)
+        )
     for record in records:
+        # What the statement just wrote, on the rows the caller holds.
         if record.last_follow_up_on is None or record.last_follow_up_on < on:
-            record.last_follow_up_on = on
-        db.add(_event(record.project_id, targets[record.finding_host_id], who, kind="follow_up",
-                      body=note, new_value=contact_email, occurred_at=happened, created_at=now))
+            set_committed_value(record, "last_follow_up_on", on)
     # One changelog line per project the follow-up was recorded in (the
     # cross-project door records in several): the day and how many rows —
     # never the note, nor whom it was about.

@@ -57,6 +57,7 @@ The client's fixing progress, kept by project admins **per FINDING ON A HOST** (
 - At risk → "Follow up"; only on track → "Remind" = the same dialog on 90 days (`RemediationWorkList.UPCOMING_REMINDER_DAYS`, in `HORIZONS`).
 - **The message is for an outside reader** (`follow_up_text`): titles and addresses, no record number or product name; one opening line, projects by name, most urgent first.
 - **Several projects:** `POST /remediation-overview/follow-up` records in every administered project with listed rows (`record_follow_up_across`, one transaction, `_lock_for_write`). `contacts()` answers `work_project_ids` (cross-project Document asks which; narrowed, "1 of 3" is a second read, not a second definition). The read answers `other_projects` (`remediation_service._STILL_WORK`; null when cut).
+- Recording is TWO statements per 5,000 rows after `_lock_for_write`: one `INSERT … SELECT` of the entries and one `UPDATE` of the day (`_record_follow_up`, the shape `severity_changed` uses) — never an ORM entry per row. Oversight's per-project figures are ONE grouped statement (`remediation_service.oversight_by_project`), pinned equal to the four functions it replaced there (`test_review_2026_11_20_leftovers2.py`).
 - A contact's name in the rows view opens that dialog (none without an address). "No contact yet" (`unassigned`) = no address, no name.
 
 ## Alerts

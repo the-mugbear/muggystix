@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import announce_scan, without_nul, write_record
-from app.services.host_deduplication_service import HostDeduplicationService
+from app.services.host_deduplication_service import HostDeduplicationService, valid_port_number
 import logging
 import time
 import re
@@ -285,6 +285,9 @@ class GnmapParser:
 
         # Process ports
         for port_data in host_data.get('ports', []):
+            if not valid_port_number(port_data.get('port_number')):
+                logger.warning("gnmap: port %r is not a port number, not written", port_data.get('port_number'))
+                continue
             # Extract port information
             port_info = {
                 'port_number': port_data.get('port_number'),

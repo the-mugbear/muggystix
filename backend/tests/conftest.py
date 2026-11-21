@@ -500,6 +500,17 @@ def client(db_session, test_user):
 
 
 @pytest.fixture(autouse=True)
+def _forget_paged_segments():
+    """Project ids repeat across tests (per-test rollback), so the Segments
+    list one test paged through must not be the next test's later page."""
+    from app.services import subnet_insight_service
+
+    subnet_insight_service._SEGMENTS.clear()
+    yield
+    subnet_insight_service._SEGMENTS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_agent_rate_limit_state(db_session):
     """Clear rate-limit buckets between tests.
 

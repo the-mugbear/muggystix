@@ -15,11 +15,9 @@ one mapping.
 
 `technology_monoculture` is emitted by the systemic service as per-technology
 monocultures (keyed ``tech:<name>``), analogous to the per-plugin vuln
-monoculture — a shared versioned technology concentrated estate-wide. Both are
-computed by Python-side bucketing of already-typed/blob rows (no JSON WHERE /
-GROUP BY), so no separate typed technologies table is required; one would only
-become necessary for a per-technology SQL-scale drill-down filter, which the
-current has: DSL does not offer for monocultures.
+monoculture — a shared versioned technology concentrated estate-wide.  It is
+counted over the typed technology rows by ``web_technologies``' rule for
+"current" (2.549.0), so its count opens ``techis:"<name>" scope:subnet``.
 """
 from __future__ import annotations
 

@@ -13,8 +13,8 @@ replaced them (migration ``f4b8d2a6c917`` drops the tables).
 import enum
 
 from sqlalchemy import (
-    Column, Integer, BigInteger, String, Text, DateTime, Boolean,
-    ForeignKey, JSON, UniqueConstraint, Index, CheckConstraint,
+    event, Column, Integer, BigInteger, String, Text, DateTime, Boolean,
+    ForeignKey, JSON, UniqueConstraint, Index, CheckConstraint, text,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -178,6 +178,14 @@ class AgentSession(Base):
     # Refreshed by the audit middleware on every authenticated call, so the
     # UI can show "idle for 47m" without scanning agent_api_calls.
     last_activity_at = Column(DateTime(timezone=True), nullable=True)
+    # When the first authenticated call arrived, and whether any call came
+    # through the MCP transport — set once each by the same middleware, so the
+    # sessions list does not read every call row for two facts that never
+    # change (revision d2e8b0f4a6c3; review 2026-11-20, T6).  The NUMBER of
+    # calls stays a count over the log: keeping it here would be an UPDATE of
+    # this row on every call.
+    first_call_at = Column(DateTime(timezone=True), nullable=True)
+    via_mcp = Column(Boolean, nullable=False, server_default=text("false"), default=False)
 
     # v2.309.0 — ``capabilities`` and ``capability_constraint`` dropped
     # (migration f1a6c92d4b70). A session's authority is its operator's project
@@ -426,6 +434,33 @@ class AgentApiCall(Base):
             name="ck_agent_api_calls_attribution_or_error",
         ),
     )
+
+
+@event.listens_for(AgentApiCall, "after_insert")
+def _note_first_call_and_transport(_mapper, connection, call) -> None:
+    """A recorded call tells its session two things that never change again:
+    when the first one arrived, and that the MCP transport carried one.  Set
+    here, by the insert itself, so every writer of a call row (the middleware,
+    a seed, a test) leaves the session right — and so the sessions list does
+    not read them back from the whole log (review 2026-11-20, T6).  Each
+    UPDATE matches a row only while its fact is unset (or an earlier call is
+    recorded late), so after the first call it takes no row lock."""
+    if call.agent_session_id is None:
+        return
+    sessions = AgentSession.__table__
+    at = call.created_at if call.created_at is not None else func.now()
+    connection.execute(
+        sessions.update()
+        .where(sessions.c.id == call.agent_session_id,
+               sessions.c.first_call_at.is_(None) | (sessions.c.first_call_at > at))
+        .values(first_call_at=at)
+    )
+    if call.via_mcp:
+        connection.execute(
+            sessions.update()
+            .where(sessions.c.id == call.agent_session_id, sessions.c.via_mcp.is_(False))
+            .values(via_mcp=True)
+        )
 
 
 class McpToolCall(Base):

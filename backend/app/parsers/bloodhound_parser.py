@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
-    ProgressBeat, ensure_scan, extract_first_ip, persist_host_observation,
+    FirstFew, ProgressBeat, ensure_scan, extract_first_ip, persist_host_observation,
 )
 from app.parsers.streaming_json import iter_document
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -63,7 +63,7 @@ class BloodHoundParser:
         entries_seen = 0
         imported = 0
         failed = 0
-        no_address: list[str] = []
+        no_address = FirstFew()
         # R6 — heartbeat between objects, outside each object's savepoint.
         beat = ProgressBeat("objects")
         for entry in entries:
@@ -87,7 +87,7 @@ class BloodHoundParser:
                 or entry.get("name")
             )
             if not ip_address:
-                no_address.append(str(hostname or entry.get("ObjectIdentifier") or "unnamed object"))
+                no_address.add(str(hostname or entry.get("ObjectIdentifier") or "unnamed object"))
                 continue
 
             # One computer that fails to write is skipped and counted, never
@@ -118,13 +118,13 @@ class BloodHoundParser:
         warnings = []
         if no_address:
             warnings.append(
-                f"{len(no_address)} object(s) with no IPv4 address were not imported: "
-                + ", ".join(no_address[:10]) + (" …" if len(no_address) > 10 else "")
+                f"{no_address.total} object(s) with no IPv4 address were not imported: "
+                + no_address.listed(", ")
             )
         if failed:
             warnings.append(f"{failed} computer(s) could not be written and were skipped")
         self.last_parse_stats = {
-            "skipped": len(no_address) + failed,
+            "skipped": no_address.total + failed,
             "warnings": "; ".join(warnings) or None,
             "summary": (
                 f"{imported} computer{'s' if imported != 1 else ''} (address and name only; "

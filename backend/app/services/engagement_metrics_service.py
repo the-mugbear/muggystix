@@ -483,15 +483,13 @@ def remediation_counts(db: Session, project_ids: Iterable[int]) -> Dict[int, Dic
     if not ids or not policy.enabled:
         return {}
     today = policy.today()
-    states = remediation_service.state_counts_by_project(db, ids, policy, today)
-    durations = remediation_service.durations_by_project(db, ids, today)
-    # The overdue rows by severity and by how late they are (v2.462.0).
-    overdue = remediation_service.overdue_breakdown_by_project(db, ids, policy, today)
-    # Where the contact's record and the assessor's conclusion disagree: the
-    # list's own ``verification_counts`` (each opens ``?verification=``).
-    gaps = remediation_service.verification_counts_by_project(db, ids)
-    return {pid: {**remediation_service._status_counts(states[pid]), **states[pid], **durations[pid],
-                  **overdue[pid], **gaps[pid]}
+    # One grouped statement for the states, the durations, the overdue rows
+    # by severity and lateness (v2.462.0) and the two gaps between the
+    # contact's record and the assessor's conclusion (each opens
+    # ``?verification=``) — they were four passes over the same rows.
+    read = remediation_service.oversight_by_project(db, ids, policy, today)
+    return {pid: {**remediation_service._status_counts(read[pid]["states"]), **read[pid]["states"],
+                  **read[pid]["durations"], **read[pid]["overdue"], **read[pid]["gaps"]}
             for pid in ids}
 
 

@@ -87,6 +87,18 @@ def _observe_report_time(clock: ScanClock, raw: Optional[str]) -> None:
         return
 
 
+def _is_detection_reference(elem) -> bool:
+    """``elem`` is the ``<result id="…">`` GMP nests in a result's
+    ``<detection>`` — a pointer to the result that detected the product, with
+    no host, port or NVT of its own — and not a result of the report.
+
+    Not checked against a real export (the repository has none): this follows
+    gvmd's report writer.  A file that has no such element is read as before.
+    """
+    parent = elem.getparent() if hasattr(elem, "getparent") else None
+    return parent is not None and strip_namespace(parent.tag) == "detection"
+
+
 class OpenVASParser:
     def __init__(self, db: Session):
         self.db = db
@@ -140,6 +152,8 @@ class OpenVASParser:
                         logger.warning("Skipping malformed OpenVAS report host: %s", outcome.error)
                     continue
                 if tag != "result":
+                    continue
+                if _is_detection_reference(elem):
                     continue
                 seen += 1
                 # One record per result (``write_record``) so one malformed

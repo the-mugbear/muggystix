@@ -465,13 +465,26 @@ def has_open_ports_predicate(db: Session) -> ColumnElement:
 # ---------------------------------------------------------------------------
 
 def tech_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
-    """Host has a web interface whose ``technologies`` JSON contains any
-    of ``values`` (cast-to-text substring, dialect-portable)."""
-    conditions = [
-        cast(models.WebInterface.technologies, SAString).ilike(f'%{escape_like(v)}%', escape='\\')
-        for v in values
-    ]
-    return _host_has(models.WebInterface.host_id, or_(*conditions))
+    """Host currently shows a technology whose name contains any of
+    ``values`` (case-insensitive) — ``web_technologies``' rows and its rule
+    for "current": the latest observation of the URL."""
+    from app.services import web_technologies
+
+    return web_technologies.host_has_technology(
+        lambda name: or_(*[name.ilike(f'%{escape_like(v)}%', escape='\\') for v in values])
+    )
+
+
+def tech_exact_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+    """Host currently shows exactly one of these technologies, as written —
+    the hosts Patterns' technology monoculture counts.  Exact and
+    case-sensitive, unlike ``tech:``."""
+    from app.services import web_technologies
+
+    wanted = [name for name in (str(v).strip()[:web_technologies.NAME_MAX] for v in values) if name]
+    if not wanted:
+        return false()
+    return web_technologies.host_has_technology(lambda name: name.in_(wanted))
 
 
 def has_web_interface_predicate(db: Session) -> ColumnElement:

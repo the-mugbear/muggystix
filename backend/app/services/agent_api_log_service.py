@@ -780,6 +780,9 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                     {"last_activity_at": _now},
                     synchronize_session=False,
                 )
+                # The session's first call and transport are set by the call
+                # row's own insert (``models_agent``: the listener under
+                # ``AgentApiCall``), once each.
             db.commit()
         finally:
             db.close()

@@ -45,6 +45,7 @@ from app.db import models
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.parser_utils import (
     skip_reason,
+    FirstFew,
     ProgressBeat,
     ScanClock,
     ensure_scan,
@@ -177,7 +178,7 @@ class ObservationsParser:
         clock = ScanClock(models.SCAN_TIME_TOOL_RECORDS)
         seen = recorded = 0
         hosts: set = set()
-        problems: List[str] = []
+        problems = FirstFew()
 
         beat = ProgressBeat("observations")
         for record in records:
@@ -187,7 +188,7 @@ class ObservationsParser:
             seen += 1
             ip = normalize_ip(_text(record.get("host")))
             if not ip:
-                problems.append(f"line {seen}: no host address" + (
+                problems.add(f"line {seen}: no host address" + (
                     f" (hostname {record.get('hostname')!r} is not enough)" if record.get("hostname") else ""))
                 continue
             if scan is None:
@@ -204,7 +205,7 @@ class ObservationsParser:
             )
             if outcome.error is not None:
                 logger.warning("observations: skipping line %d on %s: %s", seen, ip, outcome.error)
-                problems.append(f"line {seen} on {ip}: {skip_reason(outcome.error)}")
+                problems.add(f"line {seen} on {ip}: {skip_reason(outcome.error)}")
                 continue
             recorded += 1
             hosts.add(ip)
@@ -221,10 +222,9 @@ class ObservationsParser:
         self.db.commit()
 
         self.last_parse_stats = {
-            "skipped": len(problems),
+            "skipped": problems.total,
             "warnings": (
-                f"{len(problems)} line(s) were not recorded: " + "; ".join(problems[:10])
-                + (" …" if len(problems) > 10 else "")
+                f"{problems.total} line(s) were not recorded: " + problems.listed()
             ) if problems else None,
             "summary": (
                 f"{recorded} scanner observation{'s' if recorded != 1 else ''} "

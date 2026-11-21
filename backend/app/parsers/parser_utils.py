@@ -24,7 +24,7 @@ from app.db.models_vulnerability import (
 )
 from app.services import scan_sightings
 from app.services.cvss_service import cvss_version_of
-from app.services.host_deduplication_service import HostDeduplicationService
+from app.services.host_deduplication_service import HostDeduplicationService, valid_port_number  # noqa: F401 — re-exported
 from app.services.source_statements import refuse_undeclared
 
 
@@ -402,15 +402,6 @@ def parse_host_port_token(token: str) -> Tuple[Optional[str], Optional[int], Opt
     return extract_first_ip(cleaned), None, None
 
 
-def valid_port_number(value: Any) -> bool:
-    """A TCP / UDP port number: a whole number from 1 to 65535."""
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return False
-    return 0 < number <= 65535 and not isinstance(value, bool)
-
-
 class HostPortBuffer:
     """Port records grouped by address for a parser that reads a file of
     ``address:port`` lines and writes one host at a time (naabu, RustScan) —
@@ -558,6 +549,28 @@ def note_skip(reasons: List[str], exc: BaseException) -> None:
     per record."""
     if len(reasons) < SKIP_REASONS_SHOWN:
         reasons.append(skip_reason(exc))
+
+
+class FirstFew:
+    """What a parser names of the things it skipped: the first ``shown`` are
+    kept, every one is counted.  A list of one line per skipped record grew
+    with the file (review 2026-11-20)."""
+
+    def __init__(self, shown: int = 10):
+        self.shown = shown
+        self.kept: List[str] = []
+        self.total = 0
+
+    def add(self, text: str) -> None:
+        self.total += 1
+        if len(self.kept) < self.shown:
+            self.kept.append(text)
+
+    def __bool__(self) -> bool:
+        return self.total > 0
+
+    def listed(self, sep: str = "; ") -> str:
+        return sep.join(self.kept) + (" …" if self.total > len(self.kept) else "")
 
 
 def skip_summary(reasons: List[str], skipped: int, noun: str = "record") -> Optional[str]:

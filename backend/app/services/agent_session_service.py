@@ -406,20 +406,29 @@ def activity_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
     """
     if not session_ids:
         return {}
-    mcp_seen = func.max(case((AgentApiCall.via_mcp.is_(True), 1), else_=0))
+    # The transport and the first call's time are the session row's own
+    # (set once by the call-log middleware): reading them from the log meant
+    # every call row of every listed session, from the heap, on each load of
+    # the page (review 2026-11-20, C17 / T6).  The count is still the log's —
+    # the rows it holds — and needs only the session index.
+    counts = dict(
+        db.query(AgentApiCall.agent_session_id, func.count())
+        .filter(AgentApiCall.agent_session_id.in_(session_ids))
+        .group_by(AgentApiCall.agent_session_id)
+        .all()
+    )
     return {
-        sid: SessionActivity(call_count=int(count), via_mcp=bool(via_mcp), first_call_at=first_at)
-        for sid, count, via_mcp, first_at in (
-            db.query(
-                AgentApiCall.agent_session_id,
-                func.count(AgentApiCall.id),
-                mcp_seen,
-                func.min(AgentApiCall.created_at),
-            )
-            .filter(AgentApiCall.agent_session_id.in_(session_ids))
-            .group_by(AgentApiCall.agent_session_id)
-            .all()
+        sid: SessionActivity(
+            call_count=int(counts.get(sid, 0)), via_mcp=bool(via_mcp),
+            # A session whose calls were all purged from the log keeps its
+            # first call's time; it has no count, so it reads as it did.
+            first_call_at=first_at,
         )
+        for sid, via_mcp, first_at in (
+            db.query(AgentSession.id, AgentSession.via_mcp, AgentSession.first_call_at)
+            .filter(AgentSession.id.in_(session_ids))
+        )
+        if sid in counts
     }
 
 

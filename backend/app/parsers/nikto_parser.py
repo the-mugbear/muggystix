@@ -69,7 +69,8 @@ OSVDB_ID_PATTERN = re.compile(r"^(OSVDB-\d+):\s*(.*)$", re.IGNORECASE)
 
 
 # A top-level JSON OBJECT below this size is read whole (see _parse_json).
-_WHOLE_OBJECT_LIMIT = 200 * 1024 * 1024
+# The shared reader's own streaming threshold: a larger object is streamed.
+_WHOLE_OBJECT_LIMIT = 50 * 1024 * 1024
 
 
 def _target_of(host_entry: dict) -> dict:
@@ -170,6 +171,10 @@ class NiktoParser:
             # reason is read exactly as it was before.
             if file_ends_early(file_path):
                 target = _host_object_target(file_path)
+        elif head.startswith("{"):
+            # One host object too large to load whole: its findings are
+            # streamed below, and they take the target from the object.
+            target = _host_object_target(file_path)
         # Stream the records — Nikto JSON exports for large scopes are
         # dominated by per-finding ``description``/``msg`` bodies and
         # can easily reach several hundred MB.
@@ -213,7 +218,7 @@ class NiktoParser:
         if not msg and not entry.get("id"):
             return  # a target with nothing reported
         hostname = entry.get("hostname") or entry.get("host")
-        port = self._coerce_port(entry.get("port")) or 80
+        port = self._coerce_port(entry.get("port"))
         refs = entry.get("references")
         description = entry.get("description") or msg
         if refs and isinstance(refs, str) and description and refs not in description:
@@ -262,7 +267,7 @@ class NiktoParser:
                 ip_address = extract_first_ip(str(row.get("ip") or row.get("targetip") or row.get("host") or ""))
                 if not ip_address:
                     continue
-                port = self._coerce_port(row.get("port")) or 80
+                port = self._coerce_port(row.get("port"))
                 self._record_finding(
                     scan=scan,
                     ip_address=ip_address,
@@ -296,7 +301,7 @@ class NiktoParser:
                 scan=scan,
                 ip_address=ip_address,
                 hostname=hostname if hostname and hostname != ip_address else None,
-                port=self._coerce_port(port_raw) or 80,
+                port=self._coerce_port(port_raw),
                 title=title,
                 description=description,
                 plugin_id=plugin_id,
@@ -325,7 +330,10 @@ class NiktoParser:
     def _parse_text(self, file_path: str, scan: models.Scan) -> None:
         current_ip: Optional[str] = None
         current_hostname: Optional[str] = None
-        current_port = 80
+        # No port until the report names one: a finding whose report gives no
+        # port is the host's, not port 80's (a port nobody stated was written
+        # as open http — review 2026-11-20).
+        current_port: Optional[int] = None
 
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
             # NUL removed (review 2026-10-01 R5): the finding text is stored.
@@ -387,7 +395,7 @@ class NiktoParser:
         scan: models.Scan,
         ip_address: str,
         hostname: Optional[str],
-        port: int,
+        port: Optional[int],
         title: str,
         description: Optional[str],
         plugin_id: Optional[str],
@@ -432,7 +440,7 @@ class NiktoParser:
         scan: models.Scan,
         ip_address: str,
         hostname: Optional[str],
-        port: int,
+        port: Optional[int],
         title: str,
         description: Optional[str],
         plugin_id: Optional[str],
@@ -446,10 +454,13 @@ class NiktoParser:
             scan_id=scan.id,
             ip_address=ip_address,
             hostname=hostname,
-            ports=[{"port_number": port, "protocol": "tcp", "state": "open", "service_name": "http"}],
+            ports=(
+                [{"port_number": port, "protocol": "tcp", "state": "open", "service_name": "http"}]
+                if port else []
+            ),
             project_id=self._project_id,
         )
-        persisted_port = port_map.get((port, "tcp"))
+        persisted_port = port_map.get((port, "tcp")) if port else None
         # Phase 3 — nikto tested a NAME (Host header selects the vhost); the
         # finding belongs to that named endpoint, the host is where it was
         # observed.  Also records the HTTP observation name→address.

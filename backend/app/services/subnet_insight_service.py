@@ -30,6 +30,7 @@ count.
 from __future__ import annotations
 
 import ipaddress
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -338,6 +339,10 @@ def compute_subnet_insights(
     ``subnets`` is the requested page of the worst-first list, with ``total``
     for the pager.  ``limit=None`` returns everything (used internally).
     """
+    if offset > 0 and limit is not None:
+        held = _SEGMENTS.get(project_id)
+        if held is not None and held[0] > time.monotonic():
+            return _segments_page(held[1], held[2], limit, offset)
     now = datetime.now(timezone.utc)
 
     # --- Subnets in this project's scopes ---------------------------------
@@ -577,9 +582,26 @@ def compute_subnet_insights(
     for r in out:
         r.pop("_neglect_magnitude", None)
 
-    total = len(out)
+    if len(_SEGMENTS) >= _SEGMENTS_MAX:
+        _SEGMENTS.clear()  # crude bound; the memo is best-effort
+    _SEGMENTS[project_id] = (time.monotonic() + _SEGMENTS_TTL_SECONDS, out, totals)
+    return _segments_page(out, totals, limit, offset)
+
+
+# The worst-first list a reader is paging through, per worker: a LATER page
+# (offset > 0) is cut from the list its first page was cut from, instead of
+# reading the whole project again for each turn (review 2026-11-20, C19).  The
+# first page always computes, so opening or refreshing the page shows what is
+# stored now; the memo is only ever a few minutes old and never a first answer.
+_SEGMENTS_TTL_SECONDS = 180.0
+_SEGMENTS_MAX = 64
+_SEGMENTS: Dict[int, tuple] = {}
+
+
+def _segments_page(out: List[Dict[str, Any]], totals: Dict[str, Any], limit: Optional[int],
+                   offset: int) -> Dict[str, Any]:
     page = out[offset:offset + limit] if limit is not None else out[offset:]
-    return {"adopted": True, "subnets": page, "total": total,
+    return {"adopted": True, "subnets": page, "total": len(out),
             "limit": limit, "offset": offset, "totals": totals}
 
 

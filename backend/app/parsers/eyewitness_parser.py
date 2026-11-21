@@ -26,7 +26,6 @@ from __future__ import annotations
 import csv
 import logging
 import os
-import re
 import time
 import zipfile
 from pathlib import Path
@@ -581,8 +580,14 @@ class EyewitnessParser:
 
     @staticmethod
     def _extract_ip_from_url(url: str) -> Optional[str]:
-        match = re.search(r"(\d+\.\d+\.\d+\.\d+)", url or "")
-        return match.group(1) if match else None
+        """The address a URL is AIMED at — its host part, when that is an
+        address.  A dotted quad elsewhere in the URL (a path, a query value,
+        a redirect target) is not where the page was read from."""
+        try:
+            host = urlparse(url or "").hostname
+        except ValueError:
+            return None
+        return normalize_ip(host) if host else None
 
     @staticmethod
     def _port_from_url(url: str) -> Optional[int]:

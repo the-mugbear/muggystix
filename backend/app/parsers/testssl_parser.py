@@ -29,6 +29,7 @@ from app.db import models
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.parser_utils import (
     skip_reason,
+    FirstFew,
     ProgressBeat,
     ProjectHostsByAddress,
     ResolvedHost,
@@ -163,6 +164,9 @@ _NOT_WEAKNESSES = ("overall_grade", "grade_cap", "cipher-", "cipher_order", "cip
 
 
 # v2.414.0 — rated checks that are catalog weaknesses (misconfig_checks.py).
+# Targets held before they are written (each holds its ~170 check records).
+_FLUSH_TARGETS = 2_000
+
 _DEPRECATED_PROTOCOL_IDS = ("SSLv2", "SSLv3", "TLS1", "TLS1_1")
 _CATALOG_IDS = {"HSTS": "http_missing_hsts", "cert_expirationStatus": "tls_cert_expired"}
 
@@ -321,6 +325,68 @@ class TestsslParser:
         # Fold the flat finding array into per-(ip, port) targets.
         targets: Dict[Tuple[str, Optional[str], int], Dict[str, Any]] = {}
         record_count = 0
+        scan: Optional[models.Scan] = None
+        written = 0
+        observations = 0
+        # v2.332.0 — a target whose savepoint rolled back was logged and then
+        # reported as a clean import ("skipped": 0).  Count it.
+        skipped_targets = FirstFew()
+
+        def write_out() -> None:
+            """Write the targets read so far and let go of them.  An ordinary
+            file reaches this once, at its end; one with more than
+            ``_FLUSH_TARGETS`` targets is written in parts, so the worker
+            never holds every record of every target (review 2026-11-20)."""
+            nonlocal targets, scan, written, observations
+            if not targets:
+                return
+            batch, targets = targets, {}
+            if scan is None:
+                scan = models.Scan(
+                    filename=filename, scan_type="web_vulnerability_scan", tool_name="testssl",
+                    project_id=self._project_id,
+                )
+                self.db.add(scan)
+                self.db.flush()
+                announce_scan(self.db, scan)
+            # R6 — heartbeat between targets, outside the target's savepoint.
+            # The host history is also written ahead of each heartbeat's
+            # commit (a failed import's cleanup reads it).
+            scan_id = scan.id
+            beat = ProgressBeat(
+                "targets", every=100,
+                before=lambda: record_hosts_in_scan(self.db, scan_id, self._observed),
+            )
+            for (ip, hostname, port), t in batch.items():
+                beat.tick()
+                # One record per target (``write_record``) so a single row's
+                # integrity failure (e.g. a (scan_id, url, source) collision)
+                # rolls back JUST this target instead of poisoning the session.
+                outcome = write_record(
+                    self.db,
+                    lambda: self._write_target(scan, ip, hostname, port, t),
+                    on_rollback=self._reset_caches,
+                )
+                if outcome.error is not None:
+                    logger.warning("testssl: skipping target %s:%s due to %s", ip, port, outcome.error)
+                    skipped_targets.add(f"{ip}:{port} ({skip_reason(outcome.error)})")
+                    continue
+                resolved, target_observations = outcome.value
+                observations += target_observations
+                written += 1
+                # Only a COMMITTED target is an observation (v2.332.2).  Noting
+                # before the commit let a target that then rolled back — the
+                # second hostname on one ip:port collides on the URL key — put
+                # its hostname on the scan history while being reported as
+                # skipped.  A TLS assessment completed a handshake: up now.
+                self._observed.note(
+                    resolved.host, created=resolved.created, state="up", hostname=hostname,
+                    renamed=resolved.renamed,
+                )
+            # The read goes on and its heartbeat commits: the history of what
+            # was just written is in that commit.
+            record_hosts_in_scan(self.db, scan_id, self._observed)
+
         records = iter_json_records(file_path, array_keys=("scanResult",), tool_label="testssl JSON")
         # R6 — the read phase heartbeats: the scan row does not exist yet, so
         # a cancel here leaves nothing behind.
@@ -337,6 +403,8 @@ class TestsslParser:
             except ValueError:
                 port = 443
             key = (ip, hostname, port)
+            if key not in targets and len(targets) >= _FLUSH_TARGETS:
+                write_out()
             t = targets.setdefault(key, {"weak": None, "strong_seen": False,
                                          "not_after": None, "self_signed": None, "raw": []})
             t["raw"].append(rec)
@@ -359,73 +427,21 @@ class TestsslParser:
 
         if record_count == 0:
             raise ValueError("testssl file contained no parseable findings")
-        if not targets:
+        if not targets and scan is None:
             # Findings, but none naming a target: not a result to report as
             # a clean import of nothing.
             raise ValueError("testssl file contained findings but no target address")
 
-        scan = models.Scan(
-            filename=filename, scan_type="web_vulnerability_scan", tool_name="testssl",
-            project_id=self._project_id,
-        )
-        self.db.add(scan)
-        self.db.flush()
-        announce_scan(self.db, scan)
-
-        written = 0
-        observations = 0
-        # v2.332.0 — a target whose savepoint rolled back was logged and then
-        # reported as a clean import ("skipped": 0).  Count it.
-        skipped_targets: list = []
-        # R6 — heartbeat between targets, outside the target's savepoint.  The
-        # host history written at the end is also written ahead of each
-        # heartbeat's commit (a failed import's cleanup reads it).
-        scan_id = scan.id
-        beat = ProgressBeat(
-            "targets", every=100,
-            before=lambda: record_hosts_in_scan(self.db, scan_id, self._observed),
-        )
-        for (ip, hostname, port), t in targets.items():
-            beat.tick()
-            # One record per target (``write_record``) so a single row's
-            # integrity failure (e.g. a (scan_id, url, source) collision)
-            # rolls back JUST this target instead of poisoning the session —
-            # without it, the caught flush error left the transaction in
-            # pending_rollback and the next flush raised
-            # PendingRollbackError, aborting the whole upload.
-            outcome = write_record(
-                self.db,
-                lambda: self._write_target(scan, ip, hostname, port, t),
-                on_rollback=self._reset_caches,
-            )
-            if outcome.error is not None:
-                logger.warning("testssl: skipping target %s:%s due to %s", ip, port, outcome.error)
-                skipped_targets.append(f"{ip}:{port} ({skip_reason(outcome.error)})")
-                continue
-            resolved, target_observations = outcome.value
-            observations += target_observations
-            written += 1
-            # Only a COMMITTED target is an observation (v2.332.2).  Noting
-            # before the commit let a target that then rolled back — the
-            # second hostname on one ip:port collides on the URL key — put
-            # its hostname on the scan history while being reported as
-            # skipped.  A TLS assessment completed a handshake: up now.
-            self._observed.note(
-                resolved.host, created=resolved.created, state="up", hostname=hostname,
-                renamed=resolved.renamed,
-            )
-
-        record_hosts_in_scan(self.db, scan.id, self._observed)
+        write_out()
         self.db.commit()
 
         elapsed = time.time() - start
         logger.info("testssl %s: %d TLS interface(s) written in %.2fs", filename, written, elapsed)
         self.last_parse_stats = {
-            "skipped": len(skipped_targets),
+            "skipped": skipped_targets.total,
             "warnings": (
-                f"{len(skipped_targets)} target(s) failed to import: "
-                + "; ".join(skipped_targets[:10])
-                + (" …" if len(skipped_targets) > 10 else "")
+                f"{skipped_targets.total} target(s) failed to import: "
+                + skipped_targets.listed()
                 if skipped_targets
                 else None
             ),

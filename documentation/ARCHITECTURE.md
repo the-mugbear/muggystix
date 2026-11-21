@@ -279,6 +279,7 @@ backend/app/
 │   ├── evidence_service.py       # per-domain assessment-coverage (eligible vs assessed)
 │   ├── attention_service.py      # per-project / per-site exposure + neglect rollups
 │   ├── host_condition_sets.py    # per-condition host conditions + sets (systemic, subnet insights, the has: DSL)
+│   ├── web_technologies.py       # a host's CURRENT web technologies over web_interface_technologies: tech: / techis:, the Hosts facet, suggestions, the technology monoculture
 │   ├── ports_of_interest.py
 │   ├── host_follow_service.py
 │   ├── note_activity_service.py    # the project's notes, newest activity first: the Collaboration feed and the agents' /assist/notes (one read)

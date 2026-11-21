@@ -503,18 +503,6 @@ class HttpxParser:
 
         return ip, hostname
 
-    @classmethod
-    def _extract_ip_from_url(cls, url: str) -> Optional[str]:
-        """Kept for backwards compatibility — returns URL hostname iff it's an IP literal."""
-        try:
-            parsed = urlparse(url)
-        except Exception:
-            return None
-        h = parsed.hostname
-        if cls._is_ip_literal(h):
-            return h.strip("[]")
-        return None
-
     @staticmethod
     def _port_from_url(url: str) -> Optional[int]:
         try:

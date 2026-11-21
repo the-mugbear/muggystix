@@ -1036,69 +1036,23 @@ def _scan_derived_facets(
     # (used by the test suite when Postgres isn't reachable) the
     # ``json_array_elements_text`` function doesn't exist, so we fall
     # back to the previous Python aggregation there.
-    dialect = db.bind.dialect.name if db.bind is not None else "postgresql"
-    if dialect == "postgresql":
-        tech_unnest = func.json_array_elements_text(models.WebInterface.technologies).table_valued("name")
-        tech_q = (
-            db.query(
-                tech_unnest.c.name.label("name"),
-                func.count(func.distinct(models.WebInterface.host_id)).label("host_count"),
-            )
-            .select_from(models.WebInterface)
-            .join(tech_unnest, true())
-            .filter(models.WebInterface.technologies.isnot(None))
-            # SQLAlchemy stores Python ``None`` as the JSON literal
-            # ``null`` (not SQL NULL), and ``json_array_elements_text``
-            # rejects scalars with "cannot call ... on a scalar".  Also
-            # guard against legacy rows where the JSON value is an object
-            # or string by accident.  ``json_typeof`` returns 'array' for
-            # the well-formed case.
-            .filter(func.json_typeof(models.WebInterface.technologies) == "array")
+    #
+    # 2.549.0 — the rows are `web_interface_technologies`, counted by
+    # `web_technologies`' rule for "current" (the latest observation of a
+    # URL), so a count here is the hosts `techis:"<name>"` lists.  One
+    # grouped statement on every dialect; the JSON unnest and its Python
+    # fallback are gone.
+    from app.services import web_technologies
+
+    tech_hosts = func.count(func.distinct(models.Host.id))
+    tech_q, tech_row = web_technologies.current_technologies(db, lambda t: t.name, tech_hosts)
+    tech_q = tech_q.filter(host_scope if host_scope is not None else models.Host.project_id == project.id)
+    technologies_result = [
+        {"name": name, "host_count": int(host_count or 0)}
+        for name, host_count in (
+            tech_q.group_by(tech_row.name).order_by(tech_hosts.desc(), tech_row.name.asc()).limit(200).all()
         )
-        if host_scope is not None:
-            tech_q = tech_q.join(
-                models.Host, models.Host.id == models.WebInterface.host_id
-            ).filter(host_scope)
-        else:
-            tech_q = tech_q.filter(models.WebInterface.project_id == project.id)
-        tech_q = (
-            tech_q.group_by(tech_unnest.c.name)
-            .order_by(func.count(func.distinct(models.WebInterface.host_id)).desc(), tech_unnest.c.name.asc())
-            .limit(200)
-        )
-        technologies_result = [
-            {"name": name, "host_count": int(host_count or 0)}
-            for name, host_count in tech_q.all()
-            if name  # filter empty/None tech strings the parser sometimes leaves behind
-        ]
-    else:
-        # SQLite fallback — preserves pre-v2.86.5 Python aggregation.
-        tech_query = (
-            db.query(
-                models.WebInterface.host_id,
-                models.WebInterface.technologies,
-            )
-            .filter(models.WebInterface.technologies.isnot(None))
-        )
-        if host_scope is not None:
-            tech_query = tech_query.join(
-                models.Host, models.Host.id == models.WebInterface.host_id
-            ).filter(host_scope)
-        else:
-            tech_query = tech_query.filter(models.WebInterface.project_id == project.id)
-        tech_host_pairs = tech_query.all()
-        tech_host_sets: Dict[str, set] = {}
-        for host_id, tech_list in tech_host_pairs:
-            if not tech_list:
-                continue
-            for t in tech_list:
-                if not t:
-                    continue
-                tech_host_sets.setdefault(str(t), set()).add(host_id)
-        technologies_result = sorted(
-            ({"name": name, "host_count": len(hosts)} for name, hosts in tech_host_sets.items()),
-            key=lambda x: (-x["host_count"], x["name"].lower()),
-        )[:200]
+    ]
 
     # RDAP attribution facets — distinct owner / ASN / country across in-scope
     # hosts, each with a DISTINCT host count (a host maps to one block, but a

@@ -193,11 +193,24 @@ const CONDITION_DSL: Record<string, string> = {
 };
 
 /**
+ * The Hosts query for a technology monoculture (key `tech:<name>`): exactly
+ * that technology, on the hosts of the declared subnets — the hosts the count
+ * is of (`techis:` is exact, and both read the latest observation of a URL).
+ * Null for any other key, and for a name the query language cannot quote.
+ */
+const technologyQuery = (key: string): string | null => {
+  if (!key.startsWith('tech:')) return null;
+  const name = key.slice('tech:'.length);
+  if (!name || name.includes('"') || name.includes('\\')) return null;
+  return `techis:"${name}" scope:subnet`;
+};
+
+/**
  * /hosts link for a systemic condition, optionally narrowed to one subnet.
  * Returns null when the condition has no host-filter predicate.
  */
 export const conditionHostsHref = (key: string, cidr?: string | null): string | null => {
-  const q = CONDITION_DSL[key];
+  const q = CONDITION_DSL[key] ?? technologyQuery(key);
   if (!q) return null;
   return buildHostsUrl({ q, subnets: cidr ?? undefined });
 };

@@ -261,10 +261,20 @@ class _Parser:
         return children[0] if len(children) == 1 else And(children)
 
     def parse_not(self) -> Node:
-        if self._is_keyword(self.peek(), "NOT"):
+        # A run of NOTs is read in a loop, not by recursion, and is capped as
+        # parentheses are: `NOT NOT … x` a few hundred deep parsed, and then
+        # the validator and the compiler each walked it one frame per NOT.
+        tok = self.peek()
+        run = 0
+        while self._is_keyword(self.peek(), "NOT"):
             self.advance()
-            return Not(self.parse_not())
-        return self.parse_primary()
+            run += 1
+            if run > MAX_DEPTH:
+                raise DSLError(f"Too many NOTs in a row (max {MAX_DEPTH})", position=tok.start)
+        node = self.parse_primary()
+        for _ in range(run):
+            node = Not(node)
+        return node
 
     def parse_primary(self) -> Node:
         tok = self.peek()
@@ -713,7 +723,12 @@ _FIELD_SPECS: List[FieldSpec] = [
     # ILIKE/trigram fields, so `tech:a` no longer forces a leading-wildcard
     # scan below the 3-char index threshold.
     FieldSpec("tech", lambda c, v: P.tech_predicate(c.db, v), value_source="tech", trgm=True,
-              description="Detected web technology — httpx, whatweb, eyewitness."),
+              description="Detected web technology (httpx, WhatWeb), by part of its name; "
+                          "the latest observation of each URL counts."),
+    FieldSpec("techis", lambda c, v: P.tech_exact_predicate(c.db, v), value_source="tech",
+              description="Exactly one detected web technology, as written — "
+                          "`techis:\"nginx 1.14.0\"`. The hosts a technology monoculture counts. "
+                          "Exact, unlike tech:."),
     # Network attribution (ingested from RDAP). Scope validation against the
     # outside world rather than against the CIDRs someone typed into the scope.
     FieldSpec("org", lambda c, v: P.attribution_org_predicate(v),

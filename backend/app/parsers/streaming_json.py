@@ -177,6 +177,10 @@ def _document_items(
     read = 0
     raw = io.BytesIO(source) if isinstance(source, bytes) else open(source, "rb")
     with raw:
+        # A UTF-8 byte-order mark is not part of the document (PowerShell 5
+        # writes one): step over it, or the stream reader refuses byte one.
+        if raw.read(3) != b"\xef\xbb\xbf":
+            raw.seek(0)
         handle = EndTracking(raw)
         try:
             items = (
@@ -362,8 +366,8 @@ def _stream_records(
     with open(file_path, "rb") as handle:
         head = handle.read(_PEEK_BYTES)
     # A byte-order mark is not structure: JSON lines behind one are streamed
-    # by line (which takes it off).  A streamed DOCUMENT behind one is still
-    # read from its first byte by ``iter_document``.
+    # by line (which takes it off), and ``_document_items`` steps over it for
+    # a streamed document.
     head = head.removeprefix(b"\xef\xbb\xbf")
     head_stripped = head.lstrip()
 

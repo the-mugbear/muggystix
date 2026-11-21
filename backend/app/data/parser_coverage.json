@@ -1712,7 +1712,7 @@
             "Vulnerability.port_id"
           ],
           "shown": "Host inspector › Ports table; Hosts list › Exposure chips + open count; Scan page ports table · Filter: port:, exploitport:, has:open_ports, has:cleartext · Also: Evidence web_tls / auth_smb_ad eligibility; Segments ports of interest",
-          "note": "Defaults to 80 when missing/non-numeric. Every Nikto port is written as tcp/open with service_name 'http', even when Nikto tested it over SSL (443 etc.); no TLS/tunnel marker is recorded."
+          "note": "A finding whose report names no port (or a non-numeric one) is written on the host with no port. Every Nikto port is written as tcp/open with service_name 'http', even when Nikto tested it over SSL (443 etc.); no TLS/tunnel marker is recorded."
         },
         {
           "what": "Target hostname (virtual host tested)",

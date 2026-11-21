@@ -833,6 +833,33 @@ def _origin_rejected(request: Request) -> bool:
 _HTTP_STATUS_IN_TOOL_ERROR = re.compile(r"^HTTP (\d{3}) from ")
 
 
+def _write_batch_telemetry(events: List[Dict[str, Any]], api_key: Optional[str]) -> None:
+    """A request's telemetry, on the background path.  A batch sent with a key
+    the gate accepts is a row per message, as a single message is.  One sent
+    with no such key is ONE row saying how many messages it held: anyone who
+    can reach the port could otherwise write ``_MAX_BATCH_MESSAGES`` rows per
+    request (review 2026-11-20, C16)."""
+    if len(events) > 1:
+        from app.api.deps import live_agent_session_id
+
+        try:
+            accepted = live_agent_session_id(api_key) is not None
+        except Exception:
+            logger.exception("reading the key behind an MCP batch failed")
+            accepted = False
+        if not accepted:
+            refused = sum(1 for e in events if e.get("outcome") != mcp_telemetry.OK)
+            first = dict(events[0])
+            first.update(
+                rpc_method="(batch)", tool_name=None, error_code=None,
+                outcome=mcp_telemetry.REJECTED if refused else mcp_telemetry.OK,
+                detail=f"batch of {len(events)} messages with no accepted key; {refused} not answered ok",
+                duration_ms=sum(int(e.get("duration_ms") or 0) for e in events),
+            )
+            events = [first]
+    mcp_telemetry.write_events(events)
+
+
 def _classify(message: Any, response: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Outcome, error code and detail for one message/response pair."""
     if not isinstance(message, dict):
@@ -1121,7 +1148,7 @@ async def mcp_post(request: Request) -> Response:
 
     # After the response is sent, on the background path — telemetry must never
     # add latency to, or be able to fail, the request it describes.
-    response.background = BackgroundTask(mcp_telemetry.write_events, events)
+    response.background = BackgroundTask(_write_batch_telemetry, events, api_key)
     return response
 
 

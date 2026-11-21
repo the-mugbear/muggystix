@@ -63,10 +63,6 @@ class AmassParser:
         self._name_cache = ObservationCache()
         self._tool_name = "amass"
 
-    @staticmethod
-    def attribute(filename: str, source_tool: Optional[str], file_path: str) -> str:
-        return attribute_tool(filename, source_tool, file_path)
-
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
         tool_name = attribute_tool(filename, kwargs.get("source_tool"), file_path)

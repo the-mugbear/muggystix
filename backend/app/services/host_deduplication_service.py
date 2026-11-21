@@ -101,6 +101,21 @@ def port_history_service_info(port_data: Dict[str, Any]) -> Optional[str]:
     return json.dumps(service_info) if any(service_info.values()) else None
 
 
+def valid_port_number(value: Any) -> bool:
+    """A TCP / UDP port number: a whole number from 1 to 65535.  The ONE
+    rule, asked by every writer of ``ports_v2`` ahead of the table's own
+    ``ck_ports_v2_port_number``."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return False
+    return 0 < number <= 65535 and not isinstance(value, bool)
+
+
+class InvalidPort(ValueError):
+    """A port number no port can have reached ``find_or_create_port``."""
+
+
 class HostDeduplicationService:
     """Service to manage host deduplication and merging across scans"""
     
@@ -504,6 +519,8 @@ class HostDeduplicationService:
         """
         port_number = port_data.get('port_number')
         protocol = port_data.get('protocol', 'tcp')
+        if not valid_port_number(port_number):
+            raise InvalidPort(f"{port_number!r} is not a port number (1 to 65535)")
 
         # The host's ports come from the per-host working set (one query for
         # all of them), not one SELECT per port.
@@ -1234,6 +1251,12 @@ class HostDeduplicationService:
             extra = set(row[1]) - {'port_number', 'protocol', 'state', 'reason', 'service_name'}
             if extra:
                 raise ValueError(f"upsert_ports_bulk takes no {sorted(extra)}; use find_or_create_port")
+        usable = [row for row in rows if valid_port_number(row[1].get('port_number'))]
+        if len(usable) != len(rows):
+            logger.warning(
+                "%d port record(s) with a number no port can have were not written", len(rows) - len(usable),
+            )
+            rows = usable
         for start in range(0, len(rows), self.PORT_UPSERT_CHUNK):
             self._upsert_ports_chunk(scan_id, rows[start:start + self.PORT_UPSERT_CHUNK])
 

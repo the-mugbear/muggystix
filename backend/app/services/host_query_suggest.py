@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import String, cast, func, or_, true
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -158,41 +158,17 @@ def _path(ctx: _Ctx) -> List[Suggestion]:
 
 
 def _tech(ctx: _Ctx) -> List[Suggestion]:
-    """Technology names are elements of a JSON array per web interface."""
-    WI = models.WebInterface
-    dialect = ctx.db.bind.dialect.name if ctx.db.bind is not None else "postgresql"
-    if dialect == "postgresql":
-        tech = func.json_array_elements_text(WI.technologies).table_valued("name")
-        n = func.count(func.distinct(WI.host_id))
-        rows = (
-            ctx.db.query(tech.c.name, n)
-            .select_from(WI)
-            .join(tech, true())
-            .join(models.Host, models.Host.id == WI.host_id)
-            .filter(
-                _hosts_in_project(ctx),
-                WI.technologies.isnot(None),
-                func.json_typeof(WI.technologies) == "array",
-                ctx.contains(tech.c.name),
-            )
-            .group_by(tech.c.name).order_by(n.desc(), tech.c.name).limit(ctx.limit).all()
-        )
-        return [Suggestion(name, count=int(c)) for name, c in rows if name]
-    # SQLite (test fallback): aggregate in Python, as /hosts/filters/data does.
-    hosts: Dict[str, set] = {}
-    pairs = (
-        ctx.db.query(WI.host_id, WI.technologies)
-        .join(models.Host, models.Host.id == WI.host_id)
-        .filter(_hosts_in_project(ctx), WI.technologies.isnot(None))
-        .all()
+    """Technology names, by the hosts that currently show each —
+    ``web_technologies``' rows and rule, as ``tech:`` and the facet."""
+    from app.services import web_technologies
+
+    n = _host_count()
+    query, tech = web_technologies.current_technologies(ctx.db, lambda t: t.name, n)
+    rows = (
+        query.filter(_hosts_in_project(ctx), ctx.contains(tech.name))
+        .group_by(tech.name).order_by(n.desc(), tech.name).limit(ctx.limit).all()
     )
-    lowered = ctx.needle.lower()
-    for host_id, techs in pairs:
-        for t in techs if isinstance(techs, list) else []:
-            if t and lowered in str(t).lower():
-                hosts.setdefault(str(t), set()).add(host_id)
-    ranked = sorted(hosts.items(), key=lambda kv: (-len(kv[1]), kv[0]))[: ctx.limit]
-    return [Suggestion(name, count=len(ids)) for name, ids in ranked]
+    return [Suggestion(name, count=int(c)) for name, c in rows]
 
 
 # -- scanner observations -----------------------------------------------------

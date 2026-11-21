@@ -19,7 +19,7 @@ from app.db.models_confidence import (
 from app.services.confidence_service import (
     ConfidenceService, ConfidenceScore
 )
-from app.services.host_deduplication_service import HostDeduplicationService
+from app.services.host_deduplication_service import HostDeduplicationService, valid_port_number
 from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.parser_utils import announce_scan, read_tool_text, write_record
 from app.parsers.streaming_json import document_before_the_cut
@@ -1016,7 +1016,7 @@ class NetexecParser:
         """Process port information with confidence"""
         port_number = host_data.get('port')
 
-        if not port_number:
+        if not port_number or not valid_port_number(port_number):
             return
 
         # NetExec's "protocol" (smb/ldap/winrm/mssql/…) is the SERVICE, not the

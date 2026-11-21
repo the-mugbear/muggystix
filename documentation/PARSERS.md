@@ -546,7 +546,7 @@ ingest via `cert_fields.derive_cert_fields(tls_info)`.
 | `status_code` | ✓ | ✓ | ✓ |
 | `title` (≤500) / `server_header` (≤255) | ✓ | ✓ | ✓ |
 | `content_length` | ✓ | — (whatweb has none) | ✓ |
-| `technologies` | ✓ (`tech`/`technologies`, flattened) | ✓ (from `plugins` dict) | — |
+| `technologies` (the array as written; each name is also a `web_interface_technologies` row, written by the model when the attribute is set, and `technologies_stated` marks the row as an observation of them) | ✓ (`tech`/`technologies`, flattened) | ✓ (from `plugins` dict) | — |
 | `favicon_hash` | ✓ | — | — |
 | `tls_info` + `cert_not_after` + `cert_self_signed` | ✓ | — (no TLS block) | — |
 | `screenshot_path` / `page_text` | — | — | ✓ |
@@ -558,7 +558,7 @@ ingest via `cert_fields.derive_cert_fields(tls_info)`.
   per file, ≤500 MB total, ≤5000 entries). All three report
   `last_parse_stats` (`skipped` / `warnings` / `summary`).
 - **Nikto** (`.json`/`.csv`/`.txt`): host + the target's http port from the
-  report (80 when none is given) + **`Vulnerability` rows** (`source=NIKTO`;
+  report (no port when none is given: the observation is then the host's) + **`Vulnerability` rows** (`source=NIKTO`;
   `title`/`description` from the finding message, `plugin_id` from the
   Nikto/OSVDB id, `cve_id`, `references` and the request evidence as
   `plugin_output`; severity is UNKNOWN unless a wrapper format states one —

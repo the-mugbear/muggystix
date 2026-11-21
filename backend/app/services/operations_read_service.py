@@ -330,15 +330,32 @@ def compute_review_followups(
     total = int(page[0].total)
     follow_ids = [row[0] for row in page]
 
-    new_ports: Dict[int, List[int]] = {}
-    for fid, port_number in (
-        db.query(HostFollow.id, models.Port.port_number)
+    # The first few new ports of each host and how many there are — numbered
+    # and counted by Postgres, so a host that gained a full sweep's ports
+    # sends six numbers, not sixty thousand (review 2026-11-20).
+    numbered = (
+        db.query(
+            HostFollow.id.label("fid"),
+            models.Port.port_number.label("port_number"),
+            func.row_number().over(
+                partition_by=HostFollow.id, order_by=models.Port.port_number,
+            ).label("nth"),
+            func.count().over(partition_by=HostFollow.id).label("n"),
+        )
         .join(models.Port, models.Port.host_id == HostFollow.host_id)
         .filter(HostFollow.id.in_(follow_ids), P.port_after_review_condition())
-        .order_by(models.Port.port_number)
+        .subquery()
+    )
+    new_ports: Dict[int, List[int]] = {}
+    new_port_counts: Dict[int, int] = {}
+    for fid, port_number, n in (
+        db.query(numbered.c.fid, numbered.c.port_number, numbered.c.n)
+        .filter(numbered.c.nth <= _FOLLOWUP_PORT_SAMPLE)
+        .order_by(numbered.c.fid, numbered.c.nth)
         .all()
     ):
         new_ports.setdefault(fid, []).append(port_number)
+        new_port_counts[fid] = int(n)
 
     new_vulns: Dict[int, Dict[str, int]] = {}
     for fid, sev, n in (
@@ -359,11 +376,12 @@ def compute_review_followups(
         reasons: List[InvestigateReason] = []
         ports = new_ports.get(follow_id)
         if ports:
-            shown = ", ".join(str(p) for p in ports[:_FOLLOWUP_PORT_SAMPLE])
-            more = f", +{len(ports) - _FOLLOWUP_PORT_SAMPLE} more" if len(ports) > _FOLLOWUP_PORT_SAMPLE else ""
+            held = new_port_counts[follow_id]
+            shown = ", ".join(str(p) for p in ports)
+            more = f", +{held - len(ports)} more" if held > len(ports) else ""
             reasons.append(InvestigateReason(
                 kind="new_ports",
-                text=f"{_plural(len(ports), 'open port')} first seen after the review ({shown}{more})",
+                text=f"{_plural(held, 'open port')} first seen after the review ({shown}{more})",
             ))
         vulns = new_vulns.get(follow_id)
         if vulns:

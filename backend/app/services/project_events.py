@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -264,7 +264,7 @@ def list_events(
     hidden = [name for name, (grp, _words) in ACTIONS.items() if grp == REMEDIATION_GROUP]
     if not include_remediation:
         base = base.filter(ProjectEvent.action.notin_(hidden))
-    people_q = base
+    unfiltered = all(v is None for v in (actor_id, by_agent, group, action, since, until))
     if actor_id is not None:
         base = base.filter(ProjectEvent.actor_user_id == actor_id)
     if by_agent is not None:
@@ -308,33 +308,47 @@ def list_events(
         }
         for event, user in rows
     ]
+    # Who has a line here: one probe per account through
+    # ix_project_events_project_actor_created, never a DISTINCT over every
+    # line of the project (review 2026-11-20, C25).
+    has_a_line = (
+        select(ProjectEvent.id)
+        .where(ProjectEvent.project_id == project_id, ProjectEvent.actor_user_id == User.id)
+    )
+    if not include_remediation:
+        has_a_line = has_a_line.where(ProjectEvent.action.notin_(hidden))
     people = [
-        _person(user) for user in (
-            db.query(User)
-            .filter(User.id.in_(people_q.with_entities(ProjectEvent.actor_user_id).distinct()))
-            .order_by(User.username)
-            .all()
-        )
+        _person(user)
+        for user in db.query(User).filter(has_a_line.exists()).order_by(User.username).all()
     ]
     answer = page_envelope(items, total=int(total), limit=limit, offset=offset)
     answer["people"] = people
     answer["groups"] = [g for g in GROUPS if include_remediation or g != REMEDIATION_GROUP]
-    answer["trimmed"] = was_trimmed(db, project_id)
+    # With no filter and the remediation lines counted, ``total`` IS the
+    # number of lines held: no second count.
+    answer["trimmed"] = was_trimmed(
+        db, project_id, held=int(total) if unfiltered and include_remediation else None,
+    )
     return answer
 
 
 # --- the cap -----------------------------------------------------------------
 
-def was_trimmed(db: Session, project_id: int) -> bool:
+def was_trimmed(db: Session, project_id: int, *, held: Optional[int] = None) -> bool:
     """Whether the project holds as many lines as the cap allows — older ones
-    have been (or are about to be) removed."""
+    have been (or are about to be) removed.  ``held``: the number of lines,
+    when the caller has just counted them; otherwise asked as "is there a
+    line at position ``cap``" — a short answer for every project below it."""
     cap = settings.PROJECT_EVENTS_MAX_PER_PROJECT
     if cap <= 0:
         return False
-    held = (
-        db.query(func.count(ProjectEvent.id)).filter(ProjectEvent.project_id == project_id).scalar() or 0
+    if held is not None:
+        return held >= cap
+    at_the_cap = (
+        db.query(ProjectEvent.id).filter(ProjectEvent.project_id == project_id)
+        .order_by(ProjectEvent.created_at, ProjectEvent.id).offset(cap - 1).limit(1).first()
     )
-    return int(held) >= cap
+    return at_the_cap is not None
 
 
 def trim_to_cap(db: Session) -> int:
