@@ -20,6 +20,7 @@ import {
 } from '../../components/ui/accordion';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../utils/cn';
+import { tabListKeys } from '../../utils/tabList';
 
 // ---------------------------------------------------------------------------
 // Section tab strip — the five guide pages.  Order = reading order.
@@ -202,6 +203,7 @@ export const UserGuideShell: React.FC<{
         className="mb-lg flex flex-wrap gap-xxs border-b border-border"
         role="tablist"
         aria-label="User guide sections"
+        onKeyDown={tabListKeys}
       >
         {GUIDE_TABS.map((tab) => (
           <NavLink

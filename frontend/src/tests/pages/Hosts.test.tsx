@@ -372,6 +372,31 @@ describe('Hosts', () => {
     expect(mockedApi.getHosts.mock.calls.every(([, p]) => (p as { skip: number }).skip === 25)).toBe(true);
   });
 
+  // Review 2026-11-20, U6 — the host open in the side sheet was component
+  // state: a reload or a shared link lost it.
+  it('keeps the host open in the side sheet in the address, and opens the one the address names', async () => {
+    routerState.search = '?sort_by=critical_vulns&sort_order=desc&host=3';
+    renderHosts();
+    await findHostsTable();
+    expect(await screen.findByTestId('host-inspector')).toHaveTextContent('host 3');
+
+    const lastSearch = () => String((navigateSpy.mock.calls[navigateSpy.mock.calls.length - 1]?.[0] as { search?: string })?.search);
+    act(() => { columnArgs.calls[0].onOpen?.(4); });
+    await waitFor(() => expect(lastSearch()).toContain('host=4'));
+    expect(screen.getByTestId('host-inspector')).toHaveTextContent('host 4');
+    // A page turn keeps it; nothing but the reader closes the sheet.
+    await userEvent.setup({ skipHover: true }).click(screen.getByLabelText('Next page'));
+    await waitFor(() => expect(lastSearch()).toContain('page=2'));
+    expect(lastSearch()).toContain('host=4');
+  });
+
+  it('reads no host from an address that names none, or names one that is not a number', async () => {
+    routerState.search = '?sort_by=critical_vulns&sort_order=desc&host=abc';
+    renderHosts();
+    await findHostsTable();
+    expect(screen.queryByTestId('host-inspector')).toBeNull();
+  });
+
   it('writes the page into the URL, leaves it out for the first page, and a filter change goes back to it', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();

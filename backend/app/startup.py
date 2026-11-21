@@ -269,6 +269,12 @@ def _purge_retained(retention_days: int, audit_days: int, mcp_days: int = 0, ses
         read = purge_read_notifications(db, notification_days) if notification_days > 0 else 0
         if read:
             logger.info("Retention: purged %d notification(s) read more than %d day(s) ago", read, notification_days)
+        from app.services import presentation_service
+
+        left = presentation_service.forget_viewers_of_ended(db)
+        db.commit()
+        if left:
+            logger.info("Retention: removed %d tab row(s) of ended presentations", left)
         return calls, mcp, sessions, audits
 
 

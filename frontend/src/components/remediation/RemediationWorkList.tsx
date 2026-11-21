@@ -25,6 +25,7 @@ import {
 import { useToast } from '../../contexts/ToastContext';
 import { queryErrorText } from '../../lib/query';
 import { saveBlob } from '../../utils/download';
+import { tabListKeys } from '../../utils/tabList';
 import { usePagedList } from '../../hooks/usePagedList';
 import { useProjectId } from '../../hooks/useProjectId';
 import { useUrlPage } from '../../hooks/useUrlPage';
@@ -266,6 +267,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     queryFn: ({ signal }) => listRemediationContacts(null, 'all', signal),
     enabled: across && projectId != null && view === 'contacts',
   });
+  const everywhereCut = (everywhere.data?.total ?? 0) > (everywhere.data?.items.length ?? 0);
   const projectsOf = useMemo(
     () => new Map((everywhere.data?.items ?? NO_CONTACTS).map((c) => [c.contact_email, c.projects])),
     [everywhere.data],
@@ -453,7 +455,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const body = (
     <div className="min-w-0">
       <div className="mb-sm flex min-w-0 flex-wrap items-center gap-sm">
-        <div role="tablist" aria-label="How the list is shown" className="flex items-center gap-xs">
+        <div role="tablist" aria-label="How the list is shown" onKeyDown={tabListKeys} className="flex items-center gap-xs">
           {viewButton('rows', VIEW_TITLE.rows)}
           {viewButton('contacts', 'By contact')}
           {viewButton('teams', 'By team')}
@@ -592,6 +594,13 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                             {(projectsOf.get(c.contact_email) ?? 0) > c.projects ? (
                               <span title={`This contact has findings in ${projectsOf.get(c.contact_email)} projects; these counts are the chosen project’s`}>
                                 {c.projects} of {projectsOf.get(c.contact_email)}
+                              </span>
+                            ) : everywhereCut && !projectsOf.has(c.contact_email) ? (
+                              // The every-project list is the first 200
+                              // contacts: this one is past it, so how many
+                              // projects they are in is not known here.
+                              <span title="This contact may have findings in other projects too: the list of contacts across projects is cut, and they are past the cut.">
+                                {c.projects}+
                               </span>
                             ) : c.projects}
                           </TableCell>

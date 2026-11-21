@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Loader2, Trash2, Upload } from 'lucide-react';
 
 import {
+  addScopeDomains,
   deleteName,
   getName,
   getNamesSummary,
@@ -47,6 +48,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 import { Label } from '../components/ui/label';
 import {
   SideSheet,
@@ -481,6 +485,24 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
   });
   const deleting = remove.isPending;
 
+  // Review 2026-11-20, U3 — a name listed "not in scope" could only be put
+  // in scope from the Scope page.  The same write (`addScopeDomains`), from
+  // where the name is read.  A name in scope does not put its address in
+  // scope: said in the menu, and the server keeps the two apart.
+  const declare = useMutation({
+    mutationFn: ({ name, withSubdomains }: { name: NameDetail; withSubdomains: boolean }) =>
+      addScopeDomains(projectId, [{ domain: name.fqdn, include_subdomains: withSubdomains }]),
+    onSuccess: (res, { name, withSubdomains }) => {
+      if (res.invalid.length) {
+        toast.error(`Not declared — ${res.invalid[0]}`);
+        return;
+      }
+      toast.success(withSubdomains ? `${name.fqdn} and its subdomains are in scope` : `${name.fqdn} is in scope`);
+      void invalidateReads(queryClient, ...NAME_READS, 'getName', 'listScopeDomains', 'getScopeCoverage');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'The name could not be declared in scope.')),
+  });
+
   const handleDelete = async () => {
     if (!detail) return;
     const ok = await confirm({
@@ -659,6 +681,24 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
         </SideSheetBody>
         {detail && canEdit && (
           <SideSheetFooter>
+            {!detail.in_scope && detail.kind !== 'wildcard' && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" disabled={declare.isPending}>Declare in scope…</Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuLabel className="max-w-xs text-caption font-normal text-muted-foreground">
+                    Adds a domain to the project’s scope. A name in scope does not put its address in scope.
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => declare.mutate({ name: detail, withSubdomains: false })}>
+                    This name only
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => declare.mutate({ name: detail, withSubdomains: true })}>
+                    This name and its subdomains
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             <Button variant="outline" onClick={handleDelete} disabled={deleting}>
               <Trash2 className="size-4" aria-hidden /> Delete name
             </Button>

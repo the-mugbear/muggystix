@@ -34,6 +34,7 @@ import { useProjectId } from '../../hooks/useProjectId';
 import { toolReferencePath, useToolReferenceName } from '../../hooks/useToolReferenceName';
 import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
+import { tabListKeys } from '../../utils/tabList';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
 import {
@@ -632,7 +633,7 @@ const SectionBody: React.FC<{ ctl: HostTestsController; onDirtyChange?: (dirty: 
       ) : undefined}
     >
       <div className="flex flex-wrap items-center gap-xs">
-        <div role="tablist" aria-label="Which tests to show" className="inline-flex overflow-hidden rounded-control border border-border">
+        <div role="tablist" aria-label="Which tests to show" onKeyDown={tabListKeys} className="inline-flex overflow-hidden rounded-control border border-border">
           {FILTERS.map((f) => (
             <button
               key={f.value} type="button" role="tab" aria-selected={filter === f.value}

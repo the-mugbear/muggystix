@@ -48,7 +48,7 @@ const item = (kind: ActivityKind, start: string, ref: number): ActivityItem => (
   host_count: null,
   status: null,
   target: null,
-  parent_id: null,
+  parent_id: null, host_id: null,
 });
 
 const week = (items: ActivityItem[]): ActivityResponse => ({
@@ -160,7 +160,7 @@ describe('ToolActivity', () => {
     getScansAt.mockResolvedValue(week([{
       ...item('evidence', recent(2), 41),
       label: 'curl', secondary_label: 'curl -sI https://10.0.0.9/', status: 'finding',
-      target: '10.0.0.9', parent_id: 7,
+      target: '10.0.0.9', parent_id: 7, host_id: 312,
     }]));
     renderPage();
     await screen.findByTestId('activity-histogram');
@@ -169,7 +169,9 @@ describe('ToolActivity', () => {
     expect(screen.getByText('finding')).toBeInTheDocument();
     expect(screen.getByText('10.0.0.9')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open detail' }));
-    expect(navigate).toHaveBeenCalledWith('/hosts?search=10.0.0.9');
+    // The record's own host page — not a search of Hosts by the address,
+    // which also matches 10.0.0.90-99.
+    expect(navigate).toHaveBeenCalledWith('/hosts/312');
   });
 
   it('opens the recording session when a command has no address', async () => {

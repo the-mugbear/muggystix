@@ -79,6 +79,7 @@ import {
 } from '../utils/hostFiltersFromUrl';
 import {
   HOSTS_PAGE_PARAM, HOSTS_PAGE_SIZES, readHostsPageSize, writeHostsPageSize,
+  HOSTS_OPEN_HOST_PARAM, openHostFromParams,
 } from '../utils/hostsPaging';
 import { pageFromParams } from '../hooks/useUrlPage';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -190,6 +191,9 @@ interface HostsListState {
   sortBy: HostSortOption;
   /** Zero-based. */
   page: number;
+  /** The host open in the side sheet (`?host=`), so a reload or a shared
+   *  link opens it again — as Names keeps its sheet (`?name_id=`). */
+  host: number | null;
 }
 
 /** The API's parameters for a set of conditions and a sort — also the
@@ -262,13 +266,14 @@ function searchOfContext(ctx: HostQueryContext, extra?: (sp: URLSearchParams) =>
 }
 
 /** The address for a list state. */
-function hostsSearch({ filters, sortBy, page }: HostsListState): string {
+function hostsSearch({ filters, sortBy, page, host }: HostsListState): string {
   return searchOfContext(hostQueryContext(filters, sortBy), (sp) => {
     // "New in the chosen scans" ticked before a scan is chosen: not a
     // condition the API can take yet, but still the reader's choice.
     if (filters.firstSeenInSelectedScans && !filters.scanIds?.length) sp.set('first_seen_in_scan', 'true');
     if (filters.renamedInSelectedScans && !filters.scanIds?.length) sp.set('renamed_in_scan', 'true');
     if (page > 0) sp.set(HOSTS_PAGE_PARAM, String(page + 1));
+    if (host !== null) sp.set(HOSTS_OPEN_HOST_PARAM, String(host));
   });
 }
 
@@ -397,7 +402,10 @@ export default function Hosts() {
       autoApplyDefault: !hasConditions && sessionRead('projectDefaultDismissed') !== '1',
       // The address the session's filters are put into.
       restoreSearch: restoredFromSession
-        ? hostsSearch({ filters: initialFilters, sortBy: DEFAULT_SORT, page: pageFromParams(urlParams, HOSTS_PAGE_PARAM) })
+        ? hostsSearch({
+          filters: initialFilters, sortBy: DEFAULT_SORT,
+          page: pageFromParams(urlParams, HOSTS_PAGE_PARAM), host: openHostFromParams(urlParams),
+        })
         : null,
     };
   });
@@ -419,7 +427,10 @@ export default function Hosts() {
   const parsed = useMemo(() => {
     const urlParams = new URLSearchParams(location.search);
     const fromUrl = hostFiltersFromUrl(urlParams, null);
-    return { filters: fromUrl.filters, sortBy: fromUrl.sortBy ?? DEFAULT_SORT, page: pageFromParams(urlParams, HOSTS_PAGE_PARAM) };
+    return {
+      filters: fromUrl.filters, sortBy: fromUrl.sortBy ?? DEFAULT_SORT,
+      page: pageFromParams(urlParams, HOSTS_PAGE_PARAM), host: openHostFromParams(urlParams),
+    };
   }, [location.search]);
   const { sortBy, page } = parsed;
   // The same object while the conditions are the same: a new page or sort is
@@ -446,7 +457,7 @@ export default function Hosts() {
   const renderedSearchRef = useRef<string | null>(null);
   if (renderedSearchRef.current !== location.search) {
     renderedSearchRef.current = location.search;
-    pendingRef.current = { filters, sortBy, page };
+    pendingRef.current = { filters, sortBy, page, host: parsed.host };
   }
   // The address this page last wrote — any other change of address came from
   // outside (a link, another component's navigate).
@@ -455,15 +466,18 @@ export default function Hosts() {
    *  conditions changed. */
   const commit = useCallback((patch: {
     filters?: Updater<HostFilterOptions>; sortBy?: HostSortOption; page?: Updater<number>;
+    host?: number | null;
   }): boolean => {
     const current = pendingRef.current;
     const next: HostsListState = {
       filters: resolve(patch.filters, current.filters),
       sortBy: patch.sortBy ?? current.sortBy,
       page: Math.max(0, resolve(patch.page, current.page)),
+      host: patch.host !== undefined ? patch.host : current.host,
     };
     const filtersChanged = next.filters !== current.filters;
-    if (!filtersChanged && next.sortBy === current.sortBy && next.page === current.page) return false;
+    if (!filtersChanged && next.sortBy === current.sortBy && next.page === current.page
+      && next.host === current.host) return false;
     pendingRef.current = next;
     const search = hostsSearch(next);
     writtenSearchRef.current = search;
@@ -1021,7 +1035,11 @@ export default function Hosts() {
   // drilling into a host.  The full standalone page at /hosts/:id stays
   // reachable via the "Open standalone" link inside the sheet, or by
   // bookmark / deep link.
-  const [inspectedHostId, setInspectedHostId] = useState<number | null>(null);
+  // Which host is open is the address's (`?host=`): a reload, Back from the
+  // standalone page or a shared link opens the same host.  Written by the
+  // page's one address writer, like every other part of the list's state.
+  const inspectedHostId = parsed.host;
+  const setInspectedHostId = useCallback((id: number | null) => { commit({ host: id }); }, [commit]);
   // The last host the inspector showed — where focus returns when it closes.
   const lastInspectedHostIdRef = useRef<number | null>(null);
   if (inspectedHostId !== null) lastInspectedHostIdRef.current = inspectedHostId;
@@ -1047,7 +1065,7 @@ export default function Hosts() {
   const openInspector = useCallback((hostId: number) => {
     rememberFilters(filtersRef.current);
     setInspectedHostId(hostId);
-  }, []);
+  }, [setInspectedHostId]);
   // The table's rows are memoised; an inline arrow here would be a new prop
   // for every row on every render of the page.
   const openHostRow = useCallback((host: Host) => openInspector(host.id), [openInspector]);

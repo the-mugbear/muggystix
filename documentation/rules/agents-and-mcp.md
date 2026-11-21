@@ -97,7 +97,7 @@ paths:
 
 ## Tool registry — a catalogue, never a permission
 
-- A tool's row shows `intrusive`, `requires_privileges` and `output_format` when the catalogue states them and nothing when it does not (2026-11-21: shown; the missing values are to be filled in later from each tool's own documentation).
+- A tool's row shows `intrusive`, `requires_privileges` and `output_format` when the catalogue states them and nothing when it does not (2026-11-21: shown). Every shipped tool states both flags, and an output format unless it writes no file — taken from each tool's own documentation by the definitions in revision `e3f9c1a5b7d4`, which fills an existing installation's rows where a column is NULL or still as shipped (an administrator's value is kept; `test_migration_tool_catalogue_flags.py` pins revision == seed).
 - For PEOPLE (`/tool-reference`). Agents may read it (`list_tools`, `GET /references/tools`); no agent text sources or cites it; no product-written "use this tool for that".
 - `tool_registry` `status`: `reference` / `suggested` / `rejected` (no `approved`, `test_tool_registry.py`); `ingestible` is independent.
 - A parsed tool's row carries `run_command` / `run_note`, pinned to the output contract (`test_tool_command_consistency.py`), not `PATCH`-editable; note-only rows where no honest one-liner exists (gvm; `b3d9f1a7c5e2` fills only empty rows).

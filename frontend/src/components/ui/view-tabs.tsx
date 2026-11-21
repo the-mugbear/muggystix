@@ -7,6 +7,7 @@
  * tab panels of one record (`ui/tabs`).
  */
 import { cn } from '../../utils/cn';
+import { tabListKeys } from '../../utils/tabList';
 
 interface ViewTabsProps<T extends string> {
   /** What the control chooses, for assistive technology ("Findings view"). */
@@ -19,7 +20,7 @@ interface ViewTabsProps<T extends string> {
 
 export function ViewTabs<T extends string>({ label, value, options, onChange, className }: ViewTabsProps<T>) {
   return (
-    <div role="tablist" aria-label={label} className={cn('inline-flex rounded-control border border-border p-[2px]', className)}>
+    <div role="tablist" aria-label={label} onKeyDown={tabListKeys} className={cn('inline-flex rounded-control border border-border p-[2px]', className)}>
       {options.map(([key, text]) => (
         <button
           key={key}

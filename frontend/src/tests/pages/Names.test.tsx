@@ -14,6 +14,7 @@ vi.mock('../../services/api', () => ({
   getHostNames: vi.fn(),
   createFinding: vi.fn(),
   createHostTests: vi.fn(),
+  addScopeDomains: vi.fn(),
 }));
 const confirmMock = vi.fn();
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
@@ -163,11 +164,35 @@ describe('Names — Add finding / Add test on a name’s address', () => {
 
   it('a viewer sees the addresses but no action on them', async () => {
     role = 'viewer';
+    mocked.getName.mockResolvedValue({ ...detail, in_scope: false });
     renderAt('/names');
     fireEvent.click(await screen.findByText('portal.acme.com'));
     expect(await screen.findByText('open host')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add finding' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add test' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Declare in scope…' })).toBeNull();
+  });
+
+  // Review 2026-11-20, U3 — a name listed "not in scope" is put in scope
+  // from where it is listed, with the Scope page's own write.
+  it('declares a name that is not in scope from its sheet, and offers nothing for one that is', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup({ skipHover: true });
+    mocked.getName.mockResolvedValue({ ...detail, in_scope: false });
+    mocked.addScopeDomains.mockImplementation(async () => {
+      mocked.getName.mockResolvedValue(detail);     // from now on the server says it is in scope
+      return { added: 1, updated: 0, invalid: [] };
+    });
+    renderAt('/names');
+    fireEvent.click(await screen.findByText('portal.acme.com'));
+    await user.click(await screen.findByRole('button', { name: 'Declare in scope…' }));
+    expect(await screen.findByText(/does not put its address in scope/)).toBeInTheDocument();
+    await user.click(screen.getByRole('menuitem', { name: 'This name and its subdomains' }));
+    await waitFor(() => expect(mocked.addScopeDomains).toHaveBeenCalledWith(
+      1, [{ domain: 'portal.acme.com', include_subdomains: true }],
+    ));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('portal.acme.com and its subdomains are in scope'));
+    // The sheet reads the name again.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Declare in scope…' })).toBeNull());
   });
 });
 

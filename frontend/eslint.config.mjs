@@ -66,6 +66,16 @@ const OBJECT_URL = {
     + 'or save the file with utils/download (saveBlob); an API function answers with the Blob.',
 };
 
+// A tab strip drawn by hand has the roles and, unless it says otherwise, none
+// of the keys: it takes utils/tabList's handler (or is built from
+// components/ui/tabs, which has its own).
+const TAB_STRIP = {
+  selector: 'JSXOpeningElement:has(JSXAttribute[name.name="role"][value.value="tablist"])'
+    + ':not(:has(JSXAttribute[name.name="onKeyDown"]))',
+  message: 'A hand-built role="tablist" needs arrow keys: onKeyDown={tabListKeys} (utils/tabList), '
+    + 'or build the strip from components/ui/tabs.',
+};
+
 export default [
   { ignores: ['build/**', 'dist/**', 'node_modules/**', 'coverage/**'] },
   {
@@ -88,7 +98,7 @@ export default [
       // question).  The official TanStack rule; it replaced a hidden partition
       // of the cache that nothing at the call site could show.
       '@tanstack/query/exhaustive-deps': 'error',
-      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, BARE_DAY_OR_TIME, OBJECT_URL],
+      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, BARE_DAY_OR_TIME, OBJECT_URL, TAB_STRIP],
     },
   },
   {
@@ -137,9 +147,9 @@ export default [
   },
   // Each helper is exempt from its own rule only (a later entry replaces the
   // list for its files, so it names every restriction that still applies).
-  { files: ['src/utils/download.ts'], rules: { 'no-restricted-syntax': ['error', BARE_MOMENT, BARE_DAY_OR_TIME] } },
-  { files: ['src/utils/relativeTime.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, OBJECT_URL] } },
-  { files: ['src/lib/objectUrls.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, BARE_DAY_OR_TIME] } },
+  { files: ['src/utils/download.ts'], rules: { 'no-restricted-syntax': ['error', BARE_MOMENT, BARE_DAY_OR_TIME, TAB_STRIP] } },
+  { files: ['src/utils/relativeTime.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, OBJECT_URL, TAB_STRIP] } },
+  { files: ['src/lib/objectUrls.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, BARE_DAY_OR_TIME, TAB_STRIP] } },
   // Tests build fixtures and expected values with the primitives themselves.
   { files: ['src/tests/**'], rules: { 'no-restricted-syntax': 'off' } },
 ];

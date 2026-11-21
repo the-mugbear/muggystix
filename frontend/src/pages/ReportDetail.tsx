@@ -54,6 +54,7 @@ import { useProjectRole } from '../hooks/useProjectRole';
 import { useReportTextImages } from '../hooks/useReportTextImages';
 import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
+import { tabListKeys } from '../utils/tabList';
 import { NEED_SECTION } from '../utils/findingNeeds';
 import { formatTimestamp } from '../utils/relativeTime';
 import { REPORT_FIELD_LABELS } from '../utils/reportImages';
@@ -676,6 +677,18 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             The template “{template ?? report.template}” is not installed on this server{editable ? ' — choose another' : ''}.
           </p>
         )}
+        {/* A failed read of the templates is said (review 2026-11-20): the
+            picker then offered only the report's own template, the title and
+            the files line read as if there were nothing to say. */}
+        {templatesQuery.isError && (
+          <p className="flex flex-wrap items-center gap-xs text-caption text-destructive" data-testid="templates-failed">
+            {queryErrorText(templatesQuery.error, 'The list of templates could not be loaded.')}
+            {' '}What a template needs and offers is not shown.
+            <Button type="button" variant="outline" size="sm" className="h-7" onClick={() => void templatesQuery.refetch()}>
+              Retry
+            </Button>
+          </p>
+        )}
       </section>
 
       {isDraft && (
@@ -1026,7 +1039,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         </div>
       )}
 
-      <div role="tablist" aria-label="Report sections" className="flex gap-xxs border-b border-border">
+      <div role="tablist" aria-label="Report sections" onKeyDown={tabListKeys} className="flex gap-xxs border-b border-border">
         {SECTIONS.map((t) => (
           <button key={t.id} type="button" role="tab" aria-selected={section === t.id}
             id={`report-tab-${t.id}`} aria-controls={`report-panel-${t.id}`}

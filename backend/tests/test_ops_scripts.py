@@ -362,6 +362,14 @@ def test_deploy_stops_waiting_when_the_migration_has_failed(project):
     assert "The schema migration FAILED" in out and "NOTHING WAS CHANGED" in out
     assert "migration-failure-report.sh" in out and "option 7" in out
     assert "DEPLOY_IN_PROGRESS|" in project.state_file()
+    # The log is read from the moment THIS start began, never a window that
+    # reaches back before it: a restarted container keeps its log, and a
+    # restore run right after a failed upgrade read that upgrade's line
+    # (review 2026-11-20).
+    reads = [c for c in project.calls() if c.startswith("compose logs --since")]
+    assert reads and all(
+        __import__("re").fullmatch(r"compose logs --since \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ backend", c) for c in reads
+    ), reads
 
 
 def test_a_deploy_finished_by_hand_gets_a_new_rollback_point(project):

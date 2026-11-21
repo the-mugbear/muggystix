@@ -62,6 +62,9 @@ export interface ActivityItem {
   /** For evidence, the agent session that recorded it (`ref_id` is the
    *  record's own id); the deep link goes to the session. */
   parent_id: number | null;
+  /** For evidence, the host the record is about — its page is where the
+   *  record is shown.  Null for scans. */
+  host_id: number | null;
 }
 
 export interface ActivityResponse {

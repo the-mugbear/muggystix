@@ -2,6 +2,45 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.550.0",
+      "frontend": "5.437.0",
+      "date": "2026-11-21",
+      "entries": [
+        {
+          "kind": "new",
+          "text": "Names: a name that is not in scope can be declared in scope from its own panel, alone or with its subdomains."
+        },
+        {
+          "kind": "new",
+          "text": "Hosts: the host open in the side panel is part of the address, so a reload or a shared link opens the same host."
+        },
+        {
+          "kind": "new",
+          "text": "Tool Reference says for every catalogued tool whether it is intrusive, whether it needs privileges, and what file it writes."
+        },
+        {
+          "kind": "changed",
+          "text": "Tool Activity's Open detail on a recorded command opens that host's page instead of a search of Hosts."
+        },
+        {
+          "kind": "changed",
+          "text": "Tab strips on Segments, a report, Remediation, drafts, a host's tests and the user guide can be moved through with the arrow keys."
+        },
+        {
+          "kind": "fixed",
+          "text": "A report says when the list of templates could not be loaded, with Retry, instead of showing an empty picker."
+        },
+        {
+          "kind": "fixed",
+          "text": "In a presentation, a tab that lost control is told so instead of being told its slide is invalid."
+        },
+        {
+          "kind": "fixed",
+          "text": "A restore run right after a failed upgrade no longer reports that upgrade's failure as its own."
+        }
+      ]
+    },
+    {
       "backend": "2.549.0",
       "frontend": "5.436.1",
       "date": "2026-11-21",

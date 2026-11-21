@@ -12,6 +12,7 @@ import React, { useState } from 'react';
 import type { Proposal } from '../../services/api';
 import { type OnProposalDecided, useProposalDecision } from '../../hooks/useProposalDecision';
 import type { EvidenceResolver } from '../../utils/reportImages';
+import { tabListKeys } from '../../utils/tabList';
 import { cn } from '../../utils/cn';
 import { scrollBelowChrome } from '../../utils/uiStyles';
 import {
@@ -106,7 +107,7 @@ const FieldDraftsReview: React.FC<Props> = ({
         </p>
       </div>
       {many && (
-        <div role="tablist" aria-label={`${label} drafts`} className="flex min-w-0 flex-wrap gap-xs">
+        <div role="tablist" aria-label={`${label} drafts`} onKeyDown={tabListKeys} className="flex min-w-0 flex-wrap gap-xs">
           {drafts.map((d, i) => {
             const active = d.id === selected.id;
             const who = draftTabLabel(d, drafts);

@@ -123,6 +123,8 @@ class ActivityItem(BaseModel):
     # For evidence, the agent session that recorded it (``ref_id`` is the
     # record's own id); the deep link goes to the session.  Null otherwise.
     parent_id: Optional[int] = None
+    # For evidence, the host the record is about: the page that shows it.
+    host_id: Optional[int] = None
 
 
 class ActivityResponse(BaseModel):
@@ -460,7 +462,7 @@ def _query_evidence(
         db.query(
             EvidenceRecord.id, EvidenceRecord.project_id, Project.name,
             EvidenceRecord.tool, EvidenceRecord.command, EvidenceRecord.outcome,
-            when, hit, EvidenceRecord.agent_session_id,
+            when, hit, EvidenceRecord.agent_session_id, EvidenceRecord.host_id,
         )
         .join(Project, Project.id == EvidenceRecord.project_id)
         .join(models.Host, models.Host.id == EvidenceRecord.host_id)
@@ -490,6 +492,7 @@ def _query_evidence(
             status=row[5],
             target=row[7],
             parent_id=row[8],
+            host_id=row[9],
         )
         for row in rows
     ]

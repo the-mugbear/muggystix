@@ -152,8 +152,17 @@ backend_probe() {
 # step, the migration ran at import in every uvicorn worker: the supervisor
 # stayed up and respawned them — status "running", restart count 0, for as
 # long as anyone waited; 2026-10-02.)
+#
+# $1 = how far back to read: a number of seconds, or the moment the backend
+# was started (an RFC 3339 timestamp, STACK_BACKEND_STARTED_AT).  The moment
+# is what the wait passes: a container that is restarted keeps its log, so a
+# window reaching back before the start read the PREVIOUS start's failure —
+# a restore run right after a failed upgrade ended "the migration FAILED" on
+# a backend that was about to come up (review 2026-11-20).
 backend_migration_failure() {
-    $DC logs --since "${1:-300}s" backend 2>/dev/null | grep "DATABASE MIGRATION FAILED" | tail -n 1 | cut -c1-700
+    local since="${1:-300}"
+    [[ "$since" =~ ^[0-9]+$ ]] && since="${since}s"
+    $DC logs --since "$since" backend 2>/dev/null | grep "DATABASE MIGRATION FAILED" | tail -n 1 | cut -c1-700
 }
 
 # "<status> <restart count>" of the backend container, e.g. "running 0".
@@ -390,7 +399,7 @@ wait_for_backend_healthy() {
             print_error "The backend container has restarted ${restarts} times — it is crash-looping."
             return 2
         fi
-        failure="$(backend_migration_failure $((elapsed + 120)))"
+        failure="$(backend_migration_failure "${STACK_BACKEND_STARTED_AT:-$((elapsed + 120))}")"
         if [[ -n "$failure" ]]; then
             print_error "The schema migration FAILED — the backend will keep retrying it and failing the same way."
             echo "  ${failure#*| }"
@@ -449,6 +458,9 @@ wait_for_backend_healthy() {
 stack_start_backend() {
     local rc=0
     $DC stop worker report-worker >/dev/null 2>&1 || true
+    # The moment of THIS start: the health wait reads the backend's log from
+    # here on, never a line an earlier start left (backend_migration_failure).
+    STACK_BACKEND_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # shellcheck disable=SC2086
     $DC up -d ${1:-} db backend || rc=$?
     return "$rc"

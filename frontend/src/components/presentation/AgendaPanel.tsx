@@ -5,7 +5,7 @@
  * agenda exists".  Everyone sees it; only the driver changes it — every change
  * is a move (`go`), so the agenda state stays part of the shared position.
  */
-import React from 'react';
+import React, { useMemo } from 'react';
 
 import type { PresentationAgenda, PresentationState, Slide } from '../../services/api';
 import type { Target } from '../../utils/presentationSync';
@@ -38,6 +38,12 @@ const AgendaPanel: React.FC<Props> = ({ state, position, pinned, slides, agendas
   // Its items come from the agenda list (re-read when the page sees a newer version).
   const latest = running && newer
     ? agendas.find((x) => x.id === running.id && x.version === running.latest_version) : undefined;
+  // Each item's label is a scan of the deck; the panel renders on every
+  // answer (once a second), so they are read once per agenda version and
+  // deck, not per render (review 2026-11-20).  A version's items never change.
+  const pinnedKey = pinned ? `${pinned.id}:${pinned.version}` : '';
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the agenda's version, not the object
+  const itemLabels = useMemo(() => (pinned?.items ?? []).map((anchor) => itemLabel(slides, anchor)), [slides, pinnedKey]);
 
   const choose = (value: string) => {
     if (!onGo) return;
@@ -102,7 +108,7 @@ const AgendaPanel: React.FC<Props> = ({ state, position, pinned, slides, agendas
           <ol className="space-y-px text-metadata">
             {pinned.items.map((anchor, i) => {
               const here = i === a.item_index;
-              const label = `${i + 1}. ${itemLabel(slides, anchor)}`;
+              const label = `${i + 1}. ${itemLabels[i] ?? itemLabel(slides, anchor)}`;
               return (
                 <li key={`${i}-${anchor}`}>
                   {onGo ? (

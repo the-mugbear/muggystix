@@ -156,10 +156,10 @@ function deepLinkFor(item: ActivityItem): string {
       return `/scans/${item.ref_id}`;
     case 'evidence':
       // An evidence record lives on its host's page (under the test it
-      // answers). The row carries the address, not the host id, so it opens
-      // the Hosts list narrowed to that address; without one, the agent
-      // session that recorded it.
-      if (item.target) return `/hosts?search=${encodeURIComponent(item.target)}`;
+      // answers): the row names that host, so it opens that page — not a
+      // search of Hosts by the address, which matches part of other
+      // addresses too.  Without one, the agent session that recorded it.
+      if (item.host_id != null) return `/hosts/${item.host_id}`;
       return item.parent_id != null ? `/agent-sessions/${item.parent_id}` : '/agent-activity';
   }
 }

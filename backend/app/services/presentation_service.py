@@ -343,6 +343,19 @@ def _forget_viewers(db: Session, p: Presentation) -> None:
     db.execute(delete(PresentationViewer).where(PresentationViewer.presentation_id == p.id))
 
 
+def forget_viewers_of_ended(db: Session) -> int:
+    """Viewer rows of presentations that have ended — a heartbeat that read
+    the presentation as live and wrote after its End (which had just removed
+    them) leaves one.  Nothing reads such a row; the daily retention pass
+    removes them (review 2026-11-20).  The caller commits."""
+    gone = db.execute(delete(PresentationViewer).where(
+        PresentationViewer.presentation_id.in_(
+            select(Presentation.id).where(Presentation.ended_at.isnot(None))
+        )
+    ))
+    return gone.rowcount or 0
+
+
 def get_presentation(db: Session, project_id: int, presentation_id: int) -> Presentation:
     p = db.query(Presentation).filter(
         Presentation.id == presentation_id, Presentation.project_id == project_id,
@@ -613,6 +626,12 @@ def move(db: Session, p: Presentation, report: Report, user: User, client_id: st
     (``agenda``: ``{agenda_id, version, mode, item_index}``, or None for the
     full report) — all of the position, in one conditional UPDATE."""
     client_id = _client(client_id)
+    # Who may move is asked before what they asked for: a tab that lost
+    # control is told so (409), not that its slide or filter is wrong (a 422
+    # that stayed on its screen — review 2026-11-20).  The UPDATE below is
+    # still the decision; this only orders the two refusals.
+    if p.ended_at is not None or p.driver_id != user.id or p.driver_client_id != client_id:
+        _refuse_driver_write(db, p, user, client_id)
     kind, value = check_position(db, report, p, slide_key, kind, value)
     a_id, a_version, a_mode, a_index = check_agenda(db, report, p, agenda, slide_key, kind, value)
     row = db.execute(

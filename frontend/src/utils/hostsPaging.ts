@@ -9,6 +9,14 @@
 import { userScopedKey } from './scopedStorage';
 
 export const HOSTS_PAGE_PARAM = 'page';
+/** The host open in the side sheet (`?host=<id>`), so a reload or a shared
+ *  link opens it again — as Names keeps its sheet (`?name_id=`). */
+export const HOSTS_OPEN_HOST_PARAM = 'host';
+/** The ONE reading of `?host=`: a positive whole number, else no host. */
+export const openHostFromParams = (params: URLSearchParams): number | null => {
+  const raw = params.get(HOSTS_OPEN_HOST_PARAM) ?? '';
+  return /^[1-9]\d{0,9}$/.test(raw) ? Number(raw) : null;
+};
 export const HOSTS_PAGE_SIZES = [10, 25, 50, 100];
 export const HOSTS_DEFAULT_PAGE_SIZE = 25;
 

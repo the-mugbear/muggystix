@@ -30,6 +30,7 @@ import {
   type PostureSite,
 } from '../services/api';
 import { buildFindingsUrl, buildHostsUrl } from '../utils/drilldownLinks';
+import { tabListKeys } from '../utils/tabList';
 import SeverityBar from '../components/ui/SeverityBar';
 import { tierHsl, TIER_LABEL } from '../components/posture/postureTheme';
 import { queryErrorText } from '../lib/query';
@@ -294,7 +295,7 @@ const Segments: React.FC = () => {
               ? 'Each configured site with its criticality tier. Subnets in no site are rolled up as Unassigned.'
               : 'Each scoped subnet. Open a row for its open work and hygiene detail.'}
             actions={
-              <div className="inline-flex rounded-md border border-border p-0.5" role="tablist" aria-label="Segment lens">
+              <div className="inline-flex rounded-md border border-border p-0.5" role="tablist" aria-label="Segment lens" onKeyDown={tabListKeys}>
                 {(['site', 'subnet'] as const).map((m) => (
                   <button key={m} type="button" role="tab" aria-selected={effectiveLens === m} onClick={() => setLens(m)}
                     className={`rounded px-md py-0.5 text-caption font-medium capitalize transition-colors ${effectiveLens === m ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>

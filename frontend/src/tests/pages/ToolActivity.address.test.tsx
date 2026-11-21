@@ -40,7 +40,7 @@ const scan = (minsAgo: number, ref: number): ActivityItem => ({
   kind: 'scan', ref_id: ref, project_id: 1, project_name: 'Acme internal', label: 'nmap',
   secondary_label: null, start_time: new Date(Date.now() - minsAgo * 60_000).toISOString(), end_time: null,
   recorded_time: null, start_time_is_fallback: false, has_end_time: false, host_count: null, status: null,
-  target: null, parent_id: null,
+  target: null, parent_id: null, host_id: null,
 });
 
 const answer = (items: ActivityItem[]): ActivityResponse => ({
