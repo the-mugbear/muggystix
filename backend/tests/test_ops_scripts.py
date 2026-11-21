@@ -2175,3 +2175,139 @@ def test_script_parses(name):
     path = next(SCRIPTS.rglob(name))
     result = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-11-20, batch 2 — rollback identity and completeness (C3, C4), a
+# volume snapshot read to its end (C5), a database-only backup says so (C6),
+# one reading of an .env value (T5)
+# ---------------------------------------------------------------------------
+
+def _rollback_state_with_ids(project, dump, ids: dict[str, str]) -> None:
+    """As option 1 writes it since 2.547.6: `service|image ref|image id`."""
+    lines = [f"{s}|proj-{s}:latest|{ids[s]}" for s in SERVICES]
+    lines += [f"PREDEPLOY_DB_DUMP|{dump}", f"PREDEPLOY_ALEMBIC_REVISION|{OLD_REV}"]
+    (project.root / ".deploy-rollback-state").write_text("\n".join(lines) + "\n")
+
+
+def test_a_deploy_records_the_image_it_can_go_back_to_by_id(project):
+    result = project.run("deploy.sh", stdin="1\n")
+
+    assert result.returncode == 0, _output(result)
+    lines = [ln for ln in project.state_file().splitlines() if ln.startswith("backend|")]
+    assert lines == ["backend|proj-backend:latest|sha256:new-backend"]
+
+
+def test_rollback_takes_this_stacks_build_when_another_stack_reused_the_tag(project):
+    """The tag's name is the same for every BlueStick stack on the host: after
+    another stack's deploy it names THAT stack's previous build."""
+    dump = project.make_dump()
+    _rollback_state_with_ids(project, dump, {s: f"sha256:old-{s}" for s in SERVICES})
+    project.state["images"]["bluestick-rollback-backend:previous"] = "sha256:another-stacks-backend"
+    project.state["images"]["<none>-old-backend:x"] = "sha256:old-backend"     # ours, still on the host
+
+    result = project.run("deploy.sh", stdin="7\n")
+
+    assert result.returncode == 0, _output(result)
+    calls = project.calls()
+    assert _index(calls, "tag sha256:old-backend proj-backend:latest") != -1
+    assert _index(calls, "tag bluestick-rollback-backend:previous proj-backend:latest") == -1
+    assert project.read_state()["images"]["proj-backend:latest"] == "sha256:old-backend"
+
+
+def test_rollback_refuses_when_one_services_previous_build_is_gone(project):
+    """Reverting the others alone runs the previous backend beside a worker of
+    the failed build, whose start command migrates the schema forward."""
+    dump = project.make_dump()
+    project.rollback_state(dump, OLD_REV)
+    del project.state["images"]["bluestick-rollback-worker:previous"]
+
+    result = project.run("deploy.sh", stdin="7\n")
+
+    out = _output(result)
+    assert result.returncode != 0, out
+    assert "not on this host: worker" in out and "Nothing was stopped or changed" in out
+    calls = project.calls()
+    assert not any(c.startswith("tag ") for c in calls)
+    assert _index(calls, "compose stop") == -1
+    assert project.read_state()["images"]["proj-backend:latest"] == "sha256:new-backend"
+
+
+def test_rollback_of_the_others_is_done_only_when_asked_for(project):
+    dump = project.make_dump()
+    project.rollback_state(dump, OLD_REV)
+    del project.state["images"]["bluestick-rollback-worker:previous"]
+
+    result = project.run("deploy.sh", stdin="7\n", env={"DEPLOY_ROLLBACK_PARTIAL": "1"})
+
+    out = _output(result)
+    assert "leaving it as-is" in out
+    assert _index(project.calls(), "tag bluestick-rollback-backend:previous proj-backend:latest") != -1
+
+
+def test_restore_refuses_a_truncated_volume_snapshot_before_it_empties_the_volume(project):
+    """`tar tzf … | grep -q PG_VERSION` stopped at the first match and never
+    saw tar fail: a snapshot cut short after PG_VERSION passed."""
+    whole = project.backups / "whole.tar.gz"
+    payload = project.backups / "payload"
+    payload.mkdir()
+    (payload / "PG_VERSION").write_text("16\n")
+    (payload / "base.bin").write_bytes(os.urandom(300_000))
+    with tarfile.open(whole, "w:gz") as tar:
+        tar.add(payload / "PG_VERSION", arcname="PG_VERSION")
+        tar.add(payload / "base.bin", arcname="base.bin")
+    snapshot = project.backups / "nm-pgdata-20260101-000000.tar.gz"
+    snapshot.write_bytes(whole.read_bytes()[: whole.stat().st_size // 2])
+    whole.unlink()
+
+    result = project.run("restore-db.sh", str(snapshot), stdin="RESTORE\n")
+
+    out = _output(result)
+    assert result.returncode != 0, out
+    assert "unreadable or is not a PostgreSQL volume snapshot" in out
+    assert _index(project.calls(), "-mindepth 1 -delete") == -1
+
+
+def test_a_backup_whose_uploads_could_not_be_archived_says_so_in_its_own_record(project):
+    project.state["fail"] = [{"match": "/uploads:ro", "rc": 2}]
+
+    result = project.run("backup-db.sh")
+
+    assert result.returncode == 1 and "BACKUP INCOMPLETE" in _output(result)
+    metas = list(project.backups.glob("nm-pgdump-*.dump.meta"))
+    assert len(metas) == 1
+    assert "uploads_archive_missing=failed" in metas[0].read_text()
+
+
+def test_restoring_a_database_only_backup_never_ends_restore_complete(project):
+    """The dump of a backup that ended BACKUP INCOMPLETE stays in the folder,
+    newest, and used to restore as an ordinary complete one."""
+    dump = project.make_dump()
+    meta = project.backups / (dump.name + ".meta")
+    meta.write_text(meta.read_text() + "uploads_archive_missing=failed\n")
+
+    result = project.run("restore-db.sh", str(dump), stdin="RESTORE\n")
+
+    out = _output(result)
+    assert result.returncode == 4, out
+    assert "DATABASE-ONLY backup" in out and "PARTLY RESTORED" in out
+    assert "Restore complete" not in out and "made before v2.392.1" not in out
+
+
+def test_only_stack_lib_reads_a_value_out_of_an_env_file():
+    """Five scripts had a reader of their own, each with another rule for
+    quotes; check.sh's kept them."""
+    import re
+    # A reader: a grep for `^KEY=` in an .env file whose match is then cut or
+    # rewritten into a value (a bare `grep -q` asks only whether it is set).
+    reader = re.compile(r"""grep[^\n|]*\^[^\n|]*(\$1|\$\{?key\}?)=""")
+
+    def reads_a_value(line: str) -> bool:
+        return bool(reader.search(line)) and ".env" in line and ("cut -d" in line or "sed " in line)
+
+    own = sorted(
+        path.name for path in SCRIPTS.rglob("*.sh")
+        if path.name != "stack-lib.sh"
+        and any(reads_a_value(line) for line in path.read_text(encoding="utf-8").splitlines())
+    )
+    assert own == []

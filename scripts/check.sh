@@ -307,7 +307,11 @@ KEEP_LOGS=0
 SUITE_CONTAINER="bluestick-check-$$"       # shard N of several: …-sN
 declare -a SUITE_CONTAINERS=() SUITE_PIDS=() WATCHER_PIDS=()
 
-env_value() { grep -E "^$1=" "$COMPOSE_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-; }
+# The one reading of an .env value (stack-lib.sh): this script's own kept a
+# quoted value's quotes, so POSTGRES_USER="x" reached psql with them.
+# shellcheck source=stack-lib.sh
+source "$SRC/scripts/stack-lib.sh"
+env_value() { stack_env_val "$1" "$COMPOSE_ROOT/.env"; }
 pg_user() { local u; u="$(env_value POSTGRES_USER)"; printf '%s' "${u:-nmapuser}"; }
 pg_db()   { local d; d="$(env_value POSTGRES_DB)";   printf '%s' "${d:-networkMapper}"; }
 

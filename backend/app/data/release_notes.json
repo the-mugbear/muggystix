@@ -2,6 +2,16 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.6",
+      "frontend": "5.435.5",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "changed", "text": "For operators: after a rollback or an upgrade the scripts name the build that is actually running, not the version of the files in the folder."},
+        {"kind": "fixed", "text": "For operators: a rollback (deploy.sh option 7) no longer goes ahead when one service's previous build is missing, and cannot pick up another installation's build on a host that runs two."},
+        {"kind": "fixed", "text": "For operators: restoring a volume snapshot that was cut short is refused before anything is emptied, and a backup whose uploads could not be archived is restored as what it is, a database-only backup."}
+      ]
+    },
+    {
       "backend": "2.547.5",
       "frontend": "5.435.5",
       "date": "2026-11-20",

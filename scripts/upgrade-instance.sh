@@ -103,11 +103,10 @@ confirm() {
 
 # Read KEY from an env file: last uncommented assignment wins, surrounding
 # quotes stripped.  Prints nothing when unset.
-env_get() {
-    local file="$1" key="$2"
-    [[ -f "$file" ]] || return 0
-    { grep -E "^[[:space:]]*${key}=" "$file" || true; } | tail -n 1 | sed -E "s/^[[:space:]]*${key}=//; s/^[\"']//; s/[\"']\$//"
-}
+# The one reading is stack-lib.sh's `stack_env_val` (sourcing it runs nothing).
+# shellcheck source=stack-lib.sh
+source "$SCRIPT_DIR/stack-lib.sh"
+env_get() { stack_env_val "$2" "$1"; }
 
 # Carry one regular file: absent → copy; identical → skip; different → abort.
 carry_file() {
@@ -429,21 +428,21 @@ section "Verify the new code is what's serving"
 # platform_version.json is bind-mounted, so the banner alone proves nothing —
 # but after a rebuild+recreate the API's reported version must match it, and
 # the containers must be younger than this run.
-HOST_IP="$(env_get .env HOST_IP)"
+#
+# The version the API reports is read from that mounted file, so comparing it
+# with the file compared the file with itself (and the API's root is not
+# proxied by nginx, so the request this section used to make got the page).
+# What says which BUILD runs is the file the Dockerfile writes into the image.
 EXPECTED="$(python3 -c "import json; print(json.load(open('platform_version.json'))['backend'])" 2>/dev/null || true)"
-if [[ -n "$HOST_IP" && -n "$EXPECTED" ]] && command -v curl >/dev/null; then
-    reported="$(curl -sk --max-time 10 "https://${HOST_IP}/api/v1/" 2>/dev/null \
-        | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)"
-    if [[ -z "$reported" ]]; then
-        reported="$(curl -sk --max-time 10 "https://${HOST_IP}/" -H 'Accept: application/json' 2>/dev/null \
-            | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" 2>/dev/null || true)"
-    fi
-    if [[ "$reported" == "$EXPECTED" ]]; then
-        ok "API reports backend $reported (matches platform_version.json)"
-    elif [[ -z "$reported" ]]; then
-        warn "Could not read a version from https://${HOST_IP}/ — check manually: curl -sk https://${HOST_IP}/api/v1/"
+if [[ -n "$EXPECTED" ]]; then
+    built="$($DC exec -T backend cat /etc/bluestick-backend-build.json 2>/dev/null \
+        | python3 -c "import json,sys; print(json.load(sys.stdin).get('backendVersion') or '')" 2>/dev/null || true)"
+    if [[ "$built" == "$EXPECTED" ]]; then
+        ok "The running backend image is build $built (matches platform_version.json)"
+    elif [[ -n "$built" && "$built" != "unknown" ]]; then
+        warn "The running backend image is build '$built' but platform_version.json says '$EXPECTED' — the rebuild did not land."
     else
-        warn "API reports backend '$reported' but platform_version.json says '$EXPECTED' — the rebuild may not have landed."
+        warn "The running backend image does not say which build it is — check the containers' ages below."
     fi
 fi
 echo ""

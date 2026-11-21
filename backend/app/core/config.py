@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 class Settings:
     # Version configuration
@@ -30,6 +30,21 @@ class Settings:
 
     APP_VERSION: str = os.getenv("APP_VERSION", _version_data.get("backend", "1.0.0"))
     FRONTEND_VERSION: str = os.getenv("FRONTEND_VERSION", _version_data.get("frontend", "1.0.0"))
+
+    # The version of the BUILD this process runs, written into the image by
+    # the Dockerfile.  ``APP_VERSION`` above is the mounted file's — the
+    # folder's — and the two differ after a rollback or a copy with no rebuild.
+    # None when the image carries none (a build before 2.547.6, or code run
+    # outside an image).
+    BUILD_VERSION: Optional[str] = None
+    try:
+        with Path(os.getenv("BACKEND_BUILD_FILE", "/etc/bluestick-backend-build.json")).open(
+                "r", encoding="utf-8") as _build_handle:
+            _built = json.load(_build_handle).get("backendVersion")
+        if isinstance(_built, str) and _built and _built != "unknown":
+            BUILD_VERSION = _built
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
 
     # Database configuration
     DATABASE_URL: str = os.getenv(

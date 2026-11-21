@@ -54,8 +54,13 @@ describe('version consistency', () => {
     // worker and report-worker read the mounted file (PLATFORM_VERSION_FILE);
     // a fallback in their `environment:` would override the file and could
     // drift from it (backlog R10 removed the four that were there).
-    it('has exactly the two frontend build-arg fallbacks, and no version in a service environment', () => {
-      expect(fallbacks('APP_VERSION')).toHaveLength(1);
+    // Since 2.547.6 the three backend images take the same number as a BUILD
+    // ARG too — written into the image as the build's own version, which
+    // `GET /` reports beside the mounted file's (a rollback runs the previous
+    // image under the new folder's file).  A build arg, never `environment:`.
+    it('has the version only in image build args, and no version in a service environment', () => {
+      expect(fallbacks('APP_VERSION')).toHaveLength(4);
+      expect(compose.match(/^\s+BACKEND_VERSION: \$\{APP_VERSION:-[0-9.]+\}$/gm)).toHaveLength(4);
       expect(fallbacks('FRONTEND_VERSION')).toHaveLength(1);
       expect(compose).toMatch(/^\s+BACKEND_VERSION: \$\{APP_VERSION:-[0-9.]+\}$/m);
       expect(compose).toMatch(/^\s+FRONTEND_VERSION: \$\{FRONTEND_VERSION:-[0-9.]+\}$/m);

@@ -96,6 +96,16 @@ RUN echo "Cache bust: $CACHE_BUST" > /tmp/cache_bust.txt
 # Copy application code (cache-busted)
 COPY . .
 
+# The version of the BUILD, written into the image.  `platform_version.json`
+# is bind-mounted, so the version the API reports from it is the FOLDER's:
+# after a rollback (the previous image under the new folder's file) it named
+# the new release on the old build, and the two "is the right build running?"
+# checks compared the file with itself (review 2026-11-20, C7).  compose passes
+# the same number bump-version.py writes for the frontend image; `GET /`
+# reports it as `build_version` (core/config.py reads this file).
+ARG BACKEND_VERSION=unknown
+RUN printf '{"backendVersion": "%s"}\n' "$BACKEND_VERSION" > /etc/bluestick-backend-build.json
+
 # Create uploads directory with proper permissions
 RUN mkdir -p uploads \
     && chmod 755 uploads

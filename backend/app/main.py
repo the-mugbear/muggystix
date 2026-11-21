@@ -687,6 +687,9 @@ async def root():
     return {
         'message': 'BlueStick API',
         'version': settings.APP_VERSION,
+        # The build that is answering (the image's own), beside the version of
+        # the files in the folder: null when the image carries none.
+        'build_version': settings.BUILD_VERSION,
         'frontend_version': settings.FRONTEND_VERSION,
         'instance_id': get_instance_id(),
         'cors_origins': cors_origins,

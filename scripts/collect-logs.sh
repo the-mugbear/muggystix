@@ -137,19 +137,18 @@ compose_available() { [[ ${#COMPOSE_CMD[@]} -gt 0 ]]; }
 
 # compose_project_name and other_bluestick_stacks (containers.txt).
 STACK_LIB_LOADED=""
-if [[ -f "$SCRIPT_DIR/stack-lib.sh" ]] && compose_available; then
+if compose_available; then
     DC="${COMPOSE_CMD[*]}"
     PROJECT_ROOT="$PWD"
-    # shellcheck source=stack-lib.sh
-    source "$SCRIPT_DIR/stack-lib.sh"
     STACK_LIB_LOADED=1
 fi
+# Sourced either way (it runs nothing): the one reading of an .env value is
+# its `stack_env_val`; only its compose functions need STACK_LIB_LOADED.
+# shellcheck source=stack-lib.sh
+source "$SCRIPT_DIR/stack-lib.sh"
 
 # Read (never source) .env — its values are data, not shell.
-env_value() {
-    [[ -f .env ]] || return 0
-    { grep -E "^[[:space:]]*$1=" .env || true; } | tail -n 1 | cut -d'=' -f2- | sed -E 's/^["'\'']//; s/["'\'']$//'
-}
+env_value() { stack_env_val "$1"; }
 # One rule for .env values, used both to display them and to harvest what the
 # scrubber must remove: shown = plainly non-identifying; everything else is
 # redacted in configuration.txt AND removed wherever it appears in the logs.
@@ -1032,7 +1031,12 @@ for dest in "$OUT_DIR" "$PWD" "${HOME:-}"; do
     fi
 done
 if [[ -z "$BUNDLE" ]]; then
-    trap - EXIT   # keep $WORK: the bundle is the one copy
+    # Keep $WORK for the bundle, the one copy — and nothing else of it: the
+    # harvested terms (every .env secret, the project's names) and the tree
+    # the bundle was made from are not left in /tmp for whoever comes next.
+    rm -f "$TERMS"
+    rm -rf "$LOG_DIR"
+    trap - EXIT
     print_error "Could not write the bundle to $OUT_DIR, $PWD or \$HOME as $(id -un)."
     print_error "It is kept at $WORK/$LOG_NAME.tar.gz — move it from there (or re-run with --out DIR)."
     exit 1

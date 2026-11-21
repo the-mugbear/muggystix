@@ -636,6 +636,11 @@ if [[ "$UPLOADS_FAILED" -eq 1 || "$TEMPLATES_FAILED" -eq 1 ]]; then
         [[ "$UPLOADS_FAILED" -eq 1 ]] && echo "uploads_archive_missing=allowed" >> "$META_FILE"
         [[ "$TEMPLATES_FAILED" -eq 1 ]] && echo "templates_archive_missing=allowed" >> "$META_FILE"
     else
+        # Said in the backup's own record too: the artifact stays in the
+        # folder, it is the newest, and restore-db.sh would otherwise offer and
+        # restore it as an ordinary complete backup (review 2026-11-20, C6).
+        [[ "$UPLOADS_FAILED" -eq 1 ]] && echo "uploads_archive_missing=failed" >> "$META_FILE"
+        [[ "$TEMPLATES_FAILED" -eq 1 ]] && echo "templates_archive_missing=failed" >> "$META_FILE"
         print_error "BACKUP INCOMPLETE: the database artifact is kept at"
         print_error "    ${DB_ARTIFACT:-$BACKUP_DIR}"
         for what in "${missing[@]}"; do

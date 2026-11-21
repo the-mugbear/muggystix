@@ -148,6 +148,9 @@ services:
         # cannot run from this image (see backend/requirements-dev.txt).
         PYTHON_IMAGE:
         INSTALL_DEV:
+        # The build's own version, written into the image (GET / reports it
+        # as `build_version`); bump-version.py keeps the fallback.
+        BACKEND_VERSION: ${APP_VERSION:-2.547.6}
     logging: *default-logging
     # No process in the container can gain privileges it did not start with
     # (a setuid binary, file capabilities).  The entrypoints only DROP them
@@ -248,6 +251,7 @@ services:
         CACHE_BUST: ${CACHE_BUST:-}
         PYTHON_IMAGE:
         INSTALL_DEV:
+        BACKEND_VERSION: ${APP_VERSION:-2.547.6}
     logging: *default-logging
     # No process in the container can gain privileges it did not start with
     # (a setuid binary, file capabilities).  The entrypoints only DROP them
@@ -325,6 +329,7 @@ services:
         # builds it); passed only when set, like PYTHON_IMAGE.
         DEBIAN_IMAGE:
         INSTALL_DEV:
+        BACKEND_VERSION: ${APP_VERSION:-2.547.6}
     logging: *default-logging
     # No process in the container can gain privileges it did not start with
     # (a setuid binary, file capabilities).  The entrypoints only DROP them
@@ -389,7 +394,7 @@ services:
         # in this file (the services above read the mounted file).  Kept equal
         # to platform_version.json by scripts/bump-version.py and
         # versionConsistency.test.ts.
-        BACKEND_VERSION: ${APP_VERSION:-2.547.5}
+        BACKEND_VERSION: ${APP_VERSION:-2.547.6}
         # Stamped by generate-build-info.js (shown under About BlueStick).
         FRONTEND_VERSION: ${FRONTEND_VERSION:-5.435.5}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.

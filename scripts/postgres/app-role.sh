@@ -120,7 +120,11 @@ fi
 # The password travels as a psql variable and is quoted by the server
 # (format %L); the three settings keep the statement that carries it out of
 # the server log and out of pg_stat_statements.
-if ! error="$(super_sql -v password="$APP_PASSWORD" -v lock_timeout="$LOCK_TIMEOUT" 2>&1 <<'SQL'
+# It reaches psql through the ENVIRONMENT (`\getenv`, psql 15+), never as an
+# argument: a process's arguments are listed by `ps` for every account on the
+# host for as long as this transaction runs (up to the lock timeout).
+if ! error="$(APP_ROLE_PASSWORD="$APP_PASSWORD" super_sql -v lock_timeout="$LOCK_TIMEOUT" 2>&1 <<'SQL'
+\getenv password APP_ROLE_PASSWORD
 SET log_statement = 'none';
 SET log_min_duration_statement = -1;
 SET log_min_error_statement = 'panic';

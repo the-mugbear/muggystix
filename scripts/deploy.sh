@@ -873,7 +873,11 @@ snapshot_images_for_rollback() {
             continue
         fi
         if docker tag "$id" "bluestick-rollback-${svc}:previous" 2>/dev/null; then
-            echo "${svc}|${ref}" >> "$tmp"
+            # The image's ID is recorded with it: the tag's name is the same
+            # for every BlueStick stack on this host, so another stack's deploy
+            # overwrites it, and option 7 here must not take ITS previous
+            # build for ours (review 2026-11-20, C3).
+            echo "${svc}|${ref}|${id}" >> "$tmp"
             count=$((count + 1))
         fi
     done
@@ -1279,24 +1283,68 @@ rollback_to_previous() {
     fi
     [[ "$recorded_rev" == "unknown" ]] && recorded_rev=""
 
-    while IFS='|' read -r svc ref; do
+    # Decided for EVERY service before any image name is moved: which image
+    # each goes back to, and which cannot go back.  A partial revert is the
+    # state this option exists to prevent — the previous backend beside a
+    # worker of the failed build, whose start command migrates the schema
+    # forward again (review 2026-11-20, C4).
+    local id tag_id source entry
+    local -a plan=() cannot=()
+    while IFS='|' read -r svc ref id; do
         case "$svc" in
             ""|PREDEPLOY_DB_DUMP|PREDEPLOY_ALEMBIC_REVISION|DEPLOY_IN_PROGRESS) continue ;;
         esac
-        if docker image inspect "bluestick-rollback-${svc}:previous" >/dev/null 2>&1 && [[ -n "$ref" ]]; then
-            if docker tag "bluestick-rollback-${svc}:previous" "$ref" 2>/dev/null; then
-                print_info "Reverted ${svc} → ${ref}"
-                reverted=$((reverted + 1))
-            fi
+        [[ -n "$ref" ]] || continue
+        source=""
+        tag_id="$(docker image inspect "bluestick-rollback-${svc}:previous" --format '{{.Id}}' 2>/dev/null || true)"
+        if [[ -z "$id" ]]; then
+            # A snapshot recorded before image IDs were: the tag is all there is.
+            [[ -n "$tag_id" ]] && source="bluestick-rollback-${svc}:previous"
+        elif [[ "$tag_id" == "$id" ]]; then
+            source="bluestick-rollback-${svc}:previous"
+        elif docker image inspect "$id" >/dev/null 2>&1; then
+            # Another stack on this host re-used the tag's name; our image is
+            # still here under its ID.
+            source="$id"
+        fi
+        if [[ -n "$source" ]]; then
+            plan+=("${svc}|${ref}|${source}")
         else
-            print_warning "No snapshot image for ${svc}; leaving it as-is."
+            cannot+=("$svc")
         fi
     done < "$ROLLBACK_STATE_FILE"
+    # A service that runs now and was not in the snapshot at all.
+    for svc in $ROLLBACK_SERVICES; do
+        [[ " ${plan[*]%%|*} ${cannot[*]} " == *" $svc "* ]] && continue
+        [[ -n "$($DC images -q "$svc" 2>/dev/null | head -1)" ]] && cannot+=("$svc")
+    done
 
-    if [[ "$reverted" -eq 0 ]]; then
+    if [[ "${#plan[@]}" -eq 0 ]]; then
         print_error "No snapshot images could be reverted. Nothing was stopped or changed."
         return 1
     fi
+    if [[ "${#cannot[@]}" -gt 0 && "${DEPLOY_ROLLBACK_PARTIAL:-0}" != "1" ]]; then
+        print_error "The previous build of these services is not on this host: ${cannot[*]}"
+        print_error "Nothing was stopped or changed.  Rolling back the others alone would run the"
+        print_error "previous build beside the failed one, and a newer worker migrates the schema."
+        print_info  "To finish the deploy instead: option 1.  To roll back the others anyway"
+        print_info  "(the services above stay on the current build): DEPLOY_ROLLBACK_PARTIAL=1 $0"
+        return 1
+    fi
+    for svc in "${cannot[@]}"; do
+        print_warning "No snapshot image for ${svc}; leaving it as-is (DEPLOY_ROLLBACK_PARTIAL=1)."
+    done
+    for entry in "${plan[@]}"; do
+        IFS='|' read -r svc ref source <<< "$entry"
+        if docker tag "$source" "$ref" 2>/dev/null; then
+            print_info "Reverted ${svc} → ${ref}"
+            reverted=$((reverted + 1))
+        else
+            print_error "Could not point ${ref} back at its previous build (${source})."
+            print_error "Image names already moved stay moved; nothing was stopped. Fix the cause and run option 7 again."
+            return 1
+        fi
+    done
 
     # ---- 2. Stop the app; the database stays up ---------------------------
     # The old order started the previous images FIRST and offered the database
@@ -1414,7 +1462,7 @@ rollback_to_previous() {
             fi
             rollback_summary "RUNNING" \
                 "The previous build is running and its backend is healthy.$([[ "$restored" -eq 1 ]] && echo ' The database is the pre-deploy backup.')" \
-                "Check the version under About BlueStick. To try the upgrade again: option 1."
+                "The running backend is build $(running_backend_build). About BlueStick shows the version of the files in this folder, which is still the new release's. To try the upgrade again: option 1."
             return 0
             ;;
         3)
@@ -1440,6 +1488,16 @@ rollback_to_previous() {
 
 # The last thing option 7 prints: the state the instance is in, and the next
 # step.  $1 state word, $2 what is true now, $3 what to do.
+# The version the running backend IMAGE was built as (the Dockerfile writes it
+# into the image); "not stated" for an image built before 2.547.6.  The API's
+# own `version` is the mounted platform_version.json's — this folder's.
+running_backend_build() {
+    local built
+    built="$($DC exec -T backend cat /etc/bluestick-backend-build.json 2>/dev/null \
+        | sed -n 's/.*"backendVersion": *"\([^"]*\)".*/\1/p' | head -1)"
+    [[ -n "$built" && "$built" != "unknown" ]] && printf '%s' "$built" || printf 'not stated (built before 2.547.6)'
+}
+
 rollback_summary() {
     echo ""
     echo "=============================================="

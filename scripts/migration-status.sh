@@ -53,10 +53,10 @@ else
 fi
 
 # Read (never source) .env — its values are data, not shell.
-env_value() {
-    [[ -f .env ]] || return 0
-    { grep -E "^[[:space:]]*$1=" .env || true; } | tail -n 1 | cut -d'=' -f2- | sed -E 's/^["'\'']//; s/["'\'']$//'
-}
+# The one reading is stack-lib.sh's (sourcing it runs nothing).
+# shellcheck source=stack-lib.sh
+source "$SCRIPT_DIR/stack-lib.sh"
+env_value() { stack_env_val "$1"; }
 DB_NAME=$(env_value POSTGRES_DB); DB_NAME=${DB_NAME:-networkMapper}
 DB_USER=$(env_value POSTGRES_USER); DB_USER=${DB_USER:-nmapuser}
 

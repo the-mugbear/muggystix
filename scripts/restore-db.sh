@@ -313,6 +313,23 @@ meta_val() {
 # 2026-10-23, R-OPS4; backup-db.sh's backup_template_files).
 templates_archive="$(meta_val templates_archive)"
 
+# What the backup's own record says it never held: backup-db.sh writes these
+# when archiving the files failed, whether the operator then accepted a
+# database-only backup (`allowed`) or the run ended BACKUP INCOMPLETE
+# (`failed`).  Such a backup restores the database and no files, and the
+# restore says so at its start and in its ending — never "Restore complete".
+UPLOADS_NEVER_ARCHIVED="$(meta_val uploads_archive_missing)"
+TEMPLATES_NEVER_ARCHIVED="$(meta_val templates_archive_missing)"
+DATABASE_ONLY=0
+if [[ -n "$UPLOADS_NEVER_ARCHIVED" || -n "$TEMPLATES_NEVER_ARCHIVED" ]]; then
+    DATABASE_ONLY=1
+    print_warning "This is a DATABASE-ONLY backup. When it was made, these could not be archived:"
+    [[ -n "$UPLOADS_NEVER_ARCHIVED" ]] && print_warning "    ./uploads (evidence images, issued reports, screenshots)"
+    [[ -n "$TEMPLATES_NEVER_ARCHIVED" ]] && print_warning "    the report-template files installed on the server"
+    print_warning "Restoring it brings back the database only: its rows will point at whatever"
+    print_warning "files this folder holds now.  Prefer a complete backup if there is one."
+fi
+
 # A verification failure stops the restore — unless --force-unverified, which
 # turns it into a warning (returns 0).
 verification_failed() {
@@ -403,7 +420,13 @@ validate_backup() {
         ;;
       *.tar.gz)
         # PG_VERSION at the top is what makes a tar a PGDATA snapshot.
-        if ! tar tzf "$BACKUP_FILE" 2>/dev/null | grep -qE '^(\./)?PG_VERSION$'; then
+        # Listed to its END, and tar's own status looked at: `tar tzf … | grep -q`
+        # stops at the first match and never sees tar fail, so a truncated
+        # snapshot that still held PG_VERSION passed and was found out with the
+        # volume already emptied (review 2026-11-20, C5).
+        local members=""
+        if ! members="$(tar tzf "$BACKUP_FILE" 2>/dev/null)" \
+           || ! grep -qE '^(\./)?PG_VERSION$' <<< "$members"; then
             print_error "This archive is unreadable or is not a PostgreSQL volume snapshot:"
             print_error "    $BACKUP_FILE"
             return 1
@@ -763,6 +786,9 @@ if [[ -n "$uploads_archive" && -f "$BACKUP_FILE_DIR/$uploads_archive" ]]; then
 elif [[ -n "$uploads_archive" ]]; then
     print_warning "The backup names $uploads_archive, but it is not in $BACKUP_FILE_DIR —"
     print_warning "evidence images and issued report files are NOT restored."
+elif [[ -n "$UPLOADS_NEVER_ARCHIVED" ]]; then
+    print_warning "This backup holds no uploads (archiving them failed when it was made): evidence"
+    print_warning "images and issued report files in ./uploads are left as they are."
 else
     print_warning "This backup has no uploads archive (made before v2.392.1): evidence"
     print_warning "images and issued report files in ./uploads are left as they are."
@@ -824,13 +850,24 @@ files_partial_note() {
         echo "      $TEMPLATES_RETRY_CMD"
         echo ""
     fi
+    if [[ "$DATABASE_ONLY" -eq 1 ]]; then
+        echo "  This was a DATABASE-ONLY backup: it never held the files named at the start, so"
+        echo "  nothing of them was restored.  The files in this folder are as they were; rows of"
+        echo "  the restored database may point at files that are not here."
+        echo ""
+    fi
 }
 # The files did not all come back (uploads/ or the template files); NOT_BACK
 # names which, for the summary's title.
-files_partly_restored() { [[ "$UPLOADS_RESTORE_FAILED" -eq 1 || "$TEMPLATES_RESTORE_FAILED" -eq 1 ]]; }
+files_partly_restored() {
+    [[ "$UPLOADS_RESTORE_FAILED" -eq 1 || "$TEMPLATES_RESTORE_FAILED" -eq 1 || "$DATABASE_ONLY" -eq 1 ]]
+}
+uploads_not_back=0; templates_not_back=0
+[[ "$UPLOADS_RESTORE_FAILED" -eq 1 || -n "$UPLOADS_NEVER_ARCHIVED" ]] && uploads_not_back=1
+[[ "$TEMPLATES_RESTORE_FAILED" -eq 1 || -n "$TEMPLATES_NEVER_ARCHIVED" ]] && templates_not_back=1
 NOT_BACK="uploads/"
-[[ "$TEMPLATES_RESTORE_FAILED" -eq 1 ]] && NOT_BACK="report-templates/ files"
-[[ "$UPLOADS_RESTORE_FAILED" -eq 1 && "$TEMPLATES_RESTORE_FAILED" -eq 1 ]] && NOT_BACK="uploads/ and report-templates/ files"
+[[ "$templates_not_back" -eq 1 ]] && NOT_BACK="report-templates/ files"
+[[ "$uploads_not_back" -eq 1 && "$templates_not_back" -eq 1 ]] && NOT_BACK="uploads/ and report-templates/ files"
 
 # --- Start the stack; the backend runs `alembic upgrade head` ---
 if [[ "$NO_START" -eq 1 ]]; then
