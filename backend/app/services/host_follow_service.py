@@ -116,13 +116,18 @@ class HostFollowService:
 
     def set_follow_status(self, host_id: int, user_id: int, status: FollowStatus) -> HostFollow:
         follow = self.get_follow(host_id, user_id)
+        previous = follow.status if follow else None
         if not follow:
             follow = HostFollow(host_id=host_id, user_id=user_id, status=status)
             self.db.add(follow)
         self.apply_review_status(follow, status, user_id)
         from app.services import project_events
 
-        self._host_line(host_id, "host_review_changed", project_events.words(status))
+        # "An action that changed nothing records nothing": the status already
+        # held is no line (an agent or a double click re-marking In review).
+        # Reviewed again is a change — it re-stamps ``reviewed_at``.
+        if previous != status or status == FollowStatus.REVIEWED:
+            self._host_line(host_id, "host_review_changed", project_events.words(status))
         self.db.commit()
         self.db.refresh(follow)
         return follow

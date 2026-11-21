@@ -521,7 +521,9 @@ const Scopes: React.FC = () => {
       // A file's label column adds to the catalogue; its domain rows are the
       // domains section's list.
       void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels', projectId] });
-      if (response.domains_added) void queryClient.invalidateQueries({ queryKey: ['listScopeDomains', projectId] });
+      // Always: a file that only WIDENS an existing entry adds none, and the
+      // entry's "includes subdomains" and name count still changed.
+      void queryClient.invalidateQueries({ queryKey: ['listScopeDomains', projectId] });
       await scopeChanged();
       setUploadOpen(false);
       setTimeout(() => setStatusMessage(null), 3000);

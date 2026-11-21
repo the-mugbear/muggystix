@@ -514,7 +514,7 @@ export default function Scans() {
           matching file, not the loaded page). */}
       <ScansLead
         files={inventorySummary?.total_files ?? inventorySummary?.total_scans ?? scans.length}
-        filesUnknown={summaryFailed}
+        filesUnknown={summaryFailed || summaryQuery.isPending}
         filtered={hasActiveFilters}
         readsUploads={address.readsUploads}
         needAttention={inventorySummary?.imports_need_attention}
@@ -565,7 +565,7 @@ export default function Scans() {
             address={address}
             toolChips={toolChips}
             summary={inventorySummary}
-            summaryFailed={summaryFailed}
+            summaryFailed={summaryFailed || summaryQuery.isPending}
             loaded={nothingLoaded ? undefined : (
               <>
                 {/* How much of the list is loaded, so a partial view is never

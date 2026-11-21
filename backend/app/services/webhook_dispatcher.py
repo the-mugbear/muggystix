@@ -666,11 +666,18 @@ class WebhookDispatcher:
             config.project_id,
             {"config_id": config.id, "config_name": config.name},
         )
+        # End the request's read before the POST (up to 10 s): an open
+        # transaction keeps a pooled connection idle in transaction and its
+        # share locks held all that time — the LLM connection test's rule
+        # (`llm_provider_service.end_read_before_provider_call`).  What the
+        # POST needs is read first: a rollback expires the row.
+        url, config_id = config.url, config.id
+        self.db.rollback()
         try:
-            resp = _post(config.url, secret, payload)
+            resp = _post(url, secret, payload)
             return {"ok": resp.status_code < 400, "status_code": resp.status_code}
         except Exception as exc:
-            return {"ok": False, "error": _unreachable(exc, f"Webhook {config.id} test")}
+            return {"ok": False, "error": _unreachable(exc, f"Webhook {config_id} test")}
 
 
 # ---------------------------------------------------------------------------

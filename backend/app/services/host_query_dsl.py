@@ -37,7 +37,7 @@ character ``position`` where known), which a FastAPI handler maps to 400.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from sqlalchemy import Boolean, and_, false, func, not_, or_
 from sqlalchemy.orm import Session
@@ -351,6 +351,12 @@ class FieldSpec:
     value_source: str = "free"
     trgm: bool = False
     enum_values: List[str] = dc_field(default_factory=list)
+    # A closed-set field ("enum") is refused a value outside its set by
+    # ``_validate`` — one check for every such field (review 2026-11-20, C2:
+    # five fields had none, so ``scope:nome`` was an empty list and
+    # ``NOT scope:nome`` the whole project).  The set is ``enum_values`` unless
+    # the field accepts more than it offers; then this names every value.
+    accepted_values: Optional[Sequence[str]] = None
     # Human description of what the field matches and where the data comes
     # from.  Single source of truth for ALL help surfaces (the command-bar
     # syntax popover AND the user-guide field reference render this live via
@@ -697,6 +703,7 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="A path content discovery found — ffuf, gobuster, feroxbuster, dirsearch."),
     FieldSpec("portstate", lambda c, v: P.portstate_predicate(c.db, v), value_source="enum",
               enum_values=["open", "closed", "filtered"],
+              accepted_values=P.EXPLICIT_PORT_STATES,
               description="Has a port in this state — open / closed / filtered. A separate "
                           "condition: to put a state on port:/service:/version:, use @ on "
                           "that value (`service:ssh@closed`)."),
@@ -880,6 +887,15 @@ def _validate(node: Node) -> None:
                     f"Unknown field '{n.name}'. Fields: {', '.join(sorted(FIELD_BUILDERS))}",
                     position=n.pos,
                 )
+            if spec.value_source == "enum":
+                accepted = {a.lower() for a in (spec.accepted_values or spec.enum_values)}
+                for v in n.values:
+                    if v.strip().lower() not in accepted:
+                        raise DSLError(
+                            f"Unknown {n.name} value '{v}' — use one of: "
+                            + ", ".join(spec.enum_values),
+                            position=n.pos,
+                        )
             if spec.trgm:
                 for v in n.values:
                     # The trigram threshold is about the text matched, not a

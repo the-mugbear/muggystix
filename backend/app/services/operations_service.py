@@ -27,6 +27,7 @@ from app.db.models import OperationsCursor
 from app.db.models_vulnerability import Vulnerability
 from app.db.models_auth import User
 from app.db.models_project import Project
+from app.db.session import recover_or_reraise
 from app.services import host_query_predicates as P
 from app.services.operations_read_service import (
     compute_my_attention_queue,
@@ -339,28 +340,31 @@ def compute_operations(
     try:
         if include_investigate:
             investigate = compute_investigation_queue(db, project, limit=25)
-    except Exception:
+    except Exception as exc:
         # The personal queue must not go down with the engagement-wide one —
         # but say so: an empty queue reads as "every host has been touched".
+        # A statement the API timeout cancelled is the REQUEST's answer (a
+        # 503), not one section's: carrying on held a thread and a connection
+        # for a further 30 s per section (review 2026-11-20, C8).
         logger.exception("investigation queue failed for project %s", project.id)
-        db.rollback()
+        recover_or_reraise(db, exc)
         investigate = InvestigationQueueResponse()
         investigate_unavailable = True
     followups_unavailable = False
     try:
         followups = compute_review_followups(db, current_user, project, limit=preview(15))
-    except Exception:
+    except Exception as exc:
         logger.exception("review follow-ups failed for project %s", project.id)
-        db.rollback()
+        recover_or_reraise(db, exc)
         followups = ReviewFollowupsResponse()
         followups_unavailable = True
     blockers_unavailable = False
     try:
         blockers = compute_blockers(db, project)
-    except Exception:
+    except Exception as exc:
         # Same contract: a failure is said, never rendered as "nothing blocked".
         logger.exception("blockers failed for project %s", project.id)
-        db.rollback()
+        recover_or_reraise(db, exc)
         blockers = OperationsBlockers()
         blockers_unavailable = True
     return OperationsResponse(

@@ -143,6 +143,12 @@ describe('a changelog line', () => {
     expect(subjectPath(line({ subject_type: 'proposal', subject_id: 8 }))).toBeNull();
     expect(subjectPath(line({ subject_id: null }))).toBeNull();
     expect(subjectPath(line({ action: 'report_deleted', subject_type: 'report', subject_id: 3 }))).toBeNull();
+    // A deleted note or comment is about a host or a finding that is still there.
+    expect(subjectPath(line({ action: 'host_note_deleted', subject_type: 'host', subject_id: 4 }))).toBe('/hosts/4');
+    expect(subjectPath(line({ action: 'finding_comment_deleted', subject_type: 'finding', subject_id: 6 }))).toBe('/findings/6');
+    for (const action of ['finding_deleted', 'name_deleted', 'scan_deleted']) {
+      expect(subjectPath(line({ action, subject_type: 'finding', subject_id: 6 }))).toBeNull();
+    }
   });
 
   it('names the person, or their agent, or a former member', () => {

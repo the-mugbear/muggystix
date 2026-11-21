@@ -38,7 +38,7 @@ export default function HostDetail() {
     /** The Operations tab it was opened from: where Back returns. */
     operationsTab?: string;
     fromHosts?: string;
-    fromScan?: { id: number; filename: string };
+    fromScan?: { id: number; filename: string; path?: string };
     hostIds?: number[];
     currentIndex?: number;
     totalHosts?: number;
@@ -135,6 +135,8 @@ export default function HostDetail() {
     if (!(await confirmDiscardDraft())) return;
     if (navState?.fromOperations) navigate(operationsBackPath(navState));
     else if (navState?.fromHosts) navigate(navState.fromHosts);
+    // The scan page as it was left (its tab and page), not the Hosts list.
+    else if (navState?.fromScan) navigate(navState.fromScan.path ?? `/scans/${navState.fromScan.id}`);
     else navigate('/hosts');
   };
 
@@ -160,7 +162,7 @@ export default function HostDetail() {
 
   // Keyboard shortcuts: arrow keys / j-k for prev-next, Esc for back.
   useEffect(() => {
-    if (!navState?.fromHosts && !opsQueue) return;
+    if (!navState?.fromHosts && !navState?.fromScan && !opsQueue) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       // One test for every page shortcut (utils/keyboard): not while typing,
       // not with a modifier, not while a Select, a menu or a dialog has the

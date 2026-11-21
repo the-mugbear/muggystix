@@ -211,7 +211,9 @@ const ScanDetail: React.FC = () => {
   // said so for someone on this page: an nmap scan gets no column of blanks.
   const showCredentialed = snapshots.some((row) => row.credentialed != null);
   const openHost = (hostId: number) =>
-    navigate(`/hosts/${hostId}`, { state: { fromScan: { id: Number(scanId), filename: scan.filename } } });
+    navigate(`/hosts/${hostId}`, {
+      state: { fromScan: { id: Number(scanId), filename: scan.filename, path: `${location.pathname}${location.search}` } },
+    });
   // The open list's state above its table: loading, or its failure with Retry.
   const listState = (list: { rows: unknown[] | null; error: string | null; reload: () => Promise<void> }) =>
     list.error ? (

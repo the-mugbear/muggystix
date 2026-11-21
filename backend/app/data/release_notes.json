@@ -2,6 +2,20 @@
   "_about": "What changed in each release, in a line each, for the people using BlueStick (Reference -> Release notes). Newest first. kind: new | changed | fixed | before_upgrading. Every release has an entry (tests/test_release_notes.py); scripts/bump-version.py adds an empty one to fill. Why a change was made lives in CHANGELOG.md, not here.",
   "releases": [
     {
+      "backend": "2.547.5",
+      "frontend": "5.435.5",
+      "date": "2026-11-20",
+      "entries": [
+        {"kind": "fixed", "text": "A host query with a mistyped value for scope:, kind:, check:, state: or portstate: now says so and lists the values; before, it showed an empty list, and with NOT in front it showed every host."},
+        {"kind": "fixed", "text": "\"Back to Scan\" on a host page returns to the scan, on the tab and page you left, and Esc does the same."},
+        {"kind": "fixed", "text": "\"Next unreviewed\" on Hosts skips hosts a teammate has reviewed or is reviewing, as the Review column shows them."},
+        {"kind": "fixed", "text": "When Hosts or Names cannot be read, the page says so with Retry and no longer adds \"No hosts found\" or \"No names yet\" under the error."},
+        {"kind": "fixed", "text": "A changelog line about a deleted note or comment links the host or finding it was on."},
+        {"kind": "fixed", "text": "A remediation timeline note can no longer be dated in the future."},
+        {"kind": "fixed", "text": "The Domains list on Scope updates after an upload that only widens existing entries; Scans shows \"—\" for the file count until it is known."}
+      ]
+    },
+    {
       "backend": "2.547.4",
       "frontend": "5.435.4",
       "date": "2026-11-20",

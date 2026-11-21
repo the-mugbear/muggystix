@@ -55,6 +55,7 @@ import HostViewPicker, { type BuiltInHostView } from '../components/hosts/HostVi
 import {
   FOLLOW_STATUS_OPTIONS,
   isNewHost,
+  reviewStateText,
   useHostColumns,
   type HostFilterPivot,
 } from '../components/hosts/useHostColumns';
@@ -1152,10 +1153,10 @@ export default function Hosts() {
   // "Unreviewed" = nobody has started it: skip both Reviewed AND In Review
   // (a teammate is already on the in-review ones). Untouched / legacy-watching
   // hosts are the queue targets.
-  const hostNeedsReview = (h: Host) => {
-    const status = h.follow?.status ?? 'none';
-    return status !== 'reviewed' && status !== 'in_review';
-  };
+  // The Review column's own rule (`reviewStateText`): `h.follow` alone is the
+  // CALLER's mark, so "next" stopped on hosts a teammate had reviewed or was
+  // reviewing, and two analysts walked the same queue (review 2026-11-20, C22).
+  const hostNeedsReview = (h: Host) => reviewStateText(h).kind === 'none';
 
   const stepInspector = async (delta: 1 | -1) => {
     // Not over rows of another address (a page still loading, or one that
@@ -1621,7 +1622,8 @@ export default function Hosts() {
           {/* The one result count: the listing's own total, so it always agrees
               with the table and the exports. */}
           <p className="ml-auto shrink-0 text-metadata text-muted-foreground" aria-live="polite">
-            <strong className="tabular-nums text-foreground">{totalHosts.toLocaleString()}</strong>{' '}
+            {/* An unknown count is "—", never 0: no answer, and none from before. */}
+            <strong className="tabular-nums text-foreground">{listError && !shown ? '—' : totalHosts.toLocaleString()}</strong>{' '}
             {activeFilterChips.length > 0 && projectTotal != null && projectTotal >= totalHosts ? (
               // Matching and whole population together: a default view must
               // not read as the project's size.
@@ -1793,6 +1795,12 @@ export default function Hosts() {
           ``!hosts.length`` condition. */}
       {loading && hosts.length === 0 ? (
         <InlineLoader label="Loading hosts…" centered />
+      ) : hosts.length === 0 && listError ? (
+        // The read failed and there is nothing from before it: the alert above
+        // says so, with Retry.  "No hosts found — upload a scan" under it would
+        // describe a project the server never answered about (a link whose
+        // query it refused, say).
+        null
       ) : hosts.length === 0 && activeFilterChips.length > 0 ? (
         <div className="space-y-xs py-xl text-center">
           <Computer className="mx-auto size-12 text-muted-foreground" aria-hidden />

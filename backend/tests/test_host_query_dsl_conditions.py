@@ -149,7 +149,7 @@ def test_stale_review_is_not_a_flag(client, test_project):
 
     resp = _q(client, test_project.id, "has:stale_review")
     assert resp.status_code == 400, resp.text
-    assert "Unknown has: value 'stale_review'" in resp.text
+    assert "Unknown has value 'stale_review'" in resp.text
     assert "changed_since_review" in resp.text
     has = next(f for f in schema()["fields"] if f["name"] == "has")
     assert "stale_review" not in has["enum_values"]

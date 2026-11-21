@@ -58,8 +58,12 @@ const BY_OPTIONS: Array<{ value: ChangelogBy | null; label: string }> = [
 
 /** Where a line's subject can be opened, or null: a subject with no page of
  *  its own, or one the line itself says is gone. */
+const SUBJECT_GONE = new Set(['finding_deleted', 'name_deleted', 'report_deleted', 'scan_deleted']);
+
 export const subjectPath = (line: ChangelogLine): string | null => {
-  if (line.subject_id == null || line.action.endsWith('_deleted')) return null;
+  // Only the lines whose SUBJECT was deleted: a deleted note or comment is
+  // about a host or a finding that is still there.
+  if (line.subject_id == null || SUBJECT_GONE.has(line.action)) return null;
   switch (line.subject_type) {
     case 'finding': return `/findings/${line.subject_id}`;
     case 'host': return `/hosts/${line.subject_id}`;

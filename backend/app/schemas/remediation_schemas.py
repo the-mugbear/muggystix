@@ -1,6 +1,6 @@
 """Remediation tracking: one contract for the page and for agents."""
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -48,11 +48,25 @@ class _Base(BaseModel):
         return value
 
 
+def _not_in_the_future(value: Optional[datetime]) -> Optional[datetime]:
+    """A note is about something that happened: a moment after now (a mistyped
+    year) pinned it to the top of the timeline for good.  A few minutes are
+    allowed for the sender's clock; ``followed_up_on`` has the same rule by day."""
+    if value is None:
+        return value
+    now = datetime.now(timezone.utc)
+    when = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if when > now + timedelta(minutes=5):
+        raise ValueError("occurred_at cannot be in the future")
+    return value
+
+
 class NoteIn(_Base):
     body: str = Field(..., min_length=1, max_length=NOTE_MAX_CHARS)
     occurred_at: Optional[datetime] = Field(
         None, description="When it happened, if not now (a call made on Tuesday, recorded on Thursday).",
     )
+    _occurred_not_future = field_validator("occurred_at")(_not_in_the_future)
     request_key: Optional[str] = Field(
         None, min_length=1, max_length=80,
         description="Stable key for this note; send the same one on a re-run so it is not added twice.",
@@ -249,3 +263,4 @@ class PolicyUpdate(_Base):
 class NoteUpdate(_Base):
     body: Optional[str] = Field(None, min_length=1, max_length=NOTE_MAX_CHARS)
     occurred_at: Optional[datetime] = None
+    _occurred_not_future = field_validator("occurred_at")(_not_in_the_future)

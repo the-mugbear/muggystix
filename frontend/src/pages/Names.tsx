@@ -918,7 +918,9 @@ const Names: React.FC = () => {
         title={
           <>
             {activeLabel}
-            {total > 0 && <SectionCount>{total.toLocaleString()}</SectionCount>}
+            {shown == null && error
+              ? <SectionCount>—</SectionCount>
+              : total > 0 && <SectionCount>{total.toLocaleString()}</SectionCount>}
           </>
         }
         description={
@@ -931,6 +933,13 @@ const Names: React.FC = () => {
           {loading && rows.length === 0 ? (
             <div>
               <TableSkeleton rows={8} />
+            </div>
+          ) : rows.length === 0 && error ? (
+            // The read failed and nothing answered before it: the alert above
+            // says why.  "No names yet" would describe a project the server
+            // never answered about.
+            <div className="py-md">
+              <Button variant="outline" size="sm" onClick={() => void list.reload()}>Retry</Button>
             </div>
           ) : rows.length === 0 ? (
             <div className="py-md text-metadata text-muted-foreground">
